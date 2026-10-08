@@ -28,6 +28,5 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - Safety-pilot local secret/guarded owners, optimized checks, vectors, parser fuzz targets and owned benchmark rows.
 - Checked README usage and the private vulnerability reporting policy.
 
-Private-primitive erasure/review gates remain open in the C1 draft; no TLS engine or production adoption is claimed.
 
 [Unreleased]: https://github.com/pedronaugusto/cloak/commits/main

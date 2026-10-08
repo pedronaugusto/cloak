@@ -57,7 +57,7 @@ One owner per state. Runtime code depends only on Zig's standard library and nat
 
 ## Scope
 
-The C1 candidate implements credentials and verification; closure remains pending. TLS handshakes, records, resumption, datagrams and offload belong to subsequent implementation phases. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification. TLS handshakes, records, resumption, datagrams and offload belong to subsequent implementation phases. No application protocol, dialer or resolver lives here.
 
 ## Platforms
 
