@@ -1,8 +1,9 @@
 //! Optimized inspection entry points; no secret output is formatted.
 const std = @import("std");
 const Curve = @import("credentials").Curve;
+const curve_inspect = @import("curve_inspect.zig");
 comptime {
-    _ = @import("curve_inspect.zig");
+    _ = curve_inspect;
 }
 const Samples = struct {
     n: usize = 0,
