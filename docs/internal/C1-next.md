@@ -173,3 +173,22 @@ Book rows remain stale and read only: package page/bootstrap visibility assumpti
 the original first-phase ordering, old72/test and catalogue source-inspection
 counts, predecessor SDK/pin and hosted failures. No book write is authorized by
 this batch. Published candidate history and floor/default main are preserved.
+
+## First hosted finding and bounded correction
+
+FAST [37835820906](https://github.com/pedronaugusto/cloak/actions/runs/37835820906)
+on exact `9e464a45610a6165f80be20025d884e8ad61d148` was cancelled at the Linux
+job's20-minute bound (job113513782239,20m25s). Source checks completed; the
+required Fast extra finished20:07:46UTC, seed322151328; the full Debug CI run
+returned successfully20:20:17UTC, seed1730153916, reporting all8 Limbo batches
+and29 Wycheproof files with zero mismatches. The canonical driver then entered
+its first cross object target, x86_64-linux-gnu, and was cancelled20:20:58UTC.
+There was no compiler diagnostic or assertion failure. This is incomplete FAST,
+not a green tier or native/platform campaign result. `gh --log-failed` returned
+empty for the cancellation; the specific job log was fetched once instead.
+
+The correction uses canonical `fast_shards:4`, retaining Debug, the source checks,
+all tests, all12 configured targets, SDK jobs and the20-minute bound. The
+preflight runner partitions named tests across1/4..4/4; only the first shard
+runs lint/cross. No local planner, dependency patch, timeout increase or dropped
+assertion is introduced. Later exact-head FAST/MERGE results are required.

@@ -1,1 +1,1 @@
-{"compile_once":false,"targets":["x86_64-linux-gnu","aarch64-linux-gnu","x86_64-linux-musl","x86_64-windows-gnu","aarch64-windows-gnu","x86_64-macos","aarch64-macos","x86_64-freebsd","x86_64-openbsd","x86_64-netbsd","x86_64-dragonfly","wasm32-freestanding"]}
+{"compile_once":false,"targets":["x86_64-linux-gnu","aarch64-linux-gnu","x86_64-linux-musl","x86_64-windows-gnu","aarch64-windows-gnu","x86_64-macos","aarch64-macos","x86_64-freebsd","x86_64-openbsd","x86_64-netbsd","x86_64-dragonfly","wasm32-freestanding"],"fast_shards":4}
