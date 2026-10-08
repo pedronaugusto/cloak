@@ -6,6 +6,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Fixed
 
+- System CA bundles omit roots the strict parser cannot use, retaining usable roots without weakening explicit imports or resource limits.
+
 - Cumulative name-constraint and policy work is bounded separately from discovery and policy-node storage, including failed candidate paths and native-selected verification.
 
 ### Added

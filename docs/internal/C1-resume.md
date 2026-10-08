@@ -47,6 +47,25 @@ after the consumer return, so configuration requests the missing build helper
 and reruns after fetching; consumers still return before requesting CI tools.
 This follows the installed std.Build contract without making dependencies eager.
 
+Fast run 37797157383 on 78c647448a83b9ae6773340fa2d7f9e86d57d4e3
+passed clean setup but failed the Linux system-bundle test with InvalidTime.
+One unusable certificate previously poisoned the whole system import. The
+retained regression uses a synthetic month-13 root plus a valid signed neighbor
+and fails unchanged loading with InvalidTime (seed 3928676711). System bundles
+now omit unparseable/unsupported roots; each retained root still passes the
+strict parser. Explicit imports remain strict/transactional. System import
+charges every block against the root cap, including omitted entries; PEM
+framing, per-certificate/file/store limits and allocation failures still fail
+and roll back. An all-unusable bundle cannot freeze. No load-time validity
+filter, weaker calendar/profile, fallback trust authorization or native root
+dump is introduced. NoResize/checkAllAllocationFailures covers these cases.
+The targeted trust selection passed 45 tests with the Linux-only host test
+skipped on macOS in both ReleaseSafe and ReleaseFast. The synthetic private-loader
+assertion executes on this host, including NoResize/allocation-failure schedules.
+Lint/extras and all twelve configured target declaration checks pass after the fix.
+Hosted Linux execution remains a separate acceptance result.
+This startup-loader change does not change a measured verification hot path.
+
 Exact-head x86-64 and AArch64 curve assembly regeneration matches the hashes in
 C1-curve-assembly.txt byte for byte; the recorded carry branches remain.
 

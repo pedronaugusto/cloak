@@ -189,3 +189,50 @@ fn verifyRetainedSnapshot(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Ev
         try std.testing.expect(receipt.authenticated);
     }
 }
+
+// Invoked by Trust's private loader test; no production test seam is exported.
+pub fn systemBundle(comptime load: anytype) !void {
+    @setRuntimeSafety(true);
+    var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
+    const Case = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            @setRuntimeSafety(true);
+            try systemBundleAllocation(gpa, load);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), Case.run, .{});
+}
+fn systemBundleAllocation(gpa: std.mem.Allocator, comptime load: anytype) !void {
+    @setRuntimeSafety(true);
+    var trust = Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(@embedFile("verify/fixtures/work/work-root.der"), .{});
+    try expectImportError(trust.addPem(@embedFile("trust/fixtures/system-mixed.pem"), .{}), error.InvalidTime);
+    try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
+    try load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{});
+    try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
+    try std.testing.expectEqualSlices(u8, @embedFile("verify/fixtures/work/work-root.der"), trust.roots.items[0]);
+    try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .certificate_bytes = 8 }), error.TrustLimit);
+    try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
+    try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .roots = 1 }), error.TrustLimit);
+    var malformed = Trust.init(gpa);
+    defer malformed.deinit();
+    try expectImportError(load(&malformed, std.testing.io, &.{"src/trust/fixtures/system-malformed.pem"}, .{}), error.InvalidPem);
+    try std.testing.expectError(error.NoTrustAnchors, malformed.freeze());
+    try expectImportError(load(&malformed, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .bytes = 8 }), error.TrustLimit);
+    try std.testing.expectError(error.NoTrustAnchors, malformed.freeze());
+    var empty = Trust.init(gpa);
+    defer empty.deinit();
+    try load(&empty, std.testing.io, &.{"src/trust/fixtures/system-unusable.pem"}, .{});
+    try std.testing.expectError(error.NoTrustAnchors, empty.freeze());
+}
+
+fn expectImportError(result: anyerror!void, expected: anyerror) !void {
+    @setRuntimeSafety(true);
+    result catch |err| {
+        if (err == error.OutOfMemory) return err;
+        try std.testing.expect(err == expected);
+        return;
+    };
+    return error.TestUnexpectedResult;
+}

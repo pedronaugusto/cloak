@@ -3,6 +3,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
 const Trust = @This();
+const tests = @import("Trust_test.zig");
 
 gpa: std.mem.Allocator,
 /// Private: only the builder may mutate these certificate buffers.
@@ -58,6 +59,13 @@ pub fn addDer(t: *Trust, der: []const u8, limits: Limits) AddDerError!void {
 /// Atomic import: malformed later blocks leave the previous store intact.
 pub fn addPem(t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
     @setRuntimeSafety(true);
+    try importPem(false, t, pem, limits);
+}
+
+// System bundles retain only roots the strict verifier can use. Explicit input
+// remains transactional; no malformed root becomes an authorization candidate.
+fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
+    @setRuntimeSafety(true);
     if (pem.len > limits.file_bytes) return error.TrustLimit;
     const count = t.roots.items.len;
     const bytes = t.bytes;
@@ -66,7 +74,12 @@ pub fn addPem(t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
     const end = "-----END CERTIFICATE-----";
     var remaining = std.mem.trim(u8, pem, " \t\r\n");
     if (remaining.len == 0) return error.InvalidPem;
+    var blocks: usize = 0;
     while (remaining.len != 0) {
+        if (system_bundle) {
+            if (blocks >= limits.roots) return error.TrustLimit;
+            blocks += 1;
+        }
         if (!std.mem.startsWith(u8, remaining, begin)) return error.InvalidPem;
         remaining = remaining[begin.len..];
         const finish = std.mem.find(u8, remaining, end) orelse return error.InvalidPem;
@@ -85,7 +98,10 @@ pub fn addPem(t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
         const der = try t.gpa.alloc(u8, der_len);
         defer t.gpa.free(der);
         decoder.decode(der, compact[0..len]) catch return error.InvalidPem;
-        try t.addDer(der, limits);
+        t.addDer(der, limits) catch |err| switch (err) {
+            error.OutOfMemory, error.TrustLimit, error.MixedTrustPolicies => return err,
+            else => if (!system_bundle) return err,
+        };
         remaining = std.mem.trim(u8, remaining[finish + end.len ..], " \t\r\n");
     }
 }
@@ -224,10 +240,12 @@ fn systemLoad(t: *Trust, io: std.Io, limits: Limits) AddSystemError!void {
 fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits) AddSystemError!void {
     @setRuntimeSafety(true);
     for (paths) |path| {
-        t.file(io, path, limits) catch |err| switch (err) {
+        const pem = std.Io.Dir.cwd().readFileAlloc(io, path, t.gpa, .limited(limits.file_bytes)) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };
+        defer t.gpa.free(pem);
+        try importPem(true, t, pem, limits);
         return;
     }
     return error.SystemTrustUnavailable;
@@ -315,5 +333,10 @@ pub const Snapshot = struct {
 
 test {
     @setRuntimeSafety(true);
-    _ = @import("Trust_test.zig");
+    _ = tests;
+}
+
+test "trust system bundle omits unusable roots without weakening explicit import" {
+    @setRuntimeSafety(true);
+    try tests.systemBundle(firstBundle);
 }
