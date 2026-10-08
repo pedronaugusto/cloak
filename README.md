@@ -49,7 +49,7 @@ The returned receipt owns the selected DER path; its caller calls `deinit()`. Ch
 
 `PrivateKey.parse` owns its material and wipes it on final release. RSA parsing requires fresh caller CSPRNG witnesses through `PrivateKey.Entropy.fromIo(&io)`. Passphrases and Io are borrowed only for the parse call. `Identity.init` copies the chain, checks the leaf key and retains the key; `ClientAuth` shares that immutable identity.
 
-Native system trust uses `NativeVerification` with an empty explicit-anchor list. A finite timeout requires a bounded caller executor before inputs are copied. The executor owns the completion until it runs and releases it, including after abandonment and during shutdown. The driver applies portable floors to the exact OS-selected chain before returning a receipt. See [ownership and integration](docs/internal/C1-interfaces.md).
+Native system trust uses `NativeVerification` with an empty explicit-anchor list. A finite timeout requires a bounded caller executor before inputs are copied. The executor owns the completion until it runs and releases it, including after abandonment and during shutdown. The driver applies portable floors to the exact OS-selected chain before returning a receipt. See [ownership and integration](docs/design.md).
 
 ## Design
 
