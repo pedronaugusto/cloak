@@ -21,5 +21,11 @@ export fn cloakCoreVectors() u32 {
     const identity = cloak.Identity.init(gpa, &.{@embedFile("data/ed25519.der")}, key, .{}) catch return 8;
     defer identity.deinit();
     if (identity.chain().len != 1) return 9;
+    inline for (.{ @embedFile("data/p256.pem"), @embedFile("data/p384.pem") }, .{ @embedFile("data/p256.der"), @embedFile("data/p384.der") }) |pem, certificate| {
+        const curve_key = cloak.PrivateKey.parse(gpa, pem, .{}) catch return 10;
+        defer curve_key.deinit();
+        if (!curve_key.matches(certificate)) return 11;
+        // Exercise actual public caller dispatch and owned release on portable builds.
+    }
     return 0;
 }

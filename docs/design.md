@@ -85,9 +85,8 @@ measurement programs with the native SDK/linking contract. Freestanding checks
 compile the caller-service core and execute its vectors in the Wasm runner;
 hosted I/O/thread tests and benchmarks are not freestanding runtime claims.
 Benchmarks use `Config.bench` and the test-only measurement helper, retaining
-receipt/key/armor correctness checks and source metadata. Outlined constraints
-and policy calls reduced the older harness regression; the canonical harness
-is approximately neutral. Both measurements remain in the ledger.
+receipt/key/armor correctness checks and source metadata. Constraint and policy evaluation is outlined while preserving cumulative
+work charging and request binding.
 
 ## Local safety forms
 
