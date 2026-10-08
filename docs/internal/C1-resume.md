@@ -66,13 +66,22 @@ Lint/extras and all twelve configured target declaration checks pass after the f
 Hosted Linux execution remains a separate acceptance result.
 This startup-loader change does not change a measured verification hot path.
 
+Fast run 37800069272 on 0ef5413581d0204eb427402c5209039fb4205f1b
+passed the Linux system-bundle regression and 156 tests, then the combined
+9,802-case flat/indexed Limbo test exceeded the unchanged 120-second body
+watchdog (seed 1002029105). The same fixture and profile mappings now run in
+eight disjoint residue batches. Each asserts the fixed fixture cardinality,
+its exact case count and both builder verdicts; their counts sum to 9,802
+for each builder. Every batch keeps the default watchdog. No timeout, expected
+result, fixture, compiler mode or CI gate is relaxed.
+
 Exact-head x86-64 and AArch64 curve assembly regeneration matches the hashes in
 C1-curve-assembly.txt byte for byte; the recorded carry branches remain.
 
 ## Current local validation
 
 Zig 0.17.0, Apple M3 Max, Darwin 25.2.0. Targeted ReleaseSafe and ReleaseFast
-selections each passed 96/96 tests (seeds 1372501582 and 953099579). Filters:
+selections each passed 103/103 tests after batching (seeds 2930080272 and 2129299202). Filters:
 portable , Wycheproof, catalogue, policy, constraints, native verification,
 verification work and verification request. Each mode matched all 9,802 Limbo
 cases on flat and indexed builders and all 6,955 Wycheproof vectors in 29 files,

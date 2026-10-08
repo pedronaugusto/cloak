@@ -144,3 +144,7 @@ Wycheproof file counts (each zero mismatches)
 258 rsa_signature_4096_sha256_test.json
 259 rsa_signature_4096_sha384_test.json
 259 rsa_signature_4096_sha512_test.json
+
+The complete Limbo fixture runs through eight disjoint residue batches under the
+unchanged per-test watchdog. Fixed 9802 cardinality and exact per-batch counts
+assert all vectors are exercised with both flat and indexed builders.

@@ -56,15 +56,52 @@ fn reference(case: Case) !T.Identity {
         .ip6 => |v| .{ .ipv6 = v.bytes },
     };
 }
-test "x509-limbo portable complete corpus profile mapping" {
+test "x509-limbo portable complete corpus profile mapping batch 1 of 8" {
+    try corpus(0);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 2 of 8" {
+    try corpus(1);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 3 of 8" {
+    try corpus(2);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 4 of 8" {
+    try corpus(3);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 5 of 8" {
+    try corpus(4);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 6 of 8" {
+    try corpus(5);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 7 of 8" {
+    try corpus(6);
+}
+
+test "x509-limbo portable complete corpus profile mapping batch 8 of 8" {
+    try corpus(7);
+}
+
+fn corpus(comptime batch: usize) !void {
+    @setRuntimeSafety(true);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
     const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, gpa, @embedFile("fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
+    // Fixed fixture cardinality and disjoint residues preserve complete coverage.
+    try std.testing.expectEqual(@as(usize, 9802), parsed.value.testcases.len);
+    const selected = (parsed.value.testcases.len + 7 - batch) / 8;
     var mismatches: usize = 0;
     var passed: usize = 0;
     var indexed_passed: usize = 0;
-    for (parsed.value.testcases) |case| {
+    for (parsed.value.testcases, 0..) |case, case_index| {
+        if (case_index % 8 != batch) continue;
         var item = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer item.deinit();
         const alloc = item.allocator();
@@ -109,6 +146,8 @@ test "x509-limbo portable complete corpus profile mapping" {
             std.debug.print("LIMBO {s}: expected {s} got {s}\n", .{ case.id, case.expected_result, if (success) "SUCCESS" else @errorName(if (result) |_| unreachable else |err| err) });
         } else passed += 1;
     }
-    std.debug.print("LIMBO matched {d} flat and {d} indexed, mismatches {d}\n", .{ passed, indexed_passed, mismatches });
+    std.debug.print("LIMBO batch {d}/8 matched {d} flat and {d} indexed, mismatches {d}\n", .{ batch + 1, passed, indexed_passed, mismatches });
+    try std.testing.expectEqual(selected, passed);
+    try std.testing.expectEqual(selected, indexed_passed);
     try std.testing.expectEqual(@as(usize, 0), mismatches);
 }
