@@ -23,8 +23,13 @@ pub fn Field(comptime Public: type) type {
         pub const MontgomeryDomainFieldElement = [n]u64;
         pub fn selectznz(out: *[n]u64, choice: u1, a: [n]u64, b: [n]u64) void {
             @setRuntimeSafety(true);
-            const mask = Select.mask(choice);
-            for (0..n) |i| out[i] = (mask & b[i]) | (~mask & a[i]);
+            var mask = Select.mask(choice);
+            selectOwned(out, &mask, a, b);
+        }
+        fn selectOwned(out: *[n]u64, mask: *u64, a: [n]u64, b: [n]u64) void {
+            @setRuntimeSafety(true);
+            defer if (!@inComptime()) std.crypto.secureZero(u8, std.mem.asBytes(mask));
+            for (0..n) |i| out[i] = (mask.* & b[i]) | (~mask.* & a[i]);
         }
         pub fn mul(out: *[n]u64, a: [n]u64, b: [n]u64) void {
             @setRuntimeSafety(true);
@@ -110,4 +115,21 @@ pub fn Field(comptime Public: type) type {
             }
         }
     };
+}
+
+test "credential Montgomery selection live mask owner wipes full capacity" {
+    @setRuntimeSafety(true);
+    inline for (.{ std.crypto.ecc.P256.Fe, std.crypto.ecc.P384.Fe }) |Public| {
+        const M = Field(Public);
+        const n = Public.encoded_length / 8;
+        var mask: u64 = std.math.maxInt(u64);
+        var out: [n]u64 = @splat(0);
+        M.selectOwned(&out, &mask, @splat(0), @splat(1));
+        try std.testing.expect(std.mem.allEqual(u64, &out, 1));
+        // Initialized owned storage remains live after the callee's volatile wipe.
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&mask), 0));
+        M.selectOwned(&out, &mask, @splat(2), @splat(1));
+        try std.testing.expect(std.mem.allEqual(u64, &out, 2));
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&mask), 0));
+    }
 }
