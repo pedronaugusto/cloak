@@ -1,0 +1,1 @@
+{"sources": ["src"], "test_roots": ["src/root.zig"], "test_dependencies": []}

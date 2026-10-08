@@ -1,0 +1,14 @@
+.{
+    .name = .cloak,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0x8c4ddc1071f089f6,
+    .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md", "CHANGELOG.md" },
+    .dependencies = .{
+        .preflight = .{
+            .url = "git+https://github.com/pedronaugusto/preflight#9af905ed85cab6dbb19d9431c65ee3f41fbaa74d",
+            .hash = "preflight-0.1.0-LX1ZwsWpBgALd07i_vgcbSkkKQ71JAHcV3xcZN8SyG3r",
+            .lazy = true,
+        },
+    },
+}
