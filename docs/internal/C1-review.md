@@ -130,3 +130,26 @@ issues. The owner enables that setting when making the repository public. Neithe
 visibility nor settings were changed. Intake must privately triage severity,
 reproduce with a deterministic regression, prepare reviewed fixes and issue the
 GitHub security advisory when applicable; no certification is claimed.
+
+## Branch and hosted CI state
+
+The complete initial C1 draft is published on c1 at
+`de7f5253ee380533b5897a8c1006afc568727050`. Main is absent and remains unmodified.
+GitHub selected c1 as the first/default branch automatically; visibility is
+PRIVATE. No repository setting was changed by this batch.
+
+Fast dispatch is currently blocked before execution. GitHub reads
+`.github/workflows/ci.yml` from its default branch, Actions is enabled with all
+actions allowed, but `actions/workflows` returns zero workflows. Both the CLI
+and direct REST fast-dispatch requests return 404. Thus there is no fast or
+merge run id, and native Windows/Linux runtime success is not claimed. This
+registration blocker is reported to nav/owner alongside the erasure review.
+Do not bootstrap main with an unreviewed C1 commit to make CI discover it.
+
+Local integration evidence: lint 8/8 including optimized targeted extras; all
+12 configured target objects; ReleaseSmall; executed freestanding WASM vectors,
+consumer weak-options rejection and positive/negative documented verifier usage.
+Latest focused runs: 39/39 ReleaseSafe integer/key/service checks, 44/44
+ReleaseFast arithmetic/review/admission checks, 38/38 rejection checks and 40/40
+identity checks. The independent verification evidence predates the final
+borrowed Uint/resource rewrite and is deliberately identified separately.
