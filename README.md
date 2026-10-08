@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials and certificate verification for Zig TLS consumers. C1 security and validation gates remain open; the candidate is not approved for adoption. The TLS engine is under construction; this package does not yet provide an encrypted stream.
+Work in progress: credentials and certificate verification for Zig TLS consumers. The TLS engine is under construction; this package does not yet provide an encrypted stream.
 
 ## Install
 
