@@ -1,5 +1,8 @@
 # C1 resource and performance evidence
 
+Current continuation evidence and superseding pin/build status: [C1-next.md](C1-next.md).
+The entries below retain their historical source states and counters.
+
 ## Work estimate
 
 The default trust owner bounds DER storage at 16 MiB / 4,096 roots. A frozen

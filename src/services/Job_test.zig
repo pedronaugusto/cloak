@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Job = @import("Job.zig");
 const Budget = @import("Budget.zig");
 const types = @import("../types.zig");
@@ -94,6 +95,7 @@ const Cleanup = struct {
     frees: usize = 0,
     locked_frees: usize = 0,
     abandon_on_alloc: ?Job = null,
+    pause: ?*Pause = null,
     fn allocator(self: *Cleanup) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
     }
@@ -104,6 +106,11 @@ const Cleanup = struct {
     fn alloc(raw: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
         @setRuntimeSafety(true);
         const self = context(raw);
+        if (self.pause) |pause| {
+            self.pause = null;
+            pause.entered.set(pause.io);
+            pause.proceed.wait(pause.io) catch return null;
+        }
         if (self.abandon_on_alloc) |job| {
             self.abandon_on_alloc = null;
             job.abandon();
@@ -169,7 +176,6 @@ test "catalogue_verify_job_path_cleanup_releases_spin_guard" {
 
 test "catalogue_verify_job_native_abandon_during_evaluation_reaps_outside_guard" {
     @setRuntimeSafety(true);
-    const builtin = @import("builtin");
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     const root = @embedFile("../verify/fixtures/vectors/p256.der");
     const leaf = @embedFile("../verify/fixtures/vectors/leaf.der");
@@ -189,4 +195,56 @@ test "catalogue_verify_job_native_abandon_during_evaluation_reaps_outside_guard"
     try std.testing.expect(cleanup.frees >= 4);
     try std.testing.expectEqual(@as(usize, 0), cleanup.locked_frees);
     try std.testing.expectEqual(@as(usize, 1), budget.counts().jobs);
+}
+
+const Pause = struct { io: std.Io, entered: std.Io.Event = .unset, proceed: std.Io.Event = .unset };
+fn execute(job: Job) anyerror!void {
+    @setRuntimeSafety(true);
+    defer job.deinit();
+    job.run();
+}
+test "catalogue_verify_job_native_concurrent_abandon_retains_charge_until_reap" {
+    @setRuntimeSafety(true);
+    if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .limited(1) });
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pause: Pause = .{ .io = io };
+    var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
+    var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
+    var budget: Budget = .{ .max_jobs = 1 };
+    var q: Queue = .{};
+    const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = 1, .policy_generation = 1 };
+    var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
+    defer if (caller) |job| {
+        job.abandon();
+        job.deinit();
+    };
+    const executor_job = q.held.?;
+    defer if (q.held != null) {
+        executor_job.abandon();
+        executor_job.run();
+        executor_job.deinit();
+    };
+    cleanup.lock = &executor_job.state.shared.lock;
+    cleanup.state_allocation = std.mem.asBytes(executor_job.state).ptr;
+    cleanup.pause = &pause;
+    var worker = try io.concurrent(execute, .{executor_job});
+    q.held = null;
+    // Reap before the borrowed allocator, pause or backend can expire, on errors too.
+    defer {
+        pause.proceed.set(io);
+        _ = worker.cancel(io) catch {};
+    }
+    try pause.entered.wait(io);
+    caller.?.abandon();
+    caller.?.deinit();
+    caller = null;
+    try std.testing.expectEqual(@as(usize, 1), budget.counts().jobs);
+    pause.proceed.set(io);
+    try worker.await(io);
+    try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
+    try std.testing.expectEqual(@as(usize, 0), budget.counts().bytes);
+    try std.testing.expectEqual(@as(usize, 0), cleanup.locked_frees);
+    try std.testing.expect(cleanup.frees >= 4);
 }

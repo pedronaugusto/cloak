@@ -1,5 +1,8 @@
 # C1 resume: remediation and remaining acceptance gates
 
+Current continuation evidence and superseding pin/build status: [C1-next.md](C1-next.md).
+The entries below retain their historical source states and counters.
+
 Baseline: published c1 3a66309c49ab024be4e2647c9c3da4550e740ac0.
 Authoritative main at initial verification: c53aa6149fa09dc945bf55b6aabc322bdd06f7cc,
 already default. Preflight 9af905ed85cab6dbb19d9431c65ee3f41fbaa74d and test-only

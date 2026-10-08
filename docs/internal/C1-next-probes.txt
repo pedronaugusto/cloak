@@ -1,0 +1,12 @@
+
+FILE armor-timing.txt
+armor: n0=11988 n1=12012 mean0_ns=3103.831 mean1_ns=3110.177 variance0=30388.353 variance1=16965.417 welch_t=-3.194
+
+FILE curve-timing.txt
+P256: n0=12014 n1=11986 mean0_ns=74916.544 mean1_ns=74869.599 variance0=84091426.627 variance1=78251472.562 welch_t=0.404
+P384: n0=11946 n1=12054 mean0_ns=221404.609 mean1_ns=230312.700 variance0=406070998276.200 variance1=975947032067.109 welch_t=-0.831
+Edwards: n0=11873 n1=12127 mean0_ns=28389.012 mean1_ns=28394.703 variance0=1227752.181 variance1=701331.146 welch_t=-0.448
+
+FILE resource-probe.txt
+profile=0 peak_heap=7197 live_after=0 total_touched_stack=30672 below_entry=24319 heap_plus_touched=37869
+profile=1 peak_heap=24093 live_after=0 total_touched_stack=30672 below_entry=24319 heap_plus_touched=54765

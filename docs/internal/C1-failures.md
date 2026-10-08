@@ -1,5 +1,8 @@
 # C1 failure catalogue coverage
 
+Current continuation evidence and superseding pin/build status: [C1-next.md](C1-next.md).
+The entries below retain their historical source states and counters.
+
 Book reference: cloak design commit 58e6dfe81b7ef91b83d8abb8cfc945f147cf2731,
 2026-10-08, whole design plus safety.md read. Section 17 has 93 failure classes,
 102 references and 144 CVE IDs. Its `catalogue_*` identifiers are planned;

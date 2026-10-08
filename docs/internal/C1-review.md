@@ -1,5 +1,8 @@
 # C1 review and gate ledger
 
+Current continuation evidence and superseding pin/build status: [C1-next.md](C1-next.md).
+The entries below retain their historical source states and counters.
+
 ## Current resume status
 
 The fresh C1 continuation preserves published history from
