@@ -5,5 +5,4 @@ Until the first release, the supported version is `main`.
 Report vulnerabilities privately through GitHub private vulnerability reporting.
 Never report vulnerabilities in public issues.
 
-The owner will enable private vulnerability reporting when the repository becomes
-public.
+Private vulnerability reporting is enabled for this public repository.

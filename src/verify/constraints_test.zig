@@ -1,4 +1,5 @@
 const std = @import("std");
+const Work = @import("Work.zig");
 const constraints = @import("constraints.zig");
 const C = @import("../certificate.zig");
 test "directoryName matching normalizes ASCII strings and retains RDN boundaries" {
@@ -8,6 +9,7 @@ test "directoryName matching normalizes ASCII strings and retains RDN boundaries
 }
 
 test "wildcard constraints exclude intersecting hosts and preserve label depth" {
+    var work: Work = .{ .remaining = 4 * 1024 * 1024 };
     var leaf = try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{});
     var ca = try C.parse(@embedFile("fixtures/vectors/p256.der"), .{});
     leaf.extensions[leaf.extension_count] = .{ .oid = "\x55\x1d\x11", .critical = false, .value = "\x30\x0f\x82\x0d*.example.com" };
@@ -18,13 +20,14 @@ test "wildcard constraints exclude intersecting hosts and preserve label depth" 
     for (leaf.extensions[0 .. leaf.extension_count - 1]) |*e| if (std.mem.eql(u8, e.oid, "\x55\x1d\x11")) {
         e.value = leaf.extensions[leaf.extension_count - 1].value;
     };
-    try constraints.check(&.{ leaf, ca }, &.{});
+    try constraints.check(&.{ leaf, ca }, &.{}, &work);
     ca.extensions[ca.extension_count - 1].value = "\x30\x15\xa1\x13\x30\x11\x82\x0ffoo.example.com";
-    try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, ca }, &.{}));
+    try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, ca }, &.{}, &work));
 }
 
 // F15: an excluded-only predecessor cannot disable later permitted subtrees.
 test "catalogue_constraints_all_ca_permitted_and_excluded" {
+    var work: Work = .{ .remaining = 4 * 1024 * 1024 };
     const leaf = try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{});
     var lower = try C.parse(@embedFile("fixtures/vectors/p256.der"), .{});
     var upper = lower;
@@ -32,7 +35,22 @@ test "catalogue_constraints_all_ca_permitted_and_excluded" {
     lower.extension_count += 1;
     upper.extensions[upper.extension_count] = .{ .oid = "\x55\x1d\x1e", .critical = true, .value = "\x30\x11\xa1\x0f\x30\x0d\x82\x0binvalid.com" };
     upper.extension_count += 1;
-    try constraints.check(&.{ leaf, lower, upper }, &.{});
+    try constraints.check(&.{ leaf, lower, upper }, &.{}, &work);
     lower.extensions[lower.extension_count - 1].value = "\x30\x11\xa0\x0f\x30\x0d\x82\x0binvalid.com";
-    try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, lower, upper }, &.{}));
+    try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, lower, upper }, &.{}, &work));
+}
+
+// F14: constrain both visit count and byte scans, and keep rejected-path charges.
+test "catalogue_constraint_work_exact_boundary_and_no_refund" {
+    const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/work/work-leaf-1.der"), .{}), try C.parse(@embedFile("fixtures/work/work-inter-1.der"), .{}), try C.parse(@embedFile("fixtures/work/work-root.der"), .{}) };
+    var measured: Work = .{ .remaining = 65536 };
+    try constraints.check(&path, &.{}, &measured);
+    const cost = 65536 - measured.remaining;
+    try std.testing.expect(cost > 1);
+    var exact: Work = .{ .remaining = cost };
+    try constraints.check(&path, &.{}, &exact);
+    try std.testing.expectEqual(@as(usize, 0), exact.remaining);
+    try std.testing.expectError(error.VerificationLimit, constraints.check(&path, &.{}, &exact));
+    var short: Work = .{ .remaining = cost - 1 };
+    try std.testing.expectError(error.VerificationLimit, constraints.check(&path, &.{}, &short));
 }

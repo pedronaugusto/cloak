@@ -15,3 +15,13 @@ test "verification request digest binds token name time policy pins and evidence
     a.evidence.ocsp = &.{"staple"};
     try std.testing.expect(!std.mem.eql(u8, &digest, &a.digest()));
 }
+
+test "verification request digest binds every public work limit" {
+    const request: T.Request = .{ .chain = &.{"leaf"}, .time = 1, .trust_generation = 2, .policy_generation = 3 };
+    const digest = request.digest();
+    inline for (@typeInfo(T.Limits).@"struct".field_names) |field| {
+        var changed = request;
+        @field(changed.limits, field) += 1;
+        try std.testing.expect(!std.mem.eql(u8, &digest, &changed.digest()));
+    }
+}

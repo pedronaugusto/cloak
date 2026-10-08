@@ -11,6 +11,7 @@ const policies = @import("policy.zig");
 const revocation = @import("revocation.zig");
 pub const Request = T.Request;
 pub const VerifyError = C.ParseError || identity.Error || signatures.Error || constraints.Error || policies.Error || revocation.Error || V.InitError || error{ VerificationLimit, NoTrustedPath, InvalidValidity, InvalidCa, InvalidAnchorPolicy };
+const Work = @import("Work.zig");
 const Counters = struct { candidates: usize = 0, parses: usize = 0, signatures: usize = 0, rejected: usize = 0, parsed_bytes: usize = 0 };
 const Search = struct {
     gpa: std.mem.Allocator,
@@ -21,6 +22,8 @@ const Search = struct {
     count: usize = 0,
     work: Counters = .{},
     receipt: ?V = null,
+    constraint_work: Work,
+    policy_work: Work,
 
     fn init(gpa: std.mem.Allocator, request: T.Request, anchors: []const []const u8, index: ?*const C.Issuers, capacity: usize) VerifyError!*Search {
         @setRuntimeSafety(true);
@@ -28,7 +31,7 @@ const Search = struct {
         errdefer gpa.destroy(self);
         const path = try gpa.alloc(C.Certificate, capacity);
         errdefer gpa.free(path);
-        self.* = .{ .gpa = gpa, .request = request, .anchors = anchors, .issuer_index = index, .path = path };
+        self.* = .{ .gpa = gpa, .request = request, .anchors = anchors, .issuer_index = index, .path = path, .constraint_work = .{ .remaining = request.limits.constraint_work }, .policy_work = .{ .remaining = request.limits.policy_work } };
         return self;
     }
     fn deinit(self: *Search) void {
@@ -165,6 +168,7 @@ const Search = struct {
     fn accept(self: *Search, anchor_index: usize) VerifyError!bool {
         @setRuntimeSafety(true);
         const ap: T.AnchorPolicy = if (self.request.anchor_policies.len == 0) .{} else self.request.anchor_policies[anchor_index];
+        if (ap.name_constraints.len > self.request.limits.chain_bytes or ap.required_policies.len > self.request.limits.policy_nodes) return error.VerificationLimit;
         const anchor = &self.path[self.count - 1];
         if ((self.request.purpose == .server and !ap.server) or (self.request.purpose == .client and !ap.client)) return false;
         if (ap.check_validity and (self.request.time < anchor.not_before or self.request.time > anchor.not_after)) return false;
@@ -179,11 +183,11 @@ const Search = struct {
                 if (below > max) return false;
             }
         }
-        constraints.check(self.path[0..self.count], ap.name_constraints) catch |err| {
-            if (err == error.DerLimit) return err;
+        constraints.check(self.path[0..self.count], ap.name_constraints, &self.constraint_work) catch |err| {
+            if (err == error.DerLimit or err == error.VerificationLimit) return err;
             return false;
         };
-        policies.check(self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes) catch |err| {
+        policies.check(self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes, &self.policy_work) catch |err| {
             if (err == error.OutOfMemory or err == error.VerificationLimit) return err;
             return false;
         };

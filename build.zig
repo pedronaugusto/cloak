@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     const fuzz_tests = b.addTest(.{ .name = "cloak-fuzz", .root_module = fuzz_module, .filters = filters, .use_llvm = true });
     b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner").dependOn(&b.addRunArtifact(fuzz_tests).step);
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" } },
         .imports = benchImports,
         .target = target,
         .optimize = optimize,

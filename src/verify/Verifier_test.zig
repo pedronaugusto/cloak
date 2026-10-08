@@ -90,3 +90,29 @@ test "portable native selected scratch covers OS intermediates absent from reque
     try std.testing.expectEqual(@as(usize, 3), receipt.path.len);
     try receipt.check(req);
 }
+
+// F14: signed public inputs within the wire cap cannot evade comparison limits.
+test "catalogue_verification_constraint_flood_is_bounded" {
+    inline for (.{ 1, 1900 }) |count| {
+        const flood_leaf = @embedFile(std.fmt.comptimePrint("fixtures/work/work-leaf-{d}.der", .{count}));
+        const issuer = @embedFile(std.fmt.comptimePrint("fixtures/work/work-inter-{d}.der", .{count}));
+        const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = 1791467000, .trust_generation = 1, .policy_generation = 1, .limits = .{ .candidates = 16, .parses = 8, .signatures = 2, .rejected = 8, .policy_nodes = 1, .depth = 3 } };
+        const anchors = &.{@embedFile("fixtures/work/work-root.der")};
+        if (count == 1) {
+            var receipt = try V.verify(std.testing.allocator, req, anchors);
+            defer receipt.deinit();
+            try receipt.check(req);
+            var native = try V.nativePath(std.testing.allocator, req, &.{ flood_leaf, issuer, anchors[0] });
+            defer native.deinit();
+            try native.check(req);
+        } else {
+            const limited = if (V.verify(std.testing.allocator, req, anchors)) |value| blk: {
+                var receipt = value;
+                defer receipt.deinit();
+                break :blk false;
+            } else |err| err == error.VerificationLimit;
+            try std.testing.expect(limited);
+            try std.testing.expectError(error.VerificationLimit, V.nativePath(std.testing.allocator, req, &.{ flood_leaf, issuer, anchors[0] }));
+        }
+    }
+}

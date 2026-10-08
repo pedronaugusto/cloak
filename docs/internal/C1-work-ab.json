@@ -1,0 +1,350 @@
+{
+  "baseline_sha": "3a66309c49ab024be4e2647c9c3da4550e740ac0",
+  "compiler": "Zig 0.17.0 ReleaseFast mcpu=native",
+  "cpu": "Apple M3 Max",
+  "kernel": "Darwin 25.2.0",
+  "core_pinning": false,
+  "runs": [
+    {
+      "variant": "before",
+      "run": 1,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 101.969 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 853.992 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 1,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.553 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 1,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 113.384 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 868.892 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 1,
+      "workload": "constraints",
+      "output": "signed constraint path: 203.281 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 2,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 114.197 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 863.054 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 2,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.495 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 2,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.362 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 811.021 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 2,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.809 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 3,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.318 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 783.794 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 3,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.979 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 3,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 112.583 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 807.448 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 3,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.192 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 4,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 112.761 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 785.979 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 4,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.284 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 4,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.576 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 777.683 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 4,
+      "workload": "constraints",
+      "output": "signed constraint path: 201.947 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 5,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.128 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 773.369 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 5,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.122 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 5,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 112.397 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 790.806 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 5,
+      "workload": "constraints",
+      "output": "signed constraint path: 203.552 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 6,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 718.538 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 8723.665 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 6,
+      "workload": "constraints",
+      "output": "signed constraint path: 207.978 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 6,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.604 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 800.642 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 6,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.337 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 7,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 100.699 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 778.529 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 7,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.459 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 7,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 113.836 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 868.215 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 7,
+      "workload": "constraints",
+      "output": "signed constraint path: 202.283 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 8,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 110.645 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 793.919 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 8,
+      "workload": "constraints",
+      "output": "signed constraint path: 200.607 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 8,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 99.033 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 768.602 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 8,
+      "workload": "constraints",
+      "output": "signed constraint path: 198.950 us/op\n"
+    },
+    {
+      "variant": "before",
+      "run": 9,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 98.446 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 768.160 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 9,
+      "workload": "constraints",
+      "output": "signed constraint path: 198.483 us/op\n"
+    },
+    {
+      "variant": "after",
+      "run": 9,
+      "workload": "verification",
+      "output": "P-256 two-certificate portable path/receipt: 110.611 us/op (500 rounds)\nnative scoped policy plus portable floors/receipt: 783.190 us/op (20 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 9,
+      "workload": "constraints",
+      "output": "signed constraint path: 198.936 us/op\n"
+    }
+  ],
+  "metrics": {
+    "P-256 two-certificate portable path/receipt": {
+      "before": {
+        "best": 98.446,
+        "median": 100.362,
+        "p95_batch": 101.969,
+        "max": 101.969,
+        "raw": [
+          101.969,
+          100.362,
+          100.318,
+          100.576,
+          100.128,
+          100.604,
+          100.699,
+          99.033,
+          98.446
+        ]
+      },
+      "after": {
+        "best": 110.611,
+        "median": 112.761,
+        "p95_batch": 718.538,
+        "max": 718.538,
+        "raw": [
+          113.384,
+          114.197,
+          112.583,
+          112.761,
+          112.397,
+          718.538,
+          113.836,
+          110.645,
+          110.611
+        ]
+      },
+      "best_change_percent": 12.357028218515742,
+      "median_change_percent": 12.354277515394285
+    },
+    "native scoped policy plus portable floors/receipt": {
+      "before": {
+        "best": 768.16,
+        "median": 778.529,
+        "p95_batch": 853.992,
+        "max": 853.992,
+        "raw": [
+          853.992,
+          811.021,
+          783.794,
+          777.683,
+          773.369,
+          800.642,
+          778.529,
+          768.602,
+          768.16
+        ]
+      },
+      "after": {
+        "best": 783.19,
+        "median": 807.448,
+        "p95_batch": 8723.665,
+        "max": 8723.665,
+        "raw": [
+          868.892,
+          863.054,
+          807.448,
+          785.979,
+          790.806,
+          8723.665,
+          868.215,
+          793.919,
+          783.19
+        ]
+      },
+      "best_change_percent": 1.9566236200791565,
+      "median_change_percent": 3.7145693994700135
+    },
+    "signed constraint path": {
+      "before": {
+        "best": 198.483,
+        "median": 202.337,
+        "p95_batch": 202.979,
+        "max": 202.979,
+        "raw": [
+          202.553,
+          202.809,
+          202.979,
+          201.947,
+          202.122,
+          202.337,
+          202.459,
+          198.95,
+          198.483
+        ]
+      },
+      "after": {
+        "best": 198.936,
+        "median": 202.284,
+        "p95_batch": 207.978,
+        "max": 207.978,
+        "raw": [
+          203.281,
+          202.495,
+          202.192,
+          202.284,
+          203.552,
+          207.978,
+          202.283,
+          200.607,
+          198.936
+        ]
+      },
+      "best_change_percent": 0.22823113314489607,
+      "median_change_percent": -0.026193923998085733
+    }
+  },
+  "limits": "Nine interleaved batches with alternating order; batch p95 is not per-operation latency. Scheduling/frequency are uncontrolled. Comparisons apply only to these fixture paths, not hostile maxima or matched external implementations.",
+  "candidate_source_sha256": {
+    "src/types.zig": "46b7d62450d82a9d4741b716614d3bf47fc3cd28fc373c7ef1f08d5dc3dfdc31",
+    "src/verify/Work.zig": "3895aaae1dab347b76fcdbe15fe51a3b8f99e01a002557adc736baff730a6bc7",
+    "src/verify/Verifier.zig": "794447cfd636bff3481f98d58e9de04892d4c45f673f31f1ce11b91ec96e17fb",
+    "src/verify/constraints.zig": "9b73ecc48dbbb261770ce7625a61db0d8a6d358467976adcf6db60022b8ddab7",
+    "src/verify/policy.zig": "1a6277572e3413954c576cdc19d2063b52fc9ea1d9905a01ceaa2756eccb54bf"
+  },
+  "status": "Common portable best/median regression remains unresolved; signed constraint best difference is within uncontrolled host noise. No performance acceptance or no-regression claim."
+}

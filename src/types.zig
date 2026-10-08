@@ -34,6 +34,10 @@ pub const Limits = struct {
     parsed_bytes: usize = 4 * 1024 * 1024,
     receipt_bytes: usize = 65536,
     policy_nodes: usize = 256,
+    /// Cumulative subtree visits and compared bytes across all candidate paths.
+    constraint_work: usize = 4 * 1024 * 1024,
+    /// Cumulative policy visits and compared OID bytes, separate from node storage.
+    policy_work: usize = 4 * 1024 * 1024,
 };
 pub const AnchorPolicy = struct {
     check_validity: bool = false,

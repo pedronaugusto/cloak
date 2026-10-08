@@ -1,30 +1,33 @@
 const std = @import("std");
 const C = @import("../certificate.zig");
 const Der = @import("../wire/Der.zig");
-pub const Error = C.ParseError || error{NameConstraintViolation};
-pub fn check(path: []const C.Certificate, anchor_constraints: []const u8) Error!void {
+const Work = @import("Work.zig");
+pub const Error = C.ParseError || Work.ChargeError || error{NameConstraintViolation};
+pub fn check(path: []const C.Certificate, anchor_constraints: []const u8, work: *Work) Error!void {
     @setRuntimeSafety(true);
     if (anchor_constraints.len != 0) {
+        try work.charge(anchor_constraints.len);
         try C.Extensions.nameConstraints(anchor_constraints);
-        for (path[0 .. path.len - 1], 0..) |*sub, i| if (i == 0 or !sub.selfIssued()) try imposed(sub, anchor_constraints);
+        for (path[0 .. path.len - 1], 0..) |*sub, i| if (i == 0 or !sub.selfIssued()) try imposed(sub, anchor_constraints, work);
     }
     for (path, 0..) |*issuer, index| {
         if (issuer.x509(30)) |e| {
             if (index == 0) return error.NameConstraintViolation;
-            for (path[0..index], 0..) |*sub, i| if (i == 0 or !sub.selfIssued()) try imposed(sub, e.value);
+            for (path[0..index], 0..) |*sub, i| if (i == 0 or !sub.selfIssued()) try imposed(sub, e.value, work);
         }
     }
 }
-fn imposed(cert: *const C.Certificate, encoded: []const u8) Error!void {
+fn imposed(cert: *const C.Certificate, encoded: []const u8, work: *Work) Error!void {
     @setRuntimeSafety(true);
+    try work.charge(encoded.len);
     var r = try C.Extensions.sequence(encoded);
     const permitted = if (r.peek() == 0xa0) (try r.next()).value else &.{};
     const excluded = if (r.peek() == 0xa1) (try r.next()).value else &.{};
     try r.finish();
-    try checkName(.{ .tag = 0xa4, .encoded = &.{}, .value = cert.subject }, permitted, excluded);
+    try checkName(.{ .tag = 0xa4, .encoded = &.{}, .value = cert.subject }, permitted, excluded, work);
     if (cert.x509(17)) |san| {
         var names = try C.Extensions.sequence(san.value);
-        while (!names.empty()) try checkName(try names.next(), permitted, excluded);
+        while (!names.empty()) try checkName(try names.next(), permitted, excluded, work);
     } else {
         // Legacy emailAddress attributes are constrained too; never used for identity.
         var dn = (try Der.single(cert.subject, 0x30)).reader();
@@ -34,18 +37,21 @@ fn imposed(cert: *const C.Certificate, encoded: []const u8) Error!void {
                 var attr = (try set.expect(0x30)).reader();
                 const id = (try attr.expect(6)).value;
                 const value = try attr.next();
-                if (std.mem.eql(u8, id, "\x2a\x86\x48\x86\xf7\x0d\x01\x09\x01")) try checkName(.{ .tag = 0x81, .encoded = &.{}, .value = value.value }, permitted, excluded);
+                if (std.mem.eql(u8, id, "\x2a\x86\x48\x86\xf7\x0d\x01\x09\x01")) try checkName(.{ .tag = 0x81, .encoded = &.{}, .value = value.value }, permitted, excluded, work);
             }
         }
     }
 }
-fn checkName(name: Der.Element, permitted: []const u8, excluded: []const u8) Error!void {
+fn checkName(name: Der.Element, permitted: []const u8, excluded: []const u8, work: *Work) Error!void {
     @setRuntimeSafety(true);
+    try work.charge(1);
     var r: Der.Reader = .{ .bytes = excluded };
     while (!r.empty()) {
         var s = (try r.expect(0x30)).reader();
         const base = try s.next();
-        if (base.tag == name.tag and try matches(name, base.value, true)) return error.NameConstraintViolation;
+        try work.charge(1);
+        try work.charge(base.encoded.len);
+        if (base.tag == name.tag and try matches(name, base.value, true, work)) return error.NameConstraintViolation;
     }
     r = .{ .bytes = permitted };
     var constrained = false;
@@ -53,15 +59,25 @@ fn checkName(name: Der.Element, permitted: []const u8, excluded: []const u8) Err
     while (!r.empty()) {
         var s = (try r.expect(0x30)).reader();
         const base = try s.next();
+        try work.charge(1);
+        try work.charge(base.encoded.len);
         if (base.tag == name.tag) {
             constrained = true;
-            allowed = allowed or try matches(name, base.value, false);
+            allowed = allowed or try matches(name, base.value, false, work);
         }
     }
     if (constrained and !allowed) return error.NameConstraintViolation;
 }
-fn matches(name: Der.Element, base: []const u8, excluded: bool) Error!bool {
+fn matches(name: Der.Element, base: []const u8, excluded: bool, work: *Work) Error!bool {
     @setRuntimeSafety(true);
+    try work.charge(name.value.len);
+    try work.charge(base.len);
+    // A validated DN has at most 128 attributes. Each RDN set may rescan
+    // those attributes; reserve its conservative byte-work bound before matching.
+    if (name.tag == 0xa4) {
+        const bytes = std.math.add(usize, name.value.len, base.len) catch return error.VerificationLimit;
+        try work.charge(std.math.mul(usize, bytes, 128) catch return error.VerificationLimit);
+    }
     return switch (name.tag) {
         0x82 => dns(name.value, base, excluded),
         0x87 => ip(name.value, base),

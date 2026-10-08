@@ -14,6 +14,18 @@ This batch implements the authentication floor described by the private book's `
 
 A finite native timeout without an executor fails before copying inputs. The future connection/session driver captures and enforces the overall deadline and abandons expired jobs. C1 does not create a watchdog pool or retain Io in a native completion. Native calls prohibit network retrieval and copy the exact OS-selected chain. Raw native evidence is provisional: `NativeVerification.take` checks its request binding, validates portable floors on that selected path, checks the receipt and current time, then returns owned accepted-path evidence. It never rebuilds OS trust or turns an OS rejection into success.
 
+## Bounded verification work
+
+Each verification call owns cumulative constraint and policy work budgets for
+its entire search. Limits.constraint_work and Limits.policy_work default to
+4 Mi work units each and are bound into the request digest. Subtree visits,
+encoded subtree/name bytes and policy OID comparisons are charged before use;
+directoryName matching reserves a conservative bound for its 128-attribute
+rescan limit. Policy-node storage has its separate cap. Failed paths never
+refund work. Exhaustion returns VerificationLimit from portable and
+native-selected verification, before a receipt. These units bound configured
+work, not measured CPU nanoseconds or total-memory maxima.
+
 ## Receipt and reload contract
 
 `types.Request` binds peer chain, DNS/IP identity, purpose/mode, pins, policy/OIDs, offline CRL/OCSP evidence, anchor policies, supplied time, limits, trust/policy/identity generations and completion token. Receipts own selected DER and bind the complete request digest. Mutation, expired evidence, token reuse or backwards time cannot silently accept an old completion. Explicit `.none` stays unauthenticated.

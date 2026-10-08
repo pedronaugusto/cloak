@@ -1,6 +1,6 @@
 # cloak
 
-Credentials and certificate verification for Zig TLS consumers. The TLS engine is under construction; this package does not yet provide an encrypted stream.
+Work in progress: credentials and certificate verification for Zig TLS consumers. C1 security and validation gates remain open; the candidate is not approved for adoption. The TLS engine is under construction; this package does not yet provide an encrypted stream.
 
 ## Install
 
@@ -57,7 +57,7 @@ One owner per state. Runtime code depends only on Zig's standard library and nat
 
 ## Scope
 
-The C1 batch establishes credentials and verification. TLS handshakes, records, resumption, datagrams and offload belong to subsequent implementation phases. No application protocol, dialer or resolver lives here.
+The C1 candidate implements credentials and verification; closure remains pending. TLS handshakes, records, resumption, datagrams and offload belong to subsequent implementation phases. No application protocol, dialer or resolver lives here.
 
 ## Platforms
 

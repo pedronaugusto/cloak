@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- Cumulative name-constraint and policy work is bounded separately from discovery and policy-node storage, including failed candidate paths and native-selected verification.
+
 ### Added
 
 - Package build, preflight CI and production layer checks.

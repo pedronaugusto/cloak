@@ -1,6 +1,20 @@
 # C1 review and gate ledger
 
-## Status
+## Current resume status
+
+The fresh C1 continuation preserves published history from
+3a66309c49ab024be4e2647c9c3da4550e740ac0. Main remains the infrastructure floor;
+no bootstrap is recreated. Owner confirms cloak is public and private reporting
+is enabled. No repository settings are changed. Details, current checks and
+remaining gates are in [C1-resume.md](C1-resume.md).
+
+The single independent whole-C1 reviewer, task17/node19, failed with a backend
+content flag for possible cybersecurity risk. Its partial source/check evidence
+is retained, but no completed closure verdict exists for that checkpoint or
+this continuation. It is not retried, replaced or routed around. Nav must
+resolve the unavailable independent closure; no gate is waived.
+
+## Historical checkpoint status
 
 C1 is a credentials/verification draft. The original verification owner released
 its paths; all implementation/Git integration is now in the standalone C1 clone.
@@ -133,7 +147,7 @@ The default branch was explicitly corrected to main after the floor bootstrap. I
 reproduce with a deterministic regression, prepare reviewed fixes and issue the
 GitHub security advisory when applicable; no certification is claimed.
 
-## Branch and hosted CI state
+## Historical branch and hosted CI state
 
 Initial published c1 history ends at d3d790f14211924ef974918cdfe2203b8e90ab62.
 The owner-authorized floor-only main is c53aa6149fa09dc945bf55b6aabc322bdd06f7cc:
