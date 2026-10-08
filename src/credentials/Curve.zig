@@ -73,6 +73,7 @@ test {
     @setRuntimeSafety(true);
     _ = @import("Curve_test.zig");
     _ = @import("curve/Montgomery_test.zig");
+    _ = @import("curve/Montgomery.zig");
 }
 
 test "credential curve live scratch wipes full capacity on success and rejection" {
