@@ -1,4 +1,5 @@
 const std = @import("std");
+const V = @import("verify.zig");
 const shakedown = @import("shakedown");
 const Trust = @import("Trust.zig");
 const builtin = @import("builtin");
@@ -135,4 +136,56 @@ test "trust Linux system bundle freezes into the indexed explicit store" {
     defer snapshot.deinit();
     try std.testing.expect(snapshot.anchors().len > 0);
     try std.testing.expectEqual(Trust.System.portable, snapshot.systemPolicy());
+}
+
+// F25: workers retain one immutable snapshot while the builder replaces/releases its owner.
+test "catalogue_trust_snapshot_concurrent_verify_reload_release" {
+    @setRuntimeSafety(true);
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .limited(4) });
+    defer threaded.deinit();
+    const io = threaded.io();
+    var trust = Trust.init(std.testing.allocator);
+    defer trust.deinit();
+    try trust.addDer(@embedFile("verify/fixtures/vectors/p256.der"), .{});
+    var first: ?Trust.Snapshot = try trust.freeze();
+    defer if (first) |snapshot| snapshot.deinit();
+    var gate: std.Io.Event = .unset;
+    var workers: [4]std.Io.Future(anyerror!void) = undefined;
+    var started: usize = 0;
+    defer {
+        gate.set(io);
+        for (workers[0..started]) |*worker| _ = worker.cancel(io) catch {};
+    }
+    for (&workers) |*worker| {
+        worker.* = try snapshotWorker(io, first.?, &gate);
+        started += 1;
+    }
+    try trust.addDer(@embedFile("verify/fixtures/vectors/p384.der"), .{});
+    const next = try trust.freeze();
+    defer next.deinit();
+    try std.testing.expectEqual(first.?.generation() + 1, next.generation());
+    first.?.deinit();
+    first = null;
+    gate.set(io);
+    for (workers[0..started]) |*worker| try worker.await(io);
+}
+fn snapshotWorker(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Event) std.Io.ConcurrentError!std.Io.Future(anyerror!void) {
+    @setRuntimeSafety(true);
+    const retained = snapshot.retain();
+    errdefer retained.deinit();
+    return io.concurrent(verifyRetainedSnapshot, .{ io, retained, gate });
+}
+fn verifyRetainedSnapshot(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Event) anyerror!void {
+    @setRuntimeSafety(true);
+    defer snapshot.deinit();
+    try gate.wait(io);
+    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = snapshot.generation(), .policy_generation = 1 };
+    for (0..64) |_| {
+        const temporary = snapshot.retain();
+        defer temporary.deinit();
+        var receipt = try V.indexed(std.testing.allocator, request, temporary.issuers());
+        defer receipt.deinit();
+        try receipt.check(request);
+        try std.testing.expect(receipt.authenticated);
+    }
 }

@@ -2,30 +2,32 @@
 
 ## Status
 
-C1 is a reviewable credentials/verification draft, not an adopted TLS engine.
-The verification owner finished and explicitly released its assigned paths.
-The root owns integration and all Git operations. No new reviewer ship is
-started, and C0/C2 are gated by the owner after C1 lands.
+C1 is a credentials/verification draft. The original verification owner released
+its paths; all implementation/Git integration is now in the standalone C1 clone.
+The owner authorized a separate infrastructure-only main bootstrap and exactly
+one independent read-only Codex gpt-6.1-sol reviewer of a stable published C1
+checkpoint, followed by that same retained reviewer's re-review of any fixes.
+No C1/security adoption follows from the floor. C2/C0 remain nav-gated.
 
-The remaining C1 blocker is private-primitive erasure/review closure. The
-independent verifier owner reported unwiped std scalar copies at
-`std.crypto.ecc.Edwards25519.clampedMul` (local `t`) and P-256/P-384 `mul`
-(endian-swapped `s`). Root confirmed those sites in installed Zig 0.17.0.
-Wiping caller-owned scalar/pair/hash buffers does not erase a callee's copies.
-The new `credentials/Uint.zig` helper and final resource-admission rewrite were
-completed after that independent review; their deterministic checks pass, but
-no independent review of those final changes is claimed. Assembly/spill/erasure
-and class-separated timing review of the private primitives remains open.
+The concrete std scalar-copy sites are bypassed by a borrowed-scalar owned
+multiplier; a failing-before SEC1 `n+1` import regression is fixed. See
+C1-primitives.md for provenance, vectors, generated code and A/B. Security
+closure is still open: x86-64 generated P-curve field arithmetic has
+secret-derived carry branches, and extra point/callee spill copies are not
+covered by named scratch wipes. This checkpoint is not a constant-time or
+complete-erasure attestation. All critical/major findings must be fixed and
+independently closed before main can receive C1.
 
-Owner question: identify the review/remediation closure path while preserving
-the instruction to start no new ships. This records an unresolved gate, not a
-request to waive erasure or permit adoption. Root continues unaffected floor,
-portable checks, benchmarks and branch CI. Main remains unmodified while the
-gate is open.
+C1-failures.md maps every reachable catalogue row to actual source/tests,
+executed subsets and remaining assertions. Catalogue names in the book are
+planned; the locally implemented multi-CA constraints, signed multi-entry OCSP and
+concurrent snapshot regressions add executed `catalogue_*` tests here. Resource fixture measurements do not
+prove hostile/default-cap/embedded maxima. Mandatory duration, target and
+sanitizer/security proofs are not moved to a later phase by this ledger.
 
 ## Safety pilot
 
-All 265 production functions in local src explicitly retain runtime safety,
+Owned production functions in src explicitly retain runtime safety,
 including ReleaseFast. No runtime-safety-off block is introduced. Every cast
 has its range/layout/truncation reason; parsers never use unchecked pointer
 reinterprets to consume hostile bytes. Acquisitions have errdefer until ownership
@@ -93,10 +95,10 @@ runner executes only its first discovered target:
 - PEM parser, ReleaseFast: 100,236 executions; 202 unique inputs;
   370/8,594 edges (4.31%).
 
-These are smoke campaigns with no crashes, not 24 CPU-hour claims. The design's
-initial-engine 24 CPU-hour/stateful, sanitizer and full stack/resource campaigns
-remain later engine/adoption closure work. All enabled targets must retain the
-floor and grow corpus coverage; none is waived by C1 implementation.
+These are smoke campaigns with no crashes, not 24 CPU-hour claims. The design's initial-engine 24 CPU-hour target floor is not established.
+Reachable C1 parser duration, sanitizer/optimized primitive and complete
+stack/resource obligations remain open; no applicable gate is reassigned to
+C2/C0 or waived by a smoke run.
 
 Final optimized verifier campaign refresh, after workspace changes:
 
@@ -126,30 +128,53 @@ runtime consumer modules link Security/CoreFoundation or crypt32 as required.
 
 SECURITY.md records the owner decision: main is supported until the first release,
 reports go privately through GitHub private vulnerability reporting, never public
-issues. The owner enables that setting when making the repository public. Neither
-visibility nor settings were changed. Intake must privately triage severity,
+issues. The owner enables that setting when making the repository public. Visibility and private-vulnerability-reporting settings remain unchanged.
+The default branch was explicitly corrected to main after the floor bootstrap. Intake must privately triage severity,
 reproduce with a deterministic regression, prepare reviewed fixes and issue the
 GitHub security advisory when applicable; no certification is claimed.
 
 ## Branch and hosted CI state
 
-The complete initial C1 draft is published on c1 at
-`de7f5253ee380533b5897a8c1006afc568727050`. Main is absent and remains unmodified.
-GitHub selected c1 as the first/default branch automatically; visibility is
-PRIVATE. No repository setting was changed by this batch.
+Initial published c1 history ends at d3d790f14211924ef974918cdfe2203b8e90ab62.
+The owner-authorized floor-only main is c53aa6149fa09dc945bf55b6aabc322bdd06f7cc:
+build, preflight-generated CI/matrices, module stub, LICENSE, README and package
+policy/configuration files. It contains no credential or verification code.
+The required `gh repo edit pedronaugusto/cloak --default-branch main` ran and
+GitHub verified default_branch main, PRIVATE visibility. Vulnerability-reporting
+settings were not modified. CI workflow registration is now present.
 
-Fast dispatch is currently blocked before execution. GitHub reads
-`.github/workflows/ci.yml` from its default branch, Actions is enabled with all
-actions allowed, but `actions/workflows` returns zero workflows. Both the CLI
-and direct REST fast-dispatch requests return 404. Thus there is no fast or
-merge run id, and native Windows/Linux runtime success is not claimed. This
-registration blocker is reported to nav/owner alongside the erasure review.
-Do not bootstrap main with an unreviewed C1 commit to make CI discover it.
+Local c1 reconciles the unrelated floor ancestry by merge commit 6495d06;
+all initial c1 history is preserved, with no force/rewrite. Main is an ancestor
+of this branch. Future main must be a genuine fast-forward only after independent
+final-code closure and exact-commit hosted fast/merge success; recheck remote
+state first and never overwrite concurrent landed work.
 
-Local integration evidence: lint 8/8 including optimized targeted extras; all
-12 configured target objects; ReleaseSmall; executed freestanding WASM vectors,
-consumer weak-options rejection and positive/negative documented verifier usage.
-Latest focused runs: 39/39 ReleaseSafe integer/key/service checks, 44/44
-ReleaseFast arithmetic/review/admission checks, 38/38 rejection checks and 40/40
-identity checks. The independent verification evidence predates the final
-borrowed Uint/resource rewrite and is deliberately identified separately.
+Floor push run 37771993127 failed before starting: check-run 113293568212
+has no steps and GitHub's failure annotation says account payments failed or
+spending limit needs increasing. This is an owner-only billing issue to nav,
+not an attestation/test failure or a waiver. No C1 hosted fast/merge execution
+or Windows/Linux runtime success is claimed at this checkpoint.
+
+Current pins: preflight 9af905ed85cab6dbb19d9431c65ee3f41fbaa74d;
+shakedown d5d19d39bc60cec59456aca947a3a7b484b87318 (both lazy tooling only).
+Local current-kernel proof: ReleaseFast targeted catalogue/curve selection
+91 passed / 1 Linux-only skip; ReleaseSafe same plus public corpus
+120 passed / 1 Linux-only skip. Windows test bodies return on macOS, so their
+reported passes are not native Windows evidence. Both current runs matched
+9,802 Limbo cases on flat and indexed builders; ReleaseSafe matched all
+6,955 Wycheproof vectors across 29 files, no unexpected verdicts. Earlier
+source/pin/results remain historical evidence, not substituted for this code.
+
+The authorized independent review task/node and exact SHA are recorded in the
+root task report once deployed. No independent closure is claimed yet.
+
+Current-source configured compile checks: all 12 ci/workflow.json targets
+succeeded with `zig build check -Dci-lint=false -Doptimize=safe -Dtarget=...`.
+This is compile evidence, not native execution, generated-code safety or campaign
+proof. Preflight lint plus required extras passed 8/8; current workflow matrices
+match fast, merge and release plans generated by preflight 9af905e exactly.
+
+The later F15/F22/F25 catalogue-only selection passed 39/39 in both optimized
+modes, and preflight import/style corrections are followed by lint 8/8 success
+(seed 1828038789 for its required targeted test extra). Full source declarations,
+including the concurrent snapshot test, compiled on all 12 targets.

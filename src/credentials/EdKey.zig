@@ -1,5 +1,6 @@
 //! Owned RFC8032 seed expansion; every orchestration temporary is erased.
 const std = @import("std");
+const Curve = @import("Curve.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 pub const CreateError = error{InvalidKey};
 pub fn create(seed: *const [32]u8) CreateError!Ed25519.KeyPair {
@@ -15,7 +16,9 @@ pub fn create(seed: *const [32]u8) CreateError!Ed25519.KeyPair {
     hash.final(&expanded);
     var scalar = expanded[0..32].*;
     defer std.crypto.secureZero(u8, &scalar);
-    var point = Ed25519.Curve.basePoint.clampedMul(scalar) catch return error.InvalidKey;
+    scalar[0] &= 248;
+    scalar[31] = (scalar[31] & 127) | 64;
+    var point = Curve.base(Ed25519.Curve, .little, &scalar) catch return error.InvalidKey;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
     const public = point.toBytes();
     var encoded: [64]u8 = undefined;

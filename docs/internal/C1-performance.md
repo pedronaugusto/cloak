@@ -49,3 +49,36 @@ Final interleaved best-of-three cold RSA: 535469.820 us/op before and
 25.2.0. The after variant uses native-width borrowed subtraction and retains
 all safety, erasure, range and 64-round witness checks. Ed25519 control rows and
 all raw runs are in C1-key-ab.json.
+
+## Runtime fixture stack and heap (C1 continuation)
+
+`ci/resource_probe.zig` uses a joined POSIX worker on a caller-owned 2 MiB stack
+filled with 0xa5, then scans changed bytes and measures Counting allocator peak.
+Zig 0.17.0 ReleaseSafe / Apple M3 Max / Darwin 25.2.0:
+
+| Fixture | Per-call peak heap | Live after cleanup | Entire supplied-stack touched | Below worker entry | Heap + entire touched stack |
+|---|---:|---:|---:|---:|---:|
+| Common leaf + anchor | 7,165 | 0 | 30,656 | 24,335 | 37,821 |
+| 16 duplicate peers / 4,096 duplicate anchors, indexed | 24,061 | 0 | 30,656 | 24,335 | 54,717 |
+
+Root index preparation/storage uses its separate shared page allocator and is
+excluded from the per-call heap column. Both fixture calls succeed. Duplicate
+anchors deduplicate; this is deliberately not described as a worst issuer flood.
+Read-only input arrays live outside the worker stack. Touched-stack bytes include
+pthread/runtime/harness cost; the below-entry value is also not an engine-only
+peak. A sentinel scan can undercount unchanged sentinel bytes and requires
+corroborating instrumentation. CRL/OCSP, worst/default-cap path and embedded
+profiles, OS-internal native heap, shared storage amortization and worker storms
+are still unmeasured. Static assembly prologues are not substituted for runtime
+maxima. No 64/512 KiB or embedded phase gate is closed by these two fixtures.
+
+Reproduction (replace the package hash only if its pin changes):
+
+```sh
+zig build-exe -OReleaseSafe -lc -femit-bin=resource-probe --dep cloak --dep shakedown -Mroot=ci/resource_probe.zig -OReleaseSafe -Mcloak=src/root.zig -framework Security -framework CoreFoundation -OReleaseSafe -Mshakedown=zig-pkg/shakedown-0.1.0-BR8U4wgEDgAy2m7lSRtXgIZd_M19hPZ256UdmaPT_9Nj/src/shakedown.zig
+./resource-probe
+```
+
+The cold-curve import A/B and prior attempt are in C1-curve-ab.json; limitations
+and exact private-kernel security blockers are in C1-primitives.md. They do not
+replace matched-rival or distribution/worker-tail requirements.

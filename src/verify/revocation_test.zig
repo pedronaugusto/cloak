@@ -52,3 +52,14 @@ test "offline delegated responders require their own valid evidence and CRLs cov
     try std.testing.expectEqual(.good, (try R.check(&path, deadline, .{}, .{ .crls = &.{crl} })).status);
     try std.testing.expectError(error.StaleRevocation, R.check(&path, deadline + 1, .{}, .{ .crls = &.{crl} }));
 }
+
+// F22: signed responses must select the target, regardless of entry order.
+test "catalogue_revocation_multi_entry_target_and_order" {
+    const now = try std.fmt.parseInt(i64, @embedFile("fixtures/catalogue/time.txt"), 10);
+    const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/catalogue/target.der"), .{}), try C.parse(@embedFile("fixtures/catalogue/ca.der"), .{}) };
+    try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{@embedFile("fixtures/catalogue/good-neighbor.ocsp")} })).status);
+    for ([_][]const u8{ @embedFile("fixtures/catalogue/good-first.ocsp"), @embedFile("fixtures/catalogue/target-first.ocsp") }) |response| {
+        try std.testing.expectError(error.Revoked, R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{response} }));
+    }
+    try std.testing.expectError(error.InvalidRevocation, R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{@embedFile("fixtures/catalogue/unrelated.ocsp")} }));
+}

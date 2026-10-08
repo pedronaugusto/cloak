@@ -1,0 +1,427 @@
+{
+  "host": "Darwin-25.2.0-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M3 Max",
+  "zig": "0.17.0",
+  "flags": "ReleaseFast mcpu=native",
+  "noise_policy": "Interleaved reversed ordering, best/median/spread over seven batches; no core pinning; no significance or regression waiver from a best sample. p95 is across batches, not per operation.",
+  "before": "d3d790f14211924ef974918cdfe2203b8e90ab62",
+  "change": "borrowed-scalar construction, range check, wiped named scratch; skip first public identity addition",
+  "rows": [
+    {
+      "variant": "before",
+      "run": 1,
+      "output": "Ed25519 owned key parse/validate/release: 34.528 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.779 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 227.302 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 525748.305 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 1,
+      "output": "Ed25519 owned key parse/validate/release: 33.968 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.718 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 294.927 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 528530.556 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 2,
+      "output": "Ed25519 owned key parse/validate/release: 33.932 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.793 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 225.902 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 524627.472 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 2,
+      "output": "Ed25519 owned key parse/validate/release: 34.549 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.133 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 226.668 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 550844.972 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 3,
+      "output": "Ed25519 owned key parse/validate/release: 35.119 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.923 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 226.979 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 526371.611 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 3,
+      "output": "Ed25519 owned key parse/validate/release: 34.055 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.576 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 226.248 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 525534.903 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 4,
+      "output": "Ed25519 owned key parse/validate/release: 34.046 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.215 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 225.599 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 524387.194 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 4,
+      "output": "Ed25519 owned key parse/validate/release: 34.506 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.520 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 231.940 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 533621.417 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 5,
+      "output": "Ed25519 owned key parse/validate/release: 35.032 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.359 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 230.860 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 533083.556 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 5,
+      "output": "Ed25519 owned key parse/validate/release: 34.769 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.525 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 229.749 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 534070.250 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 6,
+      "output": "Ed25519 owned key parse/validate/release: 34.587 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.229 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 230.047 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 598010.181 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 6,
+      "output": "Ed25519 owned key parse/validate/release: 35.052 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 89.778 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 233.189 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 644074.375 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "before",
+      "run": 7,
+      "output": "Ed25519 owned key parse/validate/release: 35.681 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 87.271 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 233.789 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 557035.625 us/op (3 rounds)\n"
+    },
+    {
+      "variant": "after",
+      "run": 7,
+      "output": "Ed25519 owned key parse/validate/release: 35.044 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 87.341 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 232.671 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 570914.792 us/op (3 rounds)\n"
+    }
+  ],
+  "metrics": {
+    "before": {
+      "Ed25519 owned key parse/validate/release": {
+        "best": 34.506,
+        "median": 35.032,
+        "batch_p95": 35.681,
+        "max": 35.681,
+        "raw": [
+          34.528,
+          34.549,
+          35.119,
+          34.506,
+          35.032,
+          35.052,
+          35.681
+        ]
+      },
+      "P-256 owned key parse/validate/release": {
+        "best": 84.779,
+        "median": 85.52,
+        "batch_p95": 89.778,
+        "max": 89.778,
+        "raw": [
+          84.779,
+          85.133,
+          84.923,
+          85.52,
+          86.359,
+          89.778,
+          87.271
+        ]
+      },
+      "P-384 owned key parse/validate/release": {
+        "best": 226.668,
+        "median": 230.86,
+        "batch_p95": 233.789,
+        "max": 233.789,
+        "raw": [
+          227.302,
+          226.668,
+          226.979,
+          231.94,
+          230.86,
+          233.189,
+          233.789
+        ]
+      },
+      "RSA-2048 owned key parse/validate/release": {
+        "best": 525748.305,
+        "median": 533621.417,
+        "batch_p95": 644074.375,
+        "max": 644074.375,
+        "raw": [
+          525748.305,
+          550844.972,
+          526371.611,
+          533621.417,
+          533083.556,
+          644074.375,
+          557035.625
+        ]
+      }
+    },
+    "after": {
+      "Ed25519 owned key parse/validate/release": {
+        "best": 33.932,
+        "median": 34.055,
+        "batch_p95": 35.044,
+        "max": 35.044,
+        "raw": [
+          33.968,
+          33.932,
+          34.055,
+          34.046,
+          34.769,
+          34.587,
+          35.044
+        ]
+      },
+      "P-256 owned key parse/validate/release": {
+        "best": 84.718,
+        "median": 85.576,
+        "batch_p95": 87.341,
+        "max": 87.341,
+        "raw": [
+          84.718,
+          84.793,
+          85.576,
+          85.215,
+          86.525,
+          86.229,
+          87.341
+        ]
+      },
+      "P-384 owned key parse/validate/release": {
+        "best": 225.599,
+        "median": 229.749,
+        "batch_p95": 294.927,
+        "max": 294.927,
+        "raw": [
+          294.927,
+          225.902,
+          226.248,
+          225.599,
+          229.749,
+          230.047,
+          232.671
+        ]
+      },
+      "RSA-2048 owned key parse/validate/release": {
+        "best": 524387.194,
+        "median": 528530.556,
+        "batch_p95": 598010.181,
+        "max": 598010.181,
+        "raw": [
+          528530.556,
+          524627.472,
+          525534.903,
+          524387.194,
+          534070.25,
+          598010.181,
+          570914.792
+        ]
+      }
+    }
+  },
+  "best_change_percent": {
+    "Ed25519 owned key parse/validate/release": -1.6634788152784963,
+    "P-256 owned key parse/validate/release": -0.07195178051166984,
+    "P-384 owned key parse/validate/release": -0.4716148728536984,
+    "RSA-2048 owned key parse/validate/release": -0.2588902307540497
+  },
+  "previous_attempt": {
+    "host": "Darwin-25.2.0-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M3 Max",
+    "zig": "0.17.0",
+    "flags": "ReleaseFast mcpu=native",
+    "noise_policy": "Interleaved reversed ordering, best/median/spread over seven batches; no core pinning; no significance or regression waiver from a best sample. p95 is across batches, not per operation.",
+    "before": "d3d790f14211924ef974918cdfe2203b8e90ab62",
+    "rows": [
+      {
+        "variant": "before",
+        "run": 1,
+        "output": "Ed25519 owned key parse/validate/release: 34.579 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.265 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 240.529 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 627059.569 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 1,
+        "output": "Ed25519 owned key parse/validate/release: 45.875 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.505 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 227.185 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 525738.972 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 2,
+        "output": "Ed25519 owned key parse/validate/release: 34.316 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.101 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 226.636 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 527992.139 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 2,
+        "output": "Ed25519 owned key parse/validate/release: 34.833 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.468 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 229.055 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 525466.139 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 3,
+        "output": "Ed25519 owned key parse/validate/release: 34.531 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.157 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 298.445 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 557819.750 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 3,
+        "output": "Ed25519 owned key parse/validate/release: 35.033 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 86.982 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 227.024 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 519435.458 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 4,
+        "output": "Ed25519 owned key parse/validate/release: 34.111 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.261 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 225.723 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 519526.167 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 4,
+        "output": "Ed25519 owned key parse/validate/release: 34.489 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.134 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 225.492 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 521890.736 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 5,
+        "output": "Ed25519 owned key parse/validate/release: 34.578 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.185 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 235.507 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 523055.847 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 5,
+        "output": "Ed25519 owned key parse/validate/release: 34.093 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.635 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 226.910 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 517896.875 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 6,
+        "output": "Ed25519 owned key parse/validate/release: 34.041 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.578 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 225.736 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 528637.125 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 6,
+        "output": "Ed25519 owned key parse/validate/release: 34.984 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 88.512 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 241.285 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 536236.180 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "before",
+        "run": 7,
+        "output": "Ed25519 owned key parse/validate/release: 34.768 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 84.918 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 236.645 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 528901.680 us/op (3 rounds)\n"
+      },
+      {
+        "variant": "after",
+        "run": 7,
+        "output": "Ed25519 owned key parse/validate/release: 34.636 us/op (5000 rounds)\nP-256 owned key parse/validate/release: 85.894 us/op (5000 rounds)\nP-384 owned key parse/validate/release: 228.759 us/op (5000 rounds)\nRSA-2048 owned key parse/validate/release: 652836.625 us/op (3 rounds)\n"
+      }
+    ],
+    "results": {
+      "Ed25519": {
+        "before": {
+          "best_us": 34.489,
+          "median_us": 34.579,
+          "max_us": 34.984,
+          "p95_batches_us": 34.984,
+          "raw_us": [
+            34.579,
+            34.833,
+            34.531,
+            34.489,
+            34.578,
+            34.984,
+            34.768
+          ]
+        },
+        "after": {
+          "best_us": 34.041,
+          "median_us": 34.316,
+          "max_us": 45.875,
+          "p95_batches_us": 45.875,
+          "raw_us": [
+            45.875,
+            34.316,
+            35.033,
+            34.111,
+            34.093,
+            34.041,
+            34.636
+          ]
+        },
+        "best_change_percent": -1.2989648873553916
+      },
+      "P-256": {
+        "before": {
+          "best_us": 84.134,
+          "median_us": 85.265,
+          "max_us": 88.512,
+          "p95_batches_us": 88.512,
+          "raw_us": [
+            85.265,
+            85.468,
+            86.157,
+            84.134,
+            84.185,
+            88.512,
+            84.918
+          ]
+        },
+        "after": {
+          "best_us": 84.261,
+          "median_us": 85.101,
+          "max_us": 86.982,
+          "p95_batches_us": 86.982,
+          "raw_us": [
+            86.505,
+            85.101,
+            86.982,
+            84.261,
+            84.635,
+            84.578,
+            85.894
+          ]
+        },
+        "best_change_percent": 0.15094967551763094
+      },
+      "P-384": {
+        "before": {
+          "best_us": 225.492,
+          "median_us": 236.645,
+          "max_us": 298.445,
+          "p95_batches_us": 298.445,
+          "raw_us": [
+            240.529,
+            229.055,
+            298.445,
+            225.492,
+            235.507,
+            241.285,
+            236.645
+          ]
+        },
+        "after": {
+          "best_us": 225.723,
+          "median_us": 226.91,
+          "max_us": 228.759,
+          "p95_batches_us": 228.759,
+          "raw_us": [
+            227.185,
+            226.636,
+            227.024,
+            225.723,
+            226.91,
+            225.736,
+            228.759
+          ]
+        },
+        "best_change_percent": 0.10244265871961478
+      },
+      "RSA-2048": {
+        "before": {
+          "best_us": 521890.736,
+          "median_us": 528901.68,
+          "max_us": 627059.569,
+          "p95_batches_us": 627059.569,
+          "raw_us": [
+            627059.569,
+            525466.139,
+            557819.75,
+            521890.736,
+            523055.847,
+            536236.18,
+            528901.68
+          ]
+        },
+        "after": {
+          "best_us": 517896.875,
+          "median_us": 525738.972,
+          "max_us": 652836.625,
+          "p95_batches_us": 652836.625,
+          "raw_us": [
+            525738.972,
+            527992.139,
+            519435.458,
+            519526.167,
+            517896.875,
+            528637.125,
+            652836.625
+          ]
+        },
+        "best_change_percent": -0.7652676555653604
+      }
+    }
+  }
+}

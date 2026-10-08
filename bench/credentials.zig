@@ -8,8 +8,8 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var buffer: [1024]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(io, &buffer);
-    for ([_][]const u8{ @embedFile("data/ed25519.pem"), @embedFile("data/rsa.pem") }, [_][]const u8{ "Ed25519", "RSA-2048" }) |pem, name| {
-        const rounds: usize = if (smoke) 1 else if (std.mem.eql(u8, name, "RSA-2048")) 3 else 500;
+    for ([_][]const u8{ @embedFile("data/ed25519.pem"), @embedFile("data/p256.pem"), @embedFile("data/p384.pem"), @embedFile("data/rsa.pem") }, [_][]const u8{ "Ed25519", "P-256", "P-384", "RSA-2048" }) |pem, name| {
+        const rounds: usize = if (smoke) 1 else if (std.mem.eql(u8, name, "RSA-2048")) 3 else 5000;
         const options: cloak.PrivateKey.ParseOptions = .{ .entropy = @import("cloak").PrivateKey.Entropy.fromIo(&io) };
         const start = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..rounds) |_| {

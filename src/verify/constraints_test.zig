@@ -22,3 +22,17 @@ test "wildcard constraints exclude intersecting hosts and preserve label depth" 
     ca.extensions[ca.extension_count - 1].value = "\x30\x15\xa1\x13\x30\x11\x82\x0ffoo.example.com";
     try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, ca }, &.{}));
 }
+
+// F15: an excluded-only predecessor cannot disable later permitted subtrees.
+test "catalogue_constraints_all_ca_permitted_and_excluded" {
+    const leaf = try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{});
+    var lower = try C.parse(@embedFile("fixtures/vectors/p256.der"), .{});
+    var upper = lower;
+    lower.extensions[lower.extension_count] = .{ .oid = "\x55\x1d\x1e", .critical = true, .value = "\x30\x11\xa0\x0f\x30\x0d\x82\x0bexample.com" };
+    lower.extension_count += 1;
+    upper.extensions[upper.extension_count] = .{ .oid = "\x55\x1d\x1e", .critical = true, .value = "\x30\x11\xa1\x0f\x30\x0d\x82\x0binvalid.com" };
+    upper.extension_count += 1;
+    try constraints.check(&.{ leaf, lower, upper }, &.{});
+    lower.extensions[lower.extension_count - 1].value = "\x30\x11\xa0\x0f\x30\x0d\x82\x0binvalid.com";
+    try std.testing.expectError(error.NameConstraintViolation, constraints.check(&.{ leaf, lower, upper }, &.{}));
+}

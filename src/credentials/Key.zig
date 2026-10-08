@@ -11,6 +11,7 @@ const oid_des3 = "\x2a\x86\x48\x86\xf7\x0d\x03\x07";
 const P256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
 const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
 const Ed25519 = std.crypto.sign.Ed25519;
+const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair };
 pub const Options = struct { entropy: ?Entropy = null, passphrase: ?[]const u8 = null, bytes: usize = 65536, depth: usize = 24, elements: usize = 4096, iterations: usize = 1_000_000, salt_bytes: usize = 1024, password_bytes: usize = 4096 };
@@ -155,7 +156,8 @@ fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
         if (scalar.len != 32) return error.InvalidKey;
         var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        var point = P256.Curve.basePoint.mul(sk.bytes, .big) catch return error.InvalidKey;
+        Curve.validate(P256.Curve, &sk.bytes) catch return error.InvalidKey;
+        var point = Curve.base(P256.Curve, .big, &sk.bytes) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
         var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
@@ -166,7 +168,8 @@ fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
         if (scalar.len != 48) return error.InvalidKey;
         var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        var point = P384.Curve.basePoint.mul(sk.bytes, .big) catch return error.InvalidKey;
+        Curve.validate(P384.Curve, &sk.bytes) catch return error.InvalidKey;
+        var point = Curve.base(P384.Curve, .big, &sk.bytes) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
         var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
@@ -295,5 +298,6 @@ test {
     _ = @import("Rsa.zig");
     _ = @import("Kdf.zig");
     _ = @import("EdKey.zig");
+    _ = Curve;
     _ = Des3;
 }
