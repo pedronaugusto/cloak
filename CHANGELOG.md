@@ -6,11 +6,17 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Fixed
 
+- Private PEM enforces its input cap before trimming and decodes Base64 with arithmetic classification instead of character-indexed tables.
+- Native completion cleanup releases its mutation guard before allocator callbacks; request hashing also runs outside that guard.
+- Freestanding cross checks compile the caller-service core root, while hosted test and measurement programs keep their OS I/O contract. The integer oracle uses a word-sized small addend on 32-bit targets.
+
 - System CA bundles omit roots the strict parser cannot use, retaining usable roots without weakening explicit imports or resource limits.
 
 - Cumulative name-constraint and policy work is bounded separately from discovery and policy-node storage, including failed candidate paths and native-selected verification.
 
 ### Added
+
+- Structured shakedown benchmark rows and additional private-armor/native ownership evidence; security and campaign closure remains pending.
 
 - Package build, preflight CI and production layer checks.
 - Immutable indexed trust snapshots, retained private keys, identities and client authentication.

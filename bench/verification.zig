@@ -2,35 +2,42 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const cloak = @import("cloak");
+const shakedown = @import("shakedown");
+const Context = struct {
+    gpa: std.mem.Allocator,
+    request: cloak.types.Request,
+    fn portable(context: *Context, units: u64) !void {
+        @setRuntimeSafety(true);
+        for (0..units) |_| {
+            var receipt = try cloak.verify.verify(context.gpa, context.request, &.{@embedFile("data/anchor.der")});
+            defer receipt.deinit();
+            try receipt.check(context.request);
+        }
+    }
+    fn native(context: *Context, units: u64) !void {
+        @setRuntimeSafety(true);
+        var budget: cloak.services.Budget = .{};
+        for (0..units) |_| {
+            const job = try cloak.NativeVerification.init(context.gpa, &budget, context.request, .{ .anchors = &.{@embedFile("data/anchor.der")} });
+            defer job.deinit();
+            var receipt = try job.take(context.gpa, context.request, context.request.time);
+            defer receipt.deinit();
+            try receipt.check(context.request);
+        }
+        if (budget.counts().jobs != 0 or budget.counts().bytes != 0) return error.UnreapedJob;
+    }
+};
 pub fn main(init: std.process.Init) !void {
     @setRuntimeSafety(true);
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke");
-    const rounds: usize = if (smoke) 1 else 500;
-    const request: cloak.types.Request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10), .trust_generation = 1, .policy_generation = 1 };
-    const anchors = &.{@embedFile("data/anchor.der")};
-    var buffer: [1024]u8 = undefined;
+    const commit = if (args.len == 3 and std.mem.eql(u8, args[1], "--commit")) args[2] else "unrecorded";
+    var context: Context = .{ .gpa = init.gpa, .request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10), .trust_generation = 1, .policy_generation = 1 } };
+    var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    const start = std.Io.Clock.awake.now(init.io).nanoseconds;
-    for (0..rounds) |_| {
-        var receipt = try cloak.verify.verify(init.gpa, request, anchors);
-        try receipt.check(request);
-        receipt.deinit();
-    }
-    const elapsed = std.Io.Clock.awake.now(init.io).nanoseconds - start;
-    try out.interface.print("P-256 two-certificate portable path/receipt: {d:.3} us/op ({d} rounds)\n", .{ @as(f64, @floatFromInt(elapsed)) / @as(f64, @floatFromInt(rounds)) / 1000, rounds }); // safe: public time and counts become approximate f64 statistics only
+    try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 two-certificate portable path/receipt", .unit = "verification", .initial = 500, .run = Context.portable }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     if (builtin.os.tag == .macos or builtin.os.tag == .windows) {
-        var budget: cloak.services.Budget = .{};
-        const native_rounds: usize = if (smoke) 1 else 20;
-        const native_start = std.Io.Clock.awake.now(init.io).nanoseconds;
-        for (0..native_rounds) |_| {
-            const job = try cloak.NativeVerification.init(init.gpa, &budget, request, .{ .anchors = anchors });
-            defer job.deinit();
-            var receipt = try job.take(init.gpa, request, request.time);
-            receipt.deinit();
-        }
-        const native_elapsed = std.Io.Clock.awake.now(init.io).nanoseconds - native_start;
-        try out.interface.print("native scoped policy plus portable floors/receipt: {d:.3} us/op ({d} rounds)\n", .{ @as(f64, @floatFromInt(native_elapsed)) / @as(f64, @floatFromInt(native_rounds)) / 1000, native_rounds }); // safe: public time and counts become approximate f64 statistics only
+        try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "native scoped policy plus portable floors/receipt", .unit = "verification", .initial = 20, .run = Context.native }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     }
     try out.interface.flush();
 }

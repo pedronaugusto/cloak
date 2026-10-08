@@ -1,6 +1,7 @@
 //! Bounded textual armor. Decoded buffers belong to the caller.
 const std = @import("std");
 const Pem = @This();
+const Base64 = @import("Base64.zig");
 text: []const u8,
 offset: usize = 0,
 pub const Error = error{ InvalidPem, InputLimit, OutOfMemory };
@@ -22,9 +23,9 @@ pub fn init(text: []const u8) Pem {
 }
 pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     @setRuntimeSafety(true);
+    if (it.text.len > max_bytes) return error.InputLimit;
     const rest = std.mem.trim(u8, it.text[it.offset..], " \t\r\n");
     if (rest.len == 0) return null;
-    if (it.text.len > max_bytes) return error.InputLimit;
     const begin = "-----BEGIN ";
     if (!std.mem.startsWith(u8, rest, begin)) return error.InvalidPem;
     const cut = std.mem.find(u8, rest[begin.len..], "-----") orelse return error.InvalidPem;
@@ -60,19 +61,19 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
         }
     }
     if (legacy != (dek != null)) return error.InvalidPem;
-    const decoder = std.base64.standard.Decoder;
-    const size = decoder.calcSizeForSlice(compact[0..len]) catch return error.InvalidPem;
+    const size = Base64.size(compact[0..len]) catch return error.InvalidPem;
     if (size == 0 or size > max_bytes) return error.InputLimit;
     const der = try gpa.alloc(u8, size);
     errdefer {
         std.crypto.secureZero(u8, der);
         gpa.free(der);
     }
-    decoder.decode(der, compact[0..len]) catch return error.InvalidPem;
+    Base64.decode(der, compact[0..len]) catch return error.InvalidPem;
     it.offset = it.text.len - rest.len + end + ending.len;
     return .{ .label = label, .der = der, .legacy = legacy, .dek = dek };
 }
 test {
     @setRuntimeSafety(true);
+    _ = Base64;
     _ = @import("Pem_test.zig");
 }

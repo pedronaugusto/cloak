@@ -7,7 +7,7 @@ test "credential fixed integer arithmetic agrees with independent u128 subtracti
 }
 fn property(_: void, case: *shakedown.Case) !void {
     @setRuntimeSafety(true);
-    const pair = .{ shakedown.gen.int(case.source, u64), shakedown.gen.int(case.source, u64) };
+    const pair = .{ shakedown.gen.int(case.source, u64), shakedown.gen.int(case.source, usize) };
     var encoded: [16]u8 = undefined;
     std.mem.writeInt(u128, &encoded, pair[0], .big);
     var a = U.zero;

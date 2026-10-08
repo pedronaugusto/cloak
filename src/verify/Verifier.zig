@@ -183,11 +183,11 @@ const Search = struct {
                 if (below > max) return false;
             }
         }
-        constraints.check(self.path[0..self.count], ap.name_constraints, &self.constraint_work) catch |err| {
+        @call(.never_inline, constraints.check, .{ self.path[0..self.count], ap.name_constraints, &self.constraint_work }) catch |err| {
             if (err == error.DerLimit or err == error.VerificationLimit) return err;
             return false;
         };
-        policies.check(self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes, &self.policy_work) catch |err| {
+        @call(.never_inline, policies.check, .{ self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes, &self.policy_work }) catch |err| {
             if (err == error.OutOfMemory or err == error.VerificationLimit) return err;
             return false;
         };

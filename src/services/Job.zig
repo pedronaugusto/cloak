@@ -61,52 +61,72 @@ pub fn run(job: Job) void {
     guard.deinit();
     var result = Native.evaluate(job.state.gpa, job.state.inputs.request, job.state.inputs.anchors);
     guard = job.state.shared.acquire();
-    defer guard.deinit();
-    if (guard.value().phase == .abandoned) {
-        if (result) |*path| path.deinit() else |_| {}
-    } else {
+    const abandoned = guard.value().phase == .abandoned;
+    if (!abandoned) {
         guard.value().result = result;
         guard.value().phase = .ready;
+    }
+    guard.deinit();
+    // Allocator cleanup can block or reenter: it runs after the mutation lease.
+    if (abandoned) {
+        if (result) |*path| path.deinit() else |_| {}
     }
 }
 /// Cancels only this completion. The executor remains responsible for reaping work.
 pub fn abandon(job: Job) void {
     @setRuntimeSafety(true);
     var guard = job.state.shared.acquire();
-    defer guard.deinit();
-    if (guard.value().phase == .acknowledged) return;
+    if (guard.value().phase == .acknowledged) {
+        guard.deinit();
+        return;
+    }
     guard.value().phase = .abandoned;
-    if (guard.value().result) |*result| {
+    var detached = guard.value().result;
+    guard.value().result = null;
+    guard.deinit();
+    if (detached) |*result| {
         if (result.*) |*path| path.deinit() else |_| {}
-        guard.value().result = null;
     }
 }
 pub const TakeError = Native.EvaluateError || Path.CheckError || error{ ServicePending, ServiceAbandoned, ServiceAcknowledged };
 pub fn take(job: Job, request: types.Request) TakeError!Path {
     @setRuntimeSafety(true);
     var guard = job.state.shared.acquire();
+    const phase = guard.value().phase;
+    guard.deinit();
+    try ready(phase);
+    // Inputs are immutable while either handle is retained. Hash outside spin.
+    const expected = job.state.inputs.request.digest();
+    const supplied = request.digest();
+    guard = job.state.shared.acquire();
     defer guard.deinit();
-    switch (guard.value().phase) {
+    try ready(guard.value().phase);
+    if (!std.crypto.timing_safe.eql([32]u8, expected, supplied)) return error.WrongVerificationRequest;
+    const result = guard.value().result.?;
+    guard.value().result = null;
+    guard.value().phase = .acknowledged;
+    return result;
+}
+fn ready(phase: Phase) error{ ServicePending, ServiceAbandoned, ServiceAcknowledged }!void {
+    @setRuntimeSafety(true);
+    switch (phase) {
         .pending, .running => return error.ServicePending,
         .abandoned => return error.ServiceAbandoned,
         .acknowledged => return error.ServiceAcknowledged,
         .ready => {},
     }
-    if (!std.crypto.timing_safe.eql([32]u8, job.state.inputs.request.digest(), request.digest())) return error.WrongVerificationRequest;
-    const result = guard.value().result.?;
-    guard.value().result = null;
-    guard.value().phase = .acknowledged;
-    return result;
 }
 pub fn deinit(job: Job) void {
     @setRuntimeSafety(true);
     if (job.state.refs.fetchSub(1, .acq_rel) != 1) return;
     var guard = job.state.shared.acquire();
     if (guard.value().phase == .running) @panic("cloak executor released running completion");
-    if (guard.value().result) |*result| {
+    var detached = guard.value().result;
+    guard.value().result = null;
+    guard.deinit();
+    if (detached) |*result| {
         if (result.*) |*path| path.deinit() else |_| {}
     }
-    guard.deinit();
     job.state.inputs.deinit();
     job.state.budget.release(job.state.charge);
     const gpa = job.state.gpa;

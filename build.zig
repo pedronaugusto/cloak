@@ -10,46 +10,39 @@ pub fn build(b: *std.Build) void {
     const preflight = b.lazyImport(@This(), "preflight") orelse return;
     const test_step = b.step("test", "Run targeted credential and verification tests");
     const check = b.step("check", "Compile all declarations and tests");
-    const test_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch return;
-    test_module.addImport("shakedown", shakedown.module("shakedown"));
-    nativeLinks(test_module, target);
-    const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
-    const check_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    check_module.addImport("shakedown", shakedown.module("shakedown"));
-    const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
-    if (target.result.os.tag == .freestanding) {
+    const freestanding = target.result.os.tag == .freestanding;
+    if (freestanding) {
+        // The core takes caller-provided services. Hosted tests and measurement
+        // programs require OS I/O/threads and cannot run on a freestanding target.
         const core_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = target, .optimize = optimize });
         core_module.addImport("cloak", b.modules.get("cloak").?);
         const core = b.addObject(.{ .name = "cloak-core-check", .root_module = core_module });
         check.dependOn(&core.step);
-    } else check.dependOn(&checked.step);
-    test_step.dependOn(&b.addRunArtifact(tests).step);
-    const fuzz_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    fuzz_module.addImport("shakedown", shakedown.module("shakedown"));
-    nativeLinks(fuzz_module, target);
-    const fuzz_tests = b.addTest(.{ .name = "cloak-fuzz", .root_module = fuzz_module, .filters = filters, .use_llvm = true });
-    b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner").dependOn(&b.addRunArtifact(fuzz_tests).step);
+        test_step.dependOn(&core.step);
+    } else {
+        const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch return;
+        const test_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+        test_module.addImport("shakedown", shakedown.module("shakedown"));
+        nativeLinks(test_module, target);
+        const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+        const check_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+        check_module.addImport("shakedown", shakedown.module("shakedown"));
+        const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
+        check.dependOn(&checked.step);
+        const fuzz_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+        fuzz_module.addImport("shakedown", shakedown.module("shakedown"));
+        nativeLinks(fuzz_module, target);
+        const fuzz_tests = b.addTest(.{ .name = "cloak-fuzz", .root_module = fuzz_module, .filters = filters, .use_llvm = true });
+        b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner").dependOn(&b.addRunArtifact(fuzz_tests).step);
+    }
+    const host = b.graph.host;
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" } },
         .imports = benchImports,
-        .target = target,
+        .target = if (freestanding) host else target,
         .optimize = optimize,
     } });
-    const tools = b.dependencyLazy("preflight", .{}) catch return;
-    const host = b.graph.host;
-    const gantry = tools.builder.dependencyLazy("gantry", .{ .target = host, .optimize = .safe }) catch return;
-    const plan_tool = b.addExecutable(.{ .name = "cloak-ci-plan", .root_module = b.createModule(.{
-        .root_source_file = tools.path("src/main.zig"),
-        .target = host,
-        .optimize = .safe,
-        .imports = &.{.{ .name = "gantry", .module = gantry.module("gantry") }},
-    }) });
-    const plan = b.addRunArtifact(plan_tool);
-    plan.addArg("plan");
-    plan.setCwd(b.path("."));
-    plan.addPassthruArgs();
-    b.step("plan", "Describe the hosted CI matrices from ci/workflow.json").dependOn(&plan.step);
     const options_checker = b.addExecutable(.{ .name = "cloak-options-check", .root_module = b.createModule(.{ .root_source_file = b.path("ci/options.zig"), .target = host, .optimize = .safe }) });
     const run_options = b.addRunArtifact(options_checker);
     run_options.addArg(b.graph.zig_exe);
@@ -99,5 +92,11 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .optimize = optimize,
     });
     nativeLinks(bench_module, target);
-    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "cloak", .module = bench_module }}) catch @panic("out of memory configuring benchmark");
+    const armor = b.createModule(.{ .root_source_file = b.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
+    const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch @panic("missing test dependency for benchmarks");
+    return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "cloak", .module = bench_module },
+        .{ .name = "armor", .module = armor },
+        .{ .name = "shakedown", .module = shakedown.module("shakedown") },
+    }) catch @panic("out of memory configuring benchmark");
 }
