@@ -1,9 +1,11 @@
-# C1 resume: bounded work and remaining acceptance gates
+# C1 resume: remediation and remaining acceptance gates
 
 Baseline: published c1 3a66309c49ab024be4e2647c9c3da4550e740ac0.
 Authoritative main at initial verification: c53aa6149fa09dc945bf55b6aabc322bdd06f7cc,
 already default. Preflight 9af905ed85cab6dbb19d9431c65ee3f41fbaa74d and test-only
-shakedown d5d19d39bc60cec59456aca947a3a7b484b87318 match current remote main pins.
+shakedown d5d19d39bc60cec59456aca947a3a7b484b87318 matched remote main at
+initial pin verification. A later preflight update requires its own verified
+landing, exact green SHA and canonical workflow regeneration.
 No bootstrap, new ship, C2/C0 work, visibility or setting changes occur here.
 
 ## Remediation and provenance
@@ -63,7 +65,8 @@ The targeted trust selection passed 45 tests with the Linux-only host test
 skipped on macOS in both ReleaseSafe and ReleaseFast. The synthetic private-loader
 assertion executes on this host, including NoResize/allocation-failure schedules.
 Lint/extras and all twelve configured target declaration checks pass after the fix.
-Hosted Linux execution remains a separate acceptance result.
+Hosted Linux subsequently passed the system-bundle assertion on 2bf68c1.
+Its overall hosted gate still failed during foreign-target linking, below.
 This startup-loader change does not change a measured verification hot path.
 
 Fast run 37800069272 on 0ef5413581d0204eb427402c5209039fb4205f1b
@@ -93,12 +96,64 @@ and the pinned test dependency/native frameworks. No race report was emitted.
 This single schedule does not prove exhaustive races or other targets.
 
 Local native macOS bodies execute; Windows bodies on this host do not establish
-Windows runtime proof. Hosted Linux/macOS/Windows execution is a separate gate.
+Windows runtime proof. The later hosted Windows run below executes its scoped
+policy body; it does not establish the entire native campaign.
 
 All twelve ci/workflow.json targets compiled with zig build check
 -Dci-lint=false -Doptimize=safe -Dtarget=...; check and preflight lint/extras passed.
 Wasm vectors/negative consumer options are included in lint extras. Compile-only
 evidence does not establish native execution or generated crypto correctness.
+
+## Exact-head hosted evidence and owner-owned CI dependency
+
+Both recorded tiers below tested published c1
+2bf68c1f3cb970e16085f04157cbbcda2ecc00cd. This is tested evidence for that commit,
+not an acceptance claim for subsequent documentation or dependency changes.
+
+- [Fast 37802720437](https://github.com/pedronaugusto/cloak/actions/runs/37802720437):
+  failure. Linux reported 164 passing tests, all 9,802 Limbo cases for each
+  builder and all 6,955 Wycheproof vectors with zero mismatches. Foreign-target
+  linking then failed when Linux could not locate Security/CoreFoundation for
+  macOS test/benchmark executables. No final fast success exists.
+- [Merge 37805208575](https://github.com/pedronaugusto/cloak/actions/runs/37805208575):
+  failure. Linux Debug failed at the same SDK linking step after passing its
+  tests. Native macOS Debug job 113407728582 and Windows Debug job 113407728601
+  succeeded. Each timing artifact records 163 pass and one Linux-bundle skip
+  out of 164 declarations/tests; an opposite-platform early return counted as
+  pass is not native execution evidence. Zig master Linux Debug succeeded as
+  a non-blocking canary, not a substitute for the binding Linux gate.
+
+Artifact 11562577211, timings-ebda036faf315e75, records the macOS scoped-policy
+body at 0.022751209 seconds. Its checks include the accepted two-certificate
+path/request binding, wrong reference identity and wrong scoped anchor.
+Artifact 11562622772, timings-03c230abe180e8e9, records the Windows scoped-policy
+body at 0.0066283 seconds. Its existing assertion checks accepted two-certificate
+path length and wrong reference identity. Despite its test name containing
+"distrust fixture", it is not evidence for an explicit Windows distrust/root
+store campaign. Both native runs execute the concurrent snapshot assertion.
+Artifact file SHA-256s: macOS
+e98b77795fe66e1cee8368d68a9fa29a57dc6ea3a93445510bc658785d27db45;
+Windows c38228d82f71a736edfbac0f599f095b196bc49fa94dfd01a9bf653bfe03f0ae.
+
+Additional current-head private-key failure selection passed 47/47 in
+ReleaseSafe (seed 2367627862) and ReleaseFast (seed 3938895682). Filters:
+credential primality, credential complete RSA, credential RSA mathematical,
+credential Montgomery, credential fixed integer, credential KDF, credential
+AES CBC, credential input and KDF, credential final ownership. These execute
+entropy failure, CRT/range rejection, public carry oracles, bounded KDF/CBC and
+NoResize/allocation-failure ownership assertions. They do not close generated
+private arithmetic, erasure, all dispatches or entropy-provider fork/readiness.
+
+The owner assigns the shared changes to one nav-owned preflight ship: Linux
+foreign-target object compilation with SDK-backed linking on native runners,
+the canonical workflow-regeneration interface, and F04 incomplete-lint failure
+semantics. This clone does not modify shared preflight or work around the
+Linux/macOS linking failure. Existing lint success is not complete source-audit
+proof while incomplete-lint semantics remain open. After nav verifies preflight
+LANDED, pin that exact green main, regenerate through its canonical interface,
+and run fast then merge on the same final published C1 commit. Repeat only for
+actual fixed failures. All security, performance and independent-review gates
+below remain binding even if both tiers later turn green.
 
 ## Performance and resources
 
@@ -143,9 +198,9 @@ embedded, revocation, native-private allocations and worker-tail maxima remain o
   alternative backend is deployed. Nav must resolve this block; current code
   has no independent closure verdict and main cannot receive C1.
 
-Hosted fast and merge are dispatched only against the final published candidate;
-actual head SHA, run IDs/conclusions and final authoritative main are reported
-from GitHub by this task. Hosted green does not waive any gate above. README
+Hosted tiers above identify their actual published candidate SHA and conclusions.
+No final exact-head hosted acceptance or main fast-forward has occurred. Final
+authoritative main must be read again from GitHub before reporting any landing. Hosted green does not waive any gate above. README
 continues to say work in progress, and SECURITY.md retains main-until-first-release
 support and private reports only. The owner confirms reporting enabled/public
 status; no settings mutation follows. The book has no cloak repo page and its
