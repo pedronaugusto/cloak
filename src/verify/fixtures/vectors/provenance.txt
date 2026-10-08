@@ -1,0 +1,1 @@
+Generated public certificates and offline evidence with OpenSSL standards encoders. Private fixture keys discarded. SHA-256/384 RSA, RSA-PSS salts 0/32/48, P-256/P-384, Ed25519. The fixed supplied validation time is time.txt.

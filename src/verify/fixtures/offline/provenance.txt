@@ -1,0 +1,1 @@
+Public OpenSSL-generated P-256 CA, same-subject/key rollover CA, server leaf, delegated OCSP responder without noCheck, direct CRLs and signed BasicOCSPResponse. Private generating keys discarded. Fixed supplied clock in time.txt. removeFromCRL intentionally present in a full CRL to test rejection.

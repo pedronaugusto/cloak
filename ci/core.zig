@@ -1,0 +1,25 @@
+//! Executable freestanding vectors: caller storage, explicit trust/time, no Io.
+const std = @import("std");
+const cloak = @import("cloak");
+export fn cloakCoreVectors() u32 {
+    @setRuntimeSafety(true);
+    var backing: [256 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&backing);
+    const gpa = fixed.allocator();
+    var trust = cloak.Trust.init(gpa);
+    defer trust.deinit();
+    trust.addDer(@embedFile("data/anchor.der"), .{}) catch return 1;
+    const snapshot = trust.freeze() catch return 2;
+    defer snapshot.deinit();
+    const request: cloak.types.Request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch return 3, .trust_generation = snapshot.generation(), .policy_generation = 1 };
+    var receipt = cloak.verify.verify(gpa, request, snapshot.anchors()) catch return 4;
+    defer receipt.deinit();
+    receipt.check(request) catch return 5;
+    if (!receipt.authenticated or receipt.path.len != 2) return 6;
+    const key = cloak.PrivateKey.parse(gpa, @embedFile("data/ed25519.pem"), .{}) catch return 7;
+    defer key.deinit();
+    const identity = cloak.Identity.init(gpa, &.{@embedFile("data/ed25519.der")}, key, .{}) catch return 8;
+    defer identity.deinit();
+    if (identity.chain().len != 1) return 9;
+    return 0;
+}
