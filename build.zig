@@ -1,5 +1,4 @@
 const std = @import("std");
-const preflight = @import("preflight");
 
 pub fn build(b: *std.Build) void {
     @setRuntimeSafety(true);
@@ -8,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const filters = b.option([]const []const u8, "test-filter", "Run tests containing this name") orelse &.{};
     _ = module(b, target, optimize);
     if (b.pkg_hash.len != 0) return;
+    const preflight = b.lazyImport(@This(), "preflight") orelse return;
     const test_step = b.step("test", "Run targeted credential and verification tests");
     const check = b.step("check", "Compile all declarations and tests");
     const test_module = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });

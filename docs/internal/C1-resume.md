@@ -38,6 +38,18 @@ The tentative email/SAN finding in early reviewer artifacts was explicitly
 withdrawn by the reviewer after checking RFC 5280. No acceptance change is made
 for that discarded candidate.
 
+## Hosted clean-build remediation
+
+Fast run 37795614291 on e7f9034b167fb1cefc175321048454e55659e71d
+failed before testing: the top-level import of a lazy preflight dependency was
+unavailable in the clean runner. The package build now uses Zig 0.17 lazyImport
+after the consumer return, so configuration requests the missing build helper
+and reruns after fetching; consumers still return before requesting CI tools.
+This follows the installed std.Build contract without making dependencies eager.
+
+Exact-head x86-64 and AArch64 curve assembly regeneration matches the hashes in
+C1-curve-assembly.txt byte for byte; the recorded carry branches remain.
+
 ## Current local validation
 
 Zig 0.17.0, Apple M3 Max, Darwin 25.2.0. Targeted ReleaseSafe and ReleaseFast
