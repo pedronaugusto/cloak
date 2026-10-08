@@ -51,3 +51,22 @@ test "credential SEC1 rejects congruent out of range P256 and P384 scalars" {
         try std.testing.expect(rejected);
     }
 }
+
+test "credential curve carry boundaries and public affine owner match std" {
+    @setRuntimeSafety(true);
+    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384 }) |Point| {
+        const n = @sizeOf(Point.scalar.CompressedScalar);
+        inline for (.{ 1, 2, 15, 16, 17, Point.scalar.field_order - 2, Point.scalar.field_order - 1 }) |value| {
+            var scalar: [n]u8 = undefined;
+            defer std.crypto.secureZero(u8, &scalar);
+            std.mem.writeInt(@Int(.unsigned, n * 8), &scalar, value, .big);
+            var actual = try Curve.base(Point, .big, &scalar);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&actual));
+            var expected = try Point.basePoint.mul(scalar, .big);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&expected));
+            try std.testing.expect(actual.equivalent(expected));
+            // Public key storage must not retain a private projective denominator.
+            try std.testing.expectEqualDeep(Point.Fe.one, actual.z);
+        }
+    }
+}

@@ -1,9 +1,7 @@
 # Credentials and certificate verification
 
-This describes the implemented C1 candidate. Security, resource, performance,
-campaign and independent acceptance gates remain open. The package does not
-provide a TLS connection or encrypted stream. Current evidence and limits live
-in [the C1 ledger](internal/C1-next.md).
+Cloak constructs and retains credentials and verifies certificate paths.
+It does not provide a TLS connection or encrypted stream.
 
 ## Layers and owners
 
@@ -52,10 +50,31 @@ predicate are declassified. Decoder errors clear the destination. PEM compact
 and DER buffers clear before release; Safe allocator poisoning makes raw-free
 observation a poison observation rather than a direct zero observation.
 
-These source contracts do not prove complete erasure of compiler/callee/register
-copies. Optimized P-curve carry branches and point/callee spills still prevent
-whole-C1 constant-time/erasure closure. No unsafe crypto-loop exception has
-been introduced to conceal that finding.
+Private P-256/P-384 base multiplication uses a local subset of Zig 0.17.0's
+complete a=-3 point formulas and fixed-width Montgomery arithmetic (Zig contributors'
+MIT notice in LICENSE). Each arithmetic truncation retains a low word or carry. Products
+use double-width arithmetic with a documented overflow bound; REDC needs
+one masked subtraction because canonical inputs produce a result below 2p.
+Runtime safety remains enabled; fixed public limb indices and proven
+double-word bounds prevent secret-dependent safety failures. Parsers and state code keep safety enabled. Selection
+uses a tied register barrier on x86-64/AArch64; other backends use a live
+volatile mask slot erased before return. Mask bits remain zero or all ones,
+while the optimizer cannot substitute carry branches. Public fixed loop
+indices select scalar bytes and scan every table entry. Inversion uses the
+fixed public Fermat exponent. Only invalid-key status and the final affine
+public point are disclosed; a private projective denominator never escapes.
+
+Curve accumulator, selected point, digit and mask share one scratch owner;
+field results, inversion state and point-formula intermediates have named
+owners with volatile full-capacity byte wipes after last use on success and
+error. Live-owner tests inspect initialized bytes before lifetime ends;
+allocator tests inspect only before raw free, with Safe poison observations
+labeled. Never inspect freed storage or an undefined typed value. These checks
+and optimized caller inspection establish the named wipes, not universal
+secret-copy erasure: Zig provides no control over compiler-created registers,
+spills, by-value argument/result copies or callee-private temporaries. There
+is no claim that arbitrary registers or all stack copies are erased. Wasm
+inspection cannot establish a downstream JIT's spill behavior.
 
 ## Build and verification decisions
 

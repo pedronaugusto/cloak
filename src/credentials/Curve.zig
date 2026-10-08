@@ -1,6 +1,7 @@
 //! Borrowed-scalar fixed-window base multiplication for credential construction.
-//! Adapted from Zig 0.17 pcMul16/pcSelect; see docs/internal/C1-primitives.md.
+//! Adapted from Zig 0.17 pcMul16/pcSelect; see docs/design.md.
 const std = @import("std");
+const curve_point = @import("curve/Point.zig");
 pub const MultiplyError = error{IdentityElement};
 
 pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8) MultiplyError!Point {
@@ -8,24 +9,37 @@ pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *
     comptime {
         if (std.options.side_channels_mitigations == .none) @compileError("cloak private-key construction requires std side-channel mitigations");
     }
-    const table = comptime precompute(Point);
+    const private = PrivatePoint(Point);
+    var scratch: Scratch(private) = undefined;
+    return baseOwned(Point, endian, scalar, &scratch);
+}
+fn PrivatePoint(comptime Point: type) type {
+    return if (Point == std.crypto.ecc.P256 or Point == std.crypto.ecc.P384) curve_point.Point(Point) else Point;
+}
+fn Scratch(comptime Point: type) type {
+    return struct { q: Point, selected: Point, digit: u8, choice: u1 };
+}
+fn baseOwned(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8, scratch: *Scratch(PrivatePoint(Point))) MultiplyError!Point {
+    @setRuntimeSafety(true);
+    const private = PrivatePoint(Point);
+    const table = comptime precompute(private);
     // One owner for the accumulator, selected point, digit and selection mask.
-    var scratch: struct { q: Point, selected: Point, digit: u8 = 0, choice: u1 = 0 } = .{ .q = Point.identityElement, .selected = Point.identityElement };
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&scratch));
+    scratch.* = .{ .q = private.identityElement, .selected = private.identityElement, .digit = 0, .choice = 0 };
+    defer std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     var remaining: usize = scalar.len * 2;
     while (remaining != 0) {
         remaining -= 1;
         const byte = if (endian == .little) remaining / 2 else scalar.len - 1 - remaining / 2;
         const shift: u3 = if (remaining % 2 == 0) 0 else 4;
         scratch.digit = (scalar[byte] >> shift) & 15;
-        scratch.selected = Point.identityElement;
+        scratch.selected = private.identityElement;
         inline for (1..16) |i| {
             const index: u8 = @intCast(i); // safe: the compile-time table indices are 1..15
             scratch.choice = @truncate((@as(usize, scratch.digit ^ index) -% 1) >> 8); // safe: only the equality mask low bit is retained
             scratch.selected.x.cMov(table[i].x, scratch.choice);
             scratch.selected.y.cMov(table[i].y, scratch.choice);
             scratch.selected.z.cMov(table[i].z, scratch.choice);
-            if (@hasField(Point, "t")) scratch.selected.t.cMov(table[i].t, scratch.choice);
+            if (@hasField(private, "t")) scratch.selected.t.cMov(table[i].t, scratch.choice);
         }
         // The first public iteration can assign instead of adding identity.
         scratch.q = if (remaining == scalar.len * 2 - 1) scratch.selected else scratch.q.add(scratch.selected);
@@ -33,7 +47,7 @@ pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *
     }
     // Only the final invalid-key predicate is released; no secret controls the loop.
     try scratch.q.rejectIdentity();
-    return scratch.q;
+    return if (private == Point) scratch.q else scratch.q.publicPoint();
 }
 pub const ValidateError = error{InvalidScalar};
 pub fn validate(comptime Point: type, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8) ValidateError!void {
@@ -48,7 +62,7 @@ pub fn validate(comptime Point: type, scalar: *const [@sizeOf(Point.scalar.Compr
 }
 fn precompute(comptime Point: type) [16]Point {
     @setRuntimeSafety(true);
-    @setEvalBranchQuota(100000);
+    @setEvalBranchQuota(1000000);
     var table: [16]Point = undefined;
     table[0] = Point.identityElement;
     table[1] = Point.basePoint;
@@ -58,4 +72,22 @@ fn precompute(comptime Point: type) [16]Point {
 test {
     @setRuntimeSafety(true);
     _ = @import("Curve_test.zig");
+    _ = @import("curve/Montgomery_test.zig");
+}
+
+test "credential curve live scratch wipes full capacity on success and rejection" {
+    @setRuntimeSafety(true);
+    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
+        var scalar: [@sizeOf(Point.scalar.CompressedScalar)]u8 = @splat(0);
+        defer std.crypto.secureZero(u8, &scalar);
+        var owner: Scratch(PrivatePoint(Point)) = undefined;
+        scalar[0] = 1;
+        var point = try baseOwned(Point, .little, &scalar, &owner);
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+        // The owner is still live and fully initialized; inspect bytes, including padding.
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&owner), 0));
+        scalar[0] = 0;
+        try std.testing.expectError(error.IdentityElement, baseOwned(Point, .little, &scalar, &owner));
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&owner), 0));
+    }
 }

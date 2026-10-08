@@ -6,6 +6,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Fixed
 
+- P-256/P-384 private-key derivation uses compiler-resistant masked field reduction and returns only affine public coordinates; named temporary owners are erased, with compiler-created copy limits documented.
+
 - Private PEM enforces its input cap before trimming and decodes Base64 with arithmetic classification instead of character-indexed tables.
 - Native completion cleanup releases its mutation guard before allocator callbacks; request hashing also runs outside that guard.
 - Freestanding cross checks compile the caller-service core root, while hosted test and measurement programs keep their OS I/O contract. The integer oracle uses a word-sized small addend on 32-bit targets.
@@ -16,7 +18,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
-- Structured shakedown benchmark rows and additional private-armor/native ownership evidence; security and campaign closure remains pending.
+- Structured shakedown benchmark rows and additional private-armor and native ownership regressions.
 
 - Package build, preflight CI and production layer checks.
 - Immutable indexed trust snapshots, retained private keys, identities and client authentication.
