@@ -34,6 +34,9 @@ pub const Action = enum {
     certificate_verify,
     finished,
     local_finished,
+    local_certificate,
+    local_empty_certificate,
+    local_certificate_verify,
     empty_certificate,
     key_update,
     ticket,
@@ -55,6 +58,10 @@ const edges = [_]Edge{
     .{ .role = .client, .from = .possession, .action = .certificate_verify, .epoch = .handshake, .proof = .possession, .to = .finished },
     .{ .role = .client, .from = .finished, .action = .finished, .epoch = .handshake, .proof = .finished, .to = .local_flight, .boundary = true },
     .{ .role = .client, .from = .local_flight, .action = .local_finished, .epoch = .handshake, .proof = .finished, .to = .connected, .boundary = true },
+    .{ .role = .client, .from = .local_flight, .action = .local_certificate, .epoch = .handshake, .to = .client_possession },
+    .{ .role = .client, .from = .local_flight, .action = .local_empty_certificate, .epoch = .handshake, .to = .client_finished },
+    .{ .role = .client, .from = .client_possession, .action = .local_certificate_verify, .epoch = .handshake, .proof = .possession, .to = .client_finished },
+    .{ .role = .client, .from = .client_finished, .action = .local_finished, .epoch = .handshake, .proof = .finished, .to = .connected, .boundary = true },
     .{ .role = .server, .from = .start, .action = .client_hello, .epoch = .initial, .to = .hello },
     .{ .role = .server, .from = .hello, .action = .hello_retry, .epoch = .initial, .to = .retry, .boundary = true },
     .{ .role = .server, .from = .retry, .action = .client_hello, .epoch = .initial, .to = .hello },
@@ -85,6 +92,7 @@ pub const State = struct {
         errdefer self.phase = .failed;
         if (self.phase == .connected) {
             if (epoch != .application) return error.WrongEpoch;
+            if (proof != .parsed) return error.MissingProof;
             if (action == .ticket and self.role == .client) return;
             if (action == .key_update and self.mode == .stream) {
                 if (!boundary) return error.RecordAlignment;
@@ -97,6 +105,10 @@ pub const State = struct {
             if (edge.epoch != epoch) return error.WrongEpoch;
             if (edge.proof != proof) return error.MissingProof;
             if (edge.boundary and !boundary) return error.RecordAlignment;
+            if (self.role == .client and self.phase == .local_flight) {
+                if (action == .local_finished and self.requested_certificate) return error.MissingProof;
+                if (action != .local_finished and !self.requested_certificate) return error.UnexpectedMessage;
+            }
             if (action == .hello_retry and self.retried) return error.UnexpectedMessage;
             if (self.role == .server and action == .certificate_request and self.auth == .none) return error.UnexpectedMessage;
             if (self.role == .server and action == .certificate and self.phase == .certificate_request and self.auth != .none) return error.MissingProof;

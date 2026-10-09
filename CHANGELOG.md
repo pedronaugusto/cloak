@@ -6,6 +6,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Fixed
 
+- The private TLS transition table requires the requested client certificate response before local Finished and gates supplied credentials on possession proof.
+
 - P-256/P-384 private-key derivation uses compiler-resistant masked field reduction and returns only affine public coordinates; named temporary owners are erased, with compiler-created copy limits documented.
 
 - Private PEM enforces its input cap before trimming and decodes Base64 with arithmetic classification instead of character-indexed tables.

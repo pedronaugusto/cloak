@@ -200,3 +200,11 @@ derivation and old-key ordering; they do not establish connection scheduling.
 Private freestanding probes exercise all three record suites and the RFC 8448
 handshake schedule checkpoint. This is executable portable kernel evidence,
 not a freestanding network endpoint, memory peak measurement or interop claim.
+
+The checked client flight requires a Certificate response after a server
+CertificateRequest: an empty Certificate may omit CertificateVerify, while a
+supplied identity requires possession proof before local Finished. Unsolicited
+client credentials and a direct Finished after a request fail terminally.
+Independent client/server flight traces cover retry, optional/required client
+authentication, wrong actions, epochs, proofs and record boundaries. These are
+state-kernel tests, not evidence that service tokens or signatures are integrated.
