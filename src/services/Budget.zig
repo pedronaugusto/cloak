@@ -17,9 +17,9 @@ pub fn reserve(b: *Budget, amount: usize) ReserveError!void {
     var guard = b.shared.acquire();
     defer guard.deinit();
     const active = guard.value();
-    if (active.jobs.raw() >= b.max_jobs or active.bytes.raw() > b.max_bytes or amount > b.max_bytes -| active.bytes.raw()) return error.ServiceBusy;
     const jobs = active.jobs.add(.fromRaw(1)) catch return error.ServiceBusy;
     const bytes = active.bytes.add(.fromRaw(amount)) catch return error.ServiceBusy;
+    if (jobs.raw() > b.max_jobs or bytes.raw() > b.max_bytes) return error.ServiceBusy;
     active.jobs = jobs;
     active.bytes = bytes;
 }

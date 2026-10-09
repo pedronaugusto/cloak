@@ -33,8 +33,9 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     const cut = std.mem.find(u8, rest[begin.len..], "-----") orelse return error.InvalidPem;
     const label = rest[begin.len..][0..cut];
     if (label.len == 0 or label.len > 64) return error.InvalidPem;
-    const ending = try gpa.print("-----END {s}-----", .{label});
-    defer gpa.free(ending);
+    // Public grammar bounds the marker at 8 + 64 + 5 bytes; no heap owner needed.
+    var ending_buffer: [77]u8 = undefined;
+    const ending = std.mem.print(&ending_buffer, "-----END {s}-----", .{label}) catch return error.InvalidPem;
     const body_start = begin.len + cut + 5;
     const end = std.mem.findPos(u8, rest, body_start, ending) orelse return error.InvalidPem;
     var compact_owner = try SecretBytes.init(gpa, end - body_start);
