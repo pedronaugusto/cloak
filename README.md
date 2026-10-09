@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials and certificate verification for Zig TLS consumers. The TLS engine is under construction; this package does not yet provide an encrypted stream.
+Work in progress: credentials, certificate verification and TLS 1.3 foundations for Zig consumers. The TLS engine is under construction; this package does not yet provide an encrypted stream.
 
 ## Install
 
@@ -57,7 +57,13 @@ One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/
 
 ## Scope
 
-Cloak implements credentials and certificate verification. TLS handshakes, records, resumption, datagrams and offload belong to subsequent implementation phases. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, plus private TLS 1.3 record protection, HKDF/Finished, bounded transcript and checked transition foundations. A usable TLS client, stream adapter and record-free QUIC client are still under construction. Resumption, datagrams and offload follow their own phases. No application protocol, dialer or resolver lives here.
+
+The build exposes `cloak.certificates` for certificates, keys and trust, and
+`cloak.tls` for TLS. `cloak` retains the existing credential names and exposes
+`certificates` and `tls` namespaces. TLS currently exposes only suite vocabulary;
+record seal/open and transcript mutation stay private. DTLS will be a separate
+module when its datagram implementation is built.
 
 ## Platforms
 

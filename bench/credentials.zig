@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     for ([_][]const u8{ @embedFile("data/ed25519.pem"), @embedFile("data/p256.pem"), @embedFile("data/p384.pem"), @embedFile("data/rsa.pem") }, [_][]const u8{ "Ed25519", "P-256", "P-384", "RSA-2048" }) |pem, name| {
         var context: Context = .{ .gpa = init.gpa, .pem = pem, .options = .{ .entropy = cloak.PrivateKey.Entropy.fromIo(&io) } };
         const row = try init.arena.allocator().print("{s} owned key parse/validate/release", .{name});
-        try shakedown.bench.run(init.gpa, io, &out.interface, &context, &.{.{ .name = row, .unit = "key", .run = Context.parse }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+        try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.parse)).@"fn".return_type.?).error_union.error_set, init.gpa, io, &out.interface, &context, &.{.{ .name = row, .unit = "key", .run = Context.parse }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     }
     try out.interface.flush();
 }

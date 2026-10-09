@@ -2,15 +2,17 @@ const family = @import("preflight_rules");
 const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "types", .patterns = &.{"src/types.zig"} },
-    .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**" } },
+    .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**", "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },
     .{ .name = "certificate", .patterns = &.{ "src/certificate.zig", "src/certificate/**" } },
-    .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Trust.zig", "src/services.zig", "src/services/**" } },
+    .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Trust.zig", "src/services.zig", "src/services/**", "src/tls/record.zig", "src/tls/record/**" } },
     .{ .name = "native verification driver", .patterns = &.{"src/NativeVerification.zig"} },
+    .{ .name = "TLS handshake", .patterns = &.{ "src/tls/handshake.zig", "src/tls/handshake/**" } },
+    .{ .name = "concern modules", .patterns = &.{ "src/tls.zig", "src/certificates.zig" } },
     .{ .name = "cloak", .patterns = &.{"src/root.zig"} },
 };
 pub const required = [_][]const u8{"src/root.zig"};
 pub const entries: []const []const u8 = &.{"src/root.zig"};
-pub const modules: []const gantry.NamedModule = &.{};
+pub const modules: []const gantry.NamedModule = &.{ .{ .name = "cloak.certificates", .path = "src/certificates.zig" }, .{ .name = "cloak.tls", .path = "src/tls.zig" } };
 // Runtime sibling owners cannot import one another; test edges remain free.
 const sibling_references = [_]gantry.rules.ReferenceRule{
     .{ .name = "independent authentication owners", .from = "src/verify.zig", .target = "src/credentials.zig", .relative = true, .kind = .import },

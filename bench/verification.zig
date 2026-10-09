@@ -35,9 +35,9 @@ pub fn main(init: std.process.Init) !void {
     var context: Context = .{ .gpa = init.gpa, .request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) } };
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 two-certificate portable path/receipt", .unit = "verification", .initial = 500, .run = Context.portable }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+    try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.portable)).@"fn".return_type.?).error_union.error_set || @typeInfo(@typeInfo(@TypeOf(Context.native)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 two-certificate portable path/receipt", .unit = "verification", .initial = 500, .run = Context.portable }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     if (builtin.os.tag == .macos or builtin.os.tag == .windows) {
-        try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "native scoped policy plus portable floors/receipt", .unit = "verification", .initial = 20, .run = Context.native }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+        try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.native)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "native scoped policy plus portable floors/receipt", .unit = "verification", .initial = 20, .run = Context.native }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     }
     try out.interface.flush();
 }

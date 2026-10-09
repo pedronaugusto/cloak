@@ -22,6 +22,6 @@ pub fn main(init: std.process.Init) !void {
     var context: Context = .{ .gpa = init.gpa, .request = .{ .chain = &.{ @embedFile("data/work-leaf-1.der"), @embedFile("data/work-inter-1.der") }, .identity = .{ .dns = "review.example" }, .time = 1791467000, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) } };
     var output: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &output);
-    try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "signed constraint path", .unit = "verification", .initial = 1000, .run = Context.verify }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+    try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.verify)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "signed constraint path", .unit = "verification", .initial = 1000, .run = Context.verify }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     try out.interface.flush();
 }

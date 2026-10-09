@@ -32,6 +32,6 @@ pub fn main(init: std.process.Init) !void {
     _ = try std.fmt.hexToBytes(&context.expected, "a4f2fd268a5524d87c8ae647afd03db038457d7a3e383ca57e3996709b4c15a6");
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 armor parse/check/release", .unit = "block", .run = Context.parse }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+    try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.parse)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 armor parse/check/release", .unit = "block", .run = Context.parse }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     try out.interface.flush();
 }

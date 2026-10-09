@@ -18,6 +18,12 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
+- Independent certificate/key and TLS concern modules.
+- Private TLS 1.3 AEAD epochs, strict inner/outer records, checked usage caps, erased HKDF/Finished, bounded transcripts and client/server transition foundations.
+- RFC 8448 protected-flight vectors and adversarial record, transition and extension-parser regressions. These foundations do not yet provide an encrypted stream.
+- Published green aegis, preflight and shakedown pins; benchmark callers use shakedown's typed error parameter.
+
+
 - Structured shakedown benchmark rows and additional private-armor and native ownership regressions.
 
 - Package build, preflight CI and production layer checks.

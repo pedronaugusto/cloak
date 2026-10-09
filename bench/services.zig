@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     var c: Context = .{ .gpa = init.gpa };
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try shakedown.bench.run(init.gpa, init.io, &out.interface, &c, &.{
+    try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.admission)).@"fn".return_type.?).error_union.error_set || @typeInfo(@typeInfo(@TypeOf(Context.encrypted)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &c, &.{
         .{ .name = "service reserve/release", .unit = "charge", .run = Context.admission },
         .{ .name = "P-256 legacy buffer parse/release", .unit = "key", .run = Context.encrypted },
     }, .{ .commit = "unrecorded" }, .{ .samples = 9, .smoke = smoke });

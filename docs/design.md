@@ -124,3 +124,54 @@ remain the reviewed local kernels pending published constant-time values.
 Secret owners erase their explicit storage on ordinary success/error cleanup;
 they do not prove erasure of prior compiler copies, registers, arbitrary spills,
 OS paging or process abort, nor hardware constant-time behavior.
+
+## TLS 1.3 foundations (C2 in progress)
+
+Certificates and keys use `cloak.certificates` (`certificates` at the facade).
+TLS uses `cloak.tls` (`tls`); its only current consumer declaration is `Suite`.
+DTLS is reserved for a separate datagram concern at C8, with no empty module or
+claim of datagram support. The private TLS handshake imports crypto and wire;
+record protection imports crypto only. Neither imports an adapter or facade.
+
+`record.Epoch` owns one direction's key, IV, sequence and byte/record counts.
+Seal commits a nonce exactly once; a future Connection retains those committed
+bytes across partial output acknowledgement. Insufficient space and partial
+overlap leave state untouched. Open validates the actual header as AAD and
+withholds plaintext until tag verification; a malformed/authentication failure
+wipes the directional key/IV and any touched plaintext, and is terminal.
+Exact alias is the ciphertext body, starting five bytes into a record; all
+other overlap is rejected before write. There is no public raw record API.
+Connection authentication, partial-input leases, EOF and update scheduling
+are not supplied by this primitive and remain C2 integration work.
+
+TLSInnerPlaintext is capped at 16,385 bytes, content at 16,384, and outer
+ciphertext at 16,640 (RFC 8446 §§5.1–5.2). Epoch caps are at most 2^24 records
+and 2^38 inner bytes, including content type, controls and padding. At the
+maximum inner size the record cap already limits the epoch to approximately
+2^38 bytes. The record cap is below RFC 8446 §5.5's AES-GCM recommendation of
+2^24.5 full records; ChaCha's sequence-space bound is stricter here too.
+Lower caller/test caps are accepted; raising caps is refused. Connection must
+reserve and send an update under old keys before exhaustion. A receiver closes
+at exhaustion and on its first failed authentication attempt; no retry oracle.
+
+TLS HKDF owns and wipes HMAC state, label blocks and Finished keys. Traffic keys
+and IVs use published aegis Secret. Checked transcript counts use aegis checked
+integers. Published aegis has no typestate API, so full TLS 1.3 transitions are
+an explicit always-checked table with proof and epoch requirements. Resumed,
+TLS 1.2, ECH and DTLS branches are absent until their phases. The table alone is
+not a certificate/signature verifier: its internal proof arguments must be
+issued by the crypto/verification driver. Named tests cover individual catalogue
+components; the complete F27–F45 rows remain open until integration and campaigns.
+
+Published aegis constant-time choices currently require baseline hosted LLVM
+profiles. They cannot serve native CPU dispatch or freestanding/wasm TLS yet.
+Finished uses std's fixed-size timing-safe comparison, with only the completed
+verdict released. AEAD selects std's kernels and rejects `.none` mitigations
+independently of caller options. Generated-code/timing campaigns remain required
+before a complete TLS security claim. Named wipes cover owned storage, not all
+compiler-created argument copies, register spills or std AEAD local schedules.
+
+RFC 8448 §3 supplies independently published transcript, protected-flight,
+key/IV and Finished checkpoints. Its 1024-bit certificate is deliberately not
+accepted under cloak's security floor. These tests prove vector agreement, not
+live peer interoperability or reviewed endpoint security.

@@ -27,6 +27,6 @@ pub fn main(init: std.process.Init) !void {
     var context: Context = .{ .trust = &trust };
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try shakedown.bench.run(init.gpa, init.io, &out.interface, &context, &.{.{ .name = "trust publish/retain/release", .unit = "snapshot", .run = Context.publish }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
+    try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.publish)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "trust publish/retain/release", .unit = "snapshot", .run = Context.publish }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });
     try out.interface.flush();
 }
