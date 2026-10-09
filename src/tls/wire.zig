@@ -4,3 +4,4 @@ pub const Extensions = @import("wire/Extensions.zig");
 test {
     _ = Extensions;
 }
+pub const Writer = @import("wire/Writer.zig");

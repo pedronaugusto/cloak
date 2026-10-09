@@ -1,6 +1,7 @@
 //! Executable freestanding vectors: caller storage, explicit trust/time, no Io.
 const std = @import("std");
 const cloak = @import("cloak");
+const tls_vectors = @import("tls_vectors");
 export fn cloakCoreVectors() u32 {
     @setRuntimeSafety(true);
     var backing: [256 * 1024]u8 = undefined;
@@ -27,5 +28,7 @@ export fn cloakCoreVectors() u32 {
         if (!curve_key.matches(certificate)) return 11;
         // Exercise actual public caller dispatch and owned release on portable builds.
     }
+    const tls_result = tls_vectors.tls.vectors();
+    if (tls_result != 0) return 100 + tls_result;
     return 0;
 }

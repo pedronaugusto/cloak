@@ -2,6 +2,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
+const Labels = @import("../crypto/Labels.zig");
 pub const RecordCount = aegis.units.Count(struct {}, u64);
 pub const ByteCount = aegis.units.Count(struct {}, u64);
 pub const Content = enum(u8) { alert = 21, handshake = 22, application = 23 };
@@ -16,10 +17,13 @@ pub const Plaintext = struct { content: Content, bytes: []u8 };
 
 pub fn Epoch(comptime suite: suites.Suite) type {
     const A = suites.Aead(suite);
+    const Hash = suites.Hash(suite);
+    const TrafficSecret = aegis.Secret([Hash.digest_length]u8);
     return struct {
         const Self = @This();
         key: aegis.Secret([A.key_length]u8),
         iv: aegis.Secret([12]u8),
+        traffic: ?TrafficSecret = null,
         sequence: RecordCount = .fromRaw(0),
         bytes: ByteCount = .fromRaw(0),
         limits: struct { records: RecordCount, bytes: ByteCount },
@@ -29,9 +33,55 @@ pub fn Epoch(comptime suite: suites.Suite) type {
             if (limits.records == 0 or limits.records > 1 << 24 or limits.bytes == 0 or limits.bytes > 1 << 38) return error.InvalidLimits;
             return .{ .key = .init(key), .iv = .init(iv), .limits = .{ .records = .fromRaw(limits.records), .bytes = .fromRaw(limits.bytes) } };
         }
+        /// Consumes the supplied traffic owner on success; error leaves it owned.
+        pub fn initTraffic(traffic: *TrafficSecret, limits: Limits) InitError!Self {
+            var key = aegis.Secret([A.key_length]u8).init(undefined);
+            defer key.deinit();
+            var iv = aegis.Secret([12]u8).init(undefined);
+            defer iv.deinit();
+            derive(traffic.expose(), key.exposeMut(), iv.exposeMut());
+            var result = try Self.init(key.expose().*, iv.expose().*, limits);
+            errdefer result.deinit();
+            result.traffic = .init(undefined);
+            traffic.moveInto(&result.traffic.?);
+            return result;
+        }
+        pub const UpdateError = error{ Closed, MissingTraffic };
+        /// The connection calls this only after committing/accepting the complete
+        /// old-key KeyUpdate record. No public caller may install an epoch.
+        pub fn update(self: *Self) UpdateError!void {
+            @setRuntimeSafety(true);
+            if (self.closed) return error.Closed;
+            if (self.traffic == null) return error.MissingTraffic;
+            var next = TrafficSecret.init(undefined);
+            defer next.deinit();
+            // unreachable: fixed label and hash-sized output meet the HKDF bounds.
+            Labels.expand(Hash, next.exposeMut(), self.traffic.?.expose(), "traffic upd", "") catch unreachable;
+            var key = aegis.Secret([A.key_length]u8).init(undefined);
+            defer key.deinit();
+            var iv = aegis.Secret([12]u8).init(undefined);
+            defer iv.deinit();
+            derive(next.expose(), key.exposeMut(), iv.exposeMut());
+            self.key.deinit();
+            self.iv.deinit();
+            self.traffic.?.deinit();
+            self.key = .init(key.expose().*);
+            self.iv = .init(iv.expose().*);
+            self.traffic = .init(next.expose().*);
+            self.sequence = .fromRaw(0);
+            self.bytes = .fromRaw(0);
+        }
+        fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {
+            // unreachable: fixed label and AEAD-sized output meet the HKDF bounds.
+            Labels.expand(Hash, key, secret, "key", "") catch unreachable;
+            // unreachable: fixed label and twelve-byte output meet the HKDF bounds.
+            Labels.expand(Hash, iv, secret, "iv", "") catch unreachable;
+        }
         pub fn deinit(self: *Self) void {
             self.key.deinit();
             self.iv.deinit();
+            if (self.traffic) |*traffic| traffic.deinit();
+            self.traffic = null;
             self.closed = true;
         }
         fn nonce(self: *const Self) [12]u8 {
@@ -124,7 +174,7 @@ fn overlap(a: []const u8, b: []const u8) bool {
 }
 comptime {
     std.debug.assert(max_inner + 16 <= max_ciphertext);
-    for (std.enums.values(suites.Suite)) |suite| std.debug.assert(@sizeOf(Epoch(suite)) <= 128);
+    for (std.enums.values(suites.Suite)) |suite| std.debug.assert(@sizeOf(Epoch(suite)) <= 192);
 }
 test {
     _ = @import("Epoch_test.zig");

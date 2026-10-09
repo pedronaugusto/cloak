@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const aegis = @import("aegis");
 const R = @import("Epoch.zig");
 const S = @import("../crypto/Suite.zig");
 
@@ -102,5 +103,34 @@ fn roundtrip(_: void, case: *shakedown.Case) !void {
         const plain = try rx.open(sealed, out[1 .. out.len - 1]);
         try std.testing.expectEqualSlices(u8, payload[0..len], plain.bytes);
         try std.testing.expect(wire[0] == 0xa5 and wire[wire.len - 1] == 0xa5 and out[0] == 0xa5 and out[out.len - 1] == 0xa5);
+    }
+}
+
+test "C2 KeyUpdate old-key commitment then directional reset" {
+    inline for (std.enums.values(S.Suite)) |suite| {
+        const Hash = S.Hash(suite);
+        var write_secret = aegis.Secret([Hash.digest_length]u8).init(@splat(7));
+        errdefer write_secret.deinit();
+        var read_secret = aegis.Secret([Hash.digest_length]u8).init(@splat(7));
+        errdefer read_secret.deinit();
+        var tx = try R.Epoch(suite).initTraffic(&write_secret, .{ .records = 2 });
+        defer tx.deinit();
+        var rx = try R.Epoch(suite).initTraffic(&read_secret, .{ .records = 2 });
+        defer rx.deinit();
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&write_secret), 0));
+        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&read_secret), 0));
+        var wire: [128]u8 = undefined;
+        var out: [128]u8 = undefined;
+        _ = try rx.open(try tx.seal(.application, "before", 0, &wire), &out);
+        const old_key = tx.key.expose().*;
+        const update = try tx.seal(.handshake, "\x18\x00\x00\x01\x00", 0, &wire);
+        // Receiver must still authenticate this with the old directional key.
+        try std.testing.expectEqualSlices(u8, "\x18\x00\x00\x01\x00", (try rx.open(update, &out)).bytes);
+        try tx.update();
+        try rx.update();
+        try std.testing.expectEqual(@as(u64, 0), tx.sequence.raw());
+        try std.testing.expectEqual(@as(u64, 0), rx.sequence.raw());
+        try std.testing.expect(!std.mem.eql(u8, &old_key, tx.key.expose()));
+        try std.testing.expectEqualSlices(u8, "after", (try rx.open(try tx.seal(.application, "after", 0, &wire), &out)).bytes);
     }
 }

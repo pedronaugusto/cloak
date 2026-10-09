@@ -175,3 +175,28 @@ RFC 8448 §3 supplies independently published transcript, protected-flight,
 key/IV and Finished checkpoints. Its 1024-bit certificate is deliberately not
 accepted under cloak's security floor. These tests prove vector agreement, not
 live peer interoperability or reviewed endpoint security.
+
+Hello negotiation checks exact nested lengths, positive suite/group/signature
+allowlists, session echoes and duplicates before returning borrowed fields.
+Server choices bind to the client offers. ALPN is one offered nonempty protocol;
+QUIC requires ALPN and the presence of opaque transport parameters. Empty
+parameter bytes are allowed: the eventual consumer owns parameter validation
+and acceptance. Cookie-only HRR is valid; a requested group must not already
+have a share. The handshake owner must bind the subsequent suite and enforce
+one retry. No ephemeral key generation or handshake randomness is supplied by
+the encoder, and none is injected through a consumer API.
+
+The schedule owns handshake/master and exporter roots, wipes displaced roots,
+and transfers directional traffic owners to records. Exporters are gated on
+completion; the future handshake driver must issue completion only after peer
+verification and local Finished commitment. `Epoch.initTraffic` consumes its
+source only on success. Updates derive the next traffic secret and replace
+erased key/IV/secret storage, resetting only that direction's counters. The
+connection must commit or accept KeyUpdate under old keys before updating,
+retain committed ciphertext through output acknowledgement, and prohibit
+handshake messages spanning a key transition. Primitive tests establish the
+derivation and old-key ordering; they do not establish connection scheduling.
+
+Private freestanding probes exercise all three record suites and the RFC 8448
+handshake schedule checkpoint. This is executable portable kernel evidence,
+not a freestanding network endpoint, memory peak measurement or interop claim.

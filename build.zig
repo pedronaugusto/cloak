@@ -15,7 +15,8 @@ pub fn build(b: *std.Build) void {
         // The core takes caller-provided services. Hosted tests and measurement
         // programs require OS I/O/threads and cannot run on a freestanding target.
         const core_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = target, .optimize = optimize });
-        core_module.addImport("cloak", b.modules.get("cloak").?);
+        core_module.addImport("cloak", b.modules.get("cloak.certificates").?);
+        addTlsVectors(b, core_module, target, optimize);
         const core = b.addObject(.{ .name = "cloak-core-check", .root_module = core_module });
         check.dependOn(&core.step);
         test_step.dependOn(&core.step);
@@ -54,7 +55,8 @@ pub fn build(b: *std.Build) void {
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     const wasm_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
     const wasm_cloak = createCloak(b, wasm_target, .safe);
-    wasm_module.addImport("cloak", wasm_cloak);
+    wasm_module.addImport("cloak", wasm_cloak.import_table.get("cloak.certificates").?);
+    addTlsVectors(b, wasm_module, wasm_target, .safe);
     const wasm = b.addExecutable(.{ .name = "cloak-core-vectors", .root_module = wasm_module });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
@@ -122,4 +124,11 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
 fn addAegis(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
     m.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+}
+
+fn addTlsVectors(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    @setRuntimeSafety(true);
+    const vectors = b.createModule(.{ .root_source_file = b.path("src/portable.zig"), .target = target, .optimize = optimize });
+    addAegis(b, vectors, target, optimize);
+    m.addImport("tls_vectors", vectors);
 }

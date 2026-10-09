@@ -57,7 +57,7 @@ One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/
 
 ## Scope
 
-Cloak implements credentials and certificate verification, plus private TLS 1.3 record protection, HKDF/Finished, bounded transcript and checked transition foundations. A usable TLS client, stream adapter and record-free QUIC client are still under construction. Resumption, datagrams and offload follow their own phases. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, plus private TLS 1.3 record protection, HKDF/Finished, bounded transcripts, strict hello negotiation, full key schedules, directional traffic-secret updates and checked transition foundations. A usable TLS client, stream adapter and record-free QUIC client are still under construction. Resumption, datagrams and offload follow their own phases. No application protocol, dialer or resolver lives here.
 
 The build exposes `cloak.certificates` for certificates, keys and trust, and
 `cloak.tls` for TLS. `cloak` retains the existing credential names and exposes

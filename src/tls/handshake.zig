@@ -7,3 +7,11 @@ pub const Transcript = @import("handshake/Transcript.zig");
 test {
     _ = Transcript;
 }
+pub const Hello = @import("handshake/Hello.zig");
+test {
+    _ = Hello;
+}
+pub const Schedule = @import("handshake/Schedule.zig");
+test {
+    _ = Schedule;
+}
