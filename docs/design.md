@@ -16,7 +16,7 @@ owners, without depending on public verification orchestration.
 `Trust` builds explicit roots and freezes immutable retained snapshots. A
 snapshot owns its index and certificates; verification borrows a retained
 snapshot. Atomic reference counts control lifetime. Mutable admission and
-native completion payloads each have one owner behind one `services.Guarded`
+native completion payloads each have one owner behind one `aegis.Guarded`
 lock. There is no hidden root store, background network fetch or thread owner.
 
 `wire` validates hostile DER before `certificate` interprets it. `verify`
@@ -47,8 +47,8 @@ classification uses arithmetic masks at public offsets; a small separate
 classifier writes directly to named wiped scratch to avoid the inspected
 inline compiler spill. Public length/padding framing and the final validity
 predicate are declassified. Decoder errors clear the destination. PEM compact
-and DER buffers clear before release; Safe allocator poisoning makes raw-free
-observation a poison observation rather than a direct zero observation.
+and DER buffers clear before release; The published aegis SecretBytes owner retains full allocation capacity and
+calls rawFree after erasure, so the allocator hook observes zeros in every mode.
 
 Private P-256/P-384 base multiplication uses a local subset of Zig 0.17.0's
 complete a=-3 point formulas and fixed-width Montgomery arithmetic (Zig contributors'
@@ -97,3 +97,38 @@ Budget counts; Trust/PrivateKey/Identity/ClientAuth/Job retained handles;
 OwnedRequest/Path/Verification move contracts; and `verify/Work.zig` for bounded
 work arithmetic. These are explicit borrow/move contracts, not linear types or
 stale-handle detection. Future phases require their own authorization and gates.
+
+## Safety owners and scalar boundaries
+
+The runtime pins published aegis for Secret(T), spin Guarded(T), SecretBytes,
+IDs, units, checked/ranged integers and always-on programmer contracts. The
+private-key state receives Material by moveInto, erasing the parser owner;
+retained references and final release remain cloak policy. SecretBytes owns
+PEM compact/DER and decrypted key allocations, including padding/slack. Legacy
+CBC parsing borrows a shrunk live prefix from the original full allocation;
+no second DER copy or truncated free exists. KDF digest/pad/derived-key owners
+use inline Secret; caller passphrase and input/output borrows remain caller-owned.
+
+Connection generation, request, trust, policy and identity generations occupy
+distinct non-exhaustive enum(u64) domains. Importing an ID does not establish
+freshness or authority. Request hashes serialize raw integers explicitly and
+retain their existing wire encoding. Identity expiry is a real-clock seconds
+Instant; certificate encodings and native scalar calls use explicit raw values.
+Service admission keeps jobs and Bytes counts under one spin guard; observational
+counts are raw scalar snapshots. Checked integers cover DER numeric decoding,
+identity/receipt/service allocation sizes and KDF narrowing; ranged integers
+reject zero rounds. Required admission invariants remain active in every mode.
+
+The spin sections contain only bounded phase/count/result mutations and fixed
+request-digest comparison. Hashing, verification, result cleanup and allocator
+calls occur outside the guard. Reference counts and detached executor completion
+ownership are independent of this lock and retain their existing reaping rules.
+
+Later aegis APIs are not dependencies: owned request/path/receipt values and
+checked token matching remain local pending published handle/own/input APIs.
+TLS-specific policy, refcount and job lifetime are not generic owner substitutes.
+Existing fixed-width constant-time arithmetic/select and volatile spill barriers
+remain the reviewed local kernels pending published constant-time values.
+Secret owners erase their explicit storage on ordinary success/error cleanup;
+they do not prove erasure of prior compiler copies, registers, arbitrary spills,
+OS paging or process abort, nor hardware constant-time behavior.

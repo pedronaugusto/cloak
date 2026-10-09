@@ -21,7 +21,7 @@ pub fn authenticate(
         .identity = .{ .dns = name },
         .time = time,
         .trust_generation = snapshot.generation(),
-        .policy_generation = 1,
+        .policy_generation = .fromRaw(1),
         .token = token,
     }, snapshot.issuers());
 }
@@ -32,7 +32,7 @@ test "documented verifier authenticates the selected path and rejects the wrong 
     const time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10);
     const roots = &.{@embedFile("data/anchor.der")};
     const chain = &.{@embedFile("data/leaf.der")};
-    var receipt = try authenticate(std.testing.allocator, roots, chain, "example.com", time, .{ .generation = 1, .id = 1 });
+    var receipt = try authenticate(std.testing.allocator, roots, chain, "example.com", time, .{ .generation = .fromRaw(1), .id = .fromRaw(1) });
     defer receipt.deinit();
     try std.testing.expect(receipt.authenticated);
     try std.testing.expectEqual(@as(usize, 2), receipt.path.len);

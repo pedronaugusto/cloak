@@ -30,3 +30,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 
 [Unreleased]: https://github.com/pedronaugusto/cloak/commits/main
+
+## Unreleased
+
+- Adopt published aegis secret, full-capacity byte and spin-guard owners, with
+  checked C1 parser/allocation boundaries and typed admission counts.
+- Breaking: verification trust/policy generations, completion token fields and
+  identity/snapshot generations use distinct aegis ID domains. Construct them
+  with `.fromRaw(value)`; use `.raw()` only at encoding/native boundaries.

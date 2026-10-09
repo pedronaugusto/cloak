@@ -43,7 +43,7 @@ fn snapshotLifetime(gpa: std.mem.Allocator) !void {
     defer next.deinit();
     try std.testing.expectEqual(Trust.System.macos, held.systemPolicy());
     try std.testing.expectEqual(Trust.System.windows, next.systemPolicy());
-    try std.testing.expectEqual(first.generation() + 1, next.generation());
+    try std.testing.expectEqual(first.generation().raw() + 1, next.generation().raw());
 }
 
 test "trust byte identical dedup transactional PEM and immutable input ownership" {
@@ -163,7 +163,7 @@ test "catalogue_trust_snapshot_concurrent_verify_reload_release" {
     try trust.addDer(@embedFile("verify/fixtures/vectors/p384.der"), .{});
     const next = try trust.freeze();
     defer next.deinit();
-    try std.testing.expectEqual(first.?.generation() + 1, next.generation());
+    try std.testing.expectEqual(first.?.generation().raw() + 1, next.generation().raw());
     first.?.deinit();
     first = null;
     gate.set(io);
@@ -179,7 +179,7 @@ fn verifyRetainedSnapshot(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Ev
     @setRuntimeSafety(true);
     defer snapshot.deinit();
     try gate.wait(io);
-    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = snapshot.generation(), .policy_generation = 1 };
+    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
     for (0..64) |_| {
         const temporary = snapshot.retain();
         defer temporary.deinit();

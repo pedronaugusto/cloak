@@ -18,7 +18,7 @@ fn mutate(_: void, case: *shakedown.Case) !void {
     const length = shakedown.gen.intRange(case.source, usize, 0, bytes.len);
     const input = bytes[0..length];
     const now = try std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10);
-    const req: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = now, .trust_generation = 1, .policy_generation = 1 };
+    const req: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = now, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     if (V.verify(case.gpa, req, &.{anchor})) |receipt_value| {
         var receipt = receipt_value;
         defer receipt.deinit();

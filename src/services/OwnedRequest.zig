@@ -1,5 +1,7 @@
 //! Deep-owned inputs, retained by the executor until its last completion.
 const std = @import("std");
+const aegis = @import("aegis");
+const Checked = aegis.int.Checked(usize);
 const types = @import("../types.zig");
 const OwnedRequest = @This();
 gpa: std.mem.Allocator,
@@ -49,9 +51,9 @@ pub fn byteSize(request: types.Request, anchors: []const []const u8) error{Servi
 }
 fn sizeAdd(comptime T: type, total: *usize, count: usize) error{ServiceLimit}!void {
     @setRuntimeSafety(true);
-    const bytes = std.math.mul(usize, @sizeOf(T), count) catch return error.ServiceLimit;
-    const padded = std.math.add(usize, bytes, @alignOf(T) - 1) catch return error.ServiceLimit;
-    total.* = std.math.add(usize, total.*, padded) catch return error.ServiceLimit;
+    const bytes = (Checked.init(@sizeOf(T)).mul(count) catch return error.ServiceLimit).raw();
+    const padded = (Checked.init(bytes).add(@alignOf(T) - 1) catch return error.ServiceLimit).raw();
+    total.* = (Checked.init(total.*).add(padded) catch return error.ServiceLimit).raw();
 }
 fn slices(gpa: std.mem.Allocator, input: []const []const u8) std.mem.Allocator.Error![]const []const u8 {
     @setRuntimeSafety(true);

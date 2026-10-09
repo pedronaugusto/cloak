@@ -1,5 +1,6 @@
 //! Bounded textual armor. Decoded buffers belong to the caller.
 const std = @import("std");
+const SecretBytes = @import("aegis").SecretBytes;
 const Pem = @This();
 const Base64 = @import("Base64.zig");
 text: []const u8,
@@ -8,12 +9,13 @@ pub const Error = error{ InvalidPem, InputLimit, OutOfMemory };
 pub const Block = struct {
     label: []const u8,
     der: []u8,
+    // The slice is a borrow; this descriptor alone owns the full DER allocation.
+    storage: SecretBytes,
     legacy: bool = false,
     dek: ?[]const u8 = null,
-    pub fn deinit(b: *Block, gpa: std.mem.Allocator) void {
+    pub fn deinit(b: *Block, _: std.mem.Allocator) void {
         @setRuntimeSafety(true);
-        std.crypto.secureZero(u8, b.der);
-        gpa.free(b.der);
+        b.storage.deinit();
         b.* = undefined;
     }
 };
@@ -35,11 +37,10 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     defer gpa.free(ending);
     const body_start = begin.len + cut + 5;
     const end = std.mem.findPos(u8, rest, body_start, ending) orelse return error.InvalidPem;
-    const compact = try gpa.alloc(u8, end - body_start);
-    defer {
-        std.crypto.secureZero(u8, compact);
-        gpa.free(compact);
-    }
+    var compact_owner = try SecretBytes.init(gpa, end - body_start);
+    defer compact_owner.deinit();
+    compact_owner.resizeWithinCapacity(end - body_start) catch return error.InputLimit;
+    const compact = compact_owner.exposeMut();
     var len: usize = 0;
     var legacy = false;
     var dek: ?[]const u8 = null;
@@ -63,14 +64,15 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     if (legacy != (dek != null)) return error.InvalidPem;
     const size = Base64.size(compact[0..len]) catch return error.InvalidPem;
     if (size == 0 or size > max_bytes) return error.InputLimit;
-    const der = try gpa.alloc(u8, size);
-    errdefer {
-        std.crypto.secureZero(u8, der);
-        gpa.free(der);
-    }
+    var storage = try SecretBytes.init(gpa, size);
+    errdefer storage.deinit();
+    storage.resizeWithinCapacity(size) catch return error.InputLimit;
+    const der = storage.exposeMut();
     Base64.decode(der, compact[0..len]) catch return error.InvalidPem;
     it.offset = it.text.len - rest.len + end + ending.len;
-    return .{ .label = label, .der = der, .legacy = legacy, .dek = dek };
+    var block: Block = .{ .label = label, .der = der, .storage = undefined, .legacy = legacy, .dek = dek };
+    storage.moveInto(&block.storage);
+    return block;
 }
 test {
     @setRuntimeSafety(true);

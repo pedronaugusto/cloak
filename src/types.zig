@@ -1,6 +1,13 @@
 //! Lower-layer verification vocabulary. No trust owner or handshake dependency.
 const std = @import("std");
-pub const Token = struct { generation: u64 = 0, id: u64 = 0 };
+const aegis = @import("aegis");
+pub const ConnectionGeneration = aegis.id.Id(struct {}, u64);
+pub const RequestId = aegis.id.Id(struct {}, u64);
+pub const TrustGeneration = aegis.id.Id(struct {}, u64);
+pub const PolicyGeneration = aegis.id.Id(struct {}, u64);
+pub const IdentityGeneration = aegis.id.Id(struct {}, u64);
+pub const RealSeconds = aegis.units.Instant(.real, .second, i64);
+pub const Token = struct { generation: ConnectionGeneration = .fromRaw(0), id: RequestId = .fromRaw(0) };
 pub const Identity = union(enum) { none, dns: []const u8, ipv4: [4]u8, ipv6: [16]u8 };
 pub const Purpose = enum { server, client };
 pub const Mode = enum { full, none };
@@ -53,8 +60,8 @@ pub const Request = struct {
     identity: Identity = .none,
     purpose: Purpose = .server,
     time: i64,
-    trust_generation: u64,
-    policy_generation: u64,
+    trust_generation: TrustGeneration,
+    policy_generation: PolicyGeneration,
     token: Token = .{},
     mode: Mode = .full,
     policy: Policy = .{},
@@ -70,10 +77,10 @@ pub const Request = struct {
         @setRuntimeSafety(true);
         var h = std.crypto.hash.sha2.Sha256.init(.{});
         part(&h, "cloak verification request v1");
-        uint(&h, self.token.generation);
-        uint(&h, self.token.id);
-        uint(&h, self.trust_generation);
-        uint(&h, self.policy_generation);
+        uint(&h, self.token.generation.raw());
+        uint(&h, self.token.id.raw());
+        uint(&h, self.trust_generation.raw());
+        uint(&h, self.policy_generation.raw());
         // safe: i64 and u64 have the same bit width; preserve the signed time encoding.
         uint(&h, @bitCast(self.time));
         uint(&h, @backingInt(self.mode));
@@ -135,8 +142,8 @@ pub const Verification = struct {
     path: []const []const u8,
     identity: Identity,
     purpose: Purpose,
-    trust_generation: u64,
-    policy_generation: u64,
+    trust_generation: TrustGeneration,
+    policy_generation: PolicyGeneration,
     validation_time: i64,
     expires: i64,
     revocation: RevocationStatus = .unchecked,
@@ -154,7 +161,7 @@ pub const Verification = struct {
         if (name_bytes > 253) return error.VerificationLimit;
         var size: usize = 0;
         for (path) |der| size = std.math.add(usize, size, der.len) catch return error.VerificationLimit;
-        const descriptors = std.math.mul(usize, path.len, @sizeOf([]const u8)) catch return error.VerificationLimit;
+        const descriptors = (aegis.int.Checked(usize).init(path.len).mul(@sizeOf([]const u8)) catch return error.VerificationLimit).raw();
         const owned_bytes = std.math.add(usize, size, std.math.add(usize, descriptors, name_bytes) catch return error.VerificationLimit) catch return error.VerificationLimit;
         if (owned_bytes > request.limits.receipt_bytes or path.len > request.limits.depth) return error.VerificationLimit;
         const storage = try gpa.alloc(u8, size);

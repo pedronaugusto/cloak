@@ -22,7 +22,7 @@ const Queue = struct {
 };
 fn request() types.Request {
     @setRuntimeSafety(true);
-    return .{ .chain = &.{"abc"}, .time = 1, .trust_generation = 1, .policy_generation = 1, .token = .{ .generation = 2, .id = 7 } };
+    return .{ .chain = &.{"abc"}, .time = 1, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .token = .{ .generation = .fromRaw(2), .id = .fromRaw(7) } };
 }
 test "service finite deadline rejects missing executor before copying" {
     @setRuntimeSafety(true);
@@ -179,7 +179,7 @@ test "catalogue_verify_job_native_abandon_during_evaluation_reaps_outside_guard"
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     const root = @embedFile("../verify/fixtures/vectors/p256.der");
     const leaf = @embedFile("../verify/fixtures/vectors/leaf.der");
-    const req: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = 1, .policy_generation = 1 };
+    const req: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     var budget: Budget = .{};
@@ -214,7 +214,7 @@ test "catalogue_verify_job_native_concurrent_abandon_retains_charge_until_reap" 
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     var budget: Budget = .{ .max_jobs = 1 };
     var q: Queue = .{};
-    const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = 1, .policy_generation = 1 };
+    const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
     defer if (caller) |job| {
         job.abandon();

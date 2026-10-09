@@ -1,5 +1,7 @@
 //! Bounded key parsing. Private RSA operations are supplied in a later phase.
 const std = @import("std");
+const aegis = @import("aegis");
+const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Entropy = @import("Entropy.zig");
@@ -47,10 +49,10 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
             if (!rsa_label and !ec_label and !pkcs8_label and !encrypted_label) return error.UnsupportedKey;
             if (block.legacy) {
                 if (!rsa_label and !ec_label) return error.InvalidKey;
-                const plain = try legacy(gpa, block, options);
-                defer wipeFree(gpa, plain);
-                try labelShape(plain, rsa_label, ec_label);
-                found = try parseDer(plain, options);
+                var plain = try legacy(gpa, block, options);
+                defer plain.deinit();
+                try labelShape(plain.expose(), rsa_label, ec_label);
+                found = try parseDer(plain.expose(), options);
             } else if (encrypted_label) {
                 found = try encrypted(gpa, block.der, options);
             } else {
@@ -220,9 +222,10 @@ fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
     if (iv.len != (if (des3) @as(usize, 8) else 16)) return error.InvalidKey;
     const data = (try info.expect(4)).value;
     try info.finish();
-    var key: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &key);
-    const rounds: u32 = @intCast(iterations); // safe: the explicit iteration limit above fits u32
+    var key_owner = aegis.Secret([32]u8).init(undefined);
+    defer key_owner.deinit();
+    const key = key_owner.exposeMut();
+    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
     switch (hash) {
         7 => Kdf.derive(std.crypto.hash.Sha1, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
         9 => Kdf.derive(std.crypto.hash.sha2.Sha256, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
@@ -230,8 +233,10 @@ fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
         11 => Kdf.derive(std.crypto.hash.sha2.Sha512, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
         else => return error.UnsupportedEncryption,
     }
-    const plain = try gpa.alloc(u8, data.len);
-    defer wipeFree(gpa, plain);
+    var plain_owner = try SecretBytes.init(gpa, data.len);
+    defer plain_owner.deinit();
+    plain_owner.resizeWithinCapacity(data.len) catch return error.InputLimit;
+    const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, data, plain) else try Cbc.decrypt(key[0..key_len], iv[0..16].*, data, plain);
     return parseDer(decoded, options) catch |err| switch (err) {
         error.OutOfMemory, error.EntropyRequired, error.EntropyUnavailable => err,
@@ -250,7 +255,7 @@ fn cipherLength(id: []const u8) ParseError!usize {
     };
     return error.UnsupportedEncryption;
 }
-fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError![]u8 {
+fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError!SecretBytes {
     @setRuntimeSafety(true);
     const password = options.passphrase orelse return error.PasswordRequired;
     const info = block.dek orelse return error.InvalidPem;
@@ -262,36 +267,36 @@ fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError
     const iv_len: usize = if (des3) 8 else 16;
     if (info[comma + 1 ..].len != iv_len * 2) return error.InvalidPem;
     _ = std.fmt.hexToBytes(iv[0..iv_len], info[comma + 1 ..]) catch return error.InvalidPem;
-    var key: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &key);
-    var previous: [16]u8 = undefined;
-    defer std.crypto.secureZero(u8, &previous);
+    var key_owner = aegis.Secret([32]u8).init(undefined);
+    defer key_owner.deinit();
+    const key = key_owner.exposeMut();
+    var previous_owner = aegis.Secret([16]u8).init(undefined);
+    defer previous_owner.deinit();
+    const previous = previous_owner.exposeMut();
     var filled: usize = 0;
     while (filled < key_len) {
         var h = std.crypto.hash.Md5.init(.{});
         defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
-        if (filled != 0) h.update(&previous);
+        if (filled != 0) h.update(previous);
         h.update(password);
         h.update(iv[0..8]);
-        h.final(&previous);
+        h.final(previous);
         const n = @min(previous.len, key_len - filled);
         @memcpy(key[filled..][0..n], previous[0..n]);
         filled += n;
     }
-    const plain = try gpa.alloc(u8, block.der.len);
-    errdefer wipeFree(gpa, plain);
+    var plain_owner = try SecretBytes.init(gpa, block.der.len);
+    errdefer plain_owner.deinit();
+    plain_owner.resizeWithinCapacity(block.der.len) catch return error.InputLimit;
+    const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, block.der, plain) else try Cbc.decrypt(key[0..key_len], iv, block.der, plain);
-    // The owned output keeps its full allocation size for erasure and free.
-    // Make the returned DER owned; wipe padding and the staging block now.
-    const result = try gpa.dupe(u8, decoded);
-    wipeFree(gpa, plain);
+    // Preserve the complete ciphertext-sized allocation; shrink wipes padding.
+    plain_owner.resizeWithinCapacity(decoded.len) catch return error.InputLimit;
+    var result: SecretBytes = undefined;
+    plain_owner.moveInto(&result);
     return result;
 }
-fn wipeFree(gpa: std.mem.Allocator, bytes: []u8) void {
-    @setRuntimeSafety(true);
-    std.crypto.secureZero(u8, bytes);
-    gpa.free(bytes);
-}
+
 test {
     @setRuntimeSafety(true);
     _ = @import("Key_test.zig");

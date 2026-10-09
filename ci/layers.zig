@@ -86,6 +86,6 @@ const sibling_references = [_]gantry.rules.ReferenceRule{
     .{ .name = "independent authentication owners", .from = "src/services/**", .target = "src/ClientAuth.zig", .relative = true, .kind = .import },
     .{ .name = "independent authentication owners", .from = "src/services/**", .target = "src/Trust.zig", .relative = true, .kind = .import },
 };
-const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{ "std", "builtin", "shakedown" } }};
+const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{ "std", "builtin", "shakedown", "aegis" } }};
 pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ family.shakedown ++ sibling_references);
 pub const owned: []const gantry.rules.TokenRule = &(family.durability ++ family.no_async);

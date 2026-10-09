@@ -1,13 +1,15 @@
 //! Shared immutable identity: owned DER chain, encoded certificate list and key.
 const std = @import("std");
+const aegis = @import("aegis");
+const types = @import("types.zig");
 const certificate = @import("certificate.zig");
 const PrivateKey = @import("PrivateKey.zig");
 const Identity = @This();
 /// Private: immutable material is wiped/released by the final owner.
 state: *State,
-pub const Options = struct { chain_bytes: usize = 65536, certificates: usize = 16, generation: u64 = 1 };
+pub const Options = struct { chain_bytes: usize = 65536, certificates: usize = 16, generation: types.IdentityGeneration = .fromRaw(1) };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: PrivateKey, generation: u64, expires: i64 };
+const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
 pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
     if (certificates.len == 0) return error.EmptyChain;
@@ -21,8 +23,8 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
         expiry = @min(expiry, cert.not_after);
     }
     if (!key.matches(certificates[0])) return error.KeyMismatch;
-    const overhead = std.math.mul(usize, certificates.len, 3) catch return error.IdentityLimit;
-    const flight_size = std.math.add(usize, bytes, overhead) catch return error.IdentityLimit;
+    const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
+    const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();
     if (flight_size > 0xffffff) return error.IdentityLimit;
     const state = try gpa.create(State);
     errdefer gpa.destroy(state);
@@ -43,7 +45,7 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = key.retain(), .generation = options.generation, .expires = expiry };
+    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = key.retain(), .generation = options.generation, .expires = .fromRaw(expiry) };
     return .{ .state = state };
 }
 pub fn retain(identity: Identity) Identity {
@@ -76,13 +78,13 @@ pub fn certificateList(identity: Identity) []const u8 {
     @setRuntimeSafety(true);
     return identity.state.flight;
 }
-pub fn generation(identity: Identity) u64 {
+pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);
     return identity.state.generation;
 }
 pub fn expires(identity: Identity) i64 {
     @setRuntimeSafety(true);
-    return identity.state.expires;
+    return identity.state.expires.raw();
 }
 test {
     @setRuntimeSafety(true);

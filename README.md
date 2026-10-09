@@ -38,7 +38,7 @@ pub fn authenticate(
         .identity = .{ .dns = name },
         .time = time,
         .trust_generation = snapshot.generation(),
-        .policy_generation = 1,
+        .policy_generation = .fromRaw(1),
         .token = token,
     }, snapshot.issuers());
 }
@@ -53,7 +53,7 @@ Native system trust uses `NativeVerification` with an empty explicit-anchor list
 
 ## Design
 
-One owner per state. Runtime code depends only on Zig's standard library and native platform trust APIs. Credentials, verification and native services import only lower certificate, wire and value layers. The portable core takes explicit time and trust; it performs no network discovery.
+One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/aegis), Zig's standard library and native platform trust APIs. Credentials, verification and native services import only lower certificate, wire and value layers. The portable core takes explicit time and trust; it performs no network discovery.
 
 ## Scope
 

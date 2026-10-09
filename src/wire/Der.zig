@@ -1,5 +1,7 @@
 //! Strict, allocation-free DER. Each Reader is confined to one parent value.
 const std = @import("std");
+const aegis = @import("aegis");
+const Checked = aegis.int.Checked(usize);
 pub const Error = error{ InvalidDer, DerLimit };
 pub const Limits = struct { bytes: usize = 65536, elements: usize = 4096, depth: usize = 24 };
 pub const Element = struct {
@@ -40,7 +42,10 @@ pub const Reader = struct {
             if (count == 0 or count > @sizeOf(usize) or count > self.bytes.len - cursor) return error.InvalidDer;
             if (self.bytes[cursor] == 0) return error.InvalidDer;
             len = 0;
-            for (self.bytes[cursor..][0..count]) |b| len = (len << 8) | b;
+            for (self.bytes[cursor..][0..count]) |b| {
+                const shifted = Checked.init(len).shl(8) catch return error.DerLimit;
+                len = (shifted.add(b) catch return error.DerLimit).raw();
+            }
             cursor += count;
             if (len < 128) return error.InvalidDer;
         }
@@ -76,7 +81,10 @@ pub fn number(bytes: []const u8) Error!usize {
     const b = try integer(bytes);
     if (b.len > @sizeOf(usize)) return error.DerLimit;
     var n: usize = 0;
-    for (b) |v| n = (n << 8) | v;
+    for (b) |v| {
+        const shifted = Checked.init(n).shl(8) catch return error.DerLimit;
+        n = (shifted.add(v) catch return error.DerLimit).raw();
+    }
     return n;
 }
 pub fn boolean(bytes: []const u8) Error!bool {

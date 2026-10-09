@@ -16,14 +16,14 @@ fn lifetime(gpa: std.mem.Allocator) !void {
     defer block.deinit(gpa);
     const key = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});
     defer key.deinit();
-    const identity = try Identity.init(gpa, &.{block.der}, key, .{ .generation = 7 });
+    const identity = try Identity.init(gpa, &.{block.der}, key, .{ .generation = .fromRaw(7) });
     const held = identity.retain();
     identity.deinit();
     defer held.deinit();
     const auth = try ClientAuth.init(gpa, held.chain(), key, .{});
     defer auth.deinit();
     @memset(block.der, 0);
-    try std.testing.expectEqual(@as(u64, 7), held.generation());
+    try std.testing.expectEqual(@as(u64, 7), held.generation().raw());
     try std.testing.expectEqual(@as(usize, 1), held.chain().len);
     try std.testing.expectEqualSlices(u8, held.chain()[0], held.certificateList()[3..]);
     try std.testing.expect(key.matches(auth.chain()[0]));

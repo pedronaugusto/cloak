@@ -1,5 +1,6 @@
 //! Client credentials retain the same immutable identity owner as servers.
 const std = @import("std");
+const types = @import("types.zig");
 const Identity = @import("Identity.zig");
 const PrivateKey = @import("PrivateKey.zig");
 const ClientAuth = @This();
@@ -23,7 +24,7 @@ pub fn chain(auth: ClientAuth) []const []const u8 {
     @setRuntimeSafety(true);
     return auth.identity.chain();
 }
-pub fn generation(auth: ClientAuth) u64 {
+pub fn generation(auth: ClientAuth) types.IdentityGeneration {
     @setRuntimeSafety(true);
     return auth.identity.generation();
 }

@@ -3,7 +3,7 @@ const std = @import("std");
 const Der = @import("wire/Der.zig");
 const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
-const Secret = @import("credentials/Secret.zig").Secret;
+const Secret = @import("aegis").Secret;
 const PrivateKey = @This();
 /// Private: shares one immutable owner, never a caller's passphrase or DER.
 state: *State,
@@ -14,11 +14,13 @@ pub const ParseOptions = parser.Options;
 pub const Entropy = @import("credentials/Entropy.zig");
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    var material: Secret(parser.Material) = .{ .value = try parser.parse(gpa, bytes, options) };
-    defer material.deinit();
+    var material = Secret(parser.Material).init(try parser.parse(gpa, bytes, options));
+    errdefer material.deinit();
     const state = try gpa.create(State);
     errdefer gpa.destroy(state);
-    state.* = .{ .gpa = gpa, .material = material };
+    state.gpa = gpa;
+    state.refs = .init(1);
+    material.moveInto(&state.material);
     return .{ .state = state };
 }
 pub fn isEncrypted(bytes: []const u8) bool {
@@ -30,7 +32,7 @@ pub fn isEncrypted(bytes: []const u8) bool {
 pub fn matches(key: PrivateKey, der: []const u8) bool {
     @setRuntimeSafety(true);
     const cert = certificate.parse(der, .{}) catch return false;
-    return switch (key.state.material.value) {
+    return switch (key.state.material.expose().*) {
         .rsa => |*k| switch (cert.public_key) {
             .rsa => |p| std.mem.eql(u8, k.n[0..k.size], p.modulus) and std.mem.eql(u8, k.e[0..k.exponent_size], p.exponent),
             else => false,
@@ -68,5 +70,4 @@ pub fn deinit(key: PrivateKey) void {
 test {
     @setRuntimeSafety(true);
     _ = @import("credentials/Key_test.zig");
-    _ = @import("credentials/Secret.zig");
 }

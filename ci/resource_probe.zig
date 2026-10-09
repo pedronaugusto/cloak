@@ -22,7 +22,7 @@ fn run(raw: ?*anyopaque) callconv(.c) ?*anyopaque {
     const req: cloak.types.Request = .{ .chain = if (s.profile == 0) &.{leaf} else &peers, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch {
         s.failed = true;
         return null;
-    }, .trust_generation = 1, .policy_generation = 1 };
+    }, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var receipt = if (s.profile == 0) cloak.verify.verify(count.allocator(), req, &.{anchor}) catch {
         s.failed = true;
         return null;

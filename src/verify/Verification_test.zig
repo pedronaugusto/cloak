@@ -3,7 +3,7 @@ const V = @import("../types.zig").Verification;
 const T = @import("../types.zig");
 test "receipt owns path and reference and rejects another pending request" {
     var input = [_]u8{ 'a', 'b' };
-    const request: T.Request = .{ .chain = &.{&input}, .identity = .{ .dns = "example.com" }, .time = 1, .trust_generation = 2, .policy_generation = 3 };
+    const request: T.Request = .{ .chain = &.{&input}, .identity = .{ .dns = "example.com" }, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
     var receipt = try V.init(std.testing.allocator, request, request.chain, true, 2);
     defer receipt.deinit();
     try receipt.check(request);
@@ -16,7 +16,7 @@ test "receipt owns path and reference and rejects another pending request" {
 }
 
 test "receipt bounds include DNS and descriptors and none cannot claim authentication" {
-    const request: T.Request = .{ .chain = &.{"ab"}, .identity = .{ .dns = "example.com" }, .time = 1, .trust_generation = 2, .policy_generation = 3, .mode = .none };
+    const request: T.Request = .{ .chain = &.{"ab"}, .identity = .{ .dns = "example.com" }, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3), .mode = .none };
     var receipt = try V.init(std.testing.allocator, request, request.chain, true, 2);
     defer receipt.deinit();
     try std.testing.expect(!receipt.authenticated);

@@ -1,5 +1,7 @@
 //! A mutable trust builder and immutable, retained trust snapshots.
 const std = @import("std");
+const aegis = @import("aegis");
+const TrustGeneration = @import("types.zig").TrustGeneration;
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
 const Trust = @This();
@@ -11,7 +13,7 @@ roots: std.ArrayList([]const u8) = .empty,
 /// Private: bytes charged against the bounded root store.
 bytes: usize = 0,
 /// Private: the next generation published by this builder.
-next_generation: u64 = 1,
+next_generation: TrustGeneration = .fromRaw(1),
 /// Private: native policy is evaluated by an owned service job.
 system: System = .portable,
 
@@ -255,7 +257,7 @@ fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits)
 pub fn freeze(t: *Trust) FreezeError!Snapshot {
     @setRuntimeSafety(true);
     if (t.roots.items.len == 0 and t.system == .portable) return error.NoTrustAnchors;
-    if (t.next_generation == std.math.maxInt(u64)) return error.GenerationExhausted;
+    if (t.next_generation.raw() == std.math.maxInt(u64)) return error.GenerationExhausted;
     const state = try t.gpa.create(State);
     errdefer t.gpa.destroy(state);
     const roots = try t.gpa.dupe([]const u8, t.roots.items);
@@ -265,7 +267,7 @@ pub fn freeze(t: *Trust) FreezeError!Snapshot {
     state.* = .{ .gpa = t.gpa, .roots = roots, .index = index, .generation = t.next_generation, .system = t.system };
     t.roots.clearRetainingCapacity();
     t.bytes = 0;
-    t.next_generation += 1;
+    t.next_generation = .fromRaw((aegis.int.Checked(u64).init(t.next_generation.raw()).add(1) catch unreachable).raw()); // unreachable: exhaustion checked before any ownership transfer
     return .{ .state = state };
 }
 
@@ -281,7 +283,7 @@ const State = struct {
     refs: std.atomic.Value(usize) = .init(1),
     roots: []const []const u8,
     index: certificate.Issuers,
-    generation: u64,
+    generation: TrustGeneration,
     system: System,
 };
 
@@ -320,7 +322,7 @@ pub const Snapshot = struct {
         return &s.state.index;
     }
 
-    pub fn generation(s: Snapshot) u64 {
+    pub fn generation(s: Snapshot) TrustGeneration {
         @setRuntimeSafety(true);
         return s.state.generation;
     }

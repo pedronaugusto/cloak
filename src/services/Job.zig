@@ -5,7 +5,7 @@ const Native = @import("Native.zig");
 const Budget = @import("Budget.zig");
 const OwnedRequest = @import("OwnedRequest.zig");
 const Path = @import("Path.zig");
-const Guarded = @import("Guarded.zig").Guarded;
+const Guarded = @import("aegis").Guarded;
 const Job = @This();
 /// Private: the independent completion remains alive through its executor handle.
 state: *State,
@@ -153,5 +153,4 @@ fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceL
 test {
     @setRuntimeSafety(true);
     _ = @import("Job_test.zig");
-    _ = @import("Guarded.zig");
 }
