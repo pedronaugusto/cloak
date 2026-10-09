@@ -17,11 +17,13 @@ pub fn reserve(b: *Budget, amount: usize) ReserveError!void {
     var guard = b.shared.acquire();
     defer guard.deinit();
     const active = guard.value();
-    const jobs = active.jobs.add(.fromRaw(1)) catch return error.ServiceBusy;
-    const bytes = active.bytes.add(.fromRaw(amount)) catch return error.ServiceBusy;
-    if (jobs.raw() > b.max_jobs or bytes.raw() > b.max_bytes) return error.ServiceBusy;
-    active.jobs = jobs;
-    active.bytes = bytes;
+    if (active.jobs.raw() >= b.max_jobs or active.bytes.raw() > b.max_bytes) return error.ServiceBusy;
+    const available = Bytes.fromRaw(b.max_bytes).sub(active.bytes) catch unreachable; // unreachable: active bytes fit the configured ceiling
+    if (amount > available.raw()) return error.ServiceBusy;
+    // Each addition is bounded before mutation; no failing publication or rollback.
+    active.jobs = active.jobs.add(.fromRaw(1)) catch unreachable; // unreachable: jobs are strictly below their usize ceiling
+    active.bytes = active.bytes.add(.fromRaw(amount)) catch unreachable; // unreachable: amount fits the checked remaining byte budget
+
 }
 pub fn release(b: *Budget, amount: usize) void {
     @setRuntimeSafety(true);
