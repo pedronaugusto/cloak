@@ -78,7 +78,7 @@ fn fuzz(_: void, smith: *std.testing.Smith) !void {
     var bytes: [4096]u8 = undefined;
     const input = bytes[0..smith.slice(&bytes)];
     if (H.server(input, "", &shares, .{})) |parsed| {
-        try std.testing.expect(parsed.retry or parsed.share.len == H.serverShareLength(parsed.group.?));
+        try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength());
     } else |_| {}
     if (H.encrypted(input, .{})) |parsed| {
         try std.testing.expectEqual(@as(usize, 0), parsed.alpn.len);

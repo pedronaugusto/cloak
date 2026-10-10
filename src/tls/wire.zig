@@ -5,3 +5,4 @@ test {
     _ = Extensions;
 }
 pub const Writer = @import("wire/Writer.zig");
+pub const Alert = @import("wire/Alert.zig").Alert;

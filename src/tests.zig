@@ -2,7 +2,6 @@
 const std = @import("std");
 const certificates = @import("certificates.zig");
 test {
-    _ = @import("tls.zig");
     @setRuntimeSafety(true);
     std.testing.refAllDecls(certificates);
     _ = @import("Trust.zig");

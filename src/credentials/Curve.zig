@@ -23,6 +23,34 @@ fn baseOwned(comptime Point: type, comptime endian: std.builtin.Endian, scalar: 
     @setRuntimeSafety(true);
     const private = PrivatePoint(Point);
     const table = comptime precompute(private);
+    return ladder(Point, endian, &table, scalar, scratch);
+}
+/// Fixed-window multiplication of an arbitrary public point by a private scalar.
+/// The window table is public data built from the peer; the walk over the secret
+/// scalar is the same masked selection as `base`. P-256 and P-384 only.
+pub fn mul(comptime Point: type, comptime endian: std.builtin.Endian, peer: Point, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8) MultiplyError!Point {
+    @setRuntimeSafety(true);
+    comptime {
+        if (std.options.side_channels_mitigations == .none) @compileError("cloak private-scalar multiplication requires std side-channel mitigations");
+        if (Point != std.crypto.ecc.P256 and Point != std.crypto.ecc.P384) @compileError("variable-point multiplication is defined for P-256 and P-384");
+    }
+    const private = PrivatePoint(Point);
+    // Public table: peer multiples never depend on the scalar.
+    var table: [16]private = undefined;
+    table[0] = private.identityElement;
+    var open: [16]Point = undefined;
+    open[1] = peer;
+    table[1] = private.fromPublic(peer);
+    for (2..16) |i| {
+        open[i] = if (i % 2 == 0) open[i / 2].dbl() else open[i - 1].add(peer);
+        table[i] = private.fromPublic(open[i]);
+    }
+    var scratch: Scratch(private) = undefined;
+    return ladder(Point, endian, &table, scalar, &scratch);
+}
+fn ladder(comptime Point: type, comptime endian: std.builtin.Endian, table: *const [16]PrivatePoint(Point), scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8, scratch: *Scratch(PrivatePoint(Point))) MultiplyError!Point {
+    @setRuntimeSafety(true);
+    const private = PrivatePoint(Point);
     // One owner for the accumulator, selected point, digit and selection mask.
     scratch.* = .{ .q = private.identityElement, .selected = private.identityElement, .digit = 0, .choice = 0 };
     defer std.crypto.secureZero(u8, std.mem.asBytes(scratch));
@@ -34,7 +62,7 @@ fn baseOwned(comptime Point: type, comptime endian: std.builtin.Endian, scalar: 
         scratch.digit = (scalar[byte] >> shift) & 15;
         scratch.selected = private.identityElement;
         inline for (1..16) |i| {
-            const index: u8 = @intCast(i); // safe: the compile-time table indices are 1..15
+            const index: u8 = @intCast(i); // safe: the table indices are 1..15
             scratch.choice = @truncate((@as(usize, scratch.digit ^ index) -% 1) >> 8); // safe: only the equality mask low bit is retained
             scratch.selected.x.cMov(table[i].x, scratch.choice);
             scratch.selected.y.cMov(table[i].y, scratch.choice);

@@ -80,6 +80,11 @@ pub fn Point(comptime Public: type) type {
         pub const identityElement: Self = .{ .x = Field.fromPublic(Public.Fe.zero), .y = Field.fromPublic(Public.Fe.one), .z = Field.fromPublic(Public.Fe.zero) };
         pub const basePoint: Self = .{ .x = Field.fromPublic(Public.basePoint.x), .y = Field.fromPublic(Public.basePoint.y), .z = Field.fromPublic(Public.basePoint.z) };
         const B = Field.fromPublic(Public.B);
+        /// Imports a public point; its coordinates carry no secret.
+        pub fn fromPublic(p: Public) Self {
+            @setRuntimeSafety(true);
+            return .{ .x = Field.fromPublic(p.x), .y = Field.fromPublic(p.y), .z = Field.fromPublic(p.z) };
+        }
         pub fn rejectIdentity(p: Self) error{IdentityElement}!void {
             @setRuntimeSafety(true);
             // Complete formulas have homogeneous identity z=0. Release only invalid-key status.

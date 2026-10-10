@@ -4,7 +4,7 @@ const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
-pub const Group = enum(u16) { x25519 = 29, p256 = 23, p384 = 24, x25519_mlkem768 = 4588 };
+pub const Group = @import("../crypto/Group.zig").Group;
 pub const retry_random = std.crypto.tls.hello_retry_request_sequence;
 pub const Share = struct { group: Group, bytes: []const u8 };
 pub const Options = struct {
@@ -59,7 +59,7 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
     try validate(options);
     if (session.len > 32 or (options.quic and session.len != 0) or shares.len == 0 or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
     for (shares, 0..) |share, i| {
-        if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != clientShareLength(share.group)) return error.InvalidOptions;
+        if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != share.group.clientShareLength()) return error.InvalidOptions;
         for (shares[0..i]) |old| if (old.group == share.group) return error.InvalidOptions;
     }
     var w: Writer = .{ .bytes = out };
@@ -131,22 +131,6 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
 }
-pub fn clientShareLength(group: Group) usize {
-    return switch (group) {
-        .x25519 => 32,
-        .p256 => 65,
-        .p384 => 97,
-        .x25519_mlkem768 => 1216,
-    };
-}
-pub fn serverShareLength(group: Group) usize {
-    return switch (group) {
-        .x25519 => 32,
-        .p256 => 65,
-        .p384 => 97,
-        .x25519_mlkem768 => 1120,
-    };
-}
 pub const ServerHello = struct { suite: Suite, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!ServerHello {
@@ -198,7 +182,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (retry) {
         if (shared) return error.InvalidHello;
     } else {
-        if (!shared or share.len != serverShareLength(selected)) return error.InvalidHello;
+        if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
     return .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie };
 }
