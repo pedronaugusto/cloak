@@ -117,6 +117,8 @@ pub fn ClientPeer(comptime suite: Suite13) type {
         requested_certificate: bool = false,
         chain: std.ArrayList(u8) = .empty,
         certificate_verify_ok: bool = false,
+        /// The scheme of the server's CertificateVerify.
+        certificate_verify_scheme: u16 = 0,
         server_finished_ok: bool = false,
         connected: bool = false,
         received: std.ArrayList(u8) = .empty,
@@ -523,12 +525,14 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const scheme = std.mem.readInt(u16, message[4..6], .big);
             const sig_len = std.mem.readInt(u16, message[6..8], .big);
             const sig = message[8..][0..sig_len];
+            self.certificate_verify_scheme = scheme;
             self.certificate_verify_ok = verifyServer(scheme, sig, content);
             try self.transcript.commit(message);
         }
 
         /// Verifies with the fixture keys, independently of cloak's verifier.
         fn verifyServer(scheme: u16, sig: []const u8, content: []const u8) bool {
+            if (peer_module.rsaPssScheme(scheme)) return peer_module.verifyRsaPss(pki.rsa, scheme, sig, content);
             switch (scheme) {
                 0x0403 => {
                     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;

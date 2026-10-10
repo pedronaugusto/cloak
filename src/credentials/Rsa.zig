@@ -1,16 +1,22 @@
-//! Mathematical validation of complete two-prime RSA input. No signing.
+//! Mathematical validation of complete two-prime RSA input, kept in the CRT form the private
+//! operation of `crypto/rsa.zig` uses.
 const std = @import("std");
 const Entropy = @import("Entropy.zig");
 const Primality = @import("Primality.zig");
 const Der = @import("../wire/Der.zig");
-pub const Error = Der.Error || Primality.CheckError || error{ InvalidKey, EntropyRequired };
+const kernel = @import("../crypto/rsa.zig");
+/// `UnsupportedKey`: a valid key the private operation cannot hold, a factor above 2048 bits.
+pub const Error = Der.Error || Primality.CheckError || error{ InvalidKey, EntropyRequired, UnsupportedKey };
 pub const Options = struct { entropy: ?Entropy = null };
+/// The public modulus and exponent as parsed, for matching a certificate, and the private key
+/// as the CRT operation holds it: n, e, p, q, dp, dq and qinv with their Montgomery constants.
+/// The private exponent d is validated and not kept. The owner erases the whole value.
 pub const Key = struct {
     n: [512]u8 = @splat(0),
     e: [8]u8 = @splat(0),
-    d: [512]u8 = @splat(0),
     size: usize,
     exponent_size: usize,
+    crt: kernel.PrivateKey,
 };
 const Uint = @import("Uint.zig");
 const limb_bits = @bitSizeOf(usize) - 1;
@@ -72,11 +78,12 @@ pub fn parse(encoded: []const u8, options: Options) Error!Key {
     const entropy = options.entropy orelse return error.EntropyRequired;
     try Primality.check(integers[3], entropy);
     try Primality.check(integers[4], entropy);
-    var key: Key = .{ .size = n.len, .exponent_size = e.len };
+    var key: Key = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
     defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
     @memcpy(key.n[0..n.len], n);
     @memcpy(key.e[0..e.len], e);
-    @memcpy(key.d[key.d.len - d.len ..], d);
+    // Validated above; the kernel refuses only shapes it cannot hold, such as unbalanced factors.
+    key.crt.init(n, e, integers[3], integers[4], integers[5], integers[6], integers[7]) catch return error.UnsupportedKey;
     return key;
 }
 fn remainder(x: *const Uint, modulus: *const Uint) Uint {
