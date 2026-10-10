@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials, certificate verification and TLS 1.3 foundations for Zig consumers. The TLS engine is under construction; this package does not yet provide an encrypted stream.
+Work in progress: credentials, certificate verification and a TLS 1.3 client for Zig. The client is complete as a stream, a sans-I/O connection and a QUIC handshake; the server, TLS 1.2, resumption and datagrams are not built yet.
 
 ## Install
 
@@ -51,19 +51,58 @@ The returned receipt owns the selected DER path; its caller calls `deinit()`. Ch
 
 Native system trust uses `NativeVerification` with an empty explicit-anchor list. A finite timeout requires a bounded caller executor before inputs are copied. The executor owns the completion until it runs and releases it, including after abandonment and during shutdown. The driver applies portable floors to the exact OS-selected chain before returning a receipt. See [ownership and integration](docs/design.md).
 
+A TLS client over any `std.Io` reader and writer:
+
+<!-- BEGIN GENERATED zig build docs -- session -->
+```zig
+const std = @import("std");
+const cloak = @import("cloak");
+
+pub fn fetch(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    roots: cloak.Trust.Snapshot,
+    host: []const u8,
+) !void {
+    @setRuntimeSafety(true);
+    var transport_in: [16 * 1024]u8 = undefined;
+    var transport_out: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(io, &transport_in);
+    var writer = stream.writer(io, &transport_out);
+    var session: cloak.tls.Session = undefined;
+    var plain_in: [4096]u8 = undefined;
+    var plain_out: [4096]u8 = undefined;
+    try session.open(gpa, io, &reader.interface, &writer.interface, .{
+        .identity = .{ .dns = host },
+        .trust = .{ .snapshot = roots },
+        .alpn = &.{"http/1.1"},
+    }, &plain_in, &plain_out);
+    defer session.deinit();
+    try session.writer().print("GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
+    try session.writer().flush();
+    var response: [4096]u8 = undefined;
+    const n = try session.reader().readSliceShort(&response);
+    std.mem.doNotOptimizeAway(response[0..n]);
+    try session.finish();
+}
+```
+<!-- END GENERATED zig build docs -- session -->
+
+The same client without I/O is `cloak.tls.Connection`: feed it bytes, write what it holds, and answer its requests for entropy, time, peer verification and signing. `cloak.tls.quic.Handshake` is the record-free form for QUIC. Verification has no default: pass a trust snapshot, a verifier of your own, or `.none` and accept an unauthenticated connection.
+
 ## Design
 
 One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/aegis), Zig's standard library and native platform trust APIs. Credentials, verification and native services import only lower certificate, wire and value layers. The portable core takes explicit time and trust; it performs no network discovery.
 
 ## Scope
 
-Cloak implements credentials and certificate verification, plus private TLS 1.3 record protection, HKDF/Finished, bounded transcripts, strict hello negotiation, full key schedules, directional traffic-secret updates and checked transition foundations. A usable TLS client, stream adapter and record-free QUIC client are still under construction. Resumption, datagrams and offload follow their own phases. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, and a TLS 1.3 client: X25519MLKEM768, X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ALPN, SNI, client certificates, key updates and exporters, as a stream, a sans-I/O connection and a QUIC handshake. It has no server, TLS 1.2, resumption, early data or datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
 
 The build exposes `cloak.certificates` for certificates, keys and trust, and
-`cloak.tls` for TLS. `cloak` retains the existing credential names and exposes
-`certificates` and `tls` namespaces. TLS currently exposes only suite vocabulary;
-record seal/open and transcript mutation stay private. DTLS will be a separate
-module when its datagram implementation is built.
+`cloak.tls` for TLS. `cloak` exposes both as namespaces and keeps the credential
+names at its root. DTLS will be a separate module when its datagram
+implementation is built.
 
 ## Platforms
 

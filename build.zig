@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     }
     const host = b.graph.host;
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,
         .optimize = optimize,
@@ -77,6 +77,10 @@ pub fn build(b: *std.Build) void {
     example_module.addImport("cloak", b.modules.get("cloak").?);
     const example = b.addTest(.{ .name = "cloak-readme-example", .root_module = example_module });
     b.step("check-example", "Execute the documented authentication example").dependOn(&b.addRunArtifact(example).step);
+    const session_module = b.createModule(.{ .root_source_file = b.path("ci/session.zig"), .target = host, .optimize = .safe });
+    session_module.addImport("cloak", b.modules.get("cloak").?);
+    const session_example = b.addTest(.{ .name = "cloak-readme-session", .root_module = session_module });
+    b.step("check-session", "Compile the documented session example against the public surface").dependOn(&b.addRunArtifact(session_example).step);
     preflight.addConsumerCheck(b, .{ .package = "cloak", .modules = &.{ "cloak", "cloak.certificates", "cloak.tls" }, .packages = &.{b.dependency("aegis", .{ .target = target, .optimize = optimize })}, .program = b.path("ci/consumer.zig") });
 }
 
@@ -123,7 +127,12 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const armor = b.createModule(.{ .root_source_file = b.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
     addAegis(b, armor, target, optimize);
     const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch @panic("missing test dependency for benchmarks");
+    // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
+    const harness = b.createModule(.{ .root_source_file = b.path("src/testing.zig"), .target = target, .optimize = optimize });
+    addAegis(b, harness, target, optimize);
+    harness.addImport("cloak.certificates", createCloak(b, target, optimize).import_table.get("cloak.certificates").?);
     return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "harness", .module = harness },
         .{ .name = "cloak", .module = bench_module },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },

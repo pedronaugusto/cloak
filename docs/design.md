@@ -208,3 +208,94 @@ client credentials and a direct Finished after a request fail terminally.
 Independent client/server flight traces cover retry, optional/required client
 authentication, wrong actions, epochs, proofs and record boundaries. These are
 state-kernel tests, not evidence that service tokens or signatures are integrated.
+
+## TLS 1.3 client
+
+`Connection` is a sans-I/O client. Callers feed wire bytes to `receive`, write
+`output` and acknowledge it, answer each `request` through `provide`, and read
+authenticated plaintext from `readable`. It performs no I/O, never reads a clock
+or generator, and has one driver. Output is views over state the connection keeps
+until acknowledged: committed ciphertext is sealed once and a partial write never
+re-seals. The design's event queue (`next`/`ack`) is these views for streams and
+the event type for QUIC, where levels and secrets need an ordered stream.
+
+Owners, bottom to top. `crypto` holds suites, HKDF and key shares (`Exchange`).
+`record` holds `Epoch` and `Protection`, the one sequence and limit owner per
+direction. `handshake` holds the message parsers, the checked state table, the
+transcript, the schedule and `Client`, which consumes whole handshake messages and
+returns outputs through a queue: messages to send, traffic secrets to install, and
+requests for entropy, time, peer verification and signing. `Connection` turns those
+outputs into records and key slots; `quic.Handshake` turns the same outputs into
+per-level events. There is one handshake and no second engine.
+
+A request carries a token naming this connection and request. An answer to another
+token, or to nothing, is refused without progress. A rejected scalar draw
+(`InvalidEntropy`) is public and leaves the request open; every other failed
+answer ends the connection. Verification receipts are checked against the request
+the engine issued, so a receipt for another chain, name, time or policy generation
+cannot authenticate. Possession is proven by the engine itself: it parses the
+leaf of the accepted path, binds the CertificateVerify scheme to that key's type
+and curve, and verifies the signature; `verify = .none` still proves possession
+and reports an unauthenticated connection. Client certificates are signed through a
+request; the engine verifies the answer against the identity's public key before it
+leaves, so a bad signer cannot put a bad CertificateVerify on the wire.
+
+Key shares are fresh per hello and per retry. The default offer is X25519MLKEM768
+plus an independent X25519 share; P-256 and P-384 are obtained through
+HelloRetryRequest. Group 4588 sends the ML-KEM encapsulation key first, and its
+secret is the ML-KEM secret then the X25519 secret. P-256/P-384 agreement runs the
+masked fixed-window walk (`Ecdh`), which reuses credential construction's arithmetic
+with a table built from the public peer point; std's multiplication of a secret
+scalar is not used. X25519 and ML-KEM come from std, with implicit rejection for
+ML-KEM and refusal of an all-zero X25519 secret; their generated code is not yet
+reviewed here.
+
+Hostile input. A record is accepted only with a 0x0303 legacy version; protected
+records authenticate before any plaintext leaves the record buffer, and the first
+failed authentication ends the connection. One compatibility change_cipher_spec is
+ignored, only between messages before the server Finished. Handshake messages are
+bounded before they are buffered. A message that changes keys (ServerHello,
+Finished) must end its record, or in QUIC its level, with nothing after it; QUIC
+refuses a message that straddles levels. Extensions are unique, unsolicited ones
+are refused, and every selection must have been offered. Post-handshake control
+messages (tickets, key updates) are counted between application data and end the
+connection past a bound. A server that answers with an older version is refused with protocol_version, or
+illegal_parameter when its random carries the downgrade sentinel. Each failure sends one alert chosen by the failure class
+and then every call returns `Closed`. Nothing is authenticated, readable or
+exportable after a failure.
+
+Key updates. The write side sends KeyUpdate under the old key and then switches,
+before the record or byte budget can run out; the read side asks the peer to update
+when its own budget runs low. Budgets default to 2^24 records and 2^38 bytes per
+epoch and direction; tests lower them.
+
+Memory. A running handshake holds one scratch block (offered key shares, the
+transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
+record buffer sized to the record being read, a message buffer and the output
+buffer: about 37 KiB at the peak for the default offer. When the connection is
+established the scratch block and flight are freed; `trim` returns the record,
+message and output buffers when nothing is pending, and `Session` calls it before it
+waits to read. What remains for an idle connection is the struct (576 bytes) and one
+heap block of 928 bytes, 1,504 bytes in total. These are heap figures from
+a counting allocator; stack use is not measured here.
+
+`Session` drives a `Connection` over `std.Io` readers and writers. It answers
+requests with the system's secure randomness and calendar clock (or a fixed time),
+the portable verifier over a trust snapshot (or a caller's verifier), and a caller's
+signer. It is used from one task at a time. A transport end without close_notify is
+a truncation unless the caller chose `.allow` for protocols whose framing detects it.
+Per-call deadlines are the transport's own; the session adds none.
+
+`quic.Handshake` takes contiguous CRYPTO bytes per level and yields events: handshake
+data per level, traffic secrets (each once, erased on acknowledgement), the peer's
+transport parameters (provisional until accepted), authentication, and an alert. It
+installs a level's secrets before it yields data at that level. It has no record, no
+ChangeCipherSpec, no close_notify and no KeyUpdate, and it refuses a post-handshake
+CertificateRequest. Transport parameters are opaque bytes to cloak.
+
+Test support lives in `src/testing`: a scripted server peer that speaks real records
+or per-level QUIC messages and can misbehave in named ways, and drivers that run a
+client against it in memory. The peer reuses cloak's HKDF, schedule and record
+protection, which the RFC 8448 vectors pin; its parsing, message assembly and
+signatures are its own. The test PKI is disposable material generated once with
+OpenSSL, recorded in `src/testing/pki/provenance.md`.
