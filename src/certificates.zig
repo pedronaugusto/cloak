@@ -4,6 +4,12 @@ pub const PrivateKey = @import("PrivateKey.zig");
 pub const Identity = @import("Identity.zig");
 pub const ClientAuth = @import("ClientAuth.zig");
 pub const verify = @import("verify.zig");
+/// Strict DER certificate parsing with borrowed public-key metadata.
+pub const certificate = @import("certificate.zig");
+/// Public-key signature verification over parsed certificate keys; no private operations.
+pub const signature = @import("verify/signature.zig");
+/// Ephemeral ECDH on P-256 and P-384 with masked private-scalar arithmetic.
+pub const ecdh = @import("credentials/Ecdh.zig");
 pub const types = @import("types.zig");
 pub const NativeVerification = @import("NativeVerification.zig");
 pub const services = @import("services.zig");
