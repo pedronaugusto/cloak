@@ -7,6 +7,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Fixed
 
 - `tls.Session` checks a snapshot of the system's policy (`Trust.addSystem` on macOS and Windows) with the system's verifier and then the portable one over the path the system chose. It used to hand such a snapshot, which holds no roots, to the portable verifier alone, so no public server verified there.
+- A client given a fully qualified name with its trailing dot (`example.com.`) sends and checks the name without it, as RFC 6066 section 3 writes it; it used to refuse the name with `InvalidOptions`.
 - PEM text before a block is skipped, as RFC 7468 section 5.2 permits: the attributes a PKCS #12 export writes before a key or certificate, and the comments a CA bundle names each root with (curl's bundle, the p11-kit bundles of Fedora and RHEL). Text after the last block is still refused. Reading several blocks no longer loses its place when the text ends in more blank lines than separate two blocks.
 
 - The private TLS transition table requires the requested client certificate response before local Finished and gates supplied credentials on possession proof.

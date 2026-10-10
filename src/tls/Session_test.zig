@@ -46,6 +46,28 @@ test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
     try std.testing.expect(peer.close_notify);
 }
 
+test "C2 session takes a fully qualified name's trailing dot as the same host" {
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    var settings = options(snapshot);
+    settings.identity = .{ .dns = "example.com." };
+    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &write_buffer);
+    defer session.deinit();
+    try std.testing.expect(session.info().peer_authenticated);
+}
+
 test "C2 session treats a bare transport end as truncation unless allowed" {
     const gpa = std.testing.allocator;
     var trust = certificates.Trust.init(gpa);

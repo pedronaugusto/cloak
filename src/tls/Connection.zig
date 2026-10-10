@@ -134,8 +134,14 @@ alert_received: ?Alert = null,
 
 pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connection {
     @setRuntimeSafety(true);
+    // A fully qualified name's trailing dot names the same host; neither the server name
+    // sent (RFC 6066 section 3) nor a certificate's names carry it.
+    const identity: types.Identity = switch (options.identity) {
+        .dns => |name| if (name.len > 1 and name[name.len - 1] == '.') .{ .dns = name[0 .. name.len - 1] } else options.identity,
+        else => options.identity,
+    };
     const sni: []const u8 = switch (options.server_name) {
-        .identity => switch (options.identity) {
+        .identity => switch (identity) {
             .dns => |name| name,
             else => "",
         },
@@ -151,7 +157,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
         },
-        .identity = options.identity,
+        .identity = identity,
         .verify = options.verify,
         .auth = options.auth,
         .limits = options.limits.handshake,
