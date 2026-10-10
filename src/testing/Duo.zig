@@ -184,3 +184,16 @@ pub fn echo(self: *Duo, from: *Connection, to: *Connection, message: []const u8,
     }
     return out[0..got];
 }
+
+/// Runs until the server's first flight is waiting in its output, not yet delivered.
+pub fn handshakeUntilServerFlight(self: *Duo) !void {
+    try self.serve(&self.client);
+    _ = try self.move(&self.client, &self.server);
+    try self.serve(&self.server);
+    if (self.server.output().len == 0) return error.Stalled;
+}
+
+/// Answers whatever the client asks for now.
+pub fn serveClient(self: *Duo) !void {
+    try self.serve(&self.client);
+}
