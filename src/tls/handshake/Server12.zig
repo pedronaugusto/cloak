@@ -50,6 +50,11 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
         .rsa => .rsa,
         .ec, .ed25519 => .ecdsa,
     };
+    // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
+    switch (leaf.public_key) {
+        .ec => |ec| if (!hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) return error.NoSharedSuite,
+        else => {},
+    }
     self.suite12 = for (self.options.suites) |suite| {
         const candidate = suite.tls12() orelse continue;
         if (candidate.authentication() == wanted and hello.offersSuite(@backingInt(candidate))) break candidate;
@@ -167,7 +172,9 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     var probe: [Messages12.max_certificates][]const u8 = undefined;
     const count = try Messages12.certificate(msg, limits.certificates, limits.chain_bytes, &probe);
     if (count == 0) {
-        if (self.options.client_auth == .required) return error.CertificateRequired;
+        // TLS 1.2 has no certificate_required alert: a missing required certificate is a
+        // handshake_failure (RFC 5246 section 7.4.6).
+        if (self.options.client_auth == .required) return error.NoClientCertificate;
         try self.state.advance(.empty_certificate, epoch, .parsed, boundary);
         try scratch.transcripts.commit(msg);
         return;

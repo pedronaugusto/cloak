@@ -625,9 +625,10 @@ fn checkHeader(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
     const kind = self.head[0];
     const length = std.mem.readInt(u16, self.head[3..5], .big);
-    // A client's first records may carry the older legacy version (RFC 8446 section 5.1).
-    const first_flight = self.hs.role() == .server and self.rx == null and kind == 22;
-    const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (first_flight and std.mem.eql(u8, self.head[1..3], &.{ 3, 1 }));
+    // Before any key the record version is legacy and only TLS-shaped (RFC 8446 section 5.1):
+    // a ClientHello, or a refusal, may come as TLS 1.0 to 1.2. Protected records say TLS 1.2.
+    const plaintext = self.rx == null and kind != 23;
+    const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (plaintext and self.head[1] == 3 and self.head[2] >= 1 and self.head[2] <= 2);
     if (!version_ok) return error.UnexpectedRecord;
     // Under TLS 1.2 keys, alerts and handshake records are encrypted like application data.
     const sealed12 = if (self.rx) |*p| p.tls12() else false;

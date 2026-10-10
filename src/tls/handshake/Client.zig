@@ -120,7 +120,7 @@ pub fn alertFor(err: anyerror) Alert {
         error.MissingExtension => .missing_extension,
         error.HybridRequired => .insufficient_security,
         error.UnsupportedVersion => .protocol_version,
-        error.NoExtendedMasterSecret, error.NoSecureRenegotiation => .handshake_failure,
+        error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate => .handshake_failure,
         error.Renegotiation => .no_renegotiation,
         error.InappropriateFallback => .inappropriate_fallback,
         error.Downgrade => .illegal_parameter,

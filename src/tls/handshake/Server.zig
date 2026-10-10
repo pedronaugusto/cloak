@@ -566,7 +566,8 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
 
 /// Whether this server speaks TLS 1.3.
 pub fn allows13(self: *const Server) bool {
-    return self.options.max_version == .tls13;
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .quic = self.options.quic };
+    return hello.allows13();
 }
 
 /// Whether this server takes TLS 1.2 clients.

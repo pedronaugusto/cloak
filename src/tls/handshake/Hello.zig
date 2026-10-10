@@ -37,8 +37,11 @@ pub const Options = struct {
     }
 
     /// Whether TLS 1.3 is offered or accepted.
+    /// Whether TLS 1.3 is offered or accepted: allowed, and one of its suites listed.
     pub fn allows13(options: Options) bool {
-        return options.max_version == .tls13;
+        if (options.max_version != .tls13) return false;
+        for (options.suites) |suite| if (suite.version() == .tls13) return true;
+        return false;
     }
 
     pub fn offers13(options: Options, suite: Suite13) bool {
@@ -77,16 +80,10 @@ pub fn validate(options: Options) ValidateError!void {
     for (options.suites, 0..) |suite, i| for (options.suites[0..i]) |old| {
         if (old == suite) return error.InvalidOptions;
     };
-    // Each version offered needs a suite of its own.
-    var count13: usize = 0;
-    var count12: usize = 0;
-    for (options.suites) |suite| switch (suite.version()) {
-        .tls13 => count13 += 1,
-        .tls12 => count12 += 1,
-    };
     if (@backingInt(options.min_version) > @backingInt(options.max_version)) return error.InvalidOptions;
-    if (options.allows13() and count13 == 0) return error.InvalidOptions;
-    if (!options.allows13() and (!options.allows12() or count12 == 0)) return error.InvalidOptions;
+    // Some version must be left, and QUIC and a hybrid-only policy need TLS 1.3.
+    if (!options.allows13() and !options.allows12()) return error.InvalidOptions;
+    if ((options.quic or options.require_hybrid) and !options.allows13()) return error.InvalidOptions;
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
