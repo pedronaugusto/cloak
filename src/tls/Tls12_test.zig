@@ -16,8 +16,11 @@ test "C4 TLS 1.2 completes for every ECDSA suite, group and certificate key, bot
     for (ecdsa_suites) |suite| {
         for ([_]Duo.Cert{ .p256, .p384, .ed25519 }) |cert| {
             for ([_]@import("crypto/Group.zig").Group{ .x25519, .p256, .p384 }) |group| {
-                // A TLS 1.2-only client against the default server.
-                const duo = try connect(.{ .cert = cert, .client_suites = &.{suite}, .client_max = .tls12, .client_groups = &.{group} });
+                // A TLS 1.2-only client against a server choosing `group`; the client also lists the
+                // certificate's curve, as RFC 8422 requires for an ECDSA certificate.
+                const curve: @import("crypto/Group.zig").Group = if (cert == .p384) .p384 else .p256;
+                const offered = [_]@import("crypto/Group.zig").Group{ group, curve };
+                const duo = try connect(.{ .cert = cert, .client_suites = &.{suite}, .client_max = .tls12, .client_groups = if (group == curve) offered[0..1] else &offered, .server_groups = &.{group} });
                 defer duo.deinit();
                 const info = duo.client.info().?;
                 try std.testing.expectEqual(.tls12, info.version);
@@ -62,7 +65,13 @@ test "C4 TLS 1.2 client certificates: required, optional and missing" {
     const optional = try connect(.{ .client_max = .tls12, .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .client_auth = .optional });
     defer optional.deinit();
     try std.testing.expect(!optional.server.info().?.peer_authenticated);
-    try std.testing.expectError(error.CertificateRequired, connect(.{ .client_max = .tls12, .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .client_auth = .required }));
+    // TLS 1.2 has no certificate_required alert: handshake_failure.
+    {
+        const duo = try Duo.init(std.testing.allocator, .{ .client_max = .tls12, .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .client_auth = .required });
+        defer duo.deinit();
+        try std.testing.expectError(error.NoClientCertificate, duo.handshake());
+        try std.testing.expectEqual(.handshake_failure, duo.server.diagnostics().alert_sent.?);
+    }
 }
 
 test "C4 a client of both versions takes TLS 1.2 from a TLS 1.2 server, and TLS 1.3 otherwise" {
@@ -126,4 +135,21 @@ test "F46 catalogue_ccs_injection_all_reachable_states" {
     try duo.handshakeUntilServerFlight();
     try refused(duo.server.receive("\x14\x03\x03\x00\x01\x01"));
     try std.testing.expectEqual(.unexpected_message, duo.server.diagnostics().alert_sent.?);
+}
+
+test "C4 an ECDSA certificate on a curve the client does not list is not served (RFC 8422)" {
+    try std.testing.expectError(error.NoSharedSuite, connect(.{ .cert = .p256, .client_max = .tls12, .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .client_groups = &.{ .x25519, .p384 } }));
+    // A server of only TLS 1.2 suites needs no max_version: the version follows from the suites.
+    const duo = try connect(.{ .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256} });
+    defer duo.deinit();
+    try std.testing.expectEqual(.tls12, duo.client.info().?.version);
+}
+
+test "C4 a refusal in a TLS 1.0 record reaches the client as the peer's alert" {
+    const duo = try Duo.init(std.testing.allocator, .{ .client_min = .tls13, .client_suites = Suite.tls13_only });
+    defer duo.deinit();
+    try duo.serveClient();
+    try std.testing.expect(duo.client.output().len != 0);
+    try std.testing.expectError(error.PeerAlert, duo.client.receive("\x15\x03\x01\x00\x02\x02\x46"));
+    try std.testing.expectEqual(.protocol_version, duo.client.diagnostics().alert_received.?);
 }

@@ -33,6 +33,7 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     UnexpectedCookie,
     Renegotiation,
     InappropriateFallback,
+    NoClientCertificate,
 } || ClientHello.ParseError;
 
 pub const ExportError = Schedule.ExportError || Prf.ExportError;
