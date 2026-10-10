@@ -3,6 +3,7 @@
 //! recorded, and requests are answered from fixture keys. The scripted-peer tests pin each role
 //! to independent code; this checks that the two roles agree with each other.
 const std = @import("std");
+const SuiteAll = @import("../tls/crypto/Suite.zig").Suite;
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Handshake = @import("../tls/quic/Handshake.zig");
@@ -107,7 +108,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .verify = .{ .full = .{ .trust_generation = self.snapshot.generation() } },
                 .parameters = options.client_parameters,
                 .alpn = options.client_alpn,
-                .suites = &.{suite},
+                .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.client_groups,
                 .auth = self.client_auth,
                 .generation = .fromRaw(9),
@@ -117,7 +118,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .credentials = &creds,
                 .parameters = options.server_parameters,
                 .alpn = options.server_alpn,
-                .suites = &.{suite},
+                .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.server_groups,
                 .client_auth = if (options.mutual or options.mutual_without_identity) .required else .none,
                 .client_verify = if (options.mutual or options.mutual_without_identity) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,

@@ -5,12 +5,17 @@ const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 
 pub const Type = enum(u8) {
+    hello_request = 0,
+    client_hello = 1,
     server_hello = 2,
     new_session_ticket = 4,
     encrypted_extensions = 8,
     certificate = 11,
+    server_key_exchange = 12,
     certificate_request = 13,
+    server_hello_done = 14,
     certificate_verify = 15,
+    client_key_exchange = 16,
     finished = 20,
     key_update = 24,
     _,
@@ -162,12 +167,12 @@ pub fn keyUpdate(message: []const u8) ParseError!bool {
 
 pub const BuildError = Writer.WriteError;
 
-fn header(w: *Writer, kind: Type) BuildError!void {
+pub fn header(w: *Writer, kind: Type) BuildError!void {
     try w.int(u8, @backingInt(kind));
     try w.int(u24, 0);
 }
 
-fn seal(w: *Writer) []u8 {
+pub fn seal(w: *Writer) []u8 {
     @setRuntimeSafety(true);
     // safe: every builder bounds its body below 2^24 before this length is written.
     std.mem.writeInt(u24, w.bytes[1..4], @intCast(w.pos - 4), .big);

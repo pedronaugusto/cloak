@@ -56,6 +56,28 @@ pub fn retry(self: *Self, hrr: []const u8) CommitError!void {
     }
 }
 
+/// Digest of everything committed so far under the hash of `len` bytes (32 or 48). TLS 1.2
+/// keeps both hashes running: its PRF hash and a CertificateVerify's hash can differ.
+pub fn digestOf(self: *const Self, out: *[max_digest]u8, len: usize) []const u8 {
+    @setRuntimeSafety(true);
+    switch (self.state) {
+        .pending => |both| {
+            if (len == 48) {
+                out.* = both.sha384.digest();
+                return out[0..48];
+            }
+            std.debug.assert(len == 32);
+            out[0..32].* = both.sha256.digest();
+            return out[0..32];
+        },
+        else => {
+            const d = self.digest(out);
+            std.debug.assert(d.len == len);
+            return d;
+        },
+    }
+}
+
 /// Digest of everything committed so far; only meaningful once the hash is selected.
 pub fn digest(self: *const Self, out: *[max_digest]u8) []const u8 {
     @setRuntimeSafety(true);

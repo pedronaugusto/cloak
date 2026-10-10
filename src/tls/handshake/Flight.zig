@@ -4,7 +4,8 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const State = @import("State.zig");
-const Suite13 = @import("../crypto/Suite.zig").Suite13;
+const suites = @import("../crypto/Suite.zig");
+const Suite13 = suites.Suite13;
 const Transcripts = @import("Transcripts.zig");
 
 pub const Epoch = State.Epoch;
@@ -17,10 +18,74 @@ pub const Traffic = struct {
     len: u8,
 };
 
+/// TLS 1.2 record keys from the key block: the cipher's key and its fixed IV. The receiver owns
+/// and erases them.
+pub const Keys12 = struct {
+    cipher: suites.Cipher,
+    key: aegis.Secret([32]u8),
+    iv: aegis.Secret([12]u8),
+
+    pub fn keyBytes(self: *const Keys12) []const u8 {
+        return self.key.expose()[0..keyLength(self.cipher)];
+    }
+
+    pub fn ivBytes(self: *const Keys12) []const u8 {
+        return self.iv.expose()[0..self.cipher.fixedIvLength12()];
+    }
+
+    pub fn keyLength(cipher: suites.Cipher) usize {
+        return if (cipher == .aes_128_gcm) 16 else 32;
+    }
+
+    pub fn deinit(self: *Keys12) void {
+        self.key.deinit();
+        self.iv.deinit();
+    }
+};
+
+/// What a TLS 1.2 connection keeps beyond its handshake scratch: the extended master secret
+/// and both randoms (for the key block and the exporter), and the record keys that wait for a
+/// ChangeCipherSpec. Allocated only when TLS 1.2 is negotiated; erased when destroyed.
+pub const Secrets12 = struct {
+    master: aegis.Secret([48]u8) = .init(@splat(0)),
+    /// client_random || server_random.
+    randoms: [64]u8 = @splat(0),
+    /// The peer's write keys, installed at its ChangeCipherSpec.
+    read: ?Keys12 = null,
+    /// The server's own write keys, installed when it sends its ChangeCipherSpec.
+    write: ?Keys12 = null,
+
+    pub fn create(gpa: std.mem.Allocator) error{OutOfMemory}!*Secrets12 {
+        const secrets = try gpa.create(Secrets12);
+        secrets.* = .{};
+        return secrets;
+    }
+
+    pub fn clientRandom(self: *const Secrets12) *const [32]u8 {
+        return self.randoms[0..32];
+    }
+
+    pub fn serverRandom(self: *const Secrets12) *const [32]u8 {
+        return self.randoms[32..64];
+    }
+
+    pub fn destroy(self: *Secrets12, gpa: std.mem.Allocator) void {
+        self.master.deinit();
+        if (self.read) |*keys| keys.deinit();
+        if (self.write) |*keys| keys.deinit();
+        std.crypto.secureZero(u8, std.mem.asBytes(self));
+        gpa.destroy(self);
+    }
+};
+
 pub const Emit = union(enum) {
     /// A complete handshake message at `start` in the flight buffer.
     message: struct { epoch: Epoch, start: u32, len: u32 },
     secret: struct { direction: Direction, epoch: Epoch, traffic: Traffic },
+    /// TLS 1.2: install these keys for `direction`; they protect the application epoch.
+    keys12: struct { direction: Direction, keys: Keys12 },
+    /// TLS 1.2: send a ChangeCipherSpec record now, under the current write state.
+    change_cipher_spec,
     /// Send one compatibility change_cipher_spec record now.
     compat_ccs,
     /// A peer KeyUpdate: update the read keys, and answer with an update if asked.
@@ -34,6 +99,7 @@ pub const Emit = union(enum) {
 pub fn eraseEmit(emit: *Emit) void {
     switch (emit.*) {
         .secret => |*s| s.traffic.secret.deinit(),
+        .keys12 => |*k| k.keys.deinit(),
         else => {},
     }
 }

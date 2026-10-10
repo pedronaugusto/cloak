@@ -12,9 +12,12 @@ const Services = @import("handshake/Services.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
 const Suite13 = @import("crypto/Suite.zig").Suite13;
+const Suite = @import("crypto/Suite.zig").Suite;
+const Version = @import("crypto/Suite.zig").Version;
 const Protection = @import("record/Protection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
+const Flight = @import("handshake/Flight.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -48,7 +51,12 @@ pub const ClientOptions = struct {
     /// The peer-verification policy. Required: there is no implicit default.
     verify: Verify,
     server_name: ServerName = .identity,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// Suites of both versions in preference order; the version follows from the suite.
+    suites: []const Suite = Suite.default,
+    /// The lowest and highest versions. `min_version = .tls13` refuses TLS 1.2 peers;
+    /// `max_version = .tls12` speaks only TLS 1.2.
+    min_version: Version = .tls12,
+    max_version: Version = .tls13,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
@@ -94,8 +102,9 @@ pub const FinishError = SendError;
 
 const max_content = 1 << 14;
 const max_record = 5 + max_content + 256;
-/// Header, inner content type and AEAD tag around a plaintext fragment.
-const record_overhead = 5 + 1 + 16;
+/// The most a record adds around a plaintext fragment: header, TLS 1.3 inner content type or
+/// TLS 1.2 explicit nonce, and AEAD tag.
+const record_overhead = Protection.max_overhead;
 const Connection = @This();
 
 gpa: std.mem.Allocator,
@@ -145,6 +154,8 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
     const hs = try Client.init(gpa, .{
         .hello = .{
             .suites = options.suites,
+            .min_version = options.min_version,
+            .max_version = options.max_version,
             .groups = options.groups,
             .sni = sni,
             .alpn = options.alpn,
@@ -166,7 +177,12 @@ pub const ServerOptions = struct {
     /// Chains the server can present, with the names each answers for. At least one.
     credentials: []const Server.Credential,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// Suites of both versions in preference order; the version follows from the suite.
+    suites: []const Suite = Suite.default,
+    /// The lowest and highest versions. `min_version = .tls13` refuses TLS 1.2 peers;
+    /// `max_version = .tls12` speaks only TLS 1.2.
+    min_version: Version = .tls12,
+    max_version: Version = .tls13,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     /// Application protocols in the server's order of preference.
     alpn: []const []const u8 = &.{},
@@ -185,6 +201,8 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
     @setRuntimeSafety(true);
     const hs = try Server.init(gpa, .{
         .suites = options.suites,
+        .min_version = options.min_version,
+        .max_version = options.max_version,
         .groups = options.groups,
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
@@ -392,13 +410,35 @@ fn install(self: *Connection, s: anytype) Error!void {
     }
 }
 
+/// TLS 1.2 record keys for one direction; they protect the application epoch.
+fn install12(self: *Connection, direction: Flight.Direction, keys_in: Flight.Keys12) Error!void {
+    @setRuntimeSafety(true);
+    var keys = keys_in;
+    defer keys.deinit();
+    var protection = try Protection.init12(keys.cipher, keys.keyBytes(), keys.ivBytes(), .{ .records = self.limits.records, .bytes = self.limits.bytes });
+    errdefer protection.deinit();
+    switch (direction) {
+        .read => {
+            if (self.rx) |*old| old.deinit();
+            self.rx = protection;
+            self.rx_epoch = .application;
+        },
+        .write => {
+            if (self.tx) |*old| old.deinit();
+            self.tx = protection;
+            self.tx_epoch = .application;
+        },
+    }
+}
+
 /// Moves everything the handshake queued onto the wire and into the key slots, in order.
 fn drain(self: *Connection) Error!void {
     @setRuntimeSafety(true);
     while (self.hs.pop()) |emit| switch (emit) {
         .message => |m| try self.sealMessage(m.epoch, self.hs.flightBytes(m.start, m.len)),
         .secret => |s| try self.install(s),
-        .compat_ccs => try self.sealCompatCcs(),
+        .compat_ccs, .change_cipher_spec => try self.sealCompatCcs(),
+        .keys12 => |k| try self.install12(k.direction, k.keys),
         .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
         .ticket => try self.onControl(),
         .complete => {
@@ -425,6 +465,8 @@ fn onPeerKeyUpdate(self: *Connection, request_peer: bool) Error!void {
 /// KeyUpdate under the old write key, then the next write secret (RFC 8446 section 4.6.3).
 fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
+    // TLS 1.2 has no key update; its connection closes before the record or byte cap instead.
+    if (self.tx.?.tls12()) return error.NoKeyUpdate;
     var message_buf: [5]u8 = undefined;
     const message = try Messages.buildKeyUpdate(&message_buf, request_peer);
     const dst = try self.outbox.tail(self.gpa, message.len + record_overhead, self.limits.output + max_record);
@@ -437,7 +479,10 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
 fn budgetWrite(self: *Connection) Error!void {
     @setRuntimeSafety(true);
     const left = self.tx.?.remaining();
-    if (left.records < 4 or left.bytes < 2 * max_content) try self.sendKeyUpdate(false);
+    if (left.records < 4 or left.bytes < 2 * max_content) {
+        if (self.tx.?.tls12()) return error.RecordLimit;
+        try self.sendKeyUpdate(false);
+    }
 }
 
 /// Accepts the longest prefix of `plaintext` that fits one record; returns its length. Zero
@@ -585,14 +630,28 @@ fn checkHeader(self: *Connection) ReceiveError!void {
     const first_flight = self.hs.role() == .server and self.rx == null and kind == 22;
     const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (first_flight and std.mem.eql(u8, self.head[1..3], &.{ 3, 1 }));
     if (!version_ok) return error.UnexpectedRecord;
+    // Under TLS 1.2 keys, alerts and handshake records are encrypted like application data.
+    const sealed12 = if (self.rx) |*p| p.tls12() else false;
     switch (kind) {
-        20, 21, 22 => if (length == 0 or length > max_content) return error.RecordOverflow,
+        20 => if (length == 0 or length > max_content) return error.RecordOverflow,
+        21, 22 => if (sealed12) {
+            if (length > max_content + 256) return error.RecordOverflow;
+            if (length < 16) return error.BadRecord;
+        } else if (length == 0 or length > max_content) return error.RecordOverflow,
         23 => {
             if (length > max_content + 256) return error.RecordOverflow;
-            if (length < 17) return error.BadRecord;
+            // A TLS 1.3 record holds at least its content type and tag; a TLS 1.2 one its tag.
+            if (length < @as(u16, if (sealed12) 16 else 17)) return error.BadRecord;
         },
         else => return error.UnexpectedRecord,
     }
+}
+
+/// Where opened plaintext starts in the record buffer: after the header, and after a TLS 1.2
+/// explicit nonce.
+fn offsetOf(self: *const Connection, plain: []const u8) usize {
+    // safe: the plaintext is a slice of the record buffer, so its address is not below the buffer's.
+    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.ptr);
 }
 
 fn openRecord(self: *Connection) Error!void {
@@ -600,6 +659,15 @@ fn openRecord(self: *Connection) Error!void {
     const wire = self.record[0..self.record_have];
     switch (wire[0]) {
         20 => {
+            if (self.hs.version() == .tls12) {
+                // TLS 1.2: the one ChangeCipherSpec, plaintext, between messages, where the state
+                // table expects it; anywhere else it is an injection (CVE-2014-0224).
+                if (wire.len != 6 or wire[5] != 1 or self.rx != null or self.message_total != 0 or self.header_have != 0) return error.UnexpectedRecord;
+                self.record_have = 0;
+                try self.hs.receiveCcs();
+                try self.drain();
+                return;
+            }
             // A single compatibility change_cipher_spec, only before the peer's Finished and
             // only between messages, is ignored (RFC 8446 appendix D.4).
             const allowed = self.hs.compat() and !self.seen_ccs and self.phase_now == .handshaking and
@@ -609,7 +677,14 @@ fn openRecord(self: *Connection) Error!void {
             self.record_have = 0;
         },
         21, 22 => {
-            if (self.rx != null) return error.UnexpectedRecord;
+            if (self.rx) |*protection| {
+                if (!protection.tls12()) return error.UnexpectedRecord;
+                const plain = try protection.open(wire, self.record[5..]);
+                self.plain_kind = plain.content;
+                self.plain_pos = self.offsetOf(plain.bytes);
+                self.plain_end = self.plain_pos + plain.bytes.len;
+                return;
+            }
             self.plain_kind = if (wire[0] == 21) .alert else .handshake;
             self.plain_pos = 5;
             self.plain_end = wire.len;
@@ -622,8 +697,8 @@ fn openRecord(self: *Connection) Error!void {
                 self.control_run = 0;
             }
             self.plain_kind = plain.content;
-            self.plain_pos = 5;
-            self.plain_end = 5 + plain.bytes.len;
+            self.plain_pos = self.offsetOf(plain.bytes);
+            self.plain_end = self.plain_pos + plain.bytes.len;
             if (plain.content == .application and plain.bytes.len == 0) self.clearRecord();
             try self.askForUpdate();
         },
@@ -633,7 +708,7 @@ fn openRecord(self: *Connection) Error!void {
 /// Requests the peer's next write keys before this read epoch runs out.
 fn askForUpdate(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    if (self.rx_asked_update or self.phase_now != .connected or self.write_done) return;
+    if (self.rx_asked_update or self.phase_now != .connected or self.write_done or self.rx.?.tls12()) return;
     const left = self.rx.?.remaining();
     if (left.records < 1024 or left.bytes < 64 * max_content) {
         self.rx_asked_update = true;

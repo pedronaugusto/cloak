@@ -20,6 +20,7 @@ pub const Alert = enum(u8) {
     internal_error = 80,
     inappropriate_fallback = 86,
     user_canceled = 90,
+    no_renegotiation = 100,
     missing_extension = 109,
     unsupported_extension = 110,
     unrecognized_name = 112,

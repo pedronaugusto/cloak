@@ -2,6 +2,7 @@
 //! request the way a real driver would: deterministic entropy, a fixed clock, the portable
 //! verifier over a snapshot of the test root, and signatures from the fixture client keys.
 const std = @import("std");
+const SuiteAll = @import("../tls/crypto/Suite.zig").Suite;
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Connection = @import("../tls/Connection.zig");
@@ -28,7 +29,7 @@ pub const Options = struct {
     limits: Connection.Limits = .{},
     compat: bool = true,
     /// Suites the client offers; the peer always selects the pair's suite.
-    offer: ?[]const Suite13 = null,
+    offer: ?[]const SuiteAll = null,
     trusted_root: ?[]const u8 = null,
     key_log: ?Connection.KeyLog = null,
     /// Leave signing requests open so a test can answer them itself.
@@ -77,7 +78,7 @@ pub fn Pair(comptime suite: Suite13) type {
             self.conn = try Connection.client(options.client_gpa orelse gpa, .{
                 .identity = options.identity,
                 .verify = if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins } },
-                .suites = options.offer orelse &.{suite},
+                .suites = options.offer orelse &.{comptime SuiteAll.from13(suite)},
                 .groups = options.groups,
                 .alpn = options.alpn,
                 .require_alpn = options.require_alpn,

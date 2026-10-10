@@ -10,6 +10,8 @@ const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
 const Suite13 = suites.Suite13;
+const Suite = suites.Suite;
+const Version = suites.Version;
 const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -22,6 +24,9 @@ const Possession = @import("Possession.zig");
 const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
+const Prf = @import("../crypto/Prf.zig");
+const Messages12 = @import("Messages12.zig");
+const Server12 = @import("Server12.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Emit = Flight.Emit;
@@ -42,8 +47,11 @@ pub const Credential = struct {
 };
 
 pub const Options = struct {
-    /// Suites in the server's order of preference.
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// Suites of both versions in the server's order of preference.
+    suites: []const Suite = Suite.default,
+    /// The lowest and highest versions accepted; TLS 1.3 is preferred whenever the client offers it.
+    min_version: Version = .tls12,
+    max_version: Version = .tls13,
     /// Groups in the server's order of preference.
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     /// Application protocols in the server's order of preference. When set and the client offers
@@ -109,6 +117,12 @@ answered: bool = false,
 ccs_sent: bool = false,
 app_read: ?Traffic = null,
 server_name_copy: []const u8 = &.{},
+// TLS 1.2.
+version: suites.Version = .tls13,
+suite12: ?suites.Suite12 = null,
+/// TLS 1.2 secrets that outlive the handshake (the exporter needs them), allocated only for a
+/// TLS 1.2 connection.
+tls12: ?*Flight.Secrets12 = null,
 
 const Scratch = struct {
     flight: Flight = .{},
@@ -134,6 +148,10 @@ const Scratch = struct {
     schemes_len: u16 = 0,
     /// The server flight is built; only the CertificateVerify signature is missing.
     signing: bool = false,
+    // TLS 1.2: the server's ECDHE share and the ServerKeyExchange content it signs.
+    share12: ?Exchange.Share = null,
+    params12: [Messages12.max_signed]u8 = undefined,
+    params12_len: u8 = 0,
 };
 
 fn Keyed(comptime suite: Suite13) type {
@@ -151,7 +169,7 @@ const Keys = union(Suite13) {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
-    try Hello.validate(.{ .suites = options.suites, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.quic, .require_hybrid = options.require_hybrid, .quic = options.quic, .parameters = options.parameters });
+    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.quic, .require_hybrid = options.require_hybrid, .quic = options.quic, .parameters = options.parameters });
     if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
     for (options.credentials) |credential| for (credential.names) |name| {
         if (name.len == 0 or name.len > 253) return error.InvalidOptions;
@@ -192,6 +210,8 @@ pub fn wipe(self: *Server) void {
     self.post = null;
     if (self.app_read) |*traffic| traffic.secret.deinit();
     self.app_read = null;
+    if (self.tls12) |secrets| secrets.destroy(self.gpa);
+    self.tls12 = null;
     if (self.keys) |*keys| switch (keys.*) {
         inline else => |*k| {
             k.schedule.deinit();
@@ -225,10 +245,21 @@ fn startScratch(self: *Server) std.mem.Allocator.Error!*Scratch {
 fn releaseScratch(self: *Server) void {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse return;
+    if (scratch.share12) |*share| share.deinit();
+    scratch.share12 = null;
     scratch.flight.deinit(self.gpa);
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
+}
+
+/// A ChangeCipherSpec record arrived; only TLS 1.2 expects one, once, before the client's Finished.
+pub fn receiveCcs(self: *Server) Client.Error!void {
+    @setRuntimeSafety(true);
+    if (self.state.phase == .failed) return error.Closed;
+    if (self.version != .tls12) return error.UnexpectedMessage;
+    errdefer self.state.fail();
+    return Server12.onCcs(self);
 }
 
 pub fn compat(self: *const Server) bool {
@@ -252,6 +283,7 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
         else => return error.UnexpectedService,
     };
     if (entropy.len != expected) return error.InvalidEntropy;
+    if (self.version == .tls12) return Server12.onEntropy(self, entropy);
     const group = self.group.?;
     const exchange_end = 32 + Exchange.respondEntropyLength(group);
     var response = Exchange.respond(group, scratch.share[0..scratch.share_len], entropy[32..exchange_end]) catch |err| return switch (err) {
@@ -297,7 +329,7 @@ pub fn provideVerification(self: *Server, token: types.Token, receipt: *const ty
     @setRuntimeSafety(true);
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
-    try self.state.advance(.verify_chain, .handshake, .chain, true);
+    try self.state.advance(.verify_chain, if (self.version == .tls12) .initial else .handshake, .chain, true);
     self.authenticated = true;
     self.need_now = .none;
 }
@@ -310,6 +342,7 @@ pub fn rejectVerification(self: *Server) void {
 pub fn signRequest(self: *const Server) SignRequest {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
+    if (self.version == .tls12) return .{ .scheme = self.scheme, .content = scratch.params12[0..scratch.params12_len] };
     return .{ .scheme = self.scheme, .content = scratch.sign_content[0..scratch.sign_content_len] };
 }
 
@@ -317,6 +350,7 @@ pub fn signRequest(self: *const Server) SignRequest {
 pub fn provideSignature(self: *Server, signature: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
     if (self.need_now != .sign) return error.UnexpectedService;
+    if (self.version == .tls12) return Server12.onSignature(self, signature);
     const leaf = self.options.credentials[self.credential].identity.chain()[0];
     Possession.verify(@backingInt(self.scheme), &.{self.scheme}, leaf, self.signRequest().content, signature) catch return error.BadSignature;
     try self.sendCertificateVerify(signature);
@@ -335,7 +369,7 @@ fn sendCertificateVerify(self: *Server, signature: []const u8) Client.Error!void
 
 /// The fresh noise the chosen credential's signature draws with the key exchange's entropy; zero
 /// when its key is held elsewhere or signs without noise.
-fn signNoiseLength(self: *const Server) usize {
+pub fn signNoiseLength(self: *const Server) usize {
     return self.options.credentials[self.credential].identity.noiseLength() orelse 0;
 }
 
@@ -372,7 +406,7 @@ pub fn recycle(self: *Server) void {
     if (self.scratch) |scratch| scratch.flight.recycle();
 }
 
-fn push(self: *Server, emit: Emit) Client.Error!void {
+pub fn push(self: *Server, emit: Emit) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
         if (self.post != null) return error.QueueFull;
@@ -382,11 +416,11 @@ fn push(self: *Server, emit: Emit) Client.Error!void {
     try scratch.flight.push(emit);
 }
 
-fn reserve(self: *Server, want: usize) Client.Error![]u8 {
+pub fn reserve(self: *Server, want: usize) Client.Error![]u8 {
     return self.scratch.?.flight.reserve(self.gpa, want, self.options.limits.handshake);
 }
 
-fn queueMessage(self: *Server, epoch: Epoch, wire: []const u8) Client.Error!void {
+pub fn queueMessage(self: *Server, epoch: Epoch, wire: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
     try self.scratch.?.transcripts.commit(wire);
     try self.scratch.?.flight.queueMessage(epoch, wire.len);
@@ -408,7 +442,7 @@ fn makeTraffic(self: *const Server, suite: Suite13, len: usize, secret: []const 
     return .{ .suite = suite, .secret = holder, .len = @intCast(len) };
 }
 
-fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
+pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
     @setRuntimeSafety(true);
     const sink = self.options.key_log orelse return;
     const scratch = self.scratch orelse return;
@@ -446,8 +480,9 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
     errdefer self.state.fail();
     if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
     const parsed = try Messages.body(bytes_in);
+    if (self.version == .tls12) return Server12.receive(self, parsed.kind, bytes_in, epoch, boundary);
     switch (parsed.kind) {
-        @as(Messages.Type, @fromBackingInt(@intCast(1))) => try self.onClientHello(bytes_in, epoch, boundary),
+        .client_hello => try self.onClientHello(bytes_in, epoch, boundary),
         .certificate => try self.onCertificate(bytes_in, epoch, boundary),
         .certificate_verify => try self.onCertificateVerify(bytes_in, epoch, boundary),
         .finished => try self.onFinished(bytes_in, epoch, boundary),
@@ -456,7 +491,7 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
     }
 }
 
-fn credentialFor(self: *const Server, name: []const u8) ?usize {
+pub fn credentialFor(self: *const Server, name: []const u8) ?usize {
     @setRuntimeSafety(true);
     for (self.options.credentials, 0..) |credential, i| {
         if (credential.names.len == 0) return i;
@@ -483,8 +518,13 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     // ClientHello the state table accepts; a connection that never speaks holds none.
     const scratch = self.scratch orelse try self.startScratch();
     const hello = try ClientHello.parse(msg);
-    if (!hello.offersVersion(0x0304)) return error.UnsupportedVersion;
     const second = self.retried;
+    if (!hello.offersVersion(0x0304) or !self.allows13()) {
+        // A client without TLS 1.3 (or a server without it): TLS 1.2 when both sides allow it,
+        // never after a retry.
+        if (second or !self.allows12() or !hello.offers12()) return error.UnsupportedVersion;
+        return Server12.onClientHello(self, msg, &hello, epoch, boundary);
+    }
     if (second) {
         if (!std.mem.eql(u8, &hello.fingerprint(), &scratch.first)) return error.IllegalParameter;
         if (hello.cookie.len != 0) return error.UnexpectedCookie;
@@ -525,6 +565,17 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     try self.sendRetry(group);
 }
 
+/// Whether this server speaks TLS 1.3.
+pub fn allows13(self: *const Server) bool {
+    return self.options.max_version == .tls13;
+}
+
+/// Whether this server takes TLS 1.2 clients.
+pub fn allows12(self: *const Server) bool {
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .quic = self.options.quic };
+    return hello.allows12();
+}
+
 /// Chooses suite, group, credential, scheme and protocol from the client's offer and the
 /// server's preference; the server's order wins.
 fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Error!void {
@@ -532,7 +583,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     const scratch = self.scratch.?;
     if (second and !self.hasRetryGroup(hello)) return error.IllegalParameter;
     self.suite = for (self.options.suites) |suite| {
-        if (hello.offersSuite(@backingInt(suite))) break suite;
+        if (suite.tls13()) |candidate| if (hello.offersSuite(@backingInt(candidate))) break candidate;
     } else return error.NoSharedSuite;
     if (second) {
         self.group = scratch.retry_group;
@@ -810,7 +861,8 @@ pub fn info(self: *const Server) ?Info {
     @setRuntimeSafety(true);
     if (!self.established or self.state.phase == .failed) return null;
     return .{
-        .suite = self.suite.?,
+        .version = self.version,
+        .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
         .group = self.group.?,
         .alpn = self.alpn,
         .server_name = if (self.scratch) |scratch| scratch.server_name[0..scratch.server_name_len] else self.server_name_copy,
@@ -819,11 +871,12 @@ pub fn info(self: *const Server) ?Info {
     };
 }
 
-pub const ExportError = Schedule.ExportError;
+pub const ExportError = Client.ExportError;
 
 pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     @setRuntimeSafety(true);
     if (!self.established) return error.WrongPhase;
+    if (self.version == .tls12) return Server12.exportKeyingMaterial(self, out, label, context);
     switch (self.keys.?) {
         inline else => |*k| try k.schedule.exportBytes(out, label, context),
     }

@@ -17,7 +17,7 @@ fn run(comptime suite: Suite13, config: Config, options: Options, expect_group: 
     try pair.run();
     try std.testing.expectEqual(Connection.Phase.connected, pair.conn.phase());
     const info = pair.conn.info().?;
-    try std.testing.expectEqual(suite, info.suite);
+    try std.testing.expectEqual(@backingInt(suite), @backingInt(info.suite));
     try std.testing.expectEqual(expect_group, info.group);
     try std.testing.expect(pair.client.server_finished_ok and pair.client.certificate_verify_ok);
     try std.testing.expectEqual(@backingInt(suite), pair.client.server_suite);

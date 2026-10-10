@@ -133,6 +133,12 @@ pub fn sign(identity: Identity, algorithm: certificate.Algorithm.Signature, mess
     const key = identity.state.key orelse return error.UnsupportedAlgorithm;
     return key.sign(algorithm, message, noise, out);
 }
+/// Signs a digest with the key this identity holds; see `PrivateKey.signDigest`.
+pub fn signDigest(identity: Identity, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[PrivateKey.max_signature]u8) PrivateKey.SignError![]const u8 {
+    @setRuntimeSafety(true);
+    const key = identity.state.key orelse return error.UnsupportedAlgorithm;
+    return key.signDigest(algorithm, digest, noise, out);
+}
 pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);
     return identity.state.generation;

@@ -12,6 +12,8 @@ const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Server = @import("handshake/Server.zig");
 const Suite13 = @import("crypto/Suite.zig").Suite13;
+const Suite = @import("crypto/Suite.zig").Suite;
+const Version = @import("crypto/Suite.zig").Version;
 const Alert = @import("wire/Alert.zig").Alert;
 const Group = @import("crypto/Group.zig").Group;
 const SignatureScheme = @import("handshake/Hello.zig").SignatureScheme;
@@ -40,8 +42,14 @@ pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, F
 /// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA).
 pub const Signer = struct {
     context: ?*anyopaque = null,
-    sign: *const fn (context: ?*anyopaque, scheme: SignatureScheme, content: []const u8, out: []u8) error{SigningFailed}!usize,
+    /// Signs `request.content` under `request.scheme` into `out` and returns the length. Content
+    /// marked `prehashed` is already the digest of the scheme's hash (a TLS 1.2
+    /// CertificateVerify): sign it without hashing again.
+    sign: *const fn (context: ?*anyopaque, request: SignRequest, out: []u8) error{SigningFailed}!usize,
 };
+
+/// What a signer is asked to sign.
+pub const SignRequest = Connection.SignRequest;
 
 /// What a connection saw, for a caller that maps it to errors of its own.
 pub const Diagnostics = struct {
@@ -77,7 +85,12 @@ pub const Options = struct {
     pins: []const [32]u8 = &.{},
     evidence: certificates.types.Evidence = .{},
     server_name: Connection.ServerName = .identity,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// Suites of both versions in preference order; the version follows from the suite.
+    suites: []const Suite = Suite.default,
+    /// The lowest and highest versions. `min_version = .tls13` refuses TLS 1.2 peers;
+    /// `max_version = .tls12` speaks only TLS 1.2.
+    min_version: Version = .tls12,
+    max_version: Version = .tls13,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
@@ -143,6 +156,8 @@ pub fn open(
         .verify = policy,
         .server_name = options.server_name,
         .suites = options.suites,
+        .min_version = options.min_version,
+        .max_version = options.max_version,
         .groups = options.groups,
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
@@ -179,7 +194,12 @@ pub const ServerOptions = struct {
     /// Required when a credential is an identity cloak holds no signing key for.
     signer: ?Signer = null,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// Suites of both versions in preference order; the version follows from the suite.
+    suites: []const Suite = Suite.default,
+    /// The lowest and highest versions. `min_version = .tls13` refuses TLS 1.2 peers;
+    /// `max_version = .tls12` speaks only TLS 1.2.
+    min_version: Version = .tls12,
+    max_version: Version = .tls13,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
@@ -220,6 +240,8 @@ pub fn accept(
         .credentials = options.credentials,
         .unknown_name = options.unknown_name,
         .suites = options.suites,
+        .min_version = options.min_version,
+        .max_version = options.max_version,
         .groups = options.groups,
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
@@ -358,7 +380,7 @@ fn serve(session: *Session) OpenError!bool {
                     continue;
                 };
                 var signature: [1024]u8 = undefined;
-                const len = signer.sign(signer.context, sign_request.scheme, sign_request.content, &signature) catch {
+                const len = signer.sign(signer.context, sign_request, &signature) catch {
                     try session.conn.provide(request.token, .signing_failed);
                     continue;
                 };

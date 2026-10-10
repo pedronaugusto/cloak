@@ -10,6 +10,7 @@ const Machine = @import("../handshake/Machine.zig");
 const Server = @import("../handshake/Server.zig");
 const Services = @import("../handshake/Services.zig");
 const Suite13 = @import("../crypto/Suite.zig").Suite13;
+const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
 
@@ -31,7 +32,8 @@ pub const Options = struct {
     /// Application protocols, required: QUIC runs only under ALPN.
     alpn: []const []const u8,
     server_name: ServerName = .identity,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// TLS 1.3 suites only: QUIC is TLS 1.3.
+    suites: []const Suite = Suite.tls13_only,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
@@ -48,7 +50,8 @@ pub const ServerOptions = struct {
     /// Application protocols in the server's order of preference, required.
     alpn: []const []const u8,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
-    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    /// TLS 1.3 suites only: QUIC is TLS 1.3.
+    suites: []const Suite = Suite.tls13_only,
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     require_hybrid: bool = false,
     client_auth: Server.Auth = .none,
@@ -357,7 +360,7 @@ fn advance(self: *Handshake) void {
             return;
         },
         .ticket => {},
-        .compat_ccs, .key_update => {
+        .compat_ccs, .key_update, .keys12, .change_cipher_spec => {
             // Neither exists in QUIC: the state table rejects them before they can be queued.
             self.fail(.internal_error);
             return;

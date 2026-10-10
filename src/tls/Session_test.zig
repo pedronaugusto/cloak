@@ -79,8 +79,9 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
 const Server = @import("handshake/Server.zig");
 const client_module = @import("../testing/ClientPeer.zig");
 
-fn signWithFixtures(_: ?*anyopaque, scheme: SignatureScheme, content: []const u8, out: []u8) error{SigningFailed}!usize {
-    if (scheme != .ecdsa_p256_sha256) return error.SigningFailed;
+fn signWithFixtures(_: ?*anyopaque, request: Session.SignRequest, out: []u8) error{SigningFailed}!usize {
+    if (request.scheme != .ecdsa_p256_sha256 or request.prehashed) return error.SigningFailed;
+    const content = request.content;
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
     const secret = Ecdsa.SecretKey.fromBytes(pki.p256_secret[0..32].*) catch return error.SigningFailed;
     const kp = Ecdsa.KeyPair.fromSecretKey(secret) catch return error.SigningFailed;
@@ -199,7 +200,7 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     const failing = struct {
-        fn sign(_: ?*anyopaque, _: SignatureScheme, _: []const u8, _: []u8) error{SigningFailed}!usize {
+        fn sign(_: ?*anyopaque, _: Session.SignRequest, _: []u8) error{SigningFailed}!usize {
             return error.SigningFailed;
         }
     };

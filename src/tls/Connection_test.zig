@@ -18,7 +18,7 @@ fn run(comptime suite: Suite13, config: peer_module.Config, options: Options) !v
     try pair.handshake();
     try std.testing.expectEqual(Connection.Phase.connected, pair.conn.phase());
     const info = pair.conn.info().?;
-    try std.testing.expectEqual(suite, info.suite);
+    try std.testing.expectEqual(@backingInt(suite), @backingInt(info.suite));
     try std.testing.expectEqual(config.group, info.group);
     try std.testing.expect(info.peer_authenticated);
     try std.testing.expect(pair.peer.client_finished_ok);
