@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../testing/inputs.zig");
 const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
@@ -623,13 +624,22 @@ fn allocationLifetime(gpa: std.mem.Allocator) !void {
     try pair.flush();
 }
 
-test "C2 fuzz connection random bytes after a hello never connect or surface plaintext" {
-    try std.testing.fuzz({}, fuzzReceive, .{ .corpus = shakedown.corpus.entries(&.{ "\x16\x03\x03\x00\x01\x00", "\x15\x03\x03\x00\x02\x02\x28", "\x17\x03\x03\x00\x20xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "\x14\x03\x03\x00\x01\x01\x16\x03\x03\xff\xff" }) });
+const receive_examples = [_][]const u8{ "\x16\x03\x03\x00\x01\x00", "\x15\x03\x03\x00\x02\x02\x28", "\x17\x03\x03\x00\x20xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "\x14\x03\x03\x00\x01\x01\x16\x03\x03\xff\xff" };
+
+test "C2 connection takes odd records after a hello without connecting or surfacing plaintext" {
+    for (receive_examples) |input| try receiveGarbage(input);
 }
 
-fn fuzzReceive(_: void, smith: *std.testing.Smith) !void {
+test "C2 fuzz connection random bytes after a hello never connect or surface plaintext" {
+    try shakedown.check(std.testing.allocator, {}, fuzzReceive, .{ .cases = 64 });
+}
+
+fn fuzzReceive(_: void, case: *shakedown.Case) !void {
     var bytes: [4096]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
+    try receiveGarbage(inputs.draw(case, &bytes, &receive_examples, 48));
+}
+
+fn receiveGarbage(input: []const u8) !void {
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
     defer pair.deinit();
     _ = try pair.service();
@@ -691,18 +701,27 @@ test "C2 connection memory: handshake peak and idle residue are measured and bou
     }
 }
 
-test "C2 fuzz connection arbitrary encrypted server flights never authenticate" {
-    try std.testing.fuzz({}, fuzzFlight, .{ .corpus = shakedown.corpus.entries(&.{
-        "\x08\x00\x00\x02\x00\x00",
-        "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x04\x00\x00\x00\x00",
-        "\x08\x00\x00\x02\x00\x00\x0d\x00\x00\x0b\x00\x00\x08\x00\x0d\x00\x04\x00\x02\x04\x03",
-        "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x0c\x00\x00\x00\x08\x00\x00\x01a\x00\x00\x0f\x00\x00\x04\x04\x03\x00\x00",
-    }) });
+const flight_examples = [_][]const u8{
+    "\x08\x00\x00\x02\x00\x00",
+    "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x04\x00\x00\x00\x00",
+    "\x08\x00\x00\x02\x00\x00\x0d\x00\x00\x0b\x00\x00\x08\x00\x0d\x00\x04\x00\x02\x04\x03",
+    "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x0c\x00\x00\x00\x08\x00\x00\x01a\x00\x00\x0f\x00\x00\x04\x04\x03\x00\x00",
+};
+
+test "C2 connection takes odd encrypted server flights without authenticating" {
+    for (flight_examples) |flight| try runFlight(flight);
 }
 
-fn fuzzFlight(_: void, smith: *std.testing.Smith) !void {
+test "C2 fuzz connection arbitrary encrypted server flights never authenticate" {
+    try shakedown.check(std.testing.allocator, {}, fuzzFlight, .{ .cases = 64 });
+}
+
+fn fuzzFlight(_: void, case: *shakedown.Case) !void {
     var bytes: [3000]u8 = undefined;
-    const flight = bytes[0..smith.slice(&bytes)];
+    try runFlight(inputs.draw(case, &bytes, &flight_examples, 48));
+}
+
+fn runFlight(flight: []const u8) !void {
     if (flight.len == 0) return;
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .raw_flight = flight }, .{});
     defer pair.deinit();

@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- The Smith fuzz tests are shakedown `check` properties.
+
 ### Fixed
 
 - `tls.Session` checks a snapshot of the system's policy (`Trust.addSystem` on macOS and Windows) with the system's verifier and then the portable one over the path the system chose. It used to hand such a snapshot, which holds no roots, to the portable verifier alone, so no public server verified there.

@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const Handshake = @import("Handshake.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
@@ -191,12 +192,21 @@ test "C2 quic options require application protocols" {
 }
 
 test "C2 fuzz quic handshake input at every level never authenticates" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{ "\x02\x00\x00\x00", "\x08\x00\x00\x02\x00\x00", "\x0b\x00\x00\x04\x00\x00\x00\x00" }) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{ .cases = 64 });
 }
 
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+const level_examples = [_][]const u8{ "\x02\x00\x00\x00", "\x08\x00\x00\x02\x00\x00", "\x0b\x00\x00\x04\x00\x00\x00\x00" };
+
+test "C2 quic handshake takes odd messages at every level without authenticating" {
+    for (level_examples) |input| try feedLevels(input);
+}
+
+fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [2048]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
+    try feedLevels(inputs.draw(case, &bytes, &level_examples, 48));
+}
+
+fn feedLevels(input: []const u8) !void {
     const pair = try QuicPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .alpn = "h3" }, .{});
     defer pair.deinit();
     _ = try pair.step();
@@ -218,16 +228,25 @@ fn fuzz(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "C2 fuzz quic arbitrary handshake-level flights never authenticate" {
-    try std.testing.fuzz({}, fuzzFlight, .{ .corpus = shakedown.corpus.entries(&.{
-        "\x08\x00\x00\x02\x00\x00",
-        "\x08\x00\x00\x08\x00\x06\x00\x39\x00\x02xy",
-        "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x04\x00\x00\x00\x00",
-    }) });
+    try shakedown.check(std.testing.allocator, {}, fuzzFlight, .{ .cases = 64 });
 }
 
-fn fuzzFlight(_: void, smith: *std.testing.Smith) !void {
+const flight_examples = [_][]const u8{
+    "\x08\x00\x00\x02\x00\x00",
+    "\x08\x00\x00\x08\x00\x06\x00\x39\x00\x02xy",
+    "\x08\x00\x00\x02\x00\x00\x0b\x00\x00\x04\x00\x00\x00\x00",
+};
+
+test "C2 quic handshake takes odd handshake-level flights without authenticating" {
+    for (flight_examples) |flight| try runFlight(flight);
+}
+
+fn fuzzFlight(_: void, case: *shakedown.Case) !void {
     var bytes: [3000]u8 = undefined;
-    const flight = bytes[0..smith.slice(&bytes)];
+    try runFlight(inputs.draw(case, &bytes, &flight_examples, 48));
+}
+
+fn runFlight(flight: []const u8) !void {
     if (flight.len == 0) return;
     const pair = try QuicPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .raw_flight = flight, .alpn = "h3" }, .{});
     defer pair.deinit();

@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
         check.dependOn(&core.step);
         test_step.dependOn(&core.step);
     } else {
-        const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch return;
+        const shakedown = shakedownFor(b, target, optimize) catch return;
         const test_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
         test_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegis(b, test_module, target, optimize);
@@ -96,7 +96,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     addAegis(b, records, target, optimize);
     const armor = b.createModule(.{ .root_source_file = b.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
     addAegis(b, armor, target, optimize);
-    const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch @panic("missing test dependency for benchmarks");
+    const shakedown = shakedownFor(b, target, optimize) catch @panic("missing test dependency for benchmarks");
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
     const harness = b.createModule(.{ .root_source_file = b.path("src/testing.zig"), .target = target, .optimize = optimize });
     addAegis(b, harness, target, optimize);
@@ -108,6 +108,14 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "armor", .module = armor },
         .{ .name = "shakedown", .module = shakedown.module("shakedown") },
     }) catch @panic("out of memory configuring benchmark");
+}
+
+/// shakedown bound to cloak's aegis, so a build links one aegis.
+fn shakedownFor(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) error{LazyDependencyNeeded}!*std.Build.Dependency {
+    const shakedown = try b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
+    const shakedown_build = b.lazyImport(@This(), "shakedown") orelse return error.LazyDependencyNeeded;
+    shakedown_build.useAegis(shakedown, b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+    return shakedown;
 }
 
 fn addAegis(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
