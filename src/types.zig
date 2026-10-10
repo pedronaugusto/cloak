@@ -160,9 +160,9 @@ pub const Verification = struct {
         const name_bytes: usize = if (request.identity == .dns) request.identity.dns.len else 0;
         if (name_bytes > 253) return error.VerificationLimit;
         var size: usize = 0;
-        for (path) |der| size = std.math.add(usize, size, der.len) catch return error.VerificationLimit;
+        for (path) |der| size = (aegis.int.Checked(usize).init(size).add(der.len) catch return error.VerificationLimit).raw();
         const descriptors = (aegis.int.Checked(usize).init(path.len).mul(@sizeOf([]const u8)) catch return error.VerificationLimit).raw();
-        const owned_bytes = std.math.add(usize, size, std.math.add(usize, descriptors, name_bytes) catch return error.VerificationLimit) catch return error.VerificationLimit;
+        const owned_bytes = (aegis.int.Checked(usize).init(size).add(std.math.add(usize, descriptors, name_bytes) catch return error.VerificationLimit) catch return error.VerificationLimit).raw();
         if (owned_bytes > request.limits.receipt_bytes or path.len > request.limits.depth) return error.VerificationLimit;
         const storage = try gpa.alloc(u8, size);
         errdefer gpa.free(storage);

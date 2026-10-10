@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const Der = @import("../wire/Der.zig");
 const Work = @import("Work.zig");
@@ -75,8 +76,8 @@ fn matches(name: Der.Element, base: []const u8, excluded: bool, work: *Work) Err
     // A validated DN has at most 128 attributes. Each RDN set may rescan
     // those attributes; reserve its conservative byte-work bound before matching.
     if (name.tag == 0xa4) {
-        const bytes = std.math.add(usize, name.value.len, base.len) catch return error.VerificationLimit;
-        try work.charge(std.math.mul(usize, bytes, 128) catch return error.VerificationLimit);
+        const bytes = (aegis.int.Checked(usize).init(name.value.len).add(base.len) catch return error.VerificationLimit).raw();
+        try work.charge((aegis.int.Checked(usize).init(bytes).mul(128) catch return error.VerificationLimit).raw());
     }
     return switch (name.tag) {
         0x82 => dns(name.value, base, excluded),

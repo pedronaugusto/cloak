@@ -1,5 +1,6 @@
 //! Portable bounded path search. Inputs and time are supplied; no I/O or clock.
 const std = @import("std");
+const aegis = @import("aegis");
 const Der = @import("../wire/Der.zig");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
@@ -43,7 +44,7 @@ const Search = struct {
     }
     fn charge(self: *Search, comptime field: []const u8, amount: usize) VerifyError!void {
         @setRuntimeSafety(true);
-        const sum = std.math.add(usize, @field(self.work, field), amount) catch return error.VerificationLimit;
+        const sum = (aegis.int.Checked(usize).init(@field(self.work, field)).add(amount) catch return error.VerificationLimit).raw();
         if (sum > @field(self.request.limits, field)) return error.VerificationLimit;
         @field(self.work, field) = sum;
     }
@@ -264,7 +265,7 @@ fn bounds(request: T.Request, anchors: usize) VerifyError!void {
     @setRuntimeSafety(true);
     if (request.chain.len == 0 or request.chain.len > request.limits.certificates or request.limits.depth == 0 or request.limits.depth > 16) return error.VerificationLimit;
     var bytes: usize = 0;
-    for (request.chain) |cert| bytes = std.math.add(usize, bytes, cert.len) catch return error.VerificationLimit;
+    for (request.chain) |cert| bytes = (aegis.int.Checked(usize).init(bytes).add(cert.len) catch return error.VerificationLimit).raw();
     if (bytes > request.limits.chain_bytes or request.pins.len > request.limits.candidates or request.policy.required_policies.len > request.limits.policy_nodes) return error.VerificationLimit;
     if (request.anchor_policies.len != 0 and request.anchor_policies.len != anchors) return error.InvalidAnchorPolicy;
 }

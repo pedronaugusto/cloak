@@ -1,5 +1,6 @@
 //! Bounded RFC 5280 policy tree expressed as parent edges and expected policies.
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
@@ -122,8 +123,8 @@ fn nodeCapacity(path: []const C.Certificate, limit: usize, work: *Work) Error!us
         }
         // At most one child per old node per policy; mapping expansion adds at
         // most one node per mapping per child. Saturation preserves the work cap.
-        count = @min(limit, std.math.mul(usize, count, policies) catch limit);
-        count = @min(limit, std.math.mul(usize, count, mappings + 1) catch limit);
+        count = @min(limit, (aegis.int.Checked(usize).init(count).mul(policies) catch aegis.int.Checked(usize).init(limit)).raw());
+        count = @min(limit, (aegis.int.Checked(usize).init(count).mul(mappings + 1) catch aegis.int.Checked(usize).init(limit)).raw());
         peak = @max(peak, count);
     }
     return peak;

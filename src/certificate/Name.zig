@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const Der = @import("../wire/Der.zig");
 pub const Error = Der.Error || error{ InvalidName, UnsupportedName };
 pub fn validate(encoded: []const u8) Error!void {
@@ -232,11 +233,11 @@ fn punycode(input: []const u8) Error!void {
             const c = std.ascii.toLower(input[pos]);
             pos += 1;
             const digit: usize = if (c >= 'a' and c <= 'z') c - 'a' else if (c >= '0' and c <= '9') c - '0' + 26 else return error.InvalidName;
-            const product = std.math.mul(usize, digit, w) catch return error.InvalidName;
-            i = std.math.add(usize, i, product) catch return error.InvalidName;
+            const product = (aegis.int.Checked(usize).init(digit).mul(w) catch return error.InvalidName).raw();
+            i = (aegis.int.Checked(usize).init(i).add(product) catch return error.InvalidName).raw();
             const t: usize = if (k <= bias) 1 else if (k >= bias + 26) 26 else k - bias;
             if (digit < t) break;
-            w = std.math.mul(usize, w, 36 - t) catch return error.InvalidName;
+            w = (aegis.int.Checked(usize).init(w).mul(36 - t) catch return error.InvalidName).raw();
         }
         length += 1;
         const divisor: usize = if (!decoded) 700 else 2;
@@ -248,7 +249,7 @@ fn punycode(input: []const u8) Error!void {
             base += 36;
         }
         bias = base + 36 * delta / (delta + 38);
-        n = std.math.add(usize, n, i / length) catch return error.InvalidName;
+        n = (aegis.int.Checked(usize).init(n).add(i / length) catch return error.InvalidName).raw();
         if (n > 0x10ffff or (n >= 0xd800 and n <= 0xdfff) or n == 0x200c or n == 0x200d) return error.InvalidName;
         i = i % length + 1;
         decoded = true;

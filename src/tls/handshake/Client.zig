@@ -521,7 +521,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
     errdefer self.state.fail();
     if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
     if (!self.established) {
-        const total = std.math.add(usize, self.total_bytes, bytes_in.len) catch return error.HandshakeLimit;
+        const total = (aegis.int.Checked(usize).init(self.total_bytes).add(bytes_in.len) catch return error.HandshakeLimit).raw();
         if (total > self.options.limits.handshake) return error.HandshakeLimit;
         self.total_bytes = total;
     }

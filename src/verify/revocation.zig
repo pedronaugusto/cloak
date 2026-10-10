@@ -1,5 +1,6 @@
 //! Offline evidence only. Invalid supplied evidence is never silently ignored.
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
@@ -16,7 +17,7 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
     var expires: ?i64 = null;
     var bytes: usize = 0;
     for (evidence.crls) |der| {
-        bytes = std.math.add(usize, bytes, der.len) catch return error.VerificationLimit;
+        bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.VerificationLimit).raw();
         if (bytes > 262144) return error.VerificationLimit;
         const result = crl(path, now, policy, der) catch |err| {
             if (err == error.NotApplicableRevocation) continue;
@@ -28,7 +29,7 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
         expires = if (expires) |e| @min(e, result.expires) else result.expires;
     }
     for (evidence.ocsp) |der| {
-        bytes = std.math.add(usize, bytes, der.len) catch return error.VerificationLimit;
+        bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.VerificationLimit).raw();
         if (bytes > 262144) return error.VerificationLimit;
         const result = try ocsp(path, now, policy, evidence, der);
         covered[result.covered] = true;

@@ -1,5 +1,6 @@
 //! One caller handle and one executor handle; completion never points to a connection.
 const std = @import("std");
+const aegis = @import("aegis");
 const types = @import("../types.zig");
 const Native = @import("Native.zig");
 const Budget = @import("Budget.zig");
@@ -141,14 +142,14 @@ fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceL
     }
     if (request.identity == .dns and request.identity.dns.len > 253) return error.ServiceLimit;
     for (request.anchor_policies) |policy| if (policy.required_policies.len > 256) return error.ServiceLimit;
-    var total = std.math.add(usize, @sizeOf(State), try OwnedRequest.byteSize(request, anchors)) catch return error.ServiceLimit;
-    total = std.math.add(usize, total, request.limits.receipt_bytes) catch return error.ServiceLimit;
+    var total = (aegis.int.Checked(usize).init(@sizeOf(State)).add(try OwnedRequest.byteSize(request, anchors)) catch return error.ServiceLimit).raw();
+    total = (aegis.int.Checked(usize).init(total).add(request.limits.receipt_bytes) catch return error.ServiceLimit).raw();
     // Charge all cloak-owned native descriptor/name scratch alongside the path.
     // Framework/CryptoAPI private allocations remain OS-owned and job-count bounded.
-    const descriptors = std.math.mul(usize, request.limits.depth, 2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit;
-    total = std.math.add(usize, total, descriptors + 508) catch return error.ServiceLimit;
-    const references = std.math.mul(usize, @max(request.chain.len, anchors.len), @sizeOf(usize)) catch return error.ServiceLimit;
-    return std.math.add(usize, total, references) catch error.ServiceLimit;
+    const descriptors = (aegis.int.Checked(usize).init(request.limits.depth).mul(2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit).raw();
+    total = (aegis.int.Checked(usize).init(total).add(descriptors + 508) catch return error.ServiceLimit).raw();
+    const references = (aegis.int.Checked(usize).init(@max(request.chain.len, anchors.len)).mul(@sizeOf(usize)) catch return error.ServiceLimit).raw();
+    return (aegis.int.Checked(usize).init(total).add(references) catch return error.ServiceLimit).raw();
 }
 test {
     @setRuntimeSafety(true);

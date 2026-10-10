@@ -72,7 +72,7 @@ pub fn pending(self: *const Flight) bool {
 /// Room for `want` more bytes at the end of the flight buffer, within `cap`.
 pub fn reserve(self: *Flight, gpa: std.mem.Allocator, want: usize, cap: usize) Error![]u8 {
     @setRuntimeSafety(true);
-    const needed = std.math.add(usize, self.used, want) catch return error.HandshakeLimit;
+    const needed = (aegis.int.Checked(usize).init(self.used).add(want) catch return error.HandshakeLimit).raw();
     if (needed > self.buf.len) {
         if (needed > cap) return error.HandshakeLimit;
         const capacity = @min(cap, @max(needed, @max(4096, self.buf.len * 2)));

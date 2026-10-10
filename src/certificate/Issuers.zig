@@ -1,5 +1,6 @@
 //! Immutable borrowed-DER issuer index, prepared before traffic by the trust owner.
 const std = @import("std");
+const aegis = @import("aegis");
 const Certificate = @import("Certificate.zig");
 const Name = @import("Name.zig");
 const Issuers = @This();
@@ -15,7 +16,7 @@ pub fn init(gpa: std.mem.Allocator, anchors: []const []const u8, limits: Limits)
     @setRuntimeSafety(true);
     if (anchors.len > limits.anchors) return error.VerificationLimit;
     var bytes: usize = 0;
-    for (anchors) |der| bytes = std.math.add(usize, bytes, der.len) catch return error.VerificationLimit;
+    for (anchors) |der| bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.VerificationLimit).raw();
     if (bytes > limits.bytes) return error.VerificationLimit;
     const storage = try gpa.alloc(Entry, anchors.len);
     errdefer gpa.free(storage);

@@ -1,5 +1,6 @@
 //! TLS 1.3 handshake messages after the hello family. Parsed fields borrow their message.
 const std = @import("std");
+const aegis = @import("aegis");
 const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
@@ -59,7 +60,7 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
         const extensions = (try list.vector(u16)).bytes;
         if (extensions.len != 0) return error.UnsolicitedExtension;
         if (count == @min(max_count, max_certificates)) return error.CertificateLimit;
-        total = std.math.add(usize, total, der.len) catch return error.CertificateLimit;
+        total = (aegis.int.Checked(usize).init(total).add(der.len) catch return error.CertificateLimit).raw();
         if (total > max_bytes) return error.CertificateLimit;
         out[count] = der;
         count += 1;

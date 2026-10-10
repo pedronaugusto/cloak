@@ -41,7 +41,7 @@ pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, o
     defer ders.deinit(gpa);
     var reader = Pem.init(chain_pem);
     // Armor is a third larger than the DER it carries, and its markers add a little.
-    const limit = std.math.add(usize, options.chain_bytes / 3 * 4, 4096) catch return error.IdentityLimit;
+    const limit = (aegis.int.Checked(usize).init(options.chain_bytes / 3 * 4).add(4096) catch return error.IdentityLimit).raw();
     while (try reader.next(gpa, limit)) |block| {
         var owned = block;
         errdefer owned.deinit(gpa);
@@ -75,7 +75,7 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     var bytes: usize = 0;
     var expiry: i64 = std.math.maxInt(i64);
     for (certificates) |der| {
-        bytes = std.math.add(usize, bytes, der.len) catch return error.IdentityLimit;
+        bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.IdentityLimit).raw();
         if (der.len > 0xffffff or bytes > options.chain_bytes) return error.IdentityLimit;
         const cert = try certificate.parse(der, .{});
         expiry = @min(expiry, cert.not_after);
