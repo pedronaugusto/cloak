@@ -5,7 +5,7 @@ const R = @import("Epoch.zig");
 const S = @import("../crypto/Suite.zig");
 
 test "C2 catalogue_record_outer_type_and_wire_aad" {
-    inline for (std.enums.values(S.Suite)) |suite| {
+    inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(7), @splat(9), .{});
         defer tx.deinit();
@@ -42,7 +42,7 @@ test "C2 catalogue_bad_tag_no_plaintext_or_alias_damage" {
     try std.testing.expectEqualSlices(u8, "hello", plain.bytes);
 }
 test "C2 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
-    inline for (std.enums.values(S.Suite)) |suite| {
+    inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(1), @splat(2), .{ .records = 2, .bytes = 30 });
         defer tx.deinit();
@@ -64,7 +64,7 @@ test "C2 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
     }
 }
 test "C2 record padding empty application and authenticated inner rejection" {
-    inline for (std.enums.values(S.Suite)) |suite| {
+    inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(1), @splat(2), .{});
         defer tx.deinit();
@@ -91,7 +91,7 @@ fn roundtrip(_: void, case: *shakedown.Case) !void {
     const len = shakedown.gen.intRange(case.source, usize, 0, payload.len);
     for (payload[0..len]) |*byte| byte.* = shakedown.gen.int(case.source, u8);
     const padding = shakedown.gen.intRange(case.source, usize, 0, payload.len - len);
-    inline for (std.enums.values(S.Suite)) |suite| {
+    inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(1), @splat(2), .{});
         defer tx.deinit();
@@ -107,7 +107,7 @@ fn roundtrip(_: void, case: *shakedown.Case) !void {
 }
 
 test "C2 KeyUpdate old-key commitment then directional reset" {
-    inline for (std.enums.values(S.Suite)) |suite| {
+    inline for (std.enums.values(S.Suite13)) |suite| {
         const Hash = S.Hash(suite);
         var write_secret = aegis.Secret([Hash.digest_length]u8).init(@splat(7));
         errdefer write_secret.deinit();

@@ -7,7 +7,7 @@ const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Handshake = @import("../tls/quic/Handshake.zig");
 const Server = @import("../tls/handshake/Server.zig");
-const Suite = @import("../tls/crypto/Suite.zig").Suite;
+const Suite13 = @import("../tls/crypto/Suite.zig").Suite13;
 const Group = @import("../tls/crypto/Group.zig").Group;
 const Alert = @import("../tls/wire/Alert.zig").Alert;
 
@@ -59,7 +59,7 @@ pub const Side = struct {
     }
 };
 
-pub fn QuicLoop(comptime suite: Suite) type {
+pub fn QuicLoop(comptime suite: Suite13) type {
     return struct {
         const Self = @This();
 

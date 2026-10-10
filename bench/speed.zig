@@ -9,7 +9,7 @@ const harness = @import("harness");
 const cloak = harness.cloak;
 const ecdh = harness.ecdh;
 const Connection = cloak.tls.Connection;
-const Suite = cloak.tls.Suite;
+const Suite13 = cloak.tls.Suite13;
 const Group = cloak.tls.Group;
 
 const fixtures = .{ "message.bin", "root.der", "chain.pem", "leaf.key.pem", "leaf.der", "p384.key.pem", "p384.der", "ed25519.key.pem", "ed25519.der", "rsa2048.der", "rsa2048.pss.sig", "rsa4096.der", "rsa4096.pss.sig" };
@@ -104,7 +104,7 @@ pub fn main(init: std.process.Init) !void {
 // ---------------------------------------------------------------- primitives
 
 fn primitives(ctx: *const Context) !void {
-    inline for (.{ .{ Suite.aes_128_gcm_sha256, "aes128gcm" }, .{ Suite.aes_256_gcm_sha384, "aes256gcm" }, .{ Suite.chacha20_poly1305_sha256, "chacha20poly1305" } }) |entry| {
+    inline for (.{ .{ Suite13.aes_128_gcm_sha256, "aes128gcm" }, .{ Suite13.aes_256_gcm_sha384, "aes256gcm" }, .{ Suite13.chacha20_poly1305_sha256, "chacha20poly1305" } }) |entry| {
         inline for (.{ 64, 1024, 16384 }) |size| try aead(ctx, entry[0], entry[1], size);
     }
     try x25519(ctx);
@@ -115,7 +115,7 @@ fn primitives(ctx: *const Context) !void {
     inline for (.{ "rsa2048", "rsa4096" }) |name| try rsa(ctx, name);
 }
 
-fn aead(ctx: *const Context, comptime suite: Suite, comptime name: []const u8, comptime size: usize) !void {
+fn aead(ctx: *const Context, comptime suite: Suite13, comptime name: []const u8, comptime size: usize) !void {
     const A = harness.suites.Aead(suite);
     const State = struct {
         key: [A.key_length]u8 = @splat(7),
@@ -375,7 +375,7 @@ const Pair = struct {
     client: Endpoint,
     server: Endpoint,
 
-    fn init(ctx: *const Context, fixture: *const Fixture, comptime suite: Suite, comptime group: Group) !Pair {
+    fn init(ctx: *const Context, fixture: *const Fixture, comptime suite: Suite13, comptime group: Group) !Pair {
         var start = ctx.now();
         var client = try Connection.client(ctx.gpa, .{
             .identity = .{ .dns = "bench.example" },
@@ -478,7 +478,7 @@ fn handshakes(ctx: *const Context) !void {
 fn bulk(ctx: *const Context) !void {
     var fixture = try Fixture.init(ctx);
     defer fixture.deinit();
-    inline for (.{ .{ Suite.aes_128_gcm_sha256, "aes128gcm" }, .{ Suite.aes_256_gcm_sha384, "aes256gcm" }, .{ Suite.chacha20_poly1305_sha256, "chacha20poly1305" } }) |entry| {
+    inline for (.{ .{ Suite13.aes_128_gcm_sha256, "aes128gcm" }, .{ Suite13.aes_256_gcm_sha384, "aes256gcm" }, .{ Suite13.chacha20_poly1305_sha256, "chacha20poly1305" } }) |entry| {
         inline for (.{ 64, 1024, 16384 }) |size| {
             var pair = try Pair.init(ctx, &fixture, entry[0], .x25519);
             defer pair.deinit();

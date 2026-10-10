@@ -7,7 +7,7 @@ const peer_module = @import("Peer.zig");
 const client_module = @import("ClientPeer.zig");
 const Connection = @import("../tls/Connection.zig");
 const Server = @import("../tls/handshake/Server.zig");
-const Suite = @import("../tls/crypto/Suite.zig").Suite;
+const Suite13 = @import("../tls/crypto/Suite.zig").Suite13;
 const Group = @import("../tls/crypto/Group.zig").Group;
 
 pub const pki = peer_module.pki;
@@ -41,7 +41,7 @@ pub const Options = struct {
     distrust: bool = false,
 };
 
-pub fn ServerPair(comptime suite: Suite) type {
+pub fn ServerPair(comptime suite: Suite13) type {
     return struct {
         const Self = @This();
         pub const ClientType = client_module.ClientPeer(suite);

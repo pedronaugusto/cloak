@@ -9,7 +9,7 @@ const Client = @import("../handshake/Client.zig");
 const Machine = @import("../handshake/Machine.zig");
 const Server = @import("../handshake/Server.zig");
 const Services = @import("../handshake/Services.zig");
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
 
@@ -31,7 +31,7 @@ pub const Options = struct {
     /// Application protocols, required: QUIC runs only under ALPN.
     alpn: []const []const u8,
     server_name: ServerName = .identity,
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
@@ -48,7 +48,7 @@ pub const ServerOptions = struct {
     /// Application protocols in the server's order of preference, required.
     alpn: []const []const u8,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     require_hybrid: bool = false,
     client_auth: Server.Auth = .none,
@@ -71,7 +71,7 @@ pub const Event = union(enum) {
     handshake_data: struct { level: Level, bytes: []const u8, flight_end: bool },
     /// A traffic secret (a hash-length byte string) to derive packet keys from. Copy it
     /// before `ack`, which erases it. Direction is relative to this endpoint.
-    secret: struct { level: Level, direction: Direction, suite: Suite, bytes: []const u8 },
+    secret: struct { level: Level, direction: Direction, suite: Suite13, bytes: []const u8 },
     /// The peer's transport parameters, provisional until it is authenticated (a server is
     /// authenticated by its certificate, a client by its Finished); answer with
     /// `acceptParameters` or `rejectParameters`.

@@ -1,7 +1,7 @@
 //! TLS 1.3 for Zig. The client connection is sans-I/O; callers drive it with bytes, entropy,
 //! time and verification answers.
 /// Modern TLS 1.3 suite identifiers.
-pub const Suite = @import("tls/crypto/Suite.zig").Suite;
+pub const Suite13 = @import("tls/crypto/Suite.zig").Suite13;
 /// Key-exchange groups.
 pub const Group = @import("tls/crypto/Group.zig").Group;
 /// Signature schemes a signing request names.

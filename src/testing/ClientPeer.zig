@@ -12,7 +12,7 @@ const Epoch = @import("../tls/record/Epoch.zig");
 const Schedule = @import("../tls/handshake/Schedule.zig");
 const Transcript = @import("../tls/handshake/Transcript.zig").Transcript;
 const peer_module = @import("Peer.zig");
-const Suite = suites.Suite;
+const Suite13 = suites.Suite13;
 
 pub const pki = peer_module.pki;
 
@@ -74,7 +74,7 @@ pub const Config = struct {
     first_record_version: u16 = 0x0301,
 };
 
-pub fn ClientPeer(comptime suite: Suite) type {
+pub fn ClientPeer(comptime suite: Suite13) type {
     const K = Schedule.Schedule(suite);
     const Hash = suites.Hash(suite);
     const E = Epoch.Epoch(suite);

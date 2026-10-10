@@ -2,7 +2,7 @@
 //! the choice then fixes one and erases the other.
 const std = @import("std");
 const Transcript = @import("Transcript.zig").Transcript;
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const suites = @import("../crypto/Suite.zig");
 
 const Sha256 = Transcript(std.crypto.hash.sha2.Sha256);
@@ -20,7 +20,7 @@ state: union(enum) {
 const Self = @This();
 
 /// Fixes the hash once; a later call must name the same hash family.
-pub fn select(self: *Self, suite: Suite) void {
+pub fn select(self: *Self, suite: Suite13) void {
     @setRuntimeSafety(true);
     switch (self.state) {
         .pending => |*both| {

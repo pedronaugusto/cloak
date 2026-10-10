@@ -8,7 +8,7 @@ const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
-const Suite = suites.Suite;
+const Suite13 = suites.Suite13;
 const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -91,7 +91,7 @@ pub const Need = union(enum) {
 pub const SignRequest = struct { scheme: Hello.SignatureScheme, content: []const u8 };
 
 pub const Info = struct {
-    suite: Suite,
+    suite: Suite13,
     group: Group,
     alpn: []const u8,
     server_name: []const u8,
@@ -158,12 +158,12 @@ post: ?Emit = null,
 // Hello state.
 /// Handshake-only state, one allocation released when the connection is established.
 scratch: ?*Scratch,
-retry_suite: ?Suite = null,
+retry_suite: ?Suite13 = null,
 retry_group: ?Group = null,
 ccs_sent: bool = false,
 total_bytes: usize = 0,
 // Negotiation and peer state.
-suite: ?Suite = null,
+suite: ?Suite13 = null,
 group: ?Group = null,
 keys: ?Keys = null,
 alpn: []const u8 = "",
@@ -197,14 +197,14 @@ const Scratch = struct {
     sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
 };
 
-fn Keyed(comptime suite: Suite) type {
+fn Keyed(comptime suite: Suite13) type {
     return struct {
         const K = Schedule.Schedule(suite);
         schedule: K,
         handshake: K.Traffic,
     };
 }
-const Keys = union(Suite) {
+const Keys = union(Suite13) {
     aes_128_gcm_sha256: Keyed(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Keyed(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Keyed(.chacha20_poly1305_sha256),
@@ -594,14 +594,14 @@ fn emitHandshakeSecrets(self: *Client) Error!void {
     }
 }
 
-fn install(self: *Client, direction: Direction, epoch: Epoch, suite: Suite, len: usize, secret: []const u8, label: []const u8) Error!void {
+fn install(self: *Client, direction: Direction, epoch: Epoch, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Error!void {
     @setRuntimeSafety(true);
     var made = self.makeTraffic(suite, len, secret, label);
     errdefer made.secret.deinit();
     try self.push(.{ .secret = .{ .direction = direction, .epoch = epoch, .traffic = made } });
 }
 
-fn makeTraffic(self: *const Client, suite: Suite, len: usize, secret: []const u8, label: []const u8) Traffic {
+fn makeTraffic(self: *const Client, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Traffic {
     @setRuntimeSafety(true);
     var holder = aegis.Secret([Transcripts.max_digest]u8).init(@splat(0));
     @memcpy(holder.exposeMut()[0..len], secret[0..len]);

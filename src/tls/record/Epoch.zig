@@ -15,7 +15,7 @@ pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength,
 pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
 
-pub fn Epoch(comptime suite: suites.Suite) type {
+pub fn Epoch(comptime suite: suites.Suite13) type {
     const A = suites.Aead(suite);
     const Hash = suites.Hash(suite);
     return struct {
@@ -175,7 +175,7 @@ fn overlap(a: []const u8, b: []const u8) bool {
 }
 comptime {
     std.debug.assert(max_inner + 16 <= max_ciphertext);
-    for (std.enums.values(suites.Suite)) |suite| std.debug.assert(@sizeOf(Epoch(suite)) <= 192);
+    for (std.enums.values(suites.Suite13)) |suite| std.debug.assert(@sizeOf(Epoch(suite)) <= 192);
 }
 test {
     _ = @import("Epoch_test.zig");

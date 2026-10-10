@@ -4,7 +4,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const State = @import("State.zig");
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const Transcripts = @import("Transcripts.zig");
 
 pub const Epoch = State.Epoch;
@@ -12,7 +12,7 @@ pub const Direction = enum { read, write };
 
 /// A secret to install. The receiver owns and erases it.
 pub const Traffic = struct {
-    suite: Suite,
+    suite: Suite13,
     secret: aegis.Secret([Transcripts.max_digest]u8),
     len: u8,
 };

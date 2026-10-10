@@ -4,7 +4,7 @@ const record = @import("../tls/record.zig");
 const handshake = @import("../tls/handshake.zig");
 pub fn vectors() u32 {
     @setRuntimeSafety(true);
-    inline for (std.enums.values(record.Suite)) |suite| {
+    inline for (std.enums.values(record.Suite13)) |suite| {
         var tx = record.Epoch.Epoch(suite).init(@splat(1), @splat(2), .{}) catch return 1;
         defer tx.deinit();
         var rx = record.Epoch.Epoch(suite).init(@splat(1), @splat(2), .{}) catch return 2;
