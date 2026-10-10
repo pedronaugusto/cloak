@@ -7,6 +7,7 @@ for `example.com`, `*.example.org` and `192.0.2.7`, and `client` (P-256) and `cl
 client-authentication certificates for `client.example.com`. Validity runs from 2026-10-10 for
 a hundred years; tests supply their own time.
 
+`p256.key.pem`, `p384.key.pem`, `ed25519.key.pem` and `rsa.key.pem` are the server leaf keys for `PrivateKey.parse`.
 `*.secret` hold the raw private scalar (EC) or seed (Ed25519) so a test peer can sign without
 a PKCS parser. `client.key.pem` and `client_ed25519.key.pem` are the same client keys for
 `PrivateKey.parse`. `rsa-pss-sha256.sig` and `rsa-pkcs1-sha256.sig` are signatures by the RSA

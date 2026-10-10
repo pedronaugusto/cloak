@@ -212,6 +212,21 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
     return seal(&w);
 }
 
+/// A CertificateRequest with an empty context asking for these signature schemes.
+pub fn buildCertificateRequest(out: []u8, schemes: []const u16) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try header(&w, .certificate_request);
+    try w.int(u8, 0);
+    // safe: the extension is four bytes of header and the list, bounded by the scheme table.
+    try w.int(u16, @intCast(6 + schemes.len * 2));
+    try w.int(u16, 13);
+    try w.int(u16, @intCast(2 + schemes.len * 2));
+    try w.int(u16, @intCast(schemes.len * 2));
+    for (schemes) |scheme| try w.int(u16, scheme);
+    return seal(&w);
+}
+
 pub fn buildCertificateVerify(out: []u8, scheme: u16, signature: []const u8) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };

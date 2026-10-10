@@ -5,3 +5,5 @@ pub const Peer = @import("testing/Peer.zig");
 pub const Pair = @import("testing/Pair.zig");
 pub const QuicPair = @import("testing/QuicPair.zig");
 pub const Loopback = @import("testing/Loopback.zig");
+pub const ClientPeer = @import("testing/ClientPeer.zig");
+pub const ServerPair = @import("testing/ServerPair.zig");

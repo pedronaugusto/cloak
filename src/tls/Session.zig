@@ -9,6 +9,7 @@
 const std = @import("std");
 const certificates = @import("cloak.certificates");
 const Connection = @import("Connection.zig");
+const Server = @import("handshake/Server.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
 const Group = @import("crypto/Group.zig").Group;
 
@@ -138,6 +139,74 @@ pub fn open(
         .input = input,
         .output = output,
         .trust = options.trust,
+        .signer = options.signer,
+        .eof = options.eof,
+        .clock = options.clock,
+        .reader_interface = .{ .vtable = &reader_vtable, .buffer = read_buffer, .seek = 0, .end = 0 },
+        .writer_interface = .{ .vtable = &writer_vtable, .buffer = write_buffer },
+    };
+    errdefer session.conn.deinit();
+    try session.handshake();
+}
+
+/// What a server session needs: the chains it presents, a signer for their keys (cloak holds no
+/// signing code; the key stays with the signer), and how it treats a client's certificate.
+pub const ServerOptions = struct {
+    credentials: []const Server.Credential,
+    signer: Signer,
+    unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
+    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    alpn: []const []const u8 = &.{},
+    require_alpn: bool = false,
+    require_hybrid: bool = false,
+    client_auth: Server.Auth = .none,
+    /// How a presented client chain is checked.
+    client_trust: Trust = .none,
+    client_policy: certificates.types.Policy = .{},
+    limits: Connection.Limits = .{},
+    key_log: ?Connection.KeyLog = null,
+    eof: Eof = .strict,
+    clock: Clock = .real,
+};
+
+/// Performs the server handshake over `input` and `output`. The session must stay at this address.
+pub fn accept(
+    session: *Session,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    input: *std.Io.Reader,
+    output: *std.Io.Writer,
+    options: ServerOptions,
+    read_buffer: []u8,
+    write_buffer: []u8,
+) OpenError!void {
+    @setRuntimeSafety(true);
+    const policy: Connection.Verify = switch (options.client_trust) {
+        .none => .none,
+        .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.client_policy } },
+        .custom => |custom| .{ .full = .{ .trust_generation = custom.generation, .policy = options.client_policy } },
+    };
+    const conn = try Connection.server(gpa, .{
+        .credentials = options.credentials,
+        .unknown_name = options.unknown_name,
+        .suites = options.suites,
+        .groups = options.groups,
+        .alpn = options.alpn,
+        .require_alpn = options.require_alpn,
+        .require_hybrid = options.require_hybrid,
+        .client_auth = options.client_auth,
+        .client_verify = policy,
+        .limits = options.limits,
+        .key_log = options.key_log,
+    });
+    session.* = .{
+        .gpa = gpa,
+        .io = io,
+        .conn = conn,
+        .input = input,
+        .output = output,
+        .trust = options.client_trust,
         .signer = options.signer,
         .eof = options.eof,
         .clock = options.clock,

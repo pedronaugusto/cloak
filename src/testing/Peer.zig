@@ -25,6 +25,10 @@ pub const pki = struct {
     pub const ed25519_secret = @embedFile("pki/ed25519.secret");
     pub const client_secret = @embedFile("pki/client.secret");
     pub const client_ed25519_secret = @embedFile("pki/client_ed25519.secret");
+    pub const p256_pem = @embedFile("pki/p256.key.pem");
+    pub const p384_pem = @embedFile("pki/p384.key.pem");
+    pub const ed25519_pem = @embedFile("pki/ed25519.key.pem");
+    pub const rsa_pem = @embedFile("pki/rsa.key.pem");
     pub const client_pem = @embedFile("pki/client.key.pem");
     pub const client_ed25519_pem = @embedFile("pki/client_ed25519.key.pem");
     /// A time inside every fixture's validity.

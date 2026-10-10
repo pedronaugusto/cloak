@@ -35,3 +35,13 @@ pub const Services = @import("handshake/Services.zig");
 test {
     _ = Services;
 }
+pub const ClientHello = @import("handshake/ClientHello.zig");
+test {
+    _ = ClientHello;
+}
+pub const Flight = @import("handshake/Flight.zig");
+pub const Server = @import("handshake/Server.zig");
+test {
+    _ = Server;
+}
+pub const Machine = @import("handshake/Machine.zig");

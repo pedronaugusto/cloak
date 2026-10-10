@@ -162,6 +162,84 @@ pub const Share = struct {
     }
 };
 
+/// Fresh CSPRNG bytes `respond` needs for a group.
+pub fn respondEntropyLength(group: Group) usize {
+    return switch (group) {
+        .x25519 => X25519.seed_length,
+        .p256 => ecdh.P256.scalar_length,
+        .p384 => ecdh.P384.scalar_length,
+        .x25519_mlkem768 => MlKem.encaps_seed_length + X25519.seed_length,
+    };
+}
+
+/// The server's half of an exchange: the `key_exchange` bytes to send and the agreed secret.
+pub const Response = struct {
+    public: [max_share]u8,
+    public_len: usize,
+    agreed: Agreed,
+    pub fn wire(self: *const Response) []const u8 {
+        return self.public[0..self.public_len];
+    }
+    pub fn deinit(self: *Response) void {
+        self.agreed.deinit();
+        std.crypto.secureZero(u8, &self.public);
+        self.* = undefined;
+    }
+};
+
+/// Answers a client's key_share entry for `group`. `entropy` must hold exactly
+/// `respondEntropyLength(group)` fresh bytes; `InvalidEntropy` (a scalar draw outside its range)
+/// is public and the caller draws again. A malformed or small-order client share is `InvalidShare`
+/// or `WeakKey`, never an agreed secret.
+pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!Response {
+    @setRuntimeSafety(true);
+    if (entropy.len != respondEntropyLength(group)) return error.InvalidEntropy;
+    if (client_share.len != group.clientShareLength()) return error.InvalidShare;
+    var out: Response = .{ .public = @splat(0), .public_len = group.serverShareLength(), .agreed = .{ .secret = .init(@splat(0)), .len = 0 } };
+    errdefer out.deinit();
+    const into = out.agreed.secret.exposeMut();
+    switch (group) {
+        .x25519 => {
+            var key = X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+            out.public[0..32].* = key.public_key;
+            var shared = X25519.scalarmult(key.secret_key, client_share[0..32].*) catch return error.WeakKey;
+            defer std.crypto.secureZero(u8, &shared);
+            into[0..32].* = shared;
+            out.agreed.len = 32;
+        },
+        .x25519_mlkem768 => {
+            const ek = MlKem.PublicKey.fromBytes(client_share[0..MlKem.PublicKey.encoded_length]) catch return error.InvalidShare;
+            var sealed = ek.encapsDeterministic(entropy[0..MlKem.encaps_seed_length]);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&sealed));
+            var key = X25519.KeyPair.generateDeterministic(entropy[MlKem.encaps_seed_length..][0..X25519.seed_length].*);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+            var shared = X25519.scalarmult(key.secret_key, client_share[MlKem.PublicKey.encoded_length..][0..32].*) catch return error.WeakKey;
+            defer std.crypto.secureZero(u8, &shared);
+            out.public[0..MlKem.ciphertext_length].* = sealed.ciphertext;
+            out.public[MlKem.ciphertext_length..][0..32].* = key.public_key;
+            into[0..32].* = sealed.shared_secret;
+            into[32..64].* = shared;
+            out.agreed.len = 64;
+        },
+        .p256 => try respondCurve(ecdh.P256, &out, client_share, entropy),
+        .p384 => try respondCurve(ecdh.P384, &out, client_share, entropy),
+    }
+    return out;
+}
+
+fn respondCurve(comptime G: type, out: *Response, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!void {
+    @setRuntimeSafety(true);
+    var scalar: [G.scalar_length]u8 = entropy[0..G.scalar_length].*;
+    defer std.crypto.secureZero(u8, &scalar);
+    G.publicKey(&scalar, out.public[0..G.public_length]) catch return error.InvalidEntropy;
+    G.agree(&scalar, client_share, out.agreed.secret.exposeMut()[0..G.scalar_length]) catch |err| return switch (err) {
+        error.InvalidPublicKey => error.InvalidShare,
+        error.InvalidScalar, error.IdentityElement => error.WeakKey,
+    };
+    out.agreed.len = G.scalar_length;
+}
+
 test {
     _ = @import("Exchange_test.zig");
 }

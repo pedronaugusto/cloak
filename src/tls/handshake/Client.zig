@@ -13,15 +13,17 @@ const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
+const ClientHello = @import("ClientHello.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
+const Flight = @import("Flight.zig");
 const Possession = @import("Possession.zig");
 const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
 
-pub const Epoch = State.Epoch;
-pub const Direction = enum { read, write };
+pub const Epoch = Flight.Epoch;
+pub const Direction = Flight.Direction;
 
 pub const Limits = struct {
     /// One handshake message, header included.
@@ -69,26 +71,8 @@ pub const Options = struct {
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
-/// A secret to install. The receiver owns and erases it.
-pub const Traffic = struct {
-    suite: Suite,
-    secret: aegis.Secret([Transcripts.max_digest]u8),
-    len: u8,
-};
-
-pub const Emit = union(enum) {
-    /// A complete handshake message at `start` in the flight buffer.
-    message: struct { epoch: Epoch, start: u32, len: u32 },
-    secret: struct { direction: Direction, epoch: Epoch, traffic: Traffic },
-    /// Send one compatibility change_cipher_spec record now.
-    compat_ccs,
-    /// A peer KeyUpdate: update the read keys, and answer with an update if asked.
-    key_update: struct { request_peer: bool },
-    /// A well-formed NewSessionTicket was received (not used before resumption).
-    ticket,
-    /// Everything this side owes has been queued and the peer is authenticated.
-    complete,
-};
+pub const Traffic = Flight.Traffic;
+pub const Emit = Flight.Emit;
 
 pub const Need = union(enum) {
     none,
@@ -129,13 +113,24 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     ParametersRejected,
     UnexpectedService,
     QueueFull,
-};
+    NoSharedGroup,
+    NoSharedSuite,
+    NoSignatureScheme,
+    UnrecognizedName,
+    CertificateRequired,
+    UnexpectedCookie,
+} || ClientHello.ParseError;
 
 /// The alert that reports an error to the peer. Local service failures are internal errors.
 pub fn alertFor(err: anyerror) Alert {
     return switch (err) {
         error.UnexpectedMessage, error.WrongEpoch, error.MissingProof, error.RecordAlignment => .unexpected_message,
         error.InvalidLength, error.InvalidMessage, error.EmptyCertificate, error.CertificateLimit => .decode_error,
+        error.NoSharedGroup, error.NoSharedSuite, error.NoSignatureScheme => .handshake_failure,
+        error.UnrecognizedName => .unrecognized_name,
+        error.CertificateRequired => .certificate_required,
+        error.DecodeError => .decode_error,
+        error.UnexpectedCookie => .illegal_parameter,
         error.DuplicateExtension, error.ExtensionLimit, error.InvalidHello, error.IllegalParameter, error.UnofferedSelection, error.InvalidShare, error.WeakKey, error.InvalidRetry => .illegal_parameter,
         error.UnsolicitedExtension => .unsupported_extension,
         error.MissingExtension => .missing_extension,
@@ -159,8 +154,6 @@ state: State.State,
 need_now: Need = .{ .entropy = .{ .len = 0 } },
 /// A post-handshake output (ticket, key update), once the queue is released.
 post: ?Emit = null,
-flight: []u8 = &.{},
-flight_len: usize = 0,
 // Hello state.
 /// Handshake-only state, one allocation released when the connection is established.
 scratch: ?*Scratch,
@@ -185,9 +178,7 @@ established: bool = false,
 app_write: ?Traffic = null,
 
 const Scratch = struct {
-    queue: [16]?Emit = @splat(null),
-    queue_head: usize = 0,
-    queue_len: usize = 0,
+    flight: Flight = .{},
     transcripts: Transcripts = .{},
     random: [32]u8 = @splat(0),
     session: [32]u8 = @splat(0),
@@ -249,7 +240,7 @@ pub fn deinit(self: *Client) void {
 pub fn wipe(self: *Client) void {
     @setRuntimeSafety(true);
     self.releaseScratch();
-    if (self.post) |*emit| eraseEmit(emit);
+    if (self.post) |*emit| Flight.eraseEmit(emit);
     self.post = null;
     if (self.keys) |*keys| switch (keys.*) {
         inline else => |*k| {
@@ -258,12 +249,6 @@ pub fn wipe(self: *Client) void {
         },
     };
     self.keys = null;
-    if (self.flight.len != 0) {
-        std.crypto.secureZero(u8, self.flight);
-        self.gpa.free(self.flight);
-        self.flight = &.{};
-        self.flight_len = 0;
-    }
     if (self.held.len != 0) {
         self.gpa.free(self.held);
         self.held = &.{};
@@ -357,19 +342,12 @@ fn eraseShares(self: *Client) void {
     };
 }
 
-fn eraseEmit(emit: *Emit) void {
-    switch (emit.*) {
-        .secret => |*s| s.traffic.secret.deinit(),
-        else => {},
-    }
-}
-
 /// Erases and frees the handshake-only state.
 fn releaseScratch(self: *Client) void {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse return;
     self.eraseShares();
-    for (&scratch.queue) |*slot| if (slot.*) |*emit| eraseEmit(emit);
+    scratch.flight.deinit(self.gpa);
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -455,29 +433,22 @@ pub fn pop(self: *Client) ?Emit {
         self.post = null;
         return emit;
     };
-    if (scratch.queue_len == 0) return null;
-    const emit = scratch.queue[scratch.queue_head].?;
-    scratch.queue[scratch.queue_head] = null;
-    scratch.queue_head = (scratch.queue_head + 1) % scratch.queue.len;
-    scratch.queue_len -= 1;
-    return emit;
+    return scratch.flight.pop();
 }
 
 pub fn pending(self: *const Client) bool {
     const scratch = self.scratch orelse return self.post != null;
-    return scratch.queue_len != 0;
+    return scratch.flight.pending();
 }
 
 /// Bytes of a queued message; valid until `recycle` or the next input.
 pub fn flightBytes(self: *const Client, start: u32, len: u32) []const u8 {
-    @setRuntimeSafety(true);
-    return self.flight[start..][0..len];
+    return self.scratch.?.flight.bytes(start, len);
 }
 
 /// Releases the flight buffer for reuse once every message emitted so far was read.
 pub fn recycle(self: *Client) void {
-    @setRuntimeSafety(true);
-    if (!self.pending()) self.flight_len = 0;
+    if (self.scratch) |scratch| scratch.flight.recycle();
 }
 
 fn push(self: *Client, emit: Emit) Error!void {
@@ -487,33 +458,18 @@ fn push(self: *Client, emit: Emit) Error!void {
         self.post = emit;
         return;
     };
-    if (scratch.queue_len == scratch.queue.len) return error.QueueFull;
-    scratch.queue[(scratch.queue_head + scratch.queue_len) % scratch.queue.len] = emit;
-    scratch.queue_len += 1;
+    try scratch.flight.push(emit);
 }
 
 fn reserve(self: *Client, want: usize) Error![]u8 {
-    @setRuntimeSafety(true);
-    const needed = std.math.add(usize, self.flight_len, want) catch return error.HandshakeLimit;
-    if (needed > self.flight.len) {
-        if (needed > self.options.limits.handshake) return error.HandshakeLimit;
-        const capacity = @min(self.options.limits.handshake, @max(needed, @max(4096, self.flight.len * 2)));
-        const grown = try self.gpa.alloc(u8, capacity);
-        @memcpy(grown[0..self.flight_len], self.flight[0..self.flight_len]);
-        std.crypto.secureZero(u8, self.flight);
-        self.gpa.free(self.flight);
-        self.flight = grown;
-    }
-    return self.flight[self.flight_len..];
+    return self.scratch.?.flight.reserve(self.gpa, want, self.options.limits.handshake);
 }
 
 /// `message` was built at the end of the flight buffer: commit it to the transcript and queue it.
 fn queueMessage(self: *Client, epoch: Epoch, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
     try self.scratch.?.transcripts.commit(wire);
-    // safe: the flight buffer is bounded by the handshake limit, well below 4 GiB.
-    try self.push(.{ .message = .{ .epoch = epoch, .start = @intCast(self.flight_len), .len = @intCast(wire.len) } });
-    self.flight_len += wire.len;
+    try self.scratch.?.flight.queueMessage(epoch, wire.len);
 }
 
 fn sendCompatCcs(self: *Client) Error!void {
@@ -850,12 +806,6 @@ pub fn settle(self: *Client) void {
     @setRuntimeSafety(true);
     if (!self.established or self.pending()) return;
     self.releaseScratch();
-    if (self.flight.len != 0) {
-        std.crypto.secureZero(u8, self.flight);
-        self.gpa.free(self.flight);
-        self.flight = &.{};
-        self.flight_len = 0;
-    }
     if (self.held.len != 0) {
         self.gpa.free(self.held);
         self.held = &.{};

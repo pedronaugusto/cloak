@@ -3,6 +3,7 @@
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("Client.zig");
+const Machine = @import("Machine.zig");
 const Alert = @import("../wire/Alert.zig").Alert;
 
 pub const SignRequest = Client.SignRequest;
@@ -46,7 +47,7 @@ pub fn init(generation: types.ConnectionGeneration) Services {
 }
 
 /// The service the handshake is waiting for, if any. Parameters wait on the QUIC owner.
-pub fn request(self: *Services, client: *const Client) ?Request {
+pub fn request(self: *Services, client: Machine) ?Request {
     @setRuntimeSafety(true);
     const need = client.need();
     if (need == .none or need == .parameters) return null;
@@ -70,7 +71,7 @@ pub fn request(self: *Services, client: *const Client) ?Request {
 /// Delivers an answer to the request `token` names. A rejected scalar draw
 /// (`InvalidEntropy`) is public and leaves the request open for a fresh one; every other
 /// error is the caller's to treat as terminal.
-pub fn answer(self: *Services, client: *Client, token: types.Token, response: Answer) AnswerError!void {
+pub fn answer(self: *Services, client: Machine, token: types.Token, response: Answer) AnswerError!void {
     @setRuntimeSafety(true);
     const open = self.open orelse return error.NoRequest;
     if (token.generation != open.generation or token.id != open.id) return error.StaleToken;

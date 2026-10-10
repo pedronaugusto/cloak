@@ -235,6 +235,82 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
     if (options.quic and !has_parameters) return error.MissingExtension;
     return .{ .alpn = alpn, .parameters = parameters };
 }
+
+/// A ServerHello selecting `suite` and answering the client's share for `group`.
+pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite, group: Group, share: []const u8) Writer.WriteError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try w.put(&.{ 2, 0, 0, 0, 3, 3 });
+    try w.put(random);
+    try w.vector(u8, session);
+    try w.int(u16, @backingInt(suite));
+    try w.put(&.{0});
+    const ext_at = w.pos;
+    try w.int(u16, 0);
+    try w.put(&.{ 0, 43, 0, 2, 3, 4 });
+    try w.int(u16, 51);
+    // safe: a key_exchange entry is at most 1,120 bytes.
+    try w.int(u16, @intCast(4 + share.len));
+    try w.int(u16, @backingInt(group));
+    try w.vector(u16, share);
+    // safe: the extension block holds two short extensions.
+    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
+    // safe: the whole message is bounded by the caller's buffer, far below 2^24.
+    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
+    return out[0..w.pos];
+}
+
+/// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4).
+pub fn buildRetry(out: []u8, session: []const u8, suite: Suite, group: Group) Writer.WriteError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try w.put(&.{ 2, 0, 0, 0, 3, 3 });
+    try w.put(&retry_random);
+    try w.vector(u8, session);
+    try w.int(u16, @backingInt(suite));
+    try w.put(&.{0});
+    try w.int(u16, 12);
+    try w.put(&.{ 0, 43, 0, 2, 3, 4 });
+    try w.put(&.{ 0, 51, 0, 2 });
+    try w.int(u16, @backingInt(group));
+    // safe: the message is 56 bytes plus the session id.
+    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
+    return out[0..w.pos];
+}
+
+pub const EncryptedParts = struct {
+    /// Acknowledge a server_name the client sent.
+    server_name: bool = false,
+    alpn: []const u8 = "",
+    /// The server's quic_transport_parameters, when QUIC.
+    parameters: ?[]const u8 = null,
+};
+
+pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try w.put(&.{ 8, 0, 0, 0 });
+    const ext_at = w.pos;
+    try w.int(u16, 0);
+    if (parts.server_name) try w.put(&.{ 0, 0, 0, 0 });
+    if (parts.alpn.len != 0) {
+        try w.int(u16, 16);
+        // safe: a protocol name is at most 255 bytes.
+        try w.int(u16, @intCast(parts.alpn.len + 3));
+        try w.int(u16, @intCast(parts.alpn.len + 1));
+        try w.vector(u8, parts.alpn);
+    }
+    if (parts.parameters) |parameters| {
+        try w.int(u16, 57);
+        try w.vector(u16, parameters);
+    }
+    // safe: parameters are bounded at 64 KiB by the options.
+    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
+    // safe: bounded by the caller's buffer.
+    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
+    return out[0..w.pos];
+}
+
 test {
     _ = @import("Hello_test.zig");
 }

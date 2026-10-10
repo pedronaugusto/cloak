@@ -115,3 +115,42 @@ fn symmetric(_: void, case: *shakedown.Case) !void {
     const expected = try X25519.scalarmult(server.secret_key, share.wire()[0..32].*);
     try std.testing.expectEqualSlices(u8, &expected, agreed.bytes());
 }
+
+test "C2 exchange server response agrees with the client share for every group" {
+    inline for (.{ Group.x25519, Group.x25519_mlkem768, Group.p256, Group.p384 }) |group| {
+        var client_entropy: [Exchange.entropyLength(group)]u8 = undefined;
+        fill(&client_entropy, 11);
+        var client = try Exchange.Share.init(group, &client_entropy);
+        defer client.deinit();
+        var server_entropy: [Exchange.respondEntropyLength(group)]u8 = undefined;
+        fill(&server_entropy, 91);
+        var response = try Exchange.respond(group, client.wire(), &server_entropy);
+        defer response.deinit();
+        var agreed = try client.agree(response.wire());
+        defer agreed.deinit();
+        try std.testing.expectEqualSlices(u8, response.agreed.bytes(), agreed.bytes());
+        // A share of the wrong length, or off the curve, never yields a secret.
+        try std.testing.expectError(error.InvalidShare, Exchange.respond(group, client.wire()[1..], &server_entropy));
+        try std.testing.expectError(error.InvalidEntropy, Exchange.respond(group, client.wire(), server_entropy[1..]));
+    }
+}
+
+test "C2 exchange server response refuses small-order and invalid client shares" {
+    var entropy: [32]u8 = undefined;
+    fill(&entropy, 5);
+    try std.testing.expectError(error.WeakKey, Exchange.respond(.x25519, &@as([32]u8, @splat(0)), &entropy));
+    var curve_entropy: [32]u8 = undefined;
+    fill(&curve_entropy, 6);
+    var off_curve: [65]u8 = @splat(1);
+    off_curve[0] = 4;
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(.p256, &off_curve, &curve_entropy));
+    var zero_scalar: [32]u8 = @splat(0);
+    var good_share: [65]u8 = undefined;
+    try ecdh.P256.publicKey(&curve_entropy, &good_share);
+    try std.testing.expectError(error.InvalidEntropy, Exchange.respond(.p256, &good_share, &zero_scalar));
+    // A hybrid share whose ML-KEM key is not canonical.
+    var kem_entropy: [64]u8 = undefined;
+    fill(&kem_entropy, 7);
+    var bad_hybrid: [1216]u8 = @splat(0xff);
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(.x25519_mlkem768, &bad_hybrid, &kem_entropy));
+}

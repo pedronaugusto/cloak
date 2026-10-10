@@ -6,6 +6,8 @@ const std = @import("std");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("handshake/Client.zig");
+const Machine = @import("handshake/Machine.zig");
+const Server = @import("handshake/Server.zig");
 const Services = @import("handshake/Services.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
@@ -97,7 +99,7 @@ const record_overhead = 5 + 1 + 16;
 const Connection = @This();
 
 gpa: std.mem.Allocator,
-hs: *Client,
+hs: Machine,
 limits: Limits,
 rx: ?Protection = null,
 tx: ?Protection = null,
@@ -157,7 +159,45 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .key_log = options.key_log,
         .generation = options.generation,
     });
-    return .{ .gpa = gpa, .hs = hs, .limits = options.limits, .services = .init(options.generation) };
+    return .{ .gpa = gpa, .hs = .{ .state = .{ .client = hs } }, .limits = options.limits, .services = .init(options.generation) };
+}
+
+pub const ServerOptions = struct {
+    /// Chains the server can present, with the names each answers for. At least one.
+    credentials: []const Server.Credential,
+    unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
+    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    /// Application protocols in the server's order of preference.
+    alpn: []const []const u8 = &.{},
+    require_alpn: bool = false,
+    require_hybrid: bool = false,
+    client_auth: Server.Auth = .none,
+    /// How a presented client chain is checked; required for authenticated client identities.
+    client_verify: Verify = .none,
+    limits: Limits = .{},
+    key_log: ?KeyLog = null,
+    generation: types.ConnectionGeneration = .fromRaw(0),
+};
+
+/// A server connection: the same record, request and key handling around the server handshake.
+pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connection {
+    @setRuntimeSafety(true);
+    const hs = try Server.init(gpa, .{
+        .suites = options.suites,
+        .groups = options.groups,
+        .alpn = options.alpn,
+        .require_alpn = options.require_alpn,
+        .require_hybrid = options.require_hybrid,
+        .credentials = options.credentials,
+        .unknown_name = options.unknown_name,
+        .client_auth = options.client_auth,
+        .client_verify = options.client_verify,
+        .limits = options.limits.handshake,
+        .key_log = options.key_log,
+        .generation = options.generation,
+    });
+    return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .limits = options.limits, .services = .init(options.generation) };
 }
 
 pub fn deinit(self: *Connection) void {
@@ -308,7 +348,7 @@ fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void 
         const n = @min(rest.len, max_content);
         const dst = try self.outbox.tail(self.gpa, n + record_overhead, self.limits.output + max_record);
         const wire = try self.sealRecord(.handshake, rest[0..n], dst);
-        if (self.tx == null and !self.sent_hello) {
+        if (self.tx == null and !self.sent_hello and self.hs.role() == .client) {
             // The first record of a ClientHello may carry the older legacy version.
             dst[1..3].* = .{ 3, 1 };
         }
@@ -535,7 +575,10 @@ fn checkHeader(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
     const kind = self.head[0];
     const length = std.mem.readInt(u16, self.head[3..5], .big);
-    if (!std.mem.eql(u8, self.head[1..3], &.{ 3, 3 })) return error.UnexpectedRecord;
+    // A client's first records may carry the older legacy version (RFC 8446 section 5.1).
+    const first_flight = self.hs.role() == .server and self.rx == null and kind == 22;
+    const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (first_flight and std.mem.eql(u8, self.head[1..3], &.{ 3, 1 }));
+    if (!version_ok) return error.UnexpectedRecord;
     switch (kind) {
         20, 21, 22 => if (length == 0 or length > max_content) return error.RecordOverflow,
         23 => {
@@ -670,4 +713,5 @@ pub fn receiveEof(self: *Connection) Error!void {
 
 test {
     _ = @import("Connection_test.zig");
+    _ = @import("ServerConnection_test.zig");
 }

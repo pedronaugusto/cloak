@@ -6,6 +6,7 @@ const std = @import("std");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("../handshake/Client.zig");
+const Machine = @import("../handshake/Machine.zig");
 const Services = @import("../handshake/Services.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
@@ -154,13 +155,13 @@ pub fn exportKeyingMaterial(self: *const Handshake, out: []u8, label: []const u8
 
 pub fn request(self: *Handshake) ?Request {
     if (self.failed) return null;
-    return self.services.request(self.hs);
+    return self.services.request(Machine.forClient(self.hs));
 }
 
 pub fn provide(self: *Handshake, token: types.Token, answer: Answer) Error!void {
     @setRuntimeSafety(true);
     if (self.failed) return error.Closed;
-    self.services.answer(self.hs, token, answer) catch |err| switch (err) {
+    self.services.answer(Machine.forClient(self.hs), token, answer) catch |err| switch (err) {
         error.InvalidEntropy, error.StaleToken, error.NoRequest => |open| return open,
         else => |fatal| return self.abort(fatal),
     };
