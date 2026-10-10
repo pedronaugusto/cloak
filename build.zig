@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
     const options_checker = b.addExecutable(.{ .name = "cloak-options-check", .root_module = b.createModule(.{ .root_source_file = b.path("ci/options.zig"), .target = host, .optimize = .safe }) });
     const run_options = b.addRunArtifact(options_checker);
     run_options.addArg(b.graph.zig_exe);
+    run_options.addFileArg(b.dependency("aegis", .{ .target = target, .optimize = optimize }).path("src/root.zig"));
     run_options.setCwd(b.path("."));
     b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
