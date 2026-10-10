@@ -13,7 +13,6 @@ const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
-const Reader = @import("../wire/Reader.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
 const Possession = @import("Possession.zig");
@@ -121,16 +120,16 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     Transcripts.CommitError || Labels.CheckError || Possession.Error || Exchange.AgreeError ||
     Schedule.InitError || Schedule.AdvanceError ||
     std.mem.Allocator.Error || error{
-        Pending,
-        InvalidEntropy,
-        EntropyUnavailable,
-        BadSignature,
-        VerificationFailed,
-        VerificationRejected,
-        ParametersRejected,
-        UnexpectedService,
-        QueueFull,
-    };
+    Pending,
+    InvalidEntropy,
+    EntropyUnavailable,
+    BadSignature,
+    VerificationFailed,
+    VerificationRejected,
+    ParametersRejected,
+    UnexpectedService,
+    QueueFull,
+};
 
 /// The alert that reports an error to the peer. Local service failures are internal errors.
 pub fn alertFor(err: anyerror) Alert {

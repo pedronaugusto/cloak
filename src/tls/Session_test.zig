@@ -1,7 +1,6 @@
 const std = @import("std");
 const certificates = @import("cloak.certificates");
 const Session = @import("Session.zig");
-const Connection = @import("Connection.zig");
 const peer_module = @import("../testing/Peer.zig");
 const Loopback = @import("../testing/Loopback.zig").Loopback;
 

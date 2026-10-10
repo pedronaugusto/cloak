@@ -37,7 +37,7 @@ pub const Agreed = struct {
     }
     pub fn deinit(self: *Agreed) void {
         self.secret.deinit();
-        self.len = 0;
+        self.* = undefined;
     }
 };
 
@@ -158,6 +158,7 @@ pub const Share = struct {
             },
         }
         std.crypto.secureZero(u8, &self.public);
+        self.* = undefined;
     }
 };
 

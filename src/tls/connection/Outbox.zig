@@ -31,7 +31,7 @@ pub fn tail(self: *Outbox, gpa: std.mem.Allocator, want: usize, cap: usize) Erro
     if (want > cap or live > cap - want) return error.OutputFull;
     if (self.buf.len - self.end < want) {
         if (self.start != 0) {
-            std.mem.copyForwards(u8, self.buf[0..live], self.buf[self.start..self.end]);
+            @memmove(self.buf[0..live], self.buf[self.start..self.end]);
             self.start = 0;
             self.end = live;
         }
@@ -64,5 +64,5 @@ pub fn trim(self: *Outbox, gpa: std.mem.Allocator) void {
 
 pub fn deinit(self: *Outbox, gpa: std.mem.Allocator) void {
     gpa.free(self.buf);
-    self.* = .{};
+    self.* = undefined;
 }

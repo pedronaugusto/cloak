@@ -40,54 +40,54 @@ test "credential ecdh matches std on random scalars and peers" {
 }
 fn differential(_: void, case: *shakedown.Case) !void {
     inline for (.{ .{ Ecdh.P256, std.crypto.ecc.P256 }, .{ Ecdh.P384, std.crypto.ecc.P384 } }) |pair| {
-        const G = pair[0];
-        const Point = pair[1];
-        var a: [G.scalar_length]u8 = undefined;
-        var b: [G.scalar_length]u8 = undefined;
+        const group = pair[0];
+        const curve = pair[1];
+        var a: [group.scalar_length]u8 = undefined;
+        var b: [group.scalar_length]u8 = undefined;
         defer std.crypto.secureZero(u8, &a);
         defer std.crypto.secureZero(u8, &b);
         for (&a) |*byte| byte.* = shakedown.gen.int(case.source, u8);
         for (&b) |*byte| byte.* = shakedown.gen.int(case.source, u8);
-        G.check(&a) catch return;
-        G.check(&b) catch return;
-        var a_public: [G.public_length]u8 = undefined;
-        var b_public: [G.public_length]u8 = undefined;
-        try G.publicKey(&a, &a_public);
-        try G.publicKey(&b, &b_public);
-        const reference = try Point.basePoint.mul(a, .big);
+        group.check(&a) catch return;
+        group.check(&b) catch return;
+        var a_public: [group.public_length]u8 = undefined;
+        var b_public: [group.public_length]u8 = undefined;
+        try group.publicKey(&a, &a_public);
+        try group.publicKey(&b, &b_public);
+        const reference = try curve.basePoint.mul(a, .big);
         try std.testing.expectEqualSlices(u8, &reference.toUncompressedSec1(), &a_public);
-        var one: [G.scalar_length]u8 = undefined;
-        var two: [G.scalar_length]u8 = undefined;
-        try G.agree(&a, &b_public, &one);
-        try G.agree(&b, &a_public, &two);
+        var one: [group.scalar_length]u8 = undefined;
+        var two: [group.scalar_length]u8 = undefined;
+        try group.agree(&a, &b_public, &one);
+        try group.agree(&b, &a_public, &two);
         try std.testing.expectEqualSlices(u8, &one, &two);
-        const expected = (try Point.fromSec1(&b_public)).mulPublic(a, .big);
+        const expected = (try curve.fromSec1(&b_public)).mulPublic(a, .big);
         try std.testing.expectEqualSlices(u8, &(try expected).affineCoordinates().x.toBytes(.big), &one);
     }
 }
 
 test "credential ecdh rejects out of range scalars and invalid peers" {
-    inline for (.{ Ecdh.P256, Ecdh.P384 }) |G| {
-        var zero: [G.scalar_length]u8 = @splat(0);
-        var out: [G.public_length]u8 = undefined;
-        try std.testing.expectError(error.InvalidScalar, G.publicKey(&zero, &out));
-        var full: [G.scalar_length]u8 = @splat(0xff);
-        try std.testing.expectError(error.InvalidScalar, G.publicKey(&full, &out));
-        var one: [G.scalar_length]u8 = @splat(0);
+    inline for (.{ Ecdh.P256, Ecdh.P384 }) |group| {
+        var zero: [group.scalar_length]u8 = @splat(0);
+        var out: [group.public_length]u8 = undefined;
+        try std.testing.expectError(error.InvalidScalar, group.publicKey(&zero, &out));
+        var full: [group.scalar_length]u8 = @splat(0xff);
+        try std.testing.expectError(error.InvalidScalar, group.publicKey(&full, &out));
+        var one: [group.scalar_length]u8 = @splat(0);
         one[one.len - 1] = 1;
-        var secret: [G.scalar_length]u8 = undefined;
-        try G.publicKey(&one, &out);
+        var secret: [group.scalar_length]u8 = undefined;
+        try group.publicKey(&one, &out);
         // Off-curve, wrong length, compressed and identity-shaped encodings.
         var bad = out;
         bad[bad.len - 1] ^= 1;
-        try std.testing.expectError(error.InvalidPublicKey, G.agree(&one, &bad, &secret));
-        try std.testing.expectError(error.InvalidPublicKey, G.agree(&one, out[0 .. out.len - 1], &secret));
+        try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, &bad, &secret));
+        try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, out[0 .. out.len - 1], &secret));
         var compressed = out;
         compressed[0] = 2;
-        try std.testing.expectError(error.InvalidPublicKey, G.agree(&one, compressed[0 .. 1 + G.scalar_length], &secret));
-        try std.testing.expectError(error.InvalidPublicKey, G.agree(&one, &[_]u8{0}, &secret));
-        var infinity: [G.public_length]u8 = @splat(0);
+        try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, compressed[0 .. 1 + group.scalar_length], &secret));
+        try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, &[_]u8{0}, &secret));
+        var infinity: [group.public_length]u8 = @splat(0);
         infinity[0] = 4;
-        try std.testing.expectError(error.InvalidPublicKey, G.agree(&one, &infinity, &secret));
+        try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, &infinity, &secret));
     }
 }

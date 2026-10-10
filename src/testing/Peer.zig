@@ -139,7 +139,7 @@ const Writer = struct {
     }
 };
 
-fn appendMessage(list: *std.ArrayList(u8), gpa: std.mem.Allocator, kind: u8, body: []const u8) !void {
+fn appendMessage(gpa: std.mem.Allocator, list: *std.ArrayList(u8), kind: u8, body: []const u8) !void {
     try list.append(gpa, kind);
     var len: [3]u8 = undefined;
     std.mem.writeInt(u24, &len, @intCast(body.len), .big);
@@ -222,7 +222,7 @@ pub fn Peer(comptime suite: Suite) type {
         }
         pub fn drained(self: *Self, n: usize) void {
             const rest = self.out.items.len - n;
-            std.mem.copyForwards(u8, self.out.items[0..rest], self.out.items[n..]);
+            @memmove(self.out.items[0..rest], self.out.items[n..]);
             self.out.shrinkRetainingCapacity(rest);
         }
 
@@ -244,7 +244,7 @@ pub fn Peer(comptime suite: Suite) type {
                 const record = try self.gpa.dupe(u8, bytes[0 .. 5 + length]);
                 defer self.gpa.free(record);
                 const rest = bytes.len - record.len;
-                std.mem.copyForwards(u8, self.input.items[0..rest], bytes[record.len..]);
+                @memmove(self.input.items[0..rest], bytes[record.len..]);
                 self.input.shrinkRetainingCapacity(rest);
                 try self.onRecord(record);
             }
@@ -540,7 +540,7 @@ pub fn Peer(comptime suite: Suite) type {
 
             var start = flight.items.len;
             if (self.config.request_client_cert and self.config.tamper != .certificate_request_late) {
-                try appendMessage(&flight, self.gpa, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
+                try appendMessage(self.gpa, &flight, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
                 marks[mark_count] = flight.items.len;
                 mark_count += 1;
             }
@@ -550,7 +550,7 @@ pub fn Peer(comptime suite: Suite) type {
             if (self.config.tamper == .certificate_request_late) {
                 try self.commitAll(flight.items[start..]);
                 start = flight.items.len;
-                try appendMessage(&flight, self.gpa, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
+                try appendMessage(self.gpa, &flight, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
                 marks[mark_count] = flight.items.len;
                 mark_count += 1;
             }
@@ -568,13 +568,13 @@ pub fn Peer(comptime suite: Suite) type {
             Labels.finished(Hash, &verify_data, &self.server_hs, &digest);
             if (self.config.tamper == .bad_finished) verify_data[0] ^= 1;
             start = flight.items.len;
-            try appendMessage(&flight, self.gpa, 20, &verify_data);
+            try appendMessage(self.gpa, &flight, 20, &verify_data);
             try self.commitAll(flight.items[start..]);
             marks[mark_count] = flight.items.len;
             mark_count += 1;
             self.server_finished_hash = self.transcript.digest();
             if (self.config.tamper == .finished_not_at_record_end) {
-                try appendMessage(&flight, self.gpa, 4, &.{ 0, 0, 0x1c, 0x20, 0, 0, 0, 0, 0, 0, 1, 'x', 0, 0 });
+                try appendMessage(self.gpa, &flight, 4, &.{ 0, 0, 0x1c, 0x20, 0, 0, 0, 0, 0, 0, 1, 'x', 0, 0 });
             }
             if (self.config.tamper == .application_before_finished) try self.sealOne(.application, "early");
             try self.sealFlight(flight.items, marks[0..mark_count]);
@@ -610,7 +610,7 @@ pub fn Peer(comptime suite: Suite) type {
                 try body.appendSlice(self.gpa, &.{ 0, 10, 0, 4, 0, 2, 0, 29 });
             }
             std.mem.writeInt(u16, body.items[0..2], @intCast(body.items.len - 2), .big);
-            try appendMessage(list, self.gpa, 8, body.items);
+            try appendMessage(self.gpa, list, 8, body.items);
         }
 
         fn certificateMessage(self: *Self, list: *std.ArrayList(u8)) !void {
@@ -641,7 +641,7 @@ pub fn Peer(comptime suite: Suite) type {
             std.mem.writeInt(u24, &len, @intCast(entries.items.len), .big);
             try body.appendSlice(self.gpa, &len);
             try body.appendSlice(self.gpa, entries.items);
-            try appendMessage(list, self.gpa, 11, body.items);
+            try appendMessage(self.gpa, list, 11, body.items);
         }
 
         fn certificateVerify(self: *Self, list: *std.ArrayList(u8), digest: []const u8) !void {
@@ -687,7 +687,7 @@ pub fn Peer(comptime suite: Suite) type {
             std.mem.writeInt(u16, body[0..2], scheme, .big);
             std.mem.writeInt(u16, body[2..4], @intCast(signature_len), .big);
             @memcpy(body[4..][0..signature_len], signature[0..signature_len]);
-            try appendMessage(list, self.gpa, 15, body[0 .. 4 + signature_len]);
+            try appendMessage(self.gpa, list, 15, body[0 .. 4 + signature_len]);
         }
 
         fn sealFlight(self: *Self, bytes: []const u8, marks: []const usize) !void {
@@ -735,7 +735,7 @@ pub fn Peer(comptime suite: Suite) type {
                 const message = try self.gpa.dupe(u8, items[0..len]);
                 defer self.gpa.free(message);
                 const rest = items.len - len;
-                std.mem.copyForwards(u8, self.client_flight.items[0..rest], items[len..]);
+                @memmove(self.client_flight.items[0..rest], items[len..]);
                 self.client_flight.shrinkRetainingCapacity(rest);
                 try self.onClientMessage(message);
             }

@@ -179,7 +179,7 @@ fn handshake(session: *Session) OpenError!void {
         if (session.conn.request() != null) continue;
         const data = session.input.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => {
-                session.conn.receiveEof() catch {};
+                session.conn.receiveEof() catch |eof_err| return session.transportFailedWith(eof_err);
                 return error.EndOfStream;
             },
             error.ReadFailed => return session.transportFailed(error.ReadFailed),
@@ -193,6 +193,11 @@ fn handshake(session: *Session) OpenError!void {
     }
     _ = try session.flushOutput();
     try session.output.flush();
+}
+
+fn transportFailedWith(session: *Session, err: anyerror) error{ReadFailed} {
+    session.failure = err;
+    return error.ReadFailed;
 }
 
 fn transportFailed(session: *Session, err: error{ ReadFailed, WriteFailed }) @TypeOf(err) {
@@ -316,7 +321,7 @@ fn plaintext(session: *Session) (ReadError || OpenError)![]const u8 {
             error.ReadFailed => return session.remember(error.ReadFailed),
         };
         const n = session.conn.receive(data) catch |err| {
-            session.pushOutput() catch {};
+            session.pushOutput() catch |push_err| return session.remember(push_err);
             return session.remember(err);
         };
         session.input.toss(n);

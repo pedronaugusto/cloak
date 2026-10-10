@@ -3,11 +3,9 @@
 //! reads authenticated plaintext from `readable`. The connection owns record keys, sequence
 //! numbers and the handshake; it never touches a socket, a clock or a random source.
 const std = @import("std");
-const aegis = @import("aegis");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("handshake/Client.zig");
-const Hello = @import("handshake/Hello.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
 const Suite = @import("crypto/Suite.zig").Suite;
@@ -236,13 +234,16 @@ pub fn request(self: *Connection) ?Request {
         self.token = .{ .generation = self.generation, .id = .fromRaw(self.next_request) };
     }
     const token = self.token.?;
-    return .{ .token = token, .service = switch (need) {
-        .entropy => |e| .{ .entropy = e.len },
-        .time => .time,
-        .verify => .{ .verify = self.hs.verification(token) },
-        .sign => .{ .sign = self.hs.signRequest() },
-        .none, .parameters => unreachable, // filtered above
-    } };
+    return .{
+        .token = token,
+        .service = switch (need) {
+            .entropy => |e| .{ .entropy = e.len },
+            .time => .time,
+            .verify => .{ .verify = self.hs.verification(token) },
+            .sign => .{ .sign = self.hs.signRequest() },
+            .none, .parameters => unreachable, // filtered above
+        },
+    };
 }
 
 pub fn provide(self: *Connection, token: types.Token, answer: Answer) ProvideError!void {
@@ -636,7 +637,7 @@ fn onAlert(self: *Connection) ReceiveError!void {
     const body = self.record[self.plain_pos..self.plain_end];
     self.clearRecord();
     if (body.len != 2 or (body[0] != 1 and body[0] != 2)) return error.UnexpectedRecord;
-    const alert: Alert = @enumFromInt(body[1]);
+    const alert: Alert = @fromBackingInt(@intCast(body[1]));
     self.alert_received = alert;
     if (alert == .close_notify and self.phase_now == .connected) {
         self.read_done = true;

@@ -29,7 +29,7 @@ pub const ParseError = Reader.ReadError || Extensions.NextError || error{
 pub fn body(message: []const u8) ParseError!struct { kind: Type, bytes: []const u8 } {
     @setRuntimeSafety(true);
     if (message.len < 4 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
-    return .{ .kind = @enumFromInt(message[0]), .bytes = message[4..] };
+    return .{ .kind = @fromBackingInt(@intCast(message[0])), .bytes = message[4..] };
 }
 
 pub const max_certificates = 16;

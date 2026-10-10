@@ -93,9 +93,12 @@ test "C2 exchange erases the private half" {
     var entropy: [32]u8 = undefined;
     fill(&entropy, 1);
     var share = try Exchange.Share.init(.x25519, &entropy);
+    const secret = share.private.x25519.expose().*;
+    const public = share.public;
+    try std.testing.expect(std.mem.find(u8, std.mem.asBytes(&share), &secret) != null);
     share.deinit();
-    try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&share.private.x25519), 0));
-    try std.testing.expect(std.mem.allEqual(u8, &share.public, 0));
+    try std.testing.expect(std.mem.find(u8, std.mem.asBytes(&share), &secret) == null);
+    try std.testing.expect(std.mem.find(u8, std.mem.asBytes(&share), public[0..32]) == null);
 }
 
 test "C2 exchange agreement matches a symmetric peer for random entropy" {

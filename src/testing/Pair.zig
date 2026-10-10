@@ -6,6 +6,7 @@ const certificates = @import("cloak.certificates");
 const peer_module = @import("Peer.zig");
 const Connection = @import("../tls/Connection.zig");
 const Suite = @import("../tls/crypto/Suite.zig").Suite;
+const Group = @import("../tls/crypto/Group.zig").Group;
 
 pub const pki = peer_module.pki;
 
@@ -23,7 +24,7 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
-    groups: []const @import("../tls/crypto/Group.zig").Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     limits: Connection.Limits = .{},
     compat: bool = true,
     /// Suites the client offers; the peer always selects the pair's suite.

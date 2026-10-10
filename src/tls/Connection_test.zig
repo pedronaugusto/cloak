@@ -561,9 +561,10 @@ test "C2 late and repeated service answers are refused" {
 
 test "C2 key log lines carry each traffic secret" {
     const Sink = struct {
+        const Self = @This();
         lines: std.ArrayList(u8) = .empty,
         fn write(context: ?*anyopaque, line: []const u8) void {
-            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const self: *Self = @ptrCast(@alignCast(context.?));
             self.lines.appendSlice(std.testing.allocator, line) catch unreachable;
         }
     };
@@ -574,14 +575,14 @@ test "C2 key log lines carry each traffic secret" {
     try pair.handshake();
     const log = sink.lines.items;
     var random_hex: [64]u8 = undefined;
-    _ = std.fmt.bufPrint(&random_hex, "{x}", .{&pair.peer.seen.random}) catch unreachable;
+    _ = std.mem.print(&random_hex, "{x}", .{&pair.peer.seen.random}) catch unreachable;
     for ([_][]const u8{ "CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0", "EXPORTER_SECRET" }) |label| {
         try std.testing.expect(std.mem.find(u8, log, label) != null);
     }
     var expected: [256]u8 = undefined;
-    const line = try std.fmt.bufPrint(&expected, "CLIENT_HANDSHAKE_TRAFFIC_SECRET {s} {x}\n", .{ &random_hex, &pair.peer.client_hs });
+    const line = try std.mem.print(&expected, "CLIENT_HANDSHAKE_TRAFFIC_SECRET {s} {x}\n", .{ &random_hex, &pair.peer.client_hs });
     try std.testing.expect(std.mem.find(u8, log, line) != null);
-    const server_app = try std.fmt.bufPrint(&expected, "SERVER_TRAFFIC_SECRET_0 {s} {x}\n", .{ &random_hex, &pair.peer.server_app });
+    const server_app = try std.mem.print(&expected, "SERVER_TRAFFIC_SECRET_0 {s} {x}\n", .{ &random_hex, &pair.peer.server_app });
     try std.testing.expect(std.mem.find(u8, log, server_app) != null);
 }
 

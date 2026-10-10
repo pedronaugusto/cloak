@@ -82,4 +82,5 @@ pub fn deinit(self: *Protection) void {
     switch (self.state) {
         inline else => |*e| e.deinit(),
     }
+    self.* = undefined;
 }
