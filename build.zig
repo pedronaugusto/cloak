@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     }
     const host = b.graph.host;
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,
         .optimize = optimize,
@@ -123,7 +123,12 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const armor = b.createModule(.{ .root_source_file = b.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
     addAegis(b, armor, target, optimize);
     const shakedown = b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize }) catch @panic("missing test dependency for benchmarks");
+    // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
+    const harness = b.createModule(.{ .root_source_file = b.path("src/testing.zig"), .target = target, .optimize = optimize });
+    addAegis(b, harness, target, optimize);
+    harness.addImport("cloak.certificates", createCloak(b, target, optimize).import_table.get("cloak.certificates").?);
     return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "harness", .module = harness },
         .{ .name = "cloak", .module = bench_module },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },

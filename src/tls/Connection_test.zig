@@ -586,10 +586,6 @@ test "C2 key log lines carry each traffic secret" {
     try std.testing.expect(std.mem.find(u8, log, server_app) != null);
 }
 
-test "C2 an idle connection stays within its state budget" {
-    try std.testing.expect(@sizeOf(Connection) <= 2048);
-}
-
 test "C2 handshake allocation failures leave nothing behind" {
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(no_resize.allocator(), allocationLifetime, .{});
@@ -643,4 +639,30 @@ fn chunking(_: void, case: *shakedown.Case) !void {
     try pair.handshake();
     try std.testing.expect(pair.conn.info().?.peer_authenticated);
     try std.testing.expect(pair.peer.client_finished_ok);
+}
+
+const Counting = shakedown.alloc.Counting;
+
+test "C2 connection memory: handshake peak and idle residue are measured and bounded" {
+    inline for (.{ Group.x25519, Group.x25519_mlkem768 }) |group| {
+        var count = Counting.init(std.testing.allocator);
+        const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .group = group }, .{ .client_gpa = count.allocator() });
+        defer pair.deinit();
+        try pair.handshake();
+        const peak = count.peak_bytes;
+        // Handshake scratch is freed once established; flush then trim leaves only the struct
+        // allocation of the handshake core, its exporter and state.
+        try pair.flush();
+        pair.conn.trim();
+        const idle = count.live_bytes;
+        std.debug.print("\nC2 memory group={s} handshake peak={d} bytes idle heap={d} bytes connection struct={d} bytes\n", .{ @tagName(group), peak, idle, @sizeOf(Connection) });
+        try std.testing.expect(peak <= 48 * 1024);
+        // Idle state is the struct plus its one small heap block: two traffic directions,
+        // sequences, suite and policy references, exporter state.
+        try std.testing.expect(idle + @sizeOf(Connection) <= 2048);
+        // Data keeps flowing after a trim: buffers come back on demand.
+        try pair.peer.send("after trim");
+        var buf: [16]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, "after trim", buf[0..try pair.read(&buf)]);
+    }
 }

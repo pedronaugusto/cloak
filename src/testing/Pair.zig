@@ -33,6 +33,8 @@ pub const Options = struct {
     key_log: ?Connection.KeyLog = null,
     /// Leave signing requests open so a test can answer them itself.
     hold_sign: bool = false,
+    /// The allocator behind the connection alone, to measure what it holds.
+    client_gpa: ?std.mem.Allocator = null,
 };
 
 pub fn Pair(comptime suite: Suite) type {
@@ -48,6 +50,9 @@ pub fn Pair(comptime suite: Suite) type {
         rng: std.Random.DefaultPrng,
         options: Options,
         verified: usize = 0,
+        /// Time spent inside the client connection's calls, for benchmarks.
+        client_ns: u64 = 0,
+        clock: ?std.Io = null,
         last_verification_error: ?anyerror = null,
         entropy_requests: usize = 0,
 
@@ -57,6 +62,8 @@ pub fn Pair(comptime suite: Suite) type {
             self.gpa = gpa;
             self.options = options;
             self.verified = 0;
+            self.client_ns = 0;
+            self.clock = null;
             self.last_verification_error = null;
             self.entropy_requests = 0;
             self.rng = .init(options.seed);
@@ -67,7 +74,7 @@ pub fn Pair(comptime suite: Suite) type {
             errdefer self.snapshot.deinit();
             self.peer = PeerType.init(gpa, config);
             errdefer self.peer.deinit();
-            self.conn = try Connection.client(gpa, .{
+            self.conn = try Connection.client(options.client_gpa orelse gpa, .{
                 .identity = options.identity,
                 .verify = if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins } },
                 .suites = options.offer orelse &.{suite},
@@ -93,8 +100,20 @@ pub fn Pair(comptime suite: Suite) type {
             gpa.destroy(self);
         }
 
+        fn now(self: *const Self) u64 {
+            const io = self.clock orelse return 0;
+            // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+            return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+        }
+
         /// Answers every open request. Returns whether any was answered.
         pub fn service(self: *Self) !bool {
+            const start = self.now();
+            defer self.client_ns += self.now() - start;
+            return self.serveAll();
+        }
+
+        fn serveAll(self: *Self) !bool {
             var answered = false;
             while (self.conn.request()) |request| {
                 if (request.service == .sign and self.options.hold_sign) return answered;
@@ -172,6 +191,8 @@ pub fn Pair(comptime suite: Suite) type {
             }
             const in = self.peer.pending();
             if (in.len != 0) {
+                const start = self.now();
+                defer self.client_ns += self.now() - start;
                 const n = self.conn.receive(in[0..@min(in.len, chunk)]) catch |err| {
                     // A failed connection may still hold an alert for the peer.
                     self.peer.drained(in.len);

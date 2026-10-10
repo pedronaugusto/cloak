@@ -312,6 +312,8 @@ fn plaintext(session: *Session) (ReadError || OpenError)![]const u8 {
         if (view.len != 0) return view;
         if (session.conn.readClosed()) return error.EndOfStream;
         session.pushOutput() catch |err| return session.remember(err);
+        // About to wait: an idle session holds no record or message buffers.
+        session.conn.trim();
         const data = session.input.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => {
                 if (session.eof == .allow) return error.EndOfStream;

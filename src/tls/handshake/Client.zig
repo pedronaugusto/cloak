@@ -156,22 +156,16 @@ gpa: std.mem.Allocator,
 options: Options,
 state: State.State,
 need_now: Need = .{ .entropy = .{ .len = 0 } },
-queue: [16]?Emit = @splat(null),
-queue_head: usize = 0,
-queue_len: usize = 0,
+/// A post-handshake output (ticket, key update), once the queue is released.
+post: ?Emit = null,
 flight: []u8 = &.{},
 flight_len: usize = 0,
 // Hello state.
-random: [32]u8 = @splat(0),
-session: [32]u8 = @splat(0),
-session_len: u8 = 0,
-shares: [2]?Exchange.Share = @splat(null),
-cookie: [4096]u8 = undefined,
-cookie_len: u16 = 0,
+/// Handshake-only state, one allocation released when the connection is established.
+scratch: ?*Scratch,
 retry_suite: ?Suite = null,
 retry_group: ?Group = null,
 ccs_sent: bool = false,
-transcripts: Transcripts = .{},
 total_bytes: usize = 0,
 // Negotiation and peer state.
 suite: ?Suite = null,
@@ -180,20 +174,33 @@ keys: ?Keys = null,
 alpn: []const u8 = "",
 peer_parameters: []u8 = &.{},
 held: []u8 = &.{},
-chain: [Messages.max_certificates][]const u8 = undefined,
-chain_len: usize = 0,
 now: ?i64 = null,
 request_id: u64 = 0,
 authenticated: bool = false,
-cr_schemes: [1024]u8 = undefined,
-cr_len: u16 = 0,
 requested_certificate: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
-sign_content: [Messages.max_signed]u8 = undefined,
-sign_content_len: u8 = 0,
 established: bool = false,
 /// The client's application write secret, queued after its Finished.
 app_write: ?Traffic = null,
+
+const Scratch = struct {
+    queue: [16]?Emit = @splat(null),
+    queue_head: usize = 0,
+    queue_len: usize = 0,
+    transcripts: Transcripts = .{},
+    random: [32]u8 = @splat(0),
+    session: [32]u8 = @splat(0),
+    session_len: u8 = 0,
+    shares: [2]?Exchange.Share = @splat(null),
+    cookie: [4096]u8 = undefined,
+    cookie_len: u16 = 0,
+    chain: [Messages.max_certificates][]const u8 = undefined,
+    chain_len: usize = 0,
+    cr_schemes: [1024]u8 = undefined,
+    cr_len: u16 = 0,
+    sign_content: [Messages.max_signed]u8 = undefined,
+    sign_content_len: u8 = 0,
+};
 
 fn Keyed(comptime suite: Suite) type {
     return struct {
@@ -218,7 +225,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     if (options.hello.quic and options.compat) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     const self = try gpa.create(Client);
-    self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = if (options.hello.quic) .quic else .stream } };
+    errdefer gpa.destroy(self);
+    const scratch = try gpa.create(Scratch);
+    errdefer gpa.destroy(scratch);
+    scratch.* = .{};
+    self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = if (options.hello.quic) .quic else .stream }, .scratch = scratch };
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
     if (options.auth) |auth| self.options.auth = auth.retain();
     return self;
@@ -236,16 +247,9 @@ pub fn deinit(self: *Client) void {
 /// Erases secrets and releases buffers; callable once the connection is established.
 pub fn wipe(self: *Client) void {
     @setRuntimeSafety(true);
-    for (&self.shares) |*slot| if (slot.*) |*share| {
-        share.deinit();
-        slot.* = null;
-    };
-    for (&self.queue) |*slot| if (slot.*) |*emit| switch (emit.*) {
-        .secret => |*s| s.traffic.secret.deinit(),
-        else => {},
-    };
-    self.queue = @splat(null);
-    self.queue_len = 0;
+    self.releaseScratch();
+    if (self.post) |*emit| eraseEmit(emit);
+    self.post = null;
     if (self.keys) |*keys| switch (keys.*) {
         inline else => |*k| {
             k.schedule.deinit();
@@ -253,9 +257,6 @@ pub fn wipe(self: *Client) void {
         },
     };
     self.keys = null;
-    std.crypto.secureZero(u8, &self.sign_content);
-    std.crypto.secureZero(u8, &self.random);
-    std.crypto.secureZero(u8, &self.session);
     if (self.flight.len != 0) {
         std.crypto.secureZero(u8, self.flight);
         self.gpa.free(self.flight);
@@ -320,17 +321,17 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
     errdefer self.eraseShares();
     if (self.state.phase == .start) {
         var at: usize = 0;
-        self.random = entropy[0..32].*;
+        self.scratch.?.random = entropy[0..32].*;
         at += 32;
         if (self.options.compat) {
-            self.session = entropy[at..][0..32].*;
-            self.session_len = 32;
+            self.scratch.?.session = entropy[at..][0..32].*;
+            self.scratch.?.session_len = 32;
             at += 32;
         }
         const initial = self.initialGroups();
         for (initial.groups[0..initial.count], 0..) |group, i| {
             const length = Exchange.entropyLength(group.?);
-            self.shares[i] = Exchange.Share.init(group.?, entropy[at..][0..length]) catch return error.InvalidEntropy;
+            self.scratch.?.shares[i] = Exchange.Share.init(group.?, entropy[at..][0..length]) catch return error.InvalidEntropy;
             at += length;
         }
         self.need_now = .none;
@@ -339,7 +340,7 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
         // A retry request named a group: one fresh share, the old halves are gone.
         const group = self.retry_group.?;
         self.eraseShares();
-        self.shares[0] = Exchange.Share.init(group, entropy) catch return error.InvalidEntropy;
+        self.scratch.?.shares[0] = Exchange.Share.init(group, entropy) catch return error.InvalidEntropy;
         self.need_now = .none;
         try self.sendCompatCcs();
         try self.sendHello();
@@ -348,10 +349,29 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
 
 fn eraseShares(self: *Client) void {
     @setRuntimeSafety(true);
-    for (&self.shares) |*slot| if (slot.*) |*share| {
+    const scratch = self.scratch orelse return;
+    for (&scratch.shares) |*slot| if (slot.*) |*share| {
         share.deinit();
         slot.* = null;
     };
+}
+
+fn eraseEmit(emit: *Emit) void {
+    switch (emit.*) {
+        .secret => |*s| s.traffic.secret.deinit(),
+        else => {},
+    }
+}
+
+/// Erases and frees the handshake-only state.
+fn releaseScratch(self: *Client) void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch orelse return;
+    self.eraseShares();
+    for (&scratch.queue) |*slot| if (slot.*) |*emit| eraseEmit(emit);
+    std.crypto.secureZero(u8, std.mem.asBytes(scratch));
+    self.gpa.destroy(scratch);
+    self.scratch = null;
 }
 
 pub fn provideTime(self: *Client, now: i64) Error!void {
@@ -366,7 +386,7 @@ pub fn verification(self: *const Client, token: types.Token) types.Request {
     @setRuntimeSafety(true);
     const full = self.options.verify.full;
     return .{
-        .chain = self.chain[0..self.chain_len],
+        .chain = self.scratch.?.chain[0..self.scratch.?.chain_len],
         .identity = self.options.identity,
         .purpose = .server,
         .time = self.now.?,
@@ -401,7 +421,7 @@ pub fn rejectVerification(self: *Client) void {
 
 pub fn signRequest(self: *const Client) SignRequest {
     @setRuntimeSafety(true);
-    return .{ .scheme = self.sign_scheme, .content = self.sign_content[0..self.sign_content_len] };
+    return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len] };
 }
 
 /// Checks the signature against the identity's public key before using it.
@@ -429,16 +449,22 @@ pub fn provideParameters(self: *Client, accept: bool) Error!void {
 
 pub fn pop(self: *Client) ?Emit {
     @setRuntimeSafety(true);
-    if (self.queue_len == 0) return null;
-    const emit = self.queue[self.queue_head].?;
-    self.queue[self.queue_head] = null;
-    self.queue_head = (self.queue_head + 1) % self.queue.len;
-    self.queue_len -= 1;
+    const scratch = self.scratch orelse {
+        const emit = self.post;
+        self.post = null;
+        return emit;
+    };
+    if (scratch.queue_len == 0) return null;
+    const emit = scratch.queue[scratch.queue_head].?;
+    scratch.queue[scratch.queue_head] = null;
+    scratch.queue_head = (scratch.queue_head + 1) % scratch.queue.len;
+    scratch.queue_len -= 1;
     return emit;
 }
 
 pub fn pending(self: *const Client) bool {
-    return self.queue_len != 0;
+    const scratch = self.scratch orelse return self.post != null;
+    return scratch.queue_len != 0;
 }
 
 /// Bytes of a queued message; valid until `recycle` or the next input.
@@ -450,14 +476,19 @@ pub fn flightBytes(self: *const Client, start: u32, len: u32) []const u8 {
 /// Releases the flight buffer for reuse once every message emitted so far was read.
 pub fn recycle(self: *Client) void {
     @setRuntimeSafety(true);
-    if (self.queue_len == 0) self.flight_len = 0;
+    if (!self.pending()) self.flight_len = 0;
 }
 
 fn push(self: *Client, emit: Emit) Error!void {
     @setRuntimeSafety(true);
-    if (self.queue_len == self.queue.len) return error.QueueFull;
-    self.queue[(self.queue_head + self.queue_len) % self.queue.len] = emit;
-    self.queue_len += 1;
+    const scratch = self.scratch orelse {
+        if (self.post != null) return error.QueueFull;
+        self.post = emit;
+        return;
+    };
+    if (scratch.queue_len == scratch.queue.len) return error.QueueFull;
+    scratch.queue[(scratch.queue_head + scratch.queue_len) % scratch.queue.len] = emit;
+    scratch.queue_len += 1;
 }
 
 fn reserve(self: *Client, want: usize) Error![]u8 {
@@ -478,7 +509,7 @@ fn reserve(self: *Client, want: usize) Error![]u8 {
 /// `message` was built at the end of the flight buffer: commit it to the transcript and queue it.
 fn queueMessage(self: *Client, epoch: Epoch, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
-    try self.transcripts.commit(wire);
+    try self.scratch.?.transcripts.commit(wire);
     // safe: the flight buffer is bounded by the handshake limit, well below 4 GiB.
     try self.push(.{ .message = .{ .epoch = epoch, .start = @intCast(self.flight_len), .len = @intCast(wire.len) } });
     self.flight_len += wire.len;
@@ -491,13 +522,22 @@ fn sendCompatCcs(self: *Client) Error!void {
     try self.push(.compat_ccs);
 }
 
+/// An upper bound on the encoded ClientHello: its fixed fields and extensions, plus every
+/// variable part.
+fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
+    @setRuntimeSafety(true);
+    var n: usize = 256 + self.options.hello.sni.len + self.options.hello.parameters.len + self.scratch.?.cookie_len;
+    for (self.options.hello.alpn) |protocol| n += 1 + protocol.len;
+    for (shares) |share| n += 4 + share.bytes.len;
+    return n;
+}
+
 fn sendHello(self: *Client) Error!void {
     @setRuntimeSafety(true);
     var offered: [2]Hello.Share = undefined;
     const shares = self.offeredShares(&offered);
-    const capacity = 16 * 1024 + self.options.hello.parameters.len;
-    const dst = try self.reserve(capacity);
-    const hello = try Hello.client(dst, &self.random, self.session[0..self.session_len], shares, self.cookie[0..self.cookie_len], self.options.hello);
+    const dst = try self.reserve(self.helloCapacity(shares));
+    const hello = try Hello.client(dst, &self.scratch.?.random, self.scratch.?.session[0..self.scratch.?.session_len], shares, self.scratch.?.cookie[0..self.scratch.?.cookie_len], self.options.hello);
     try self.state.advance(.client_hello, .initial, .parsed, true);
     try self.queueMessage(.initial, hello);
 }
@@ -534,7 +574,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
 fn offeredShares(self: *const Client, out: *[2]Hello.Share) []const Hello.Share {
     @setRuntimeSafety(true);
     var count: usize = 0;
-    for (&self.shares) |*slot| if (slot.*) |*share| {
+    for (&self.scratch.?.shares) |*slot| if (slot.*) |*share| {
         out[count] = .{ .group = share.group, .bytes = share.wire() };
         count += 1;
     };
@@ -544,20 +584,20 @@ fn offeredShares(self: *const Client, out: *[2]Hello.Share) []const Hello.Share 
 fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     var offered: [2]Hello.Share = undefined;
-    const parsed = try Hello.server(msg, self.session[0..self.session_len], self.offeredShares(&offered), self.options.hello);
+    const parsed = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello);
     if (parsed.retry) return self.onRetry(msg, parsed, epoch, boundary);
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     if (self.retry_suite) |suite| if (suite != parsed.suite) return error.IllegalParameter;
     const group = parsed.group.?;
-    const share = for (&self.shares) |*slot| {
+    const share = for (&self.scratch.?.shares) |*slot| {
         if (slot.*) |*candidate| if (candidate.group == group) break candidate;
     } else return error.InvalidHello;
     var agreed = try share.agree(parsed.share);
     defer agreed.deinit();
-    self.transcripts.select(parsed.suite);
-    try self.transcripts.commit(msg);
+    self.scratch.?.transcripts.select(parsed.suite);
+    try self.scratch.?.transcripts.commit(msg);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const hello_hash = self.transcripts.digest(&digest_buf);
+    const hello_hash = self.scratch.?.transcripts.digest(&digest_buf);
     self.suite = parsed.suite;
     self.group = group;
     switch (parsed.suite) {
@@ -613,7 +653,7 @@ fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
     at += label.len;
     line[at] = ' ';
     at += 1;
-    for (self.random) |b| {
+    for (self.scratch.?.random) |b| {
         line[at] = hex[b >> 4];
         line[at + 1] = hex[b & 15];
         at += 2;
@@ -632,12 +672,12 @@ fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
 fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.hello_retry, epoch, .parsed, boundary);
-    self.transcripts.select(parsed.suite);
-    try self.transcripts.retry(msg);
+    self.scratch.?.transcripts.select(parsed.suite);
+    try self.scratch.?.transcripts.retry(msg);
     self.retry_suite = parsed.suite;
-    @memcpy(self.cookie[0..parsed.cookie.len], parsed.cookie);
+    @memcpy(self.scratch.?.cookie[0..parsed.cookie.len], parsed.cookie);
     // safe: Hello.server bounds the cookie at 4096 bytes.
-    self.cookie_len = @intCast(parsed.cookie.len);
+    self.scratch.?.cookie_len = @intCast(parsed.cookie.len);
     if (parsed.group) |group| {
         self.retry_group = group;
         self.need_now = .{ .entropy = .{ .len = Exchange.entropyLength(group) } };
@@ -651,7 +691,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
     @setRuntimeSafety(true);
     try self.state.advance(.encrypted_extensions, epoch, .parsed, boundary);
     const parsed = try Hello.encrypted(msg, self.options.hello);
-    try self.transcripts.commit(msg);
+    try self.scratch.?.transcripts.commit(msg);
     for (self.options.hello.alpn) |offered| if (std.mem.eql(u8, offered, parsed.alpn)) {
         self.alpn = offered;
     };
@@ -667,12 +707,12 @@ fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: 
     try self.state.advance(.certificate_request, epoch, .parsed, boundary);
     const parsed = try Messages.certificateRequest(msg);
     if (parsed.context.len != 0) return error.IllegalParameter;
-    try self.transcripts.commit(msg);
+    try self.scratch.?.transcripts.commit(msg);
     self.requested_certificate = true;
-    const keep = @min(parsed.schemes.len, self.cr_schemes.len) & ~@as(usize, 1);
-    @memcpy(self.cr_schemes[0..keep], parsed.schemes[0..keep]);
+    const keep = @min(parsed.schemes.len, self.scratch.?.cr_schemes.len) & ~@as(usize, 1);
+    @memcpy(self.scratch.?.cr_schemes[0..keep], parsed.schemes[0..keep]);
     // safe: at most 1024 bytes are kept.
-    self.cr_len = @intCast(keep);
+    self.scratch.?.cr_len = @intCast(keep);
 }
 
 fn onCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -682,11 +722,11 @@ fn onCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     if (self.held.len != 0) self.gpa.free(self.held);
     self.held = try self.gpa.dupe(u8, msg);
     const limits = self.options.limits;
-    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.chain);
+    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain);
     if (parsed.context.len != 0) return error.IllegalParameter;
     if (parsed.count == 0) return error.EmptyCertificate;
-    self.chain_len = parsed.count;
-    try self.transcripts.commit(msg);
+    self.scratch.?.chain_len = parsed.count;
+    try self.scratch.?.transcripts.commit(msg);
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .handshake, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
@@ -699,10 +739,10 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     const parsed = try Messages.certificateVerify(msg);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
-    const content = Messages.signedContent(&content_buf, true, self.transcripts.digest(&digest_buf));
-    try Possession.verify(parsed.scheme, &Hello.schemes, self.chain[0], content, parsed.signature);
+    const content = Messages.signedContent(&content_buf, true, self.scratch.?.transcripts.digest(&digest_buf));
+    try Possession.verify(parsed.scheme, &Hello.schemes, self.scratch.?.chain[0], content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
-    try self.transcripts.commit(msg);
+    try self.scratch.?.transcripts.commit(msg);
 }
 
 fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -713,12 +753,12 @@ fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Erro
         inline else => |*k, tag| {
             const Hash = suites.Hash(tag);
             const received = try Messages.finished(msg, Hash.digest_length);
-            const before = self.transcripts.digest(&before_buf);
+            const before = self.scratch.?.transcripts.digest(&before_buf);
             try Labels.checkFinished(Hash, k.handshake.server.expose(), before[0..Hash.digest_length], received);
             try self.state.advance(.finished, epoch, .finished, boundary);
-            try self.transcripts.commit(msg);
+            try self.scratch.?.transcripts.commit(msg);
             var after_buf: [Transcripts.max_digest]u8 = undefined;
-            const after = self.transcripts.digest(&after_buf);
+            const after = self.scratch.?.transcripts.digest(&after_buf);
             var app: @TypeOf(k.schedule).Traffic = .{};
             defer app.deinit();
             try k.schedule.application(after[0..Hash.digest_length], &app);
@@ -738,7 +778,7 @@ fn continueFlight(self: *Client) Error!void {
     if (!self.requested_certificate) return self.finishFlight();
     const auth = self.options.auth orelse return self.sendEmptyCertificate();
     const cert = certificates.certificate.parse(auth.chain()[0], .{}) catch return self.sendEmptyCertificate();
-    const request: Messages.CertificateRequest = .{ .context = "", .schemes = self.cr_schemes[0..self.cr_len] };
+    const request: Messages.CertificateRequest = .{ .context = "", .schemes = self.scratch.?.cr_schemes[0..self.scratch.?.cr_len] };
     const scheme = Possession.choose(cert.public_key, request) orelse return self.sendEmptyCertificate();
     var total: usize = 64;
     for (auth.chain()) |der| total += der.len + 5;
@@ -747,9 +787,9 @@ fn continueFlight(self: *Client) Error!void {
     try self.state.advance(.local_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const content = Messages.signedContent(&self.sign_content, false, self.transcripts.digest(&digest_buf));
+    const content = Messages.signedContent(&self.scratch.?.sign_content, false, self.scratch.?.transcripts.digest(&digest_buf));
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
-    self.sign_content_len = @intCast(content.len);
+    self.scratch.?.sign_content_len = @intCast(content.len);
     self.sign_scheme = scheme;
     self.need_now = .sign;
 }
@@ -769,7 +809,7 @@ fn finishFlight(self: *Client) Error!void {
     switch (self.keys.?) {
         inline else => |*k, tag| {
             const Hash = suites.Hash(tag);
-            const digest = self.transcripts.digest(&digest_buf);
+            const digest = self.scratch.?.transcripts.digest(&digest_buf);
             var verify_data: [Hash.digest_length]u8 = undefined;
             Labels.finished(Hash, &verify_data, k.handshake.client.expose(), digest[0..Hash.digest_length]);
             const dst = try self.reserve(4 + Hash.digest_length);
@@ -807,8 +847,8 @@ fn onKeyUpdate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
 /// established and every output was read. Keys for the exporter and the info stay.
 pub fn settle(self: *Client) void {
     @setRuntimeSafety(true);
-    if (!self.established or self.queue_len != 0) return;
-    self.eraseShares();
+    if (!self.established or self.pending()) return;
+    self.releaseScratch();
     if (self.flight.len != 0) {
         std.crypto.secureZero(u8, self.flight);
         self.gpa.free(self.flight);
@@ -818,9 +858,7 @@ pub fn settle(self: *Client) void {
     if (self.held.len != 0) {
         self.gpa.free(self.held);
         self.held = &.{};
-        self.chain_len = 0;
     }
-    std.crypto.secureZero(u8, &self.sign_content);
 }
 
 pub fn info(self: *const Client) ?Info {
