@@ -5,7 +5,7 @@ const std = @import("std");
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Connection = @import("../tls/Connection.zig");
-const Suite = @import("../tls/crypto/Suite.zig").Suite;
+const Suite13 = @import("../tls/crypto/Suite.zig").Suite13;
 const Group = @import("../tls/crypto/Group.zig").Group;
 
 pub const pki = peer_module.pki;
@@ -28,7 +28,7 @@ pub const Options = struct {
     limits: Connection.Limits = .{},
     compat: bool = true,
     /// Suites the client offers; the peer always selects the pair's suite.
-    offer: ?[]const Suite = null,
+    offer: ?[]const Suite13 = null,
     trusted_root: ?[]const u8 = null,
     key_log: ?Connection.KeyLog = null,
     /// Leave signing requests open so a test can answer them itself.
@@ -37,7 +37,7 @@ pub const Options = struct {
     client_gpa: ?std.mem.Allocator = null,
 };
 
-pub fn Pair(comptime suite: Suite) type {
+pub fn Pair(comptime suite: Suite13) type {
     return struct {
         const Self = @This();
         pub const PeerType = peer_module.Peer(suite);

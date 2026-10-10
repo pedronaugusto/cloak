@@ -7,7 +7,7 @@ const ServerPair = harness.ServerPair.ServerPair;
 
 const Scenario = struct { name: []const u8, config: harness.Peer.Config, options: harness.Pair.Options };
 
-fn measure(comptime suite: harness.Suite, scenario: Scenario, init: std.process.Init, writer: *std.Io.Writer, samples: usize) !void {
+fn measure(comptime suite: harness.Suite13, scenario: Scenario, init: std.process.Init, writer: *std.Io.Writer, samples: usize) !void {
     const gpa = std.heap.smp_allocator;
     const times = try gpa.alloc(u64, samples);
     defer gpa.free(times);
@@ -32,7 +32,7 @@ fn measure(comptime suite: harness.Suite, scenario: Scenario, init: std.process.
 
 const ServerScenario = struct { name: []const u8, config: harness.ClientPeer.Config, options: harness.ServerPair.Options };
 
-fn measureServer(comptime suite: harness.Suite, scenario: ServerScenario, init: std.process.Init, writer: *std.Io.Writer, samples: usize) !void {
+fn measureServer(comptime suite: harness.Suite13, scenario: ServerScenario, init: std.process.Init, writer: *std.Io.Writer, samples: usize) !void {
     const gpa = std.heap.smp_allocator;
     const times = try gpa.alloc(u64, samples);
     defer gpa.free(times);
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "x25519 P-384 chain verified", .config = .{ .group = .x25519, .cert = .p384 }, .options = .{} },
         .{ .name = "x25519 no verification", .config = .{ .group = .x25519 }, .options = .{ .verify_none = true, .identity = .none } },
     };
-    inline for (.{ harness.Suite.aes_128_gcm_sha256, harness.Suite.chacha20_poly1305_sha256 }) |suite| {
+    inline for (.{ harness.Suite13.aes_128_gcm_sha256, harness.Suite13.chacha20_poly1305_sha256 }) |suite| {
         for (scenarios) |scenario| try measure(suite, scenario, init, &out.interface, samples);
     }
     const server_scenarios = [_]ServerScenario{
@@ -79,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "x25519 Ed25519 certificate", .config = .{ .shares = &.{.x25519}, .schemes = &.{0x0807} }, .options = .{ .cert = .ed25519 } },
         .{ .name = "x25519 client certificate", .config = .{ .shares = &.{.x25519}, .client_cert = true }, .options = .{ .client_auth = .required } },
     };
-    inline for (.{ harness.Suite.aes_128_gcm_sha256, harness.Suite.chacha20_poly1305_sha256 }) |suite| {
+    inline for (.{ harness.Suite13.aes_128_gcm_sha256, harness.Suite13.chacha20_poly1305_sha256 }) |suite| {
         for (server_scenarios) |scenario| try measureServer(suite, scenario, init, &out.interface, samples);
     }
     try out.interface.flush();

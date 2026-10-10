@@ -2,7 +2,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
-const Suite = @import("crypto/Suite.zig").Suite;
+const Suite13 = @import("crypto/Suite.zig").Suite13;
 const Group = @import("crypto/Group.zig").Group;
 const Alert = @import("wire/Alert.zig").Alert;
 const pair_module = @import("../testing/Pair.zig");
@@ -11,7 +11,7 @@ const Options = pair_module.Options;
 const peer_module = @import("../testing/Peer.zig");
 const pki = peer_module.pki;
 
-fn run(comptime suite: Suite, config: peer_module.Config, options: Options) !void {
+fn run(comptime suite: Suite13, config: peer_module.Config, options: Options) !void {
     const P = Pair(suite);
     const pair = try P.init(std.testing.allocator, config, options);
     defer pair.deinit();
@@ -49,7 +49,7 @@ fn retrying(group: Group) ?Group {
 }
 
 test "C2 connection completes a full handshake for every suite and group" {
-    inline for (std.enums.values(Suite)) |suite| {
+    inline for (std.enums.values(Suite13)) |suite| {
         inline for (.{ Group.x25519, Group.x25519_mlkem768, Group.p256, Group.p384 }) |group| {
             try run(suite, .{ .group = group, .retry = retrying(group) }, .{});
         }
@@ -73,7 +73,7 @@ test "C2 connection survives every record layout and one-byte delivery" {
 }
 
 /// The handshake must fail with `expected`, send `alert`, and leave nothing authenticated.
-fn fails(comptime suite: Suite, config: peer_module.Config, options: Options, expected: anyerror, alert: ?Alert) !void {
+fn fails(comptime suite: Suite13, config: peer_module.Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try Pair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
     try std.testing.expectError(expected, pair.handshake());

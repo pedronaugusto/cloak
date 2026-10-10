@@ -1,7 +1,7 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const Handshake = @import("Handshake.zig");
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const Group = @import("../crypto/Group.zig").Group;
 const QuicPair = @import("../../testing/QuicPair.zig").QuicPair;
 const peer_module = @import("../../testing/Peer.zig");
@@ -12,7 +12,7 @@ fn retrying(group: Group) ?Group {
 }
 
 test "C2 quic handshake completes for every suite and group and hands off matching secrets" {
-    inline for (std.enums.values(Suite)) |suite| {
+    inline for (std.enums.values(Suite13)) |suite| {
         inline for (.{ Group.x25519, Group.x25519_mlkem768, Group.p256 }) |group| {
             const P = QuicPair(suite);
             const pair = try P.init(std.testing.allocator, .{ .group = group, .retry = retrying(group), .alpn = "h3" }, .{});

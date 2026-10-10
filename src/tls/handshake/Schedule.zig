@@ -5,7 +5,7 @@ const Labels = @import("../crypto/Labels.zig");
 pub const InitError = error{InvalidSharedSecret};
 pub const AdvanceError = error{WrongPhase};
 pub const ExportError = AdvanceError || Labels.ExpandError;
-pub fn Schedule(comptime suite: suites.Suite) type {
+pub fn Schedule(comptime suite: suites.Suite13) type {
     const Hash = suites.Hash(suite);
     const Secret = aegis.Secret([Hash.digest_length]u8);
     return struct {

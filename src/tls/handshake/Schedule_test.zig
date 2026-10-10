@@ -36,7 +36,7 @@ test "C2 RFC8448 master application and exporter root schedule" {
     try std.testing.expect(!std.mem.eql(u8, &out, &other));
 }
 test "C2 schedule invalid phases never expose prior output" {
-    inline for (std.enums.values(suites.Suite)) |suite| {
+    inline for (std.enums.values(suites.Suite13)) |suite| {
         const K = S.Schedule(suite);
         const H = suites.Hash(suite);
         var traffic: K.Traffic = .{};

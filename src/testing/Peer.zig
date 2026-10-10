@@ -10,7 +10,7 @@ const Group = @import("../tls/crypto/Group.zig").Group;
 const Epoch = @import("../tls/record/Epoch.zig");
 const Schedule = @import("../tls/handshake/Schedule.zig");
 const Transcript = @import("../tls/handshake/Transcript.zig").Transcript;
-const Suite = suites.Suite;
+const Suite13 = suites.Suite13;
 
 pub const pki = struct {
     pub const ca = @embedFile("pki/ca.der");
@@ -176,7 +176,7 @@ fn signedContent(digest: []const u8, server: bool, out: *[64 + 34 + 48]u8) []con
     return out[0 .. 65 + label.len + digest.len];
 }
 
-pub fn Peer(comptime suite: Suite) type {
+pub fn Peer(comptime suite: Suite13) type {
     const K = Schedule.Schedule(suite);
     const Hash = suites.Hash(suite);
     const E = Epoch.Epoch(suite);

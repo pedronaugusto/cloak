@@ -2,9 +2,9 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const record = @import("records").Epoch;
-const Suite = @import("records").Suite;
+const Suite13 = @import("records").Suite13;
 const WorkError = record.InitError || record.SealError || record.OpenError || error{WrongPlaintext};
-fn Context(comptime suite: Suite, comptime size: usize) type {
+fn Context(comptime suite: Suite13, comptime size: usize) type {
     return struct {
         const Self = @This();
         tx: record.Epoch(suite) = undefined,
@@ -30,7 +30,7 @@ fn Context(comptime suite: Suite, comptime size: usize) type {
         }
     };
 }
-fn measure(comptime suite: Suite, comptime size: usize, init: std.process.Init, writer: *std.Io.Writer, commit: []const u8, smoke: bool) !void {
+fn measure(comptime suite: Suite13, comptime size: usize, init: std.process.Init, writer: *std.Io.Writer, commit: []const u8, smoke: bool) !void {
     var context: Context(suite, size) = .{};
     try shakedown.bench.run(WorkError, init.gpa, init.io, writer, &context, &.{.{
         .name = @tagName(suite) ++ "/" ++ std.fmt.comptimePrint("{d}", .{size}) ++ " seal/open/check",
@@ -45,6 +45,6 @@ pub fn main(init: std.process.Init) !void {
     const commit = if (args.len == 3 and std.mem.eql(u8, args[1], "--commit")) args[2] else "unrecorded";
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    inline for (std.enums.values(Suite)) |suite| inline for (.{ 64, 1024, 16384 }) |size| try measure(suite, size, init, &out.interface, commit, smoke);
+    inline for (std.enums.values(Suite13)) |suite| inline for (.{ 64, 1024, 16384 }) |size| try measure(suite, size, init, &out.interface, commit, smoke);
     try out.interface.flush();
 }

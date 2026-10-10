@@ -9,7 +9,7 @@ const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
-const Suite = suites.Suite;
+const Suite13 = suites.Suite13;
 const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -43,7 +43,7 @@ pub const Credential = struct {
 
 pub const Options = struct {
     /// Suites in the server's order of preference.
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     /// Groups in the server's order of preference.
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     /// Application protocols in the server's order of preference. When set and the client offers
@@ -91,7 +91,7 @@ parameters_accepted: bool = false,
 post: ?Emit = null,
 held: []u8 = &.{},
 scratch: ?*Scratch = null,
-suite: ?Suite = null,
+suite: ?Suite13 = null,
 group: ?Group = null,
 alpn: []const u8 = "",
 credential: usize = 0,
@@ -136,14 +136,14 @@ const Scratch = struct {
     signing: bool = false,
 };
 
-fn Keyed(comptime suite: Suite) type {
+fn Keyed(comptime suite: Suite13) type {
     return struct {
         const K = Schedule.Schedule(suite);
         schedule: K,
         handshake: K.Traffic,
     };
 }
-const Keys = union(Suite) {
+const Keys = union(Suite13) {
     aes_128_gcm_sha256: Keyed(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Keyed(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Keyed(.chacha20_poly1305_sha256),
@@ -392,14 +392,14 @@ fn queueMessage(self: *Server, epoch: Epoch, wire: []const u8) Client.Error!void
     try self.scratch.?.flight.queueMessage(epoch, wire.len);
 }
 
-fn install(self: *Server, direction: Flight.Direction, epoch: Epoch, suite: Suite, len: usize, secret: []const u8, label: []const u8) Client.Error!void {
+fn install(self: *Server, direction: Flight.Direction, epoch: Epoch, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
     var made = self.makeTraffic(suite, len, secret, label);
     errdefer made.secret.deinit();
     try self.push(.{ .secret = .{ .direction = direction, .epoch = epoch, .traffic = made } });
 }
 
-fn makeTraffic(self: *const Server, suite: Suite, len: usize, secret: []const u8, label: []const u8) Traffic {
+fn makeTraffic(self: *const Server, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Traffic {
     @setRuntimeSafety(true);
     var holder = aegis.Secret([Transcripts.max_digest]u8).init(@splat(0));
     @memcpy(holder.exposeMut()[0..len], secret[0..len]);

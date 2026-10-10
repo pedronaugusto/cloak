@@ -1,14 +1,14 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const Handshake = @import("Handshake.zig");
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
 const loop_module = @import("../../testing/QuicLoop.zig");
 const QuicLoop = loop_module.QuicLoop;
 
 test "C3 quic roles agree for every suite and group and hand off matching secrets" {
-    inline for (std.enums.values(Suite)) |suite| {
+    inline for (std.enums.values(Suite13)) |suite| {
         inline for (.{ Group.x25519, Group.x25519_mlkem768, Group.p256, Group.p384 }) |group| {
             // A single group on both sides; a P curve costs a retry because only X25519 or the
             // hybrid get a first share.

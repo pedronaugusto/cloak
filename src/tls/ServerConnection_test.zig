@@ -1,7 +1,7 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const Connection = @import("Connection.zig");
-const Suite = @import("crypto/Suite.zig").Suite;
+const Suite13 = @import("crypto/Suite.zig").Suite13;
 const Group = @import("crypto/Group.zig").Group;
 const Alert = @import("wire/Alert.zig").Alert;
 const Exchange = @import("crypto/Exchange.zig");
@@ -11,7 +11,7 @@ const Options = server_module.Options;
 const client_module = @import("../testing/ClientPeer.zig");
 const Config = client_module.Config;
 
-fn run(comptime suite: Suite, config: Config, options: Options, expect_group: Group) !void {
+fn run(comptime suite: Suite13, config: Config, options: Options, expect_group: Group) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
     try pair.run();
@@ -45,7 +45,7 @@ fn run(comptime suite: Suite, config: Config, options: Options, expect_group: Gr
 }
 
 test "C3 server completes a handshake for every suite and group a client can share" {
-    inline for (std.enums.values(Suite)) |suite| {
+    inline for (std.enums.values(Suite13)) |suite| {
         try run(suite, .{}, .{}, .x25519_mlkem768);
         try run(suite, .{ .shares = &.{.x25519} }, .{}, .x25519);
         try run(suite, .{ .shares = &.{.p256} }, .{}, .p256);
@@ -115,7 +115,7 @@ test "C3 server accepts the legacy record version on the first hello only" {
     try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0302 }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
-fn fails(comptime suite: Suite, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
+fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
     try std.testing.expectError(expected, pair.run());

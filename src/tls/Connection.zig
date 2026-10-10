@@ -11,7 +11,7 @@ const Server = @import("handshake/Server.zig");
 const Services = @import("handshake/Services.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
-const Suite = @import("crypto/Suite.zig").Suite;
+const Suite13 = @import("crypto/Suite.zig").Suite13;
 const Protection = @import("record/Protection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
@@ -48,7 +48,7 @@ pub const ClientOptions = struct {
     /// The peer-verification policy. Required: there is no implicit default.
     verify: Verify,
     server_name: ServerName = .identity,
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
@@ -166,7 +166,7 @@ pub const ServerOptions = struct {
     /// Chains the server can present, with the names each answers for. At least one.
     credentials: []const Server.Credential,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     /// Application protocols in the server's order of preference.
     alpn: []const []const u8 = &.{},

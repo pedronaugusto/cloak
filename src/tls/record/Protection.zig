@@ -1,9 +1,10 @@
-//! One direction's record protection for whichever suite was negotiated.
+//! One direction's record protection for whichever version and suite was negotiated.
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Epoch = @import("Epoch.zig");
-const Suite = suites.Suite;
+const Epoch12 = @import("Epoch12.zig").Epoch12;
+const Suite13 = suites.Suite13;
 
 pub const Limits = Epoch.Limits;
 pub const Content = Epoch.Content;
@@ -11,18 +12,24 @@ pub const Plaintext = Epoch.Plaintext;
 pub const InitError = Epoch.InitError;
 pub const SealError = Epoch.SealError;
 pub const OpenError = Epoch.OpenError;
-pub const UpdateError = Epoch.Epoch(.aes_128_gcm_sha256).UpdateError;
+pub const UpdateError = Epoch.Epoch(.aes_128_gcm_sha256).UpdateError || error{NoKeyUpdate};
+
+/// The most bytes protection adds around a plaintext fragment in either version.
+pub const max_overhead = 5 + 8 + 16 + 1;
 
 const Protection = @This();
 
-state: union(Suite) {
+state: union(enum) {
     aes_128_gcm_sha256: Epoch.Epoch(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Epoch.Epoch(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Epoch.Epoch(.chacha20_poly1305_sha256),
+    tls12_aes_128_gcm: Epoch12(.aes_128_gcm),
+    tls12_aes_256_gcm: Epoch12(.aes_256_gcm),
+    tls12_chacha20_poly1305: Epoch12(.chacha20_poly1305),
 },
 
-/// Keys derived from a traffic secret of the suite's hash length; the copy is erased.
-pub fn init(suite: Suite, secret: []const u8, limits: Limits) InitError!Protection {
+/// TLS 1.3 keys derived from a traffic secret of the suite's hash length; the copy is erased.
+pub fn init(suite: Suite13, secret: []const u8, limits: Limits) InitError!Protection {
     @setRuntimeSafety(true);
     switch (suite) {
         inline else => |tag| {
@@ -35,11 +42,38 @@ pub fn init(suite: Suite, secret: []const u8, limits: Limits) InitError!Protecti
     }
 }
 
+/// TLS 1.2 keys from the key block: the cipher's key and fixed IV.
+pub fn init12(cipher: suites.Cipher, key: []const u8, iv: []const u8, limits: Limits) InitError!Protection {
+    @setRuntimeSafety(true);
+    switch (cipher) {
+        inline else => |tag| {
+            const E = Epoch12(tag);
+            std.debug.assert(key.len == E.key_length and iv.len == E.iv_length);
+            return .{ .state = @unionInit(@FieldType(Protection, "state"), "tls12_" ++ @tagName(tag), try E.init(key[0..E.key_length], iv[0..E.iv_length], limits)) };
+        },
+    }
+}
+
+/// Whether this protects TLS 1.2 records.
+pub fn tls12(self: *const Protection) bool {
+    return switch (self.state) {
+        .tls12_aes_128_gcm, .tls12_aes_256_gcm, .tls12_chacha20_poly1305 => true,
+        else => false,
+    };
+}
+
 pub fn seal(self: *Protection, content: Content, input: []const u8, padding: usize, out: []u8) SealError![]u8 {
     @setRuntimeSafety(true);
-    return switch (self.state) {
-        inline else => |*e| e.seal(content, input, padding, out),
-    };
+    switch (self.state) {
+        inline else => |*e, tag| {
+            if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) {
+                // TLS 1.2 records have no padding.
+                if (padding != 0) return error.InvalidLength;
+                return e.seal(content, input, out);
+            }
+            return e.seal(content, input, padding, out);
+        },
+    }
 }
 
 pub fn open(self: *Protection, wire: []const u8, out: []u8) OpenError!Plaintext {
@@ -49,10 +83,14 @@ pub fn open(self: *Protection, wire: []const u8, out: []u8) OpenError!Plaintext 
     };
 }
 
+/// A TLS 1.3 key update; TLS 1.2 has none.
 pub fn update(self: *Protection) UpdateError!void {
     @setRuntimeSafety(true);
     switch (self.state) {
-        inline else => |*e| try e.update(),
+        inline else => |*e, tag| {
+            if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) return error.NoKeyUpdate;
+            try e.update();
+        },
     }
 }
 
@@ -71,10 +109,6 @@ pub fn closed(self: *const Protection) bool {
     return switch (self.state) {
         inline else => |*e| e.closed,
     };
-}
-
-pub fn negotiated(self: *const Protection) Suite {
-    return std.meta.activeTag(self.state);
 }
 
 pub fn deinit(self: *Protection) void {

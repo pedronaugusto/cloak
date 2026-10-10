@@ -3,12 +3,12 @@ const std = @import("std");
 const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
-const Suite = @import("../crypto/Suite.zig").Suite;
+const Suite13 = @import("../crypto/Suite.zig").Suite13;
 pub const Group = @import("../crypto/Group.zig").Group;
 pub const retry_random = std.crypto.tls.hello_retry_request_sequence;
 pub const Share = struct { group: Group, bytes: []const u8 };
 pub const Options = struct {
-    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    suites: []const Suite13 = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     sni: []const u8 = "",
     alpn: []const []const u8 = &.{},
@@ -131,7 +131,7 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
 }
-pub const ServerHello = struct { suite: Suite, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
+pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!ServerHello {
     @setRuntimeSafety(true);
@@ -175,8 +175,8 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         if (std.mem.eql(u8, random[24..], "DOWNGRD\x01") or std.mem.eql(u8, random[24..], "DOWNGRD\x00")) return error.Downgrade;
         return error.UnsupportedVersion;
     }
-    const suite = std.enums.fromInt(Suite, suite_id) orelse return error.UnofferedSelection;
-    if (!std.mem.containsAtLeast(Suite, options.suites, 1, &.{suite})) return error.UnofferedSelection;
+    const suite = std.enums.fromInt(Suite13, suite_id) orelse return error.UnofferedSelection;
+    if (!std.mem.containsAtLeast(Suite13, options.suites, 1, &.{suite})) return error.UnofferedSelection;
     if (retry and group == null and cookie.len != 0) return .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie };
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
@@ -237,7 +237,7 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
 }
 
 /// A ServerHello selecting `suite` and answering the client's share for `group`.
-pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite, group: Group, share: []const u8) Writer.WriteError![]u8 {
+pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0, 3, 3 });
@@ -261,7 +261,7 @@ pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite:
 }
 
 /// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4).
-pub fn buildRetry(out: []u8, session: []const u8, suite: Suite, group: Group) Writer.WriteError![]u8 {
+pub fn buildRetry(out: []u8, session: []const u8, suite: Suite13, group: Group) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0, 3, 3 });
