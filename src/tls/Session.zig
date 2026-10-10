@@ -12,6 +12,7 @@ const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Server = @import("handshake/Server.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
+const Alert = @import("wire/Alert.zig").Alert;
 const Group = @import("crypto/Group.zig").Group;
 
 const Session = @This();
@@ -39,6 +40,18 @@ pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, F
 pub const Signer = struct {
     context: ?*anyopaque = null,
     sign: *const fn (context: ?*anyopaque, scheme: u16, content: []const u8, out: []u8) error{SigningFailed}!usize,
+};
+
+/// What a connection saw, for a caller that maps it to errors of its own.
+pub const Diagnostics = struct {
+    /// What ended the connection, when it ended.
+    reason: ?Connection.Error = null,
+    /// The alert this side sent for a failure of its own.
+    alert_sent: ?Alert = null,
+    /// The alert the peer sent.
+    alert_received: ?Alert = null,
+    /// The peer asked for a certificate (or, for a server, this one asks).
+    certificate_requested: bool = false,
 };
 
 /// What the transport's end of stream means for application data.
@@ -76,6 +89,8 @@ pub const Options = struct {
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
     clock: Clock = .real,
+    /// Filled when the handshake fails, since the session is gone by then.
+    diagnostics: ?*Diagnostics = null,
 };
 
 pub const OpenError = Connection.InitError || Connection.Error || Connection.ProvideError || error{
@@ -149,7 +164,10 @@ pub fn open(
         .reader_interface = .{ .vtable = &reader_vtable, .buffer = read_buffer, .seek = 0, .end = 0 },
         .writer_interface = .{ .vtable = &writer_vtable, .buffer = write_buffer },
     };
-    errdefer session.conn.deinit();
+    errdefer {
+        if (options.diagnostics) |report| report.* = session.diagnostics();
+        session.conn.deinit();
+    }
     try session.handshake();
 }
 
@@ -173,6 +191,8 @@ pub const ServerOptions = struct {
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
     clock: Clock = .real,
+    /// Filled when the handshake fails, since the session is gone by then.
+    diagnostics: ?*Diagnostics = null,
 };
 
 /// Performs the server handshake over `input` and `output`. The session must stay at this address.
@@ -221,7 +241,10 @@ pub fn accept(
         .reader_interface = .{ .vtable = &reader_vtable, .buffer = read_buffer, .seek = 0, .end = 0 },
         .writer_interface = .{ .vtable = &writer_vtable, .buffer = write_buffer },
     };
-    errdefer session.conn.deinit();
+    errdefer {
+        if (options.diagnostics) |report| report.* = session.diagnostics();
+        session.conn.deinit();
+    }
     try session.handshake();
 }
 
@@ -236,13 +259,20 @@ pub fn info(session: *const Session) Connection.Info {
 }
 
 /// Why the connection ended and the alerts that crossed it, after a failure or a close.
-pub fn diagnostics(session: *const Session) Connection.Diagnostics {
-    return session.conn.diagnostics();
+pub fn diagnostics(session: *const Session) Diagnostics {
+    const seen = session.conn.diagnostics();
+    return .{
+        .reason = seen.reason,
+        .alert_sent = seen.alert_sent,
+        .alert_received = seen.alert_received,
+        .certificate_requested = session.conn.certificateRequested(),
+    };
 }
 
-/// Whether the peer asked for a certificate, whether or not the handshake completed.
-pub fn certificateRequested(session: *const Session) bool {
-    return session.conn.certificateRequested();
+/// Names the `Io` later reads and writes use for entropy and the clock, for a session that
+/// outlives the task that opened it. The session itself stays where it is.
+pub fn rebind(session: *Session, io: std.Io) void {
+    session.io = io;
 }
 
 pub fn reader(session: *Session) *std.Io.Reader {

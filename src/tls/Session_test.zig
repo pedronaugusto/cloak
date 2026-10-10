@@ -1,6 +1,8 @@
 const std = @import("std");
 const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
+const Connection = @import("Connection.zig");
+const Alert = @import("wire/Alert.zig").Alert;
 const peer_module = @import("../testing/Peer.zig");
 const Loopback = @import("../testing/Loopback.zig").Loopback;
 
@@ -27,6 +29,8 @@ test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
     var write_buffer: [256]u8 = undefined;
     try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, options(snapshot), &read_buffer, &write_buffer);
     defer session.deinit();
+    // A kept session is read from a later task's Io.
+    session.rebind(std.testing.io);
     try std.testing.expectEqualSlices(u8, "h2", session.info().alpn);
     try std.testing.expect(session.info().peer_authenticated);
     try session.writer().writeAll("GET / HTTP/1.1\r\n\r\n");
@@ -139,12 +143,19 @@ test "C3 session sends the alert for a failed handshake before it returns" {
     transport.init(&peer, &transport_read, &.{});
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
+    var report: Session.Diagnostics = .{};
     try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
         .credentials = &credentials,
         .alpn = &.{"h2"},
         .clock = .{ .fixed = pki.time },
+        .diagnostics = &report,
     }, &read_buffer, &.{}));
     try std.testing.expectEqual(@as(?u8, 120), peer.plain_alert);
+    // The session is gone, and the report says what it saw.
+    try std.testing.expectEqual(@as(?Alert, .no_application_protocol), report.alert_sent);
+    try std.testing.expectEqual(@as(?Alert, null), report.alert_received);
+    try std.testing.expectEqual(@as(?Connection.Error, error.NoApplicationProtocol), report.reason);
+    try std.testing.expect(!report.certificate_requested);
 }
 
 test "C3 session accept needs a signer for an identity without a key, and uses it" {
@@ -197,4 +208,27 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
         .clock = .{ .fixed = pki.time },
     }, &read_buffer, &.{}));
     try std.testing.expect(!peer.server_finished_ok);
+}
+
+test "C2 session reports a rejected server chain as the alert it sent" {
+    const gpa = std.testing.allocator;
+    // Trust a root that did not sign the server's chain.
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.p384, .{});
+    const stranger = try trust.freeze();
+    defer stranger.deinit();
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [64]u8 = undefined;
+    var report: Session.Diagnostics = .{};
+    var settings = options(stranger);
+    settings.diagnostics = &report;
+    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &.{}));
+    try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
+    try std.testing.expectEqual(@as(?Connection.Error, error.VerificationRejected), report.reason);
 }
