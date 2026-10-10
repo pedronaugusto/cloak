@@ -170,8 +170,9 @@ at exhaustion and on its first failed authentication attempt; no retry oracle.
 TLS HKDF owns and wipes HMAC state, label blocks and Finished keys. Traffic keys
 and IVs use published aegis Secret. Checked transcript counts use aegis checked
 integers. Published aegis has no typestate API, so full TLS 1.3 transitions are
-an explicit always-checked table with proof and epoch requirements. Resumed,
-TLS 1.2, ECH and DTLS branches are absent until their phases. The table alone is
+an explicit always-checked table with proof and epoch requirements, version as one
+of its keys (TLS 1.2 edges sit beside the TLS 1.3 ones). Resumed, ECH and DTLS
+branches are absent until their phases. The table alone is
 not a certificate/signature verifier: its internal proof arguments must be
 issued by the crypto/verification driver. Named tests cover individual catalogue
 components; the complete F27–F45 rows remain open until integration and campaigns.
@@ -416,3 +417,46 @@ client or a server against them in memory, or the two QUIC roles against each ot
 protection, which the RFC 8448 vectors pin; its parsing, message assembly and
 signatures are its own. The test PKI is disposable material generated once with
 OpenSSL, recorded in `src/testing/pki/provenance.md`.
+
+## TLS 1.2
+
+TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)
+or a ClientHello without TLS 1.3 (server) moves the machine onto TLS 1.2 edges of the one
+state table, and `Client12`/`Server12` hold the messages; neither imports a role, so the
+two versions share entropy, time, verification and signing requests, the flight queue and
+the transcript owner. Suites, versions and their bounds are one option set: `suites` lists
+both versions in preference order, `min_version`/`max_version` bound them, and a version is
+offered only when one of its suites is listed (QUIC and `require_hybrid` are TLS 1.3 only).
+A server prefers TLS 1.3 whenever the client offers it.
+
+Only the modern subset exists. Key exchange is ECDHE on X25519, P-256 or P-384 (the hybrid
+group is TLS 1.3's), with a fresh share per connection; the record ciphers are AES-128-GCM,
+AES-256-GCM and ChaCha20-Poly1305 (RFC 5288, RFC 7905), the GCM explicit nonce being the
+record sequence; the master secret is always the extended one (RFC 7627), and a peer
+without it is refused, as is one without the secure renegotiation indication (RFC 5746).
+No suite of RSA key exchange, finite-field DHE, static ECDH, CBC, RC4, 3DES or NULL exists
+to be negotiated; compression other than null, SSLv2 hellos, MD5 and SHA-1 signatures,
+renegotiation (a HelloRequest or a second ClientHello) and session resumption are refused.
+A server that speaks TLS 1.3 marks its TLS 1.2 random with the downgrade sentinel and
+refuses TLS_FALLBACK_SCSV; a client that offered TLS 1.3 refuses a marked TLS 1.2 answer.
+
+ChangeCipherSpec is a real message here: it is accepted only between messages, as a
+plaintext record, where the table expects it; the keys it switches to are derived before
+and installed by the connection when the record arrives. Handshake and alert records under
+TLS 1.2 keys are decrypted like application data, in place after the explicit nonce. The
+ServerKeyExchange signature covers both randoms and the parameters; TLS 1.2 binds an ECDSA
+scheme to its hash rather than to the key's curve, and PKCS#1 v1.5 RSA signatures are
+accepted and made only in TLS 1.2. A CertificateVerify signs the transcript hash of its
+scheme: both SHA-256 and SHA-384 transcripts run through a TLS 1.2 handshake, so the
+signature goes through `signDigest`/`verifyDigest`; Ed25519, which signs messages rather
+than digests, is not offered for client authentication in TLS 1.2. A key held elsewhere
+receives the digest with `prehashed` set. There is no key update: a TLS 1.2 connection
+closes before the record and byte caps instead. The exporter is RFC 5705's over the
+extended master secret, always with the caller's context.
+
+What a TLS 1.2 connection keeps past its handshake (the master secret and both randoms,
+for the exporter) is one allocation made only when TLS 1.2 is negotiated, so a connection
+nobody has spoken to stays as small as before. Tests run a cloak client against a cloak
+server for every suite, group and certificate key, client certificates, version selection
+both ways, one-byte delivery and the failure catalogue's TLS 1.2 rows (F46–F64); live
+peers are the trials campaign's.

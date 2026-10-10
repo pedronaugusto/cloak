@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials, certificate verification and a TLS 1.3 client and server for Zig. Both roles exist as a stream, a sans-I/O connection and a QUIC handshake; TLS 1.2, resumption and datagrams are not built yet.
+Work in progress: credentials, certificate verification and a TLS 1.3 and TLS 1.2 client and server for Zig. Both roles exist as a stream and a sans-I/O connection, and TLS 1.3 also as a QUIC handshake; resumption and datagrams are not built yet.
 
 ## Install
 
@@ -132,7 +132,7 @@ One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/
 
 ## Scope
 
-Cloak implements credentials and certificate verification, and a TLS 1.3 client and server: X25519MLKEM768, X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ALPN, SNI, client certificates, key updates and exporters, as a stream, a sans-I/O connection and a QUIC handshake. It has no TLS 1.2, resumption, early data or datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, and a TLS 1.3 and TLS 1.2 client and server: X25519MLKEM768 (TLS 1.3), X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ECDSA, Ed25519 and RSA certificates signed and verified, ALPN, SNI, client certificates, key updates (TLS 1.3) and exporters, as a stream, a sans-I/O connection and (TLS 1.3) a QUIC handshake. TLS 1.2 is the modern subset only: ECDHE with AEAD suites and the extended master secret, no renegotiation. It has no resumption, early data or datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
 
 The build exposes one module, `cloak`, with `cloak.certificates` for certificates, keys and trust and
 `cloak.tls` for TLS as namespaces; the credential names are also at the root. TLS builds on the certificates, which link the native trust store, so a separate module for either would link the same code and fetch the same packages. Zig analyzes only what you use. DTLS will be another namespace when its datagram implementation is built.
