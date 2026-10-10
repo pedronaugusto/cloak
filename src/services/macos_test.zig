@@ -7,7 +7,7 @@ test "service macOS scoped anchors selected chain and policy rejection offline" 
     if (builtin.os.tag != .macos) return;
     const root = @embedFile("../verify/fixtures/vectors/p256.der");
     const leaf = @embedFile("../verify/fixtures/vectors/leaf.der");
-    var request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    var request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var path = try Native.evaluate(std.testing.allocator, request, &.{root});
     defer path.deinit();
     try path.check(request);

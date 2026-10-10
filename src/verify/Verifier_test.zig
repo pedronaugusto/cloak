@@ -1,7 +1,7 @@
 const std = @import("std");
 const V = @import("Verifier.zig");
 test "portable verifier rejects empty chains and work budget overflow" {
-    try std.testing.expectError(error.VerificationLimit, V.verify(std.testing.allocator, .{ .chain = &.{}, .time = 0, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) }, &.{}));
+    try std.testing.expectError(error.VerificationLimit, V.verify(std.testing.allocator, .{ .chain = &.{}, .time = .fromNanoseconds(0 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) }, &.{}));
 }
 
 const C = @import("../certificate.zig");
@@ -10,7 +10,7 @@ const shakedown = @import("shakedown");
 const root = @embedFile("fixtures/vectors/p256.der");
 const leaf = @embedFile("fixtures/vectors/leaf.der");
 fn request() T.Request {
-    return .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10) catch unreachable, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
+    return .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
 }
 test "portable selected path identity pins limits and native floors" {
     var req = request();
@@ -75,7 +75,7 @@ test "portable indexed verification accepts large stores within discovery budget
 test "portable and native selected leaf share strict serial and issuer metadata floors" {
     const zero = @embedFile("fixtures/limbo-zero-serial.der");
     const cert = try C.parse(zero, .{});
-    const req: T.Request = .{ .chain = &.{zero}, .identity = .{ .dns = "example.com" }, .time = cert.not_before, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const req: T.Request = .{ .chain = &.{zero}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, cert.not_before) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     try std.testing.expectError(error.InvalidCertificate, V.verify(std.testing.allocator, req, &.{zero}));
     // A provisional native-selected path must still satisfy the same leaf floor.
     try std.testing.expectError(error.InvalidCertificate, V.nativePath(std.testing.allocator, req, &.{zero}));
@@ -84,7 +84,7 @@ test "portable and native selected leaf share strict serial and issuer metadata 
 test "portable native selected scratch covers OS intermediates absent from request" {
     const selected_leaf = @embedFile("fixtures/offline/leaf.der");
     const selected = &.{ selected_leaf, @embedFile("fixtures/offline/rollover.der"), @embedFile("fixtures/offline/ca.der") };
-    const req: T.Request = .{ .chain = &.{selected_leaf}, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("fixtures/offline/time.txt"), 10) catch unreachable, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const req: T.Request = .{ .chain = &.{selected_leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("fixtures/offline/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var receipt = try V.nativePath(std.testing.allocator, req, selected);
     defer receipt.deinit();
     try std.testing.expectEqual(@as(usize, 3), receipt.path.len);
@@ -96,7 +96,7 @@ test "catalogue_verification_constraint_flood_is_bounded" {
     inline for (.{ 1, 1900 }) |count| {
         const flood_leaf = @embedFile(std.fmt.comptimePrint("fixtures/work/work-leaf-{d}.der", .{count}));
         const issuer = @embedFile(std.fmt.comptimePrint("fixtures/work/work-inter-{d}.der", .{count}));
-        const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = 1791467000, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .limits = .{ .candidates = 16, .parses = 8, .signatures = 2, .rejected = 8, .policy_nodes = 1, .depth = 3 } };
+        const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = .fromNanoseconds(1791467000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .limits = .{ .candidates = 16, .parses = 8, .signatures = 2, .rejected = 8, .policy_nodes = 1, .depth = 3 } };
         const anchors = &.{@embedFile("fixtures/work/work-root.der")};
         if (count == 1) {
             var receipt = try V.verify(std.testing.allocator, req, anchors);

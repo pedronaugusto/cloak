@@ -116,7 +116,7 @@ pub fn provideEntropy(self: Machine, entropy: []const u8) Error!void {
     };
 }
 
-pub fn provideTime(self: Machine, now: i64) Error!void {
+pub fn provideTime(self: Machine, now: std.Io.Timestamp) Error!void {
     return switch (self.state) {
         inline else => |m| m.provideTime(now),
     };

@@ -567,7 +567,7 @@ test "C2 catalogue_finished_entropy_failure_is_never_success" {
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .entropy = &@as([96]u8, @splat(1)) }));
         try std.testing.expectEqual(@as(usize, 0), pair.conn.output().len);
         // The wrong answer kind ends the connection: the engine asked for something else.
-        try std.testing.expectError(error.UnexpectedService, pair.conn.provide(request.token, .{ .time = 5 }));
+        try std.testing.expectError(error.UnexpectedService, pair.conn.provide(request.token, .{ .time = .fromNanoseconds(5 * std.time.ns_per_s) }));
         try std.testing.expectEqual(Connection.Phase.failed, pair.conn.phase());
     }
 }

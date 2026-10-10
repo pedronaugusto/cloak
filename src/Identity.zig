@@ -137,9 +137,10 @@ pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);
     return identity.state.generation;
 }
-pub fn expires(identity: Identity) i64 {
+/// The start of the last second every certificate in the chain is valid for.
+pub fn expires(identity: Identity) std.Io.Timestamp {
     @setRuntimeSafety(true);
-    return identity.state.expires.raw();
+    return types.instant(identity.state.expires.raw());
 }
 test {
     @setRuntimeSafety(true);

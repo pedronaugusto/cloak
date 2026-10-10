@@ -410,7 +410,7 @@ const Pair = struct {
                 try self.ctx.io.randomSecure(bytes[0..len]);
                 try end.conn.provide(request.token, .{ .entropy = bytes[0..len] });
             },
-            .time => try end.conn.provide(request.token, .{ .time = std.Io.Clock.real.now(self.ctx.io).toSeconds() }),
+            .time => try end.conn.provide(request.token, .{ .time = std.Io.Clock.real.now(self.ctx.io) }),
             .verify => |verify_request| {
                 var receipt = try cloak.verify.indexed(self.ctx.gpa, verify_request, self.fixture.snapshot.issuers());
                 defer receipt.deinit();

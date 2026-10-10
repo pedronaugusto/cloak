@@ -7,6 +7,18 @@ pub const TrustGeneration = aegis.id.Id(struct {}, u64);
 pub const PolicyGeneration = aegis.id.Id(struct {}, u64);
 pub const IdentityGeneration = aegis.id.Id(struct {}, u64);
 pub const RealSeconds = aegis.units.Instant(.real, .second, i64);
+
+/// Whole seconds of a calendar instant, rounded down and saturated; certificates and revocation
+/// evidence count in seconds.
+pub fn seconds(t: std.Io.Timestamp) i64 {
+    const s = @divFloor(t.nanoseconds, std.time.ns_per_s);
+    return std.math.cast(i64, s) orelse if (s < 0) std.math.minInt(i64) else std.math.maxInt(i64);
+}
+
+/// The instant that starts a whole second.
+pub fn instant(s: i64) std.Io.Timestamp {
+    return .fromNanoseconds(@as(i96, s) * std.time.ns_per_s);
+}
 pub const Token = struct { generation: ConnectionGeneration = .fromRaw(0), id: RequestId = .fromRaw(0) };
 pub const Identity = union(enum) { none, dns: []const u8, ipv4: [4]u8, ipv6: [16]u8 };
 pub const Purpose = enum { server, client };
@@ -17,8 +29,10 @@ pub const RevocationStatus = enum { unchecked, not_present, good };
 pub const RevocationPolicy = struct {
     mode: Revocation = .if_present,
     coverage: Coverage = .leaf,
-    clock_skew: u64 = 300,
-    max_age: u64 = 86400,
+    /// Allowed difference between the evidence's clock and ours; at most a day.
+    clock_skew: std.Io.Duration = .fromSeconds(300),
+    /// How long evidence without a next-update time stays fresh; at most a year.
+    max_age: std.Io.Duration = .fromSeconds(86400),
 };
 pub const Evidence = struct { crls: []const []const u8 = &.{}, ocsp: []const []const u8 = &.{} };
 pub const Policy = struct {
@@ -59,7 +73,8 @@ pub const Request = struct {
     chain: []const []const u8,
     identity: Identity = .none,
     purpose: Purpose = .server,
-    time: i64,
+    /// The calendar time the chain is checked at.
+    time: std.Io.Timestamp,
     trust_generation: TrustGeneration,
     policy_generation: PolicyGeneration,
     token: Token = .{},
@@ -76,13 +91,12 @@ pub const Request = struct {
     pub fn digest(self: Request) [32]u8 {
         @setRuntimeSafety(true);
         var h = std.crypto.hash.sha2.Sha256.init(.{});
-        part(&h, "cloak verification request v1");
+        part(&h, "cloak verification request v2");
         uint(&h, self.token.generation.raw());
         uint(&h, self.token.id.raw());
         uint(&h, self.trust_generation.raw());
         uint(&h, self.policy_generation.raw());
-        // safe: i64 and u64 have the same bit width; preserve the signed time encoding.
-        uint(&h, @bitCast(self.time));
+        wide(&h, self.time.nanoseconds);
         uint(&h, @backingInt(self.mode));
         uint(&h, @backingInt(self.purpose));
         uint(&h, @backingInt(self.identity));
@@ -101,8 +115,8 @@ pub const Request = struct {
         uint(&h, @intFromBool(self.policy.inhibit_any));
         uint(&h, @backingInt(self.policy.revocation.mode));
         uint(&h, @backingInt(self.policy.revocation.coverage));
-        uint(&h, self.policy.revocation.clock_skew);
-        uint(&h, self.policy.revocation.max_age);
+        wide(&h, self.policy.revocation.clock_skew.nanoseconds);
+        wide(&h, self.policy.revocation.max_age.nanoseconds);
         parts(&h, self.evidence.crls);
         parts(&h, self.evidence.ocsp);
         inline for (@typeInfo(Limits).@"struct".field_names) |f| uint(&h, @field(self.limits, f));
@@ -127,6 +141,13 @@ fn parts(h: *std.crypto.hash.sha2.Sha256, slices: []const []const u8) void {
     uint(h, slices.len);
     for (slices) |s| part(h, s);
 }
+/// A signed 96-bit count of nanoseconds, two's complement, big endian.
+fn wide(h: *std.crypto.hash.sha2.Sha256, n: i96) void {
+    @setRuntimeSafety(true);
+    var bytes: [12]u8 = undefined;
+    std.mem.writeInt(i96, &bytes, n, .big);
+    h.update(&bytes);
+}
 fn uint(h: *std.crypto.hash.sha2.Sha256, n: u64) void {
     @setRuntimeSafety(true);
     var bytes: [8]u8 = undefined;
@@ -144,17 +165,19 @@ pub const Verification = struct {
     purpose: Purpose,
     trust_generation: TrustGeneration,
     policy_generation: PolicyGeneration,
-    validation_time: i64,
-    expires: i64,
+    /// The request's time.
+    validation_time: std.Io.Timestamp,
+    /// The start of the last second the receipt holds for.
+    expires: std.Io.Timestamp,
     revocation: RevocationStatus = .unchecked,
-    revocation_expires: ?i64 = null,
+    revocation_expires: ?std.Io.Timestamp = null,
     authenticated: bool,
     request_digest: [32]u8,
     token: Token,
     storage: []u8,
     identity_storage: ?[]u8 = null,
     pub const InitError = std.mem.Allocator.Error || error{VerificationLimit};
-    pub fn init(gpa: std.mem.Allocator, request: Request, path: []const []const u8, authenticated: bool, expires: i64) InitError!Verification {
+    pub fn init(gpa: std.mem.Allocator, request: Request, path: []const []const u8, authenticated: bool, expires: std.Io.Timestamp) InitError!Verification {
         @setRuntimeSafety(true);
         if (path.len == 0 or request.chain.len == 0 or !std.mem.eql(u8, path[0], request.chain[0])) return error.VerificationLimit;
         const name_bytes: usize = if (request.identity == .dns) request.identity.dns.len else 0;
@@ -196,7 +219,7 @@ pub const Verification = struct {
             .ipv6 => |ip| if (request.identity != .ipv6 or !std.mem.eql(u8, &ip, &request.identity.ipv6)) return error.WrongVerificationRequest,
         }
         if (request.mode == .full and !self.authenticated) return error.Unauthenticated;
-        if (self.validation_time != request.time or self.expires < request.time) return error.VerificationExpired;
+        if (self.validation_time.nanoseconds != request.time.nanoseconds or seconds(self.expires) < seconds(request.time)) return error.VerificationExpired;
     }
     pub fn deinit(self: *Verification) void {
         @setRuntimeSafety(true);

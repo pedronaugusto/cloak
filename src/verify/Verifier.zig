@@ -142,7 +142,7 @@ const Search = struct {
                 signatures.verify(issuer.public_key, issuer.signature_algorithm, issuer.tbs, issuer.signature) catch return false;
             }
             if (issuer.x509(14) == null) return false;
-            if (self.request.time < issuer.not_before or self.request.time > issuer.not_after) return false;
+            if (T.seconds(self.request.time) < issuer.not_before or T.seconds(self.request.time) > issuer.not_after) return false;
             const bc = issuer.x509(19) orelse return false;
             if (!bc.critical) return false;
             const basic = try C.Extensions.basic(bc.value);
@@ -171,7 +171,7 @@ const Search = struct {
         if (ap.name_constraints.len > self.request.limits.chain_bytes or ap.required_policies.len > self.request.limits.policy_nodes) return error.VerificationLimit;
         const anchor = &self.path[self.count - 1];
         if ((self.request.purpose == .server and !ap.server) or (self.request.purpose == .client and !ap.client)) return false;
-        if (ap.check_validity and (self.request.time < anchor.not_before or self.request.time > anchor.not_after)) return false;
+        if (ap.check_validity and (T.seconds(self.request.time) < anchor.not_before or T.seconds(self.request.time) > anchor.not_after)) return false;
         identity.purpose(anchor, self.request.purpose, self.count > 1) catch return false;
         if (anchor.x509(19)) |bc| {
             const basic = try C.Extensions.basic(bc.value);
@@ -191,7 +191,7 @@ const Search = struct {
             if (err == error.OutOfMemory or err == error.VerificationLimit) return err;
             return false;
         };
-        const evidence = revocation.check(self.path[0..self.count], self.request.time, self.request.policy.revocation, self.request.evidence) catch |err| {
+        const evidence = revocation.check(self.path[0..self.count], T.seconds(self.request.time), self.request.policy.revocation, self.request.evidence) catch |err| {
             if (err == error.VerificationLimit) return err;
             return false;
         };
@@ -201,9 +201,9 @@ const Search = struct {
         if (evidence.expires) |deadline| expires = @min(expires, deadline);
         var der: [16][]const u8 = undefined;
         for (self.path[0..self.count], 0..) |*cert, i| der[i] = cert.der;
-        var receipt = try V.init(self.gpa, self.request, der[0..self.count], true, expires);
+        var receipt = try V.init(self.gpa, self.request, der[0..self.count], true, T.instant(expires));
         receipt.revocation = evidence.status;
-        receipt.revocation_expires = evidence.expires;
+        receipt.revocation_expires = if (evidence.expires) |deadline| T.instant(deadline) else null;
         self.receipt = receipt;
         return true;
     }
@@ -247,7 +247,7 @@ fn run(gpa: std.mem.Allocator, request: T.Request, anchors: []const []const u8, 
     state.path[0] = try state.parse(request.chain[0]);
     state.count = 1;
     try identity.pins(&state.path[0], request.pins);
-    if (request.mode == .none) return V.init(gpa, request, request.chain[0..1], false, state.path[0].not_after);
+    if (request.mode == .none) return V.init(gpa, request, request.chain[0..1], false, T.instant(state.path[0].not_after));
     try leafFloors(&state.path[0], request);
     if (!try state.search()) return error.NoTrustedPath;
     return state.receipt.?;
@@ -256,7 +256,7 @@ fn leafFloors(cert: *const C.Certificate, request: T.Request) VerifyError!void {
     @setRuntimeSafety(true);
     if (cert.serial.len == 1 and cert.serial[0] == 0) return error.InvalidCertificate;
     if (!cert.selfIssued() and cert.x509(35) == null) return error.InvalidCertificate;
-    if (request.time < cert.not_before or request.time > cert.not_after) return error.InvalidValidity;
+    if (T.seconds(request.time) < cert.not_before or T.seconds(request.time) > cert.not_after) return error.InvalidValidity;
     try identity.check(cert, request.identity);
     try identity.purpose(cert, request.purpose, false);
 }
@@ -296,7 +296,7 @@ pub fn nativePath(gpa: std.mem.Allocator, request: T.Request, selected_chain: []
         state.path[index] = try state.parse(der);
         state.count = index;
         if (index != selected_chain.len - 1 or index == 0) {
-            if (request.time < state.path[index].not_before or request.time > state.path[index].not_after) return error.InvalidValidity;
+            if (T.seconds(request.time) < state.path[index].not_before or T.seconds(request.time) > state.path[index].not_after) return error.InvalidValidity;
         }
         if (index > 0 and !try state.link(&state.path[index - 1], &state.path[index], index == selected_chain.len - 1)) return error.InvalidCa;
         state.count = index + 1;

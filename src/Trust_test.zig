@@ -179,7 +179,7 @@ fn verifyRetainedSnapshot(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Ev
     @setRuntimeSafety(true);
     defer snapshot.deinit();
     try gate.wait(io);
-    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
+    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
     for (0..64) |_| {
         const temporary = snapshot.retain();
         defer temporary.deinit();

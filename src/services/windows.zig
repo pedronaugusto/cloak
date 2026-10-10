@@ -9,7 +9,8 @@ pub const Error = Path.InitError || error{ NativePolicyFailure, InvalidReference
 const offline_flags: u32 = 0x00000004 | 0x00000100 | 0x00002000 | 0x80000000;
 pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const []const u8) Error!Path {
     @setRuntimeSafety(true);
-    if (request.time < -62135596800 or request.time > 253402300799) return error.InvalidValidationTime;
+    const now = types.seconds(request.time);
+    if (now < -62135596800 or now > 253402300799) return error.InvalidValidationTime;
     if (request.chain.len == 0 or request.chain.len > request.limits.certificates) return error.ServiceLimit;
     const additional = try store(request.chain);
     defer _ = C.CertCloseStore(additional, .{});
@@ -30,7 +31,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
             return error.NativePolicyFailure;
         }
     }
-    const ticks: i128 = (@as(i128, request.time) + 11644473600) * 10_000_000;
+    const ticks: i128 = (@as(i128, now) + 11644473600) * 10_000_000;
     if (ticks < 0 or ticks > std.math.maxInt(u64)) return error.InvalidValidationTime;
     // The range is checked before converting the Windows 100ns epoch.
     const stamp: u64 = @intCast(ticks); // safe: epoch ticks were checked to fit u64

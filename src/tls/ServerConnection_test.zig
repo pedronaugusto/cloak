@@ -335,7 +335,7 @@ test "C3 service failures end the handshake" {
         try pair.client.start();
         _ = try pair.conn.receive(pair.client.pending());
         const request = pair.conn.request().?;
-        try std.testing.expectError(error.UnexpectedService, pair.conn.provide(request.token, .{ .time = 7 }));
+        try std.testing.expectError(error.UnexpectedService, pair.conn.provide(request.token, .{ .time = .fromNanoseconds(7 * std.time.ns_per_s) }));
     }
 }
 

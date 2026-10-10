@@ -12,7 +12,7 @@ export fn cloakCoreVectors() u32 {
     trust.addDer(@embedFile("data/anchor.der"), .{}) catch return 1;
     const snapshot = trust.freeze() catch return 2;
     defer snapshot.deinit();
-    const request: cloak.types.Request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch return 3, .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
+    const request: cloak.types.Request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch return 3) * std.time.ns_per_s), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
     var receipt = cloak.verify.verify(gpa, request, snapshot.anchors()) catch return 4;
     defer receipt.deinit();
     receipt.check(request) catch return 5;

@@ -6,7 +6,8 @@ const Cf = *const anyopaque;
 pub const Error = Path.InitError || error{ NativePolicyFailure, InvalidReferenceIdentity, InvalidValidationTime };
 pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const []const u8) Error!Path {
     @setRuntimeSafety(true);
-    if (request.time < -62135596800 or request.time > 253402300799) return error.InvalidValidationTime;
+    const now = types.seconds(request.time);
+    if (now < -62135596800 or now > 253402300799) return error.InvalidValidationTime;
     if (request.chain.len == 0 or request.chain.len > request.limits.certificates) return error.ServiceLimit;
     const certificates = try array(gpa, request.chain);
     defer CFRelease(certificates);
@@ -27,7 +28,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     if (SecTrustSetNetworkFetchAllowed(owner, 0) != 0) return error.NativePolicyFailure;
     var network: u8 = 1;
     if (SecTrustGetNetworkFetchAllowed(owner, &network) != 0 or network != 0) return error.NativePolicyFailure;
-    const date = CFDateCreate(null, @as(f64, @floatFromInt(request.time)) - 978307200.0) orelse return error.OutOfMemory; // safe: validated integer seconds in year 1..9999 are exactly representable by f64
+    const date = CFDateCreate(null, @as(f64, @floatFromInt(now)) - 978307200.0) orelse return error.OutOfMemory; // safe: validated integer seconds in year 1..9999 are exactly representable by f64
     defer CFRelease(date);
     if (SecTrustSetVerifyDate(owner, date) != 0) return error.NativePolicyFailure;
     if (anchors.len != 0) {

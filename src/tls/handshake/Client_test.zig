@@ -65,7 +65,7 @@ test "C2 a message while a service answer is owed is refused" {
     defer client.deinit();
     try std.testing.expectError(error.Pending, client.receive("\x02\x00\x00\x00", .initial, true));
     // Services outside the request kind are refused too.
-    try std.testing.expectError(error.UnexpectedService, client.provideTime(5));
+    try std.testing.expectError(error.UnexpectedService, client.provideTime(.fromNanoseconds(5 * std.time.ns_per_s)));
     try std.testing.expectError(error.UnexpectedService, client.provideSignature("sig"));
     try std.testing.expectError(error.UnexpectedService, client.provideParameters(true));
 }

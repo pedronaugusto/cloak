@@ -110,7 +110,7 @@ fn corpus(comptime batch: usize) !void {
         const chain = try alloc.alloc([]const u8, others.len + 1);
         chain[0] = try der(alloc, case.peer_certificate);
         @memcpy(chain[1..], others);
-        const request: T.Request = .{ .chain = chain, .identity = try reference(case), .purpose = if (std.mem.eql(u8, case.validation_kind, "CLIENT")) .client else .server, .time = try timestamp(case.validation_time), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .evidence = .{ .crls = try ders(alloc, case.crls) }, .limits = .{ .depth = if (case.max_chain_depth != null) 16 else 8, .intermediates = case.max_chain_depth orelse 16 } };
+        const request: T.Request = .{ .chain = chain, .identity = try reference(case), .purpose = if (std.mem.eql(u8, case.validation_kind, "CLIENT")) .client else .server, .time = .fromNanoseconds(@as(i96, try timestamp(case.validation_time)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .evidence = .{ .crls = try ders(alloc, case.crls) }, .limits = .{ .depth = if (case.max_chain_depth != null) 16 else 8, .intermediates = case.max_chain_depth orelse 16 } };
         var configured = request;
         if (std.mem.startsWith(u8, case.id, "bettertls::pathbuilding::")) {
             configured.limits.certificates = @max(16, chain.len);

@@ -3,13 +3,14 @@ const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
 const Connection = @import("Connection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
+const SignatureScheme = @import("handshake/Hello.zig").SignatureScheme;
 const peer_module = @import("../testing/Peer.zig");
 const Loopback = @import("../testing/Loopback.zig").Loopback;
 
 const pki = peer_module.pki;
 
 fn options(snapshot: certificates.Trust.Snapshot) Session.Options {
-    return .{ .identity = .{ .dns = "example.com" }, .trust = .{ .snapshot = snapshot }, .clock = .{ .fixed = pki.time }, .alpn = &.{ "h2", "http/1.1" } };
+    return .{ .identity = .{ .dns = "example.com" }, .trust = .{ .snapshot = snapshot }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .alpn = &.{ "h2", "http/1.1" } };
 }
 
 test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
@@ -27,7 +28,7 @@ test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, options(snapshot), &read_buffer, &write_buffer);
+    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot));
     defer session.deinit();
     // A kept session is read from a later task's Io.
     session.rebind(std.testing.io);
@@ -63,7 +64,7 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
         var settings = options(snapshot);
         settings.eof = eof;
         var read_buffer: [64]u8 = undefined;
-        try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &.{});
+        try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings);
         defer session.deinit();
         var line: [8]u8 = undefined;
         if (eof == .strict) {
@@ -78,8 +79,8 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
 const Server = @import("handshake/Server.zig");
 const client_module = @import("../testing/ClientPeer.zig");
 
-fn signWithFixtures(_: ?*anyopaque, scheme: u16, content: []const u8, out: []u8) error{SigningFailed}!usize {
-    if (scheme != 0x0403) return error.SigningFailed;
+fn signWithFixtures(_: ?*anyopaque, scheme: SignatureScheme, content: []const u8, out: []u8) error{SigningFailed}!usize {
+    if (scheme != .ecdsa_p256_sha256) return error.SigningFailed;
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
     const secret = Ecdsa.SecretKey.fromBytes(pki.p256_secret[0..32].*) catch return error.SigningFailed;
     const kp = Ecdsa.KeyPair.fromSecretKey(secret) catch return error.SigningFailed;
@@ -105,11 +106,11 @@ test "C3 session accepts over std.Io, serves a request and closes cleanly" {
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, .{
         .credentials = &credentials,
         .alpn = &.{ "http/1.1", "h2" },
-        .clock = .{ .fixed = pki.time },
-    }, &read_buffer, &write_buffer);
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    });
     defer session.deinit();
     try std.testing.expectEqualSlices(u8, "http/1.1", session.info().alpn);
     try std.testing.expect(!session.info().peer_authenticated);
@@ -144,12 +145,12 @@ test "C3 session sends the alert for a failed handshake before it returns" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     var report: Session.Diagnostics = .{};
-    try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+    try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
         .alpn = &.{"h2"},
-        .clock = .{ .fixed = pki.time },
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
         .diagnostics = &report,
-    }, &read_buffer, &.{}));
+    }));
     try std.testing.expectEqual(@as(?u8, 120), peer.plain_alert);
     // The session is gone, and the report says what it saw.
     try std.testing.expectEqual(@as(?Alert, .no_application_protocol), report.alert_sent);
@@ -171,15 +172,15 @@ test "C3 session accept needs a signer for an identity without a key, and uses i
     transport.init(&peer, &transport_read, &.{});
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
-    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
-        .clock = .{ .fixed = pki.time },
-    }, &read_buffer, &.{}));
-    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    }));
+    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
         .signer = .{ .sign = signWithFixtures },
-        .clock = .{ .fixed = pki.time },
-    }, &read_buffer, &.{});
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    });
     defer session.deinit();
     try std.testing.expect(peer.certificate_verify_ok and peer.server_finished_ok);
 }
@@ -198,15 +199,15 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     const failing = struct {
-        fn sign(_: ?*anyopaque, _: u16, _: []const u8, _: []u8) error{SigningFailed}!usize {
+        fn sign(_: ?*anyopaque, _: SignatureScheme, _: []const u8, _: []u8) error{SigningFailed}!usize {
             return error.SigningFailed;
         }
     };
-    try std.testing.expectError(error.SigningFailed, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+    try std.testing.expectError(error.SigningFailed, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
         .signer = .{ .sign = failing.sign },
-        .clock = .{ .fixed = pki.time },
-    }, &read_buffer, &.{}));
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    }));
     try std.testing.expect(!peer.server_finished_ok);
 }
 
@@ -228,7 +229,43 @@ test "C2 session reports a rejected server chain as the alert it sent" {
     var report: Session.Diagnostics = .{};
     var settings = options(stranger);
     settings.diagnostics = &report;
-    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &.{}));
+    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings));
     try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
     try std.testing.expectEqual(@as(?Connection.Error, error.VerificationRejected), report.reason);
+}
+
+/// A transport whose reads fail the way a cancelled `std.Io` read does: `ReadFailed`, with the
+/// cause kept by the transport.
+const CancelledTransport = struct {
+    buffer: [64]u8 = undefined,
+    reader: std.Io.Reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
+    writer: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+    err: ?anyerror = null,
+    fn stream(r: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *CancelledTransport = @fieldParentPtr("reader", r);
+        self.err = error.Canceled;
+        return error.ReadFailed;
+    }
+    fn drain(_: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |slice| n += slice.len;
+        return n + data[data.len - 1].len * splat;
+    }
+};
+
+test "a cancelled transport read ends open with ReadFailed and releases the connection" {
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    var transport: CancelledTransport = .{};
+    transport.reader.buffer = &transport.buffer;
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    try std.testing.expectError(error.ReadFailed, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot)));
+    try std.testing.expectEqual(@as(?anyerror, error.Canceled), transport.err);
+    // The testing allocator reports anything open left behind.
 }

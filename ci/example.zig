@@ -7,7 +7,7 @@ pub fn authenticate(
     roots: []const []const u8,
     chain: []const []const u8,
     name: []const u8,
-    time: i64,
+    time: std.Io.Timestamp,
     token: cloak.types.Token,
 ) !cloak.types.Verification {
     @setRuntimeSafety(true);
@@ -29,7 +29,7 @@ pub fn authenticate(
 
 test "documented verifier authenticates the selected path and rejects the wrong name" {
     @setRuntimeSafety(true);
-    const time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10);
+    const time: std.Io.Timestamp = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10)) * std.time.ns_per_s);
     const roots = &.{@embedFile("data/anchor.der")};
     const chain = &.{@embedFile("data/leaf.der")};
     var receipt = try authenticate(std.testing.allocator, roots, chain, "example.com", time, .{ .generation = .fromRaw(1), .id = .fromRaw(1) });

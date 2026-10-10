@@ -9,7 +9,7 @@ test "native verification receipt binds request and rechecks expiry at completio
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
     const root = @embedFile("verify/fixtures/vectors/p256.der");
     const leaf = @embedFile("verify/fixtures/vectors/leaf.der");
-    const request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .{};
     const good = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{root} });
     defer good.deinit();
@@ -19,17 +19,17 @@ test "native verification receipt binds request and rechecks expiry at completio
     try std.testing.expect(receipt.authenticated);
     const late = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{root} });
     defer late.deinit();
-    try std.testing.expectError(error.VerificationExpired, late.take(std.testing.allocator, request, std.math.maxInt(i64)));
+    try std.testing.expectError(error.VerificationExpired, late.take(std.testing.allocator, request, .fromNanoseconds(std.math.maxInt(i96))));
 }
 
 test "native verification late receipt rejects a backwards real clock" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
-    const request: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const request: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .{};
     const native = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{@embedFile("verify/fixtures/vectors/p256.der")} });
     defer native.deinit();
-    try std.testing.expectError(error.ValidationTimeChanged, native.take(std.testing.allocator, request, request.time - 1));
+    try std.testing.expectError(error.ValidationTimeChanged, native.take(std.testing.allocator, request, .fromNanoseconds(request.time.nanoseconds - 1)));
 }
 
 test "catalogue_native_completion_owned_allocation_failures_without_resize" {
@@ -40,7 +40,7 @@ test "catalogue_native_completion_owned_allocation_failures_without_resize" {
 }
 fn nativeAllocations(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
-    const req: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const req: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .{};
     defer {
         std.debug.assert(budget.counts().jobs == 0);

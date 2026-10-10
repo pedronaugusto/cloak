@@ -6,7 +6,7 @@
 
 pub const Limbs = [4]u64;
 
-pub inline fn mul(a: Limbs, b: Limbs) Limbs {
+pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one straight-line assembly block; splitting it would split a carry chain
     var c0: u64 = undefined;
     var c1: u64 = undefined;
     var c2: u64 = undefined;
@@ -161,7 +161,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs {
     return .{ l0, l1, l2, l3 };
 }
 
-pub inline fn sqr(a: Limbs) Limbs {
+pub inline fn sqr(a: Limbs) Limbs { // glint-ignore: P003 -- one straight-line assembly block; splitting it would split a carry chain
     var c0: u64 = undefined;
     var c1: u64 = undefined;
     var c2: u64 = undefined;

@@ -104,7 +104,11 @@ use inline Secret; caller passphrase and input/output borrows remain caller-owne
 Connection generation, request, trust, policy and identity generations occupy
 distinct non-exhaustive enum(u64) domains. Importing an ID does not establish
 freshness or authority. Request hashes serialize raw integers explicitly and
-retain their existing wire encoding. Identity expiry is a real-clock seconds
+retain their existing wire encoding. Times at the public surface are `std.Io.Timestamp` (a request's
+validation time, a receipt's times, `Identity.expires`, the time a handshake asks for,
+`Session.Clock.fixed`) and spans are `std.Io.Duration` (revocation skew and maximum
+age); inside, certificates and revocation evidence count whole seconds, rounded down
+from the request's time once. Identity expiry is stored as a real-clock seconds
 Instant; certificate encodings and native scalar calls use explicit raw values.
 Service admission keeps jobs and Bytes counts under one spin guard; observational
 counts are raw scalar snapshots. Checked integers cover DER numeric decoding,
@@ -253,10 +257,15 @@ bad signer cannot put a bad CertificateVerify on the wire.
 Key shares are fresh per hello and per retry. The default offer is X25519MLKEM768
 plus an independent X25519 share; P-256 and P-384 are obtained through
 HelloRetryRequest. Group 4588 sends the ML-KEM encapsulation key first, and its
-secret is the ML-KEM secret then the X25519 secret. P-256/P-384 agreement runs the
-masked fixed-window walk (`Ecdh`), which reuses credential construction's arithmetic
-with a table built from the public peer point; std's multiplication of a secret
-scalar is not used. X25519 and ML-KEM come from std, with implicit rejection for
+secret is the ML-KEM secret then the X25519 secret. P-256 key generation, agreement, ECDSA
+signing and verification run cloak's own kernel (`src/crypto/p256.zig`): a precomputed
+comb of the base point with complete projective additions for secret scalars, signed
+five-bit windows over a public table of the peer's multiples for agreement (every entry
+scanned; identity and doubling handled by selection), and a public double-base walk
+for verification. Field arithmetic is Montgomery over four limbs, in assembly on AArch64
+and portable Zig elsewhere, the two tested equal; the generated code of the secret walks
+has no branch on secret data. P-384 agreement runs the masked fixed-window walk
+(`Ecdh`). std's multiplication of a secret scalar is not used. X25519 and ML-KEM come from std, with implicit rejection for
 ML-KEM and refusal of an all-zero X25519 secret; their generated code is not yet
 reviewed here.
 
@@ -294,7 +303,13 @@ requests with the system's secure randomness and calendar clock (or a fixed time
 the portable verifier over a trust snapshot (or a caller's verifier), and, for
 a key cloak does not hold, a caller's signer. It is used from one task at a time. A transport end without close_notify is
 a truncation unless the caller chose `.allow` for protocols whose framing detects it.
-Per-call deadlines are the transport's own; the session adds none.
+Per-call deadlines are the transport's own; the session adds none. A `Session` drives
+readers and writers it does not own and cannot interrupt a blocking read, so a timeout
+option would hold only where the transport already enforces one. Bound a handshake with
+the transport's deadline (reactor's streams do) or by cancelling the task running
+`open` or `accept`: a cancelled read or write comes back as `ReadFailed` or
+`WriteFailed` (the transport keeps `error.Canceled`), `open` has already released
+the connection, and one caller deadline covers every flight and service.
 
 `quic.Handshake` takes contiguous CRYPTO bytes per level and yields events: handshake
 data per level, traffic secrets (each once, erased on acknowledgement), the peer's

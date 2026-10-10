@@ -26,7 +26,7 @@ fn certificate(_: void, smith: *std.testing.Smith) !void {
         try std.testing.expect(parsed.spki.len <= parsed.tbs.len);
         try std.testing.expect(parsed.extension_count <= parsed.extensions.len);
     } else |_| {}
-    const request: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = now, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const request: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, now) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     if (V.verify(std.testing.allocator, request, &.{anchor})) |value| {
         var receipt = value;
         defer receipt.deinit();

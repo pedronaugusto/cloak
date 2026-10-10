@@ -20,6 +20,9 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Changed
 
+- Breaking: times are `std.Io.Timestamp` and spans `std.Io.Duration` across the public surface: `types.Request.time`, a receipt's `validation_time`, `expires` and `revocation_expires`, `Identity.expires`, `NativeVerification.take`'s `now`, the `time` a handshake asks for (`tls.Connection.Answer.time`), `tls.Session.Clock.fixed`, and `types.RevocationPolicy.clock_skew` and `max_age` (still at most a day and a year). Certificates and revocation evidence still count whole seconds inside, rounded down from the request's time once.
+- Breaking: `tls.Session.open` and `accept` take their options last, after the buffers; `tls.Session.Signer.sign` names the scheme as `tls.SignatureScheme`, not a raw integer; `tls.Session.finish` returns `tls.Session.FinishError`; `PrivateKey.sign` with noise of the wrong length is `InvalidNoise`, no longer `SigningFailed`.
+- P-256 key generation, agreement, ECDSA signing and verification run cloak's own kernel: a precomputed base comb with complete additions, constant-time signed windows over the peer's multiples, a public double-base walk for verification, and the field in assembly on AArch64 (portable Zig elsewhere, tested equal).
 - Breaking: `cloak` is one build module. `cloak.certificates` and `cloak.tls` are no longer modules to import; use `cloak.certificates` and `cloak.tls` as namespaces of `@import("cloak")`. TLS builds on the certificates, which link the native trust store, so every TLS user linked it already and a second module bought nothing. Code that wrote `@import("cloak").tls` is unchanged. DTLS, when it exists, is a namespace unless it gains a dependency others should not fetch.
 
 ### Added
@@ -31,7 +34,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `tls.Connection`, a sans-I/O TLS 1.3 client with X25519MLKEM768, X25519, P-256 and P-384 key exchange (P-curves through HelloRetryRequest), ALPN, SNI, an explicit reference identity, client certificates, key updates, exporters and an NSS key-log sink. A server's certificate chain, CertificateVerify and Finished must all verify before any application byte is readable or writable.
 - `tls.Session`, the same client over `std.Io` readers and writers, with a strict truncation default.
 - `tls.quic.Handshake`, the record-free client handshake for QUIC: per-level handshake data, traffic secrets, provisional transport parameters and authentication as events.
-- `certificates.ecdh`, ephemeral ECDH on P-256 and P-384 with masked private-scalar arithmetic, plus `certificates.certificate` and `certificates.signature` for strict certificate parsing and public-key signature checks.
+- `certificates.certificate` and `certificates.signature` for strict certificate parsing and public-key signature checks.
 - Bounded handshake messages (Certificate, CertificateRequest, CertificateVerify, Finished, NewSessionTicket, KeyUpdate), TLS key shares, a shared service gateway with request tokens, and a scripted test peer with named misbehaviours.
 - Benchmarks for client handshake CPU and private-scalar ECDH.
 - `certificates` and `tls` namespaces of the `cloak` module.

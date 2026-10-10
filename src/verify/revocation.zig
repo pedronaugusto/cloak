@@ -50,9 +50,8 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
 }
 fn fresh(this: i64, next: ?i64, now: i64, policy: T.RevocationPolicy) Error!i64 {
     @setRuntimeSafety(true);
-    if (policy.clock_skew > 86400 or policy.max_age > 365 * 86400) return error.InvalidRevocation;
-    const skew: i64 = @intCast(policy.clock_skew); // safe: policy is bounded above.
-    const age: i64 = @intCast(policy.max_age); // safe: policy is bounded above.
+    const skew = try span(policy.clock_skew, 86400);
+    const age = try span(policy.max_age, 365 * 86400);
     if (this > now +| skew) return error.StaleRevocation;
     const expires = next orelse (this +| age);
     if (expires < this or expires < now -| skew) return error.StaleRevocation;
@@ -191,11 +190,22 @@ fn bit(index: usize) u16 {
     @setRuntimeSafety(true);
     return @as(u16, 1) << @intCast(index); // safe: all path indices are bounded below 16.
 }
+/// A policy span in whole seconds, refused when negative or above `max` seconds.
+fn span(d: std.Io.Duration, comptime max: i64) Error!i64 {
+    @setRuntimeSafety(true);
+    if (d.nanoseconds < 0 or d.nanoseconds > @as(i96, max) * std.time.ns_per_s) return error.InvalidRevocation;
+    return @intCast(@divFloor(d.nanoseconds, std.time.ns_per_s)); // safe: bounded by max above
+}
+/// The configured skew in whole seconds, clamped to 0..86400 where it only widens a bound.
+fn skewSeconds(policy: T.RevocationPolicy) i64 {
+    @setRuntimeSafety(true);
+    const ns = std.math.clamp(policy.clock_skew.nanoseconds, 0, 86400 * std.time.ns_per_s);
+    return @intCast(@divFloor(ns, std.time.ns_per_s)); // safe: clamped above
+}
 fn deadline(expires: i64, policy: T.RevocationPolicy) i64 {
     @setRuntimeSafety(true);
     // Acceptance and receipt expiry use the same explicitly configured skew.
-    // safe: the skew is clamped to 86400 before conversion.
-    return expires +| @as(i64, @intCast(@min(policy.clock_skew, 86400)));
+    return expires +| skewSeconds(policy);
 }
 fn extension(e: Der.Element) Error!C.Certificate.Extension {
     @setRuntimeSafety(true);
@@ -241,7 +251,7 @@ fn ocsp(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, evide
     if (responder.tag != 0xa1 and responder.tag != 0xa2) return error.InvalidRevocation;
     const produced = try C.Certificate.evidenceTime(try data.expect(0x18));
     // safe: the skew is clamped to 86400 before conversion.
-    if (produced > now +| @as(i64, @intCast(@min(policy.clock_skew, 86400)))) return error.StaleRevocation;
+    if (produced > now +| skewSeconds(policy)) return error.StaleRevocation;
     const responses = (try data.expect(0x30)).value;
     if (data.peek() == 0xa1) try ocspExtensions((try data.next()).value);
     try data.finish();
@@ -283,7 +293,7 @@ fn responsesFor(path: []const C.Certificate, responses: []const u8, now: i64, po
         try single.finish();
         const expires = try fresh(this, next, now, policy);
         // safe: the skew is clamped to 86400 before conversion.
-        if (produced < this -| @as(i64, @intCast(@min(policy.clock_skew, 86400))) or produced > expires +| @as(i64, @intCast(@min(policy.clock_skew, 86400)))) return error.StaleRevocation;
+        if (produced < this -| skewSeconds(policy) or produced > expires +| skewSeconds(policy)) return error.StaleRevocation;
         for (path[0..path.len -| 1], 0..) |*cert, index| {
             if (!try certId(cert_id, cert, &path[index + 1])) continue;
             if (status.tag == 0xa1) return error.Revoked;

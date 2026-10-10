@@ -4,6 +4,8 @@
 pub const Suite = @import("tls/crypto/Suite.zig").Suite;
 /// Key-exchange groups.
 pub const Group = @import("tls/crypto/Group.zig").Group;
+/// Signature schemes a signing request names.
+pub const SignatureScheme = @import("tls/handshake/Hello.zig").SignatureScheme;
 /// Alert descriptions.
 pub const Alert = @import("tls/wire/Alert.zig").Alert;
 /// A certificate chain a server can present, with the names it answers for.

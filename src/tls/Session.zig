@@ -14,6 +14,7 @@ const Server = @import("handshake/Server.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
 const Alert = @import("wire/Alert.zig").Alert;
 const Group = @import("crypto/Group.zig").Group;
+const SignatureScheme = @import("handshake/Hello.zig").SignatureScheme;
 
 const Session = @This();
 
@@ -39,7 +40,7 @@ pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, F
 /// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA).
 pub const Signer = struct {
     context: ?*anyopaque = null,
-    sign: *const fn (context: ?*anyopaque, scheme: u16, content: []const u8, out: []u8) error{SigningFailed}!usize,
+    sign: *const fn (context: ?*anyopaque, scheme: SignatureScheme, content: []const u8, out: []u8) error{SigningFailed}!usize,
 };
 
 /// What a connection saw, for a caller that maps it to errors of its own.
@@ -65,8 +66,8 @@ pub const Eof = enum {
 /// The calendar clock behind certificate validity.
 pub const Clock = union(enum) {
     real,
-    /// A fixed time in seconds, for replay and tests.
-    fixed: i64,
+    /// A fixed calendar time, for replay and tests.
+    fixed: std.Io.Timestamp,
 };
 
 pub const Options = struct {
@@ -126,9 +127,9 @@ pub fn open(
     io: std.Io,
     input: *std.Io.Reader,
     output: *std.Io.Writer,
-    options: Options,
     read_buffer: []u8,
     write_buffer: []u8,
+    options: Options,
 ) OpenError!void {
     @setRuntimeSafety(true);
     if (options.auth) |auth| if (auth.identity.noiseLength() == null and options.signer == null) return error.SignerRequired;
@@ -202,9 +203,9 @@ pub fn accept(
     io: std.Io,
     input: *std.Io.Reader,
     output: *std.Io.Writer,
-    options: ServerOptions,
     read_buffer: []u8,
     write_buffer: []u8,
+    options: ServerOptions,
 ) OpenError!void {
     @setRuntimeSafety(true);
     if (options.signer == null) for (options.credentials) |credential| {
@@ -347,8 +348,8 @@ fn serve(session: *Session) OpenError!bool {
                 } else |_| try session.conn.provide(request.token, .entropy_failed);
             },
             .time => try session.conn.provide(request.token, .{ .time = switch (session.clock) {
-                .real => std.Io.Clock.real.now(session.io).toSeconds(),
-                .fixed => |seconds| seconds,
+                .real => std.Io.Clock.real.now(session.io),
+                .fixed => |at| at,
             } }),
             .verify => |verify_request| try session.verify(request.token, verify_request),
             .sign => |sign_request| {
@@ -357,7 +358,7 @@ fn serve(session: *Session) OpenError!bool {
                     continue;
                 };
                 var signature: [1024]u8 = undefined;
-                const len = signer.sign(signer.context, @backingInt(sign_request.scheme), sign_request.content, &signature) catch {
+                const len = signer.sign(signer.context, sign_request.scheme, sign_request.content, &signature) catch {
                     try session.conn.provide(request.token, .signing_failed);
                     continue;
                 };
@@ -415,7 +416,7 @@ fn pushOutput(session: *Session) OpenError!void {
 const reader_vtable: std.Io.Reader.VTable = .{ .stream = readerStream };
 
 fn fromReader(r: *std.Io.Reader) *Session {
-    return @fieldParentPtr("reader_interface", r);
+    return @alignCast(@fieldParentPtr("reader_interface", r)); // safe: the interface is a field of a Session, aligned for the Session
 }
 
 fn readerStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
@@ -468,7 +469,7 @@ fn remember(session: *Session, err: anyerror) error{ReadFailed} {
 const writer_vtable: std.Io.Writer.VTable = .{ .drain = writerDrain, .flush = writerFlush };
 
 fn fromWriter(w: *std.Io.Writer) *Session {
-    return @fieldParentPtr("writer_interface", w);
+    return @alignCast(@fieldParentPtr("writer_interface", w)); // safe: the interface is a field of a Session, aligned for the Session
 }
 
 fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
@@ -517,8 +518,10 @@ fn sendAll(session: *Session, bytes: []const u8) !void {
     _ = try session.flushOutput();
 }
 
+pub const FinishError = std.Io.Writer.Error || Connection.FinishError || OpenError;
+
 /// Sends close_notify and flushes. Reading may continue until the peer closes too.
-pub fn finish(session: *Session) !void {
+pub fn finish(session: *Session) FinishError!void {
     try session.writer_interface.flush();
     try session.conn.finish();
     _ = try session.flushOutput();
