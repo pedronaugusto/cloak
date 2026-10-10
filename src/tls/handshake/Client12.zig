@@ -10,7 +10,6 @@ const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
-const Client = @import("Client.zig");
 const Flight = @import("Flight.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
@@ -18,14 +17,15 @@ const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 
-const Error = Client.Error;
-const Epoch = Client.Epoch;
+const Error = @import("Errors.zig").Error;
+const ExportError = @import("Errors.zig").ExportError;
+const Epoch = Flight.Epoch;
 
 /// Bits of `Scratch.cr_types`: the certificate types a CertificateRequest named.
 pub const rsa_sign = 1;
 pub const ecdsa_sign = 2;
 
-pub fn onServerHello(self: *Client, msg: []const u8, hello: Hello.ServerHello12, epoch: Epoch, boundary: bool) Error!void {
+pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     self.version = .tls12;
     self.state.version = .tls12;
@@ -43,7 +43,7 @@ pub fn onServerHello(self: *Client, msg: []const u8, hello: Hello.ServerHello12,
     try scratch.transcripts.commit(msg);
 }
 
-pub fn receive(self: *Client, kind: Messages.Type, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     switch (kind) {
         .certificate => try onCertificate(self, msg, epoch, boundary),
@@ -58,7 +58,7 @@ pub fn receive(self: *Client, kind: Messages.Type, msg: []const u8, epoch: Epoch
     }
 }
 
-fn onCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.certificate, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
@@ -87,7 +87,7 @@ fn suiteKey(suite: suites.Suite12, key: certificates.certificate.PublicKey) Erro
     if (!ok) return error.UnsupportedKey;
 }
 
-fn onServerKeyExchange(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .server_key_exchange12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
@@ -106,7 +106,7 @@ fn onServerKeyExchange(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     scratch.server_public_len = @intCast(ske.public.len);
 }
 
-fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onCertificateRequest(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.certificate_request, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
@@ -126,7 +126,7 @@ fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: 
     scratch.cr_len = @intCast(keep);
 }
 
-fn onServerHelloDone(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onServerHelloDone(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.server_hello_done, epoch, .parsed, boundary);
     try Messages12.serverHelloDone(msg);
@@ -136,7 +136,7 @@ fn onServerHelloDone(self: *Client, msg: []const u8, epoch: Epoch, boundary: boo
 }
 
 /// The entropy for the client's ECDHE share: send the flight.
-pub fn onEntropy(self: *Client, entropy: []const u8) Error!void {
+pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .local_flight12) return error.UnexpectedService;
     const scratch = self.scratch.?;
@@ -146,7 +146,7 @@ pub fn onEntropy(self: *Client, entropy: []const u8) Error!void {
 }
 
 /// The scheme the client certificate signs with, or null to answer with an empty certificate.
-fn chooseCredential(self: *const Client) ?Hello.SignatureScheme {
+fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const auth = self.options.auth orelse return null;
@@ -161,7 +161,7 @@ fn chooseCredential(self: *const Client) ?Hello.SignatureScheme {
     return Possession.chooseClient12(cert.public_key, request);
 }
 
-fn sendFlight(self: *Client) Error!void {
+fn sendFlight(self: anytype) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var scheme: ?Hello.SignatureScheme = null;
@@ -213,7 +213,7 @@ fn sendFlight(self: *Client) Error!void {
 }
 
 /// A signature from the caller's signer for a key cloak does not hold, checked before use.
-pub fn onSignature(self: *Client, signature: []const u8) Error!void {
+pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const digest = scratch.sign_content[0..scratch.sign_content_len];
@@ -222,7 +222,7 @@ pub fn onSignature(self: *Client, signature: []const u8) Error!void {
     try sendCertificateVerify(self, signature);
 }
 
-fn sendCertificateVerify(self: *Client, signature: []const u8) Error!void {
+fn sendCertificateVerify(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const message = try Messages.buildCertificateVerify(try self.reserve(8 + signature.len), @backingInt(self.sign_scheme), signature);
     try self.state.advance(.local_certificate_verify, .initial, .possession, true);
@@ -232,7 +232,7 @@ fn sendCertificateVerify(self: *Client, signature: []const u8) Error!void {
 
 /// ChangeCipherSpec, the client write keys, then Finished under them. The server's keys wait
 /// for its ChangeCipherSpec.
-fn finishFlight(self: *Client) Error!void {
+fn finishFlight(self: anytype) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     try self.state.advance(.local_ccs, .initial, .parsed, true);
@@ -275,7 +275,7 @@ pub fn expand(comptime Hash: type, comptime suite: suites.Suite12, master: *cons
 }
 
 /// The server's ChangeCipherSpec: its keys protect what follows.
-pub fn onCcs(self: *Client) Error!void {
+pub fn onCcs(self: anytype) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.ccs, .initial, .parsed, true);
     const keys = self.tls12.?.read orelse return error.UnexpectedMessage;
@@ -283,7 +283,7 @@ pub fn onCcs(self: *Client) Error!void {
     try self.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });
 }
 
-fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .peer_finished12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
@@ -303,7 +303,7 @@ fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Erro
 }
 
 /// RFC 5705 keying material over the extended master secret; the context is always included.
-pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: []const u8) Client.ExportError!void {
+pub fn exportKeyingMaterial(self: anytype, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     @setRuntimeSafety(true);
     switch (self.suite12.?) {
         inline else => |suite| try Prf.exporter(suites.Hash12(suite), out, self.tls12.?.master.expose(), label, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), context),

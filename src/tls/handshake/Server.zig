@@ -24,7 +24,6 @@ const Possession = @import("Possession.zig");
 const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
-const Prf = @import("../crypto/Prf.zig");
 const Messages12 = @import("Messages12.zig");
 const Server12 = @import("Server12.zig");
 

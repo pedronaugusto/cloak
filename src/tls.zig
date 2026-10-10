@@ -24,6 +24,7 @@ test {
     _ = @import("tls/record.zig");
     _ = @import("tls/catalogue_test.zig");
     _ = @import("tls/Tls12_test.zig");
+    _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

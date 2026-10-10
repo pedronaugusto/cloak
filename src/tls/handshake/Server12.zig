@@ -6,26 +6,24 @@
 //! indication required, no renegotiation, no resumption. The server random carries the TLS 1.3
 //! downgrade sentinel, since this server would have spoken TLS 1.3.
 const std = @import("std");
-const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
 const Exchange = @import("../crypto/Exchange.zig");
-const Group = @import("../crypto/Group.zig").Group;
-const Client = @import("Client.zig");
 const Client12 = @import("Client12.zig");
 const ClientHello = @import("ClientHello.zig");
 const Hello = @import("Hello.zig");
+const Flight = @import("Flight.zig");
 const Messages = @import("Messages.zig");
 const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
-const Server = @import("Server.zig");
 const Transcripts = @import("Transcripts.zig");
 
-const Error = Client.Error;
-const Epoch = Server.Epoch;
+const Error = @import("Errors.zig").Error;
+const ExportError = @import("Errors.zig").ExportError;
+const Epoch = Flight.Epoch;
 
-pub fn onClientHello(self: *Server, msg: []const u8, hello: *const ClientHello, epoch: Epoch, boundary: bool) Error!void {
+pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     self.version = .tls12;
     self.state.version = .tls12;
@@ -74,7 +72,7 @@ pub fn onClientHello(self: *Server, msg: []const u8, hello: *const ClientHello, 
 }
 
 /// The server random, its ECDHE share and signing noise: send the flight.
-pub fn onEntropy(self: *Server, entropy: []const u8) Error!void {
+pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const group = self.group.?;
@@ -112,14 +110,14 @@ pub fn onEntropy(self: *Server, entropy: []const u8) Error!void {
     self.need_now = .sign;
 }
 
-fn queue(self: *Server, message: []const u8) Error!void {
+fn queue(self: anytype, message: []const u8) Error!void {
     const dst = try self.reserve(message.len);
     @memcpy(dst[0..message.len], message);
     try self.queueMessage(.initial, dst[0..message.len]);
 }
 
 /// A signature from the caller's signer for a key cloak does not hold, checked before use.
-pub fn onSignature(self: *Server, signature: []const u8) Error!void {
+pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const leaf = self.options.credentials[self.credential].identity.chain()[0];
@@ -128,7 +126,7 @@ pub fn onSignature(self: *Server, signature: []const u8) Error!void {
     try sendKeyExchange(self, signature);
 }
 
-fn sendKeyExchange(self: *Server, signature: []const u8) Error!void {
+fn sendKeyExchange(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     // The signed content is the two randoms, then the params the message carries.
@@ -148,7 +146,7 @@ fn sendKeyExchange(self: *Server, signature: []const u8) Error!void {
     try self.queueMessage(.initial, done);
 }
 
-pub fn receive(self: *Server, kind: Messages.Type, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     switch (kind) {
         .certificate => try onCertificate(self, msg, epoch, boundary),
@@ -161,7 +159,7 @@ pub fn receive(self: *Server, kind: Messages.Type, msg: []const u8, epoch: Epoch
     }
 }
 
-fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .c_certificate12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
@@ -187,7 +185,7 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) E
     }
 }
 
-fn onClientKeyExchange(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.client_key_exchange, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
@@ -212,7 +210,7 @@ fn onClientKeyExchange(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
     self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
 }
 
-fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .c_verify12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
@@ -228,7 +226,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
 }
 
 /// The client's ChangeCipherSpec: its keys protect what follows.
-pub fn onCcs(self: *Server) Error!void {
+pub fn onCcs(self: anytype) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.ccs, .initial, .parsed, true);
     const keys = self.tls12.?.read orelse return error.UnexpectedMessage;
@@ -236,7 +234,7 @@ pub fn onCcs(self: *Server) Error!void {
     try self.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });
 }
 
-fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase != .c_finished12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
@@ -266,7 +264,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     try self.push(.complete);
 }
 
-pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: []const u8) Server.ExportError!void {
+pub fn exportKeyingMaterial(self: anytype, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     @setRuntimeSafety(true);
     switch (self.suite12.?) {
         inline else => |suite| try Prf.exporter(suites.Hash12(suite), out, self.tls12.?.master.expose(), label, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), context),

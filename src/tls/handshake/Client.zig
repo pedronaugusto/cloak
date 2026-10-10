@@ -13,7 +13,6 @@ const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
-const ClientHello = @import("ClientHello.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
 const Flight = @import("Flight.zig");
@@ -21,7 +20,6 @@ const Possession = @import("Possession.zig");
 const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
-const Prf = @import("../crypto/Prf.zig");
 const Client12 = @import("Client12.zig");
 
 pub const Epoch = Flight.Epoch;
@@ -105,29 +103,7 @@ pub const Info = struct {
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
-pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError || Messages.ParseError ||
-    Transcripts.CommitError || Labels.CheckError || Possession.Error || Exchange.AgreeError ||
-    Schedule.InitError || Schedule.AdvanceError ||
-    std.mem.Allocator.Error || error{
-    Pending,
-    InvalidEntropy,
-    EntropyUnavailable,
-    BadSignature,
-    SigningFailed,
-    VerificationFailed,
-    VerificationRejected,
-    ParametersRejected,
-    UnexpectedService,
-    QueueFull,
-    NoSharedGroup,
-    NoSharedSuite,
-    NoSignatureScheme,
-    UnrecognizedName,
-    CertificateRequired,
-    UnexpectedCookie,
-    Renegotiation,
-    InappropriateFallback,
-} || ClientHello.ParseError;
+pub const Error = @import("Errors.zig").Error;
 
 /// The alert that reports an error to the peer. Local service failures are internal errors.
 pub fn alertFor(err: anyerror) Alert {
@@ -898,7 +874,7 @@ pub fn info(self: *const Client) ?Info {
     };
 }
 
-pub const ExportError = Schedule.ExportError || Prf.ExportError;
+pub const ExportError = @import("Errors.zig").ExportError;
 
 /// RFC 8446 section 7.5 exporter; only after the connection is established.
 pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: []const u8) ExportError!void {
