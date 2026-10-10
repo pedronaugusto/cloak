@@ -235,6 +235,16 @@ pub fn info(session: *const Session) Connection.Info {
     return session.conn.info().?;
 }
 
+/// Why the connection ended and the alerts that crossed it, after a failure or a close.
+pub fn diagnostics(session: *const Session) Connection.Diagnostics {
+    return session.conn.diagnostics();
+}
+
+/// Whether the peer asked for a certificate, whether or not the handshake completed.
+pub fn certificateRequested(session: *const Session) bool {
+    return session.conn.certificateRequested();
+}
+
 pub fn reader(session: *Session) *std.Io.Reader {
     return &session.reader_interface;
 }

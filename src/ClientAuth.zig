@@ -7,10 +7,16 @@ const ClientAuth = @This();
 /// Private: the owned identity survives reloads and caller buffer release.
 identity: Identity,
 pub const InitError = Identity.InitError;
+pub const InitPemError = Identity.InitPemError;
 pub const Options = Identity.Options;
 pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: PrivateKey, options: Options) InitError!ClientAuth {
     @setRuntimeSafety(true);
     return .{ .identity = try Identity.init(gpa, certificates, key, options) };
+}
+/// `init` over a chain in PEM; see `Identity.initPem`.
+pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, options: Options) InitPemError!ClientAuth {
+    @setRuntimeSafety(true);
+    return .{ .identity = try Identity.initPem(gpa, chain_pem, key, options) };
 }
 /// A client chain whose key is held elsewhere; see `Identity.initExternal`.
 pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, options: Options) InitError!ClientAuth {

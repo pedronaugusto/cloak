@@ -54,6 +54,14 @@ pub fn compat(self: Machine) bool {
     };
 }
 
+/// Whether the client was asked for a certificate, or the server asks for one.
+pub fn certificateRequested(self: Machine) bool {
+    return switch (self.state) {
+        .client => |m| m.requested_certificate,
+        .server => |m| m.options.client_auth != .none,
+    };
+}
+
 pub fn receive(self: Machine, bytes: []const u8, epoch: Epoch, boundary: bool) Error!void {
     return switch (self.state) {
         inline else => |m| m.receive(bytes, epoch, boundary),

@@ -227,6 +227,12 @@ pub fn diagnostics(self: *const Connection) Diagnostics {
     return .{ .phase = self.phase_now, .reason = self.failure, .alert_sent = self.alert_sent, .alert_received = self.alert_received };
 }
 
+/// Whether the server asked this client for a certificate (or this server asks its client for
+/// one), whether or not the handshake completed.
+pub fn certificateRequested(self: *const Connection) bool {
+    return self.hs.certificateRequested();
+}
+
 /// Negotiated parameters; null before the handshake completes.
 pub fn info(self: *const Connection) ?Info {
     return self.hs.info();

@@ -319,6 +319,7 @@ test "C2 client certificate response: signed, empty, or refused by an unsuitable
         const pair = try P.init(gpa, .{ .request_client_cert = true }, .{});
         defer pair.deinit();
         try pair.handshake();
+        try std.testing.expect(pair.conn.certificateRequested());
         try std.testing.expectEqual(@as(usize, 0), pair.peer.client_certificates);
         try std.testing.expect(!pair.peer.client_signature_ok);
         try std.testing.expect(pair.peer.client_finished_ok);
@@ -343,6 +344,7 @@ test "C2 client certificate response: signed, empty, or refused by an unsuitable
         const pair = try P.init(gpa, .{}, .{ .client_auth = auth });
         defer pair.deinit();
         try pair.handshake();
+        try std.testing.expect(!pair.conn.certificateRequested());
         try std.testing.expectEqual(@as(usize, 0), pair.peer.client_certificates);
     }
 }

@@ -118,3 +118,41 @@ fn externalLifetime(gpa: std.mem.Allocator) !void {
     defer held.deinit();
     try std.testing.expectEqual(@as(usize, 1), held.chain().len);
 }
+
+test "credential identity reads its chain from PEM, the leaf first, and refuses anything else" {
+    @setRuntimeSafety(true);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, pemLifetime, .{});
+    const gpa = std.testing.allocator;
+    const key = try PrivateKey.parse(gpa, @embedFile("testdata/p256.pkcs8.pem"), .{});
+    defer key.deinit();
+    const chain = @embedFile("testdata/p256.cert.pem") ++ @embedFile("testdata/rsa.cert.pem");
+    const identity = try Identity.initPem(gpa, chain, key, .{});
+    defer identity.deinit();
+    try std.testing.expectEqual(@as(usize, 2), identity.chain().len);
+    try std.testing.expect(key.matches(identity.chain()[0]));
+    // A key in the chain file is not a certificate, an empty file is no chain, and the leaf must match.
+    try rejectPem(error.NotCertificate, Identity.initPem(gpa, chain ++ @embedFile("testdata/p256.pkcs8.pem"), key, .{}));
+    try rejectPem(error.EmptyChain, Identity.initPem(gpa, " \n", key, .{}));
+    try rejectPem(error.InvalidPem, Identity.initPem(gpa, "not pem", key, .{}));
+    try rejectPem(error.IdentityLimit, Identity.initPem(gpa, chain, key, .{ .certificates = 1 }));
+    try rejectPem(error.KeyMismatch, Identity.initPem(gpa, @embedFile("testdata/rsa.cert.pem"), key, .{}));
+    const auth = try ClientAuth.initPem(gpa, chain, key, .{});
+    defer auth.deinit();
+    try std.testing.expectEqual(@as(usize, 2), auth.chain().len);
+}
+
+fn pemLifetime(gpa: std.mem.Allocator) !void {
+    @setRuntimeSafety(true);
+    const key = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    defer key.deinit();
+    const identity = try Identity.initPem(gpa, @embedFile("testdata/ed25519.cert.pem"), key, .{});
+    identity.deinit();
+}
+
+fn rejectPem(expected: anyerror, result: anyerror!Identity) !void {
+    @setRuntimeSafety(true);
+    if (result) |unexpected| {
+        unexpected.deinit();
+        return error.TestUnexpectedResult;
+    } else |err| try std.testing.expectEqual(expected, err);
+}

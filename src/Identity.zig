@@ -4,16 +4,44 @@ const aegis = @import("aegis");
 const types = @import("types.zig");
 const certificate = @import("certificate.zig");
 const PrivateKey = @import("PrivateKey.zig");
+const Pem = @import("credentials/Pem.zig");
 const Identity = @This();
 /// Private: immutable material is wiped/released by the final owner.
 state: *State,
 pub const Options = struct { chain_bytes: usize = 65536, certificates: usize = 16, generation: types.IdentityGeneration = .fromRaw(1) };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
+pub const InitPemError = InitError || Pem.Error || error{NotCertificate};
 const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
 /// A chain and the key that signs for its leaf; the key is retained and must match the leaf.
 pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
     return build(gpa, certificates, key, options);
+}
+
+/// `init` over a chain in PEM: every block is a CERTIFICATE, the leaf first, as the usual
+/// `cert.pem` of a leaf and its intermediates lays them out.
+pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, options: Options) InitPemError!Identity {
+    @setRuntimeSafety(true);
+    var blocks: std.ArrayList(Pem.Block) = .empty;
+    defer {
+        for (blocks.items) |*block| block.deinit(gpa);
+        blocks.deinit(gpa);
+    }
+    var ders: std.ArrayList([]const u8) = .empty;
+    defer ders.deinit(gpa);
+    var reader = Pem.init(chain_pem);
+    // Armor is a third larger than the DER it carries, and its markers add a little.
+    const limit = std.math.add(usize, options.chain_bytes / 3 * 4, 4096) catch return error.IdentityLimit;
+    while (try reader.next(gpa, limit)) |block| {
+        var owned = block;
+        errdefer owned.deinit(gpa);
+        if (!std.mem.eql(u8, owned.label, "CERTIFICATE")) return error.NotCertificate;
+        if (blocks.items.len == options.certificates) return error.IdentityLimit;
+        try blocks.append(gpa, owned);
+        errdefer _ = blocks.pop();
+        try ders.append(gpa, owned.der);
+    }
+    return init(gpa, ders.items, key, options);
 }
 
 /// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
