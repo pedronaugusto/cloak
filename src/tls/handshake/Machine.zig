@@ -150,6 +150,13 @@ pub fn provideParameters(self: Machine, accept: bool) Error!void {
     };
 }
 
+/// The largest handshake message either role accepts, in bytes.
+pub fn messageLimit(self: Machine) usize {
+    return switch (self.state) {
+        inline else => |m| m.options.limits.message,
+    };
+}
+
 /// The peer's QUIC transport parameters; empty before they arrive.
 pub fn peerParameters(self: Machine) []const u8 {
     return switch (self.state) {
@@ -157,10 +164,11 @@ pub fn peerParameters(self: Machine) []const u8 {
     };
 }
 
-/// The largest group the handshake has settled on, once the ServerHello is processed.
+/// Whether the ServerHello (not a retry request) has been sent or processed: the keys changed.
 pub fn negotiated(self: Machine) bool {
     return switch (self.state) {
-        inline else => |m| m.group != null,
+        .client => |m| m.group != null,
+        .server => |m| m.answered,
     };
 }
 

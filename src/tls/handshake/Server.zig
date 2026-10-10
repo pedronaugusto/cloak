@@ -84,6 +84,9 @@ gpa: std.mem.Allocator,
 options: Options,
 state: State.State,
 need_now: Need = .none,
+/// What follows once the client's QUIC transport parameters are accepted.
+deferred: Need = .none,
+parameters_accepted: bool = false,
 post: ?Emit = null,
 held: []u8 = &.{},
 scratch: ?*Scratch,
@@ -99,6 +102,9 @@ authenticated: bool = false,
 peer_certificate: bool = false,
 established: bool = false,
 retried: bool = false,
+/// The ClientHello is final (not answered by a retry request): the client may send nothing more
+/// at the initial level.
+answered: bool = false,
 ccs_sent: bool = false,
 app_read: ?Traffic = null,
 server_name_copy: []const u8 = &.{},
@@ -316,8 +322,9 @@ pub fn provideSignature(self: *Server, signature: []const u8) Client.Error!void 
 pub fn provideParameters(self: *Server, accept: bool) Client.Error!void {
     if (self.need_now != .parameters) return error.UnexpectedService;
     if (!accept) return error.ParametersRejected;
-    self.need_now = .none;
-    // Parameters gate nothing else the server has queued; the flight waits on its signature.
+    self.parameters_accepted = true;
+    self.need_now = self.deferred;
+    self.deferred = .none;
 }
 
 // ---------------------------------------------------------------- outputs
@@ -481,7 +488,14 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
         if (share.len != group.clientShareLength()) return error.IllegalParameter;
         @memcpy(scratch.share[0..share.len], share);
         scratch.share_len = share.len;
-        self.need_now = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) } };
+        self.answered = true;
+        const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) } };
+        // QUIC: the client's transport parameters are provisional, and the server says nothing
+        // that depends on them until the caller accepts them.
+        if (self.options.quic and !self.parameters_accepted) {
+            self.deferred = entropy;
+            self.need_now = .parameters;
+        } else self.need_now = entropy;
         return;
     }
     // No usable share: ask once for the group the server chose.
@@ -673,9 +687,6 @@ fn finishFlight(self: *Server) Client.Error!void {
         },
     }
     scratch.signing = false;
-    // QUIC: the client's transport parameters are provisional until accepted, and nothing it
-    // sends is processed until then.
-    if (self.options.quic) self.need_now = .parameters;
 }
 
 fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {

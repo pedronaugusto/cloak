@@ -1,4 +1,4 @@
-//! A QUIC client handshake (RFC 9001). The caller feeds the contiguous CRYPTO bytes of each
+//! A QUIC handshake of either role (RFC 9001). The caller feeds the contiguous CRYPTO bytes of each
 //! level to `receive`, drains `next` events (handshake bytes to send per level, traffic
 //! secrets to install, the peer's transport parameters, authentication) and answers each
 //! `request`. There is no TLS record, ChangeCipherSpec, KeyUpdate or close_notify here.
@@ -7,6 +7,7 @@ const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("../handshake/Client.zig");
 const Machine = @import("../handshake/Machine.zig");
+const Server = @import("../handshake/Server.zig");
 const Services = @import("../handshake/Services.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
@@ -39,6 +40,24 @@ pub const Options = struct {
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
+pub const ServerOptions = struct {
+    /// Chains the server can present, with the names each answers for. At least one.
+    credentials: []const Server.Credential,
+    /// The server's transport parameters: the quic_transport_parameters extension body.
+    parameters: []const u8,
+    /// Application protocols in the server's order of preference, required.
+    alpn: []const []const u8,
+    unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
+    suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
+    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    require_hybrid: bool = false,
+    client_auth: Server.Auth = .none,
+    client_verify: Verify = .none,
+    limits: Client.Limits = .{},
+    key_log: ?KeyLog = null,
+    generation: types.ConnectionGeneration = .fromRaw(0),
+};
+
 pub const ServerName = union(enum) {
     identity,
     name: []const u8,
@@ -53,10 +72,11 @@ pub const Event = union(enum) {
     /// A traffic secret (a hash-length byte string) to derive packet keys from. Copy it
     /// before `ack`, which erases it. Direction is relative to this endpoint.
     secret: struct { level: Level, direction: Direction, suite: Suite, bytes: []const u8 },
-    /// The server's transport parameters, provisional until authentication; answer with
+    /// The peer's transport parameters, provisional until it is authenticated (a server is
+    /// authenticated by its certificate, a client by its Finished); answer with
     /// `acceptParameters` or `rejectParameters`.
     peer_parameters: []const u8,
-    /// The server is authenticated and Finished verified; the local Finished is queued.
+    /// The peer is authenticated and its Finished verified; the handshake is complete.
     authenticated: Info,
     /// The handshake failed with this description (QUIC crypto error 0x100 plus it).
     alert: Alert,
@@ -84,7 +104,7 @@ const Partial = struct {
 };
 
 gpa: std.mem.Allocator,
-hs: *Client,
+hs: Machine,
 services: Services,
 partial: [3]Partial = @splat(.{}),
 current: ?Current = null,
@@ -122,7 +142,30 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
         .key_log = options.key_log,
         .generation = options.generation,
     });
-    return .{ .gpa = gpa, .hs = hs, .services = .init(options.generation) };
+    return .{ .gpa = gpa, .hs = Machine.forClient(hs), .services = .init(options.generation) };
+}
+
+/// A server handshake. The client's transport parameters arrive as a `peer_parameters` event.
+pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshake {
+    @setRuntimeSafety(true);
+    if (options.alpn.len == 0) return error.InvalidOptions;
+    const hs = try Server.init(gpa, .{
+        .suites = options.suites,
+        .groups = options.groups,
+        .alpn = options.alpn,
+        .require_alpn = true,
+        .require_hybrid = options.require_hybrid,
+        .quic = true,
+        .parameters = options.parameters,
+        .credentials = options.credentials,
+        .unknown_name = options.unknown_name,
+        .client_auth = options.client_auth,
+        .client_verify = options.client_verify,
+        .limits = options.limits,
+        .key_log = options.key_log,
+        .generation = options.generation,
+    });
+    return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .services = .init(options.generation) };
 }
 
 pub fn deinit(self: *Handshake) void {
@@ -155,13 +198,13 @@ pub fn exportKeyingMaterial(self: *const Handshake, out: []u8, label: []const u8
 
 pub fn request(self: *Handshake) ?Request {
     if (self.failed) return null;
-    return self.services.request(Machine.forClient(self.hs));
+    return self.services.request(self.hs);
 }
 
 pub fn provide(self: *Handshake, token: types.Token, answer: Answer) Error!void {
     @setRuntimeSafety(true);
     if (self.failed) return error.Closed;
-    self.services.answer(Machine.forClient(self.hs), token, answer) catch |err| switch (err) {
+    self.services.answer(self.hs, token, answer) catch |err| switch (err) {
         error.InvalidEntropy, error.StaleToken, error.NoRequest => |open| return open,
         else => |fatal| return self.abort(fatal),
     };
@@ -236,8 +279,10 @@ fn receiveChecked(self: *Handshake, level: Level, bytes: []const u8) Error!usize
         slot.total = 0;
         try self.hs.receive(message, epoch(level), boundary);
         // A message that changes keys ends its level: nothing may follow it there. A retry
-        // request does not change keys, and the real ServerHello follows it at the same level.
-        if ((message[0] == 2 and self.hs.group != null) or (message[0] == 20 and level == .handshake)) slot.closed = true;
+        // request does not change keys, and the real ServerHello follows it at the same level;
+        // the second ClientHello is likewise sent again at the initial level.
+        const opening: u8 = if (self.hs.role() == .server) 1 else 2;
+        if ((message[0] == opening and self.hs.negotiated()) or (message[0] == 20 and level == .handshake)) slot.closed = true;
         if (slot.closed and consumed != bytes.len) return error.RecordAlignment;
     }
     return consumed;
@@ -255,7 +300,7 @@ fn take(self: *Handshake, slot: *Partial, bytes: []const u8) Error!usize {
         used = n;
         if (slot.have < 4) return used;
         const total = 4 + @as(usize, std.mem.readInt(u24, slot.buf[1..4], .big));
-        if (total > self.hs.options.limits.message) return error.HandshakeLimit;
+        if (total > self.hs.messageLimit()) return error.HandshakeLimit;
         if (slot.buf.len < total) {
             const grown = try self.gpa.alloc(u8, total);
             @memcpy(grown[0..4], slot.buf[0..4]);
@@ -280,7 +325,7 @@ pub fn next(self: *Handshake) ?Event {
     return switch (current.*) {
         .data => |d| .{ .handshake_data = .{ .level = d.level, .bytes = self.hs.flightBytes(d.start + d.acked, d.len - d.acked), .flight_end = d.flight_end } },
         .secret => |*s| .{ .secret = .{ .level = s.level, .direction = s.direction, .suite = s.traffic.suite, .bytes = s.traffic.secret.expose()[0..s.traffic.len] } },
-        .parameters => .{ .peer_parameters = self.hs.peer_parameters },
+        .parameters => .{ .peer_parameters = self.hs.peerParameters() },
         .authenticated => .{ .authenticated = self.hs.info().? },
         .alert => |alert| .{ .alert = alert },
     };
@@ -348,4 +393,5 @@ pub fn ack(self: *Handshake, consumed: usize) void {
 
 test {
     _ = @import("Handshake_test.zig");
+    _ = @import("ServerHandshake_test.zig");
 }
