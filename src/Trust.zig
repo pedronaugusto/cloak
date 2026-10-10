@@ -4,6 +4,7 @@ const aegis = @import("aegis");
 const TrustGeneration = @import("types.zig").TrustGeneration;
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
+const Pem = @import("credentials/Pem.zig");
 const Trust = @This();
 const tests = @import("Trust_test.zig");
 
@@ -25,7 +26,7 @@ pub const Limits = struct {
     certificate_bytes: usize = 64 * 1024,
     directory_entries: usize = 8192,
 };
-pub const AddDerError = std.mem.Allocator.Error || certificate.ParseError || error{ TrustLimit, MixedTrustPolicies };
+pub const AddDerError = std.mem.Allocator.Error || certificate.ParseError || error{TrustLimit};
 pub const AddPemError = AddDerError || error{ InvalidPem, InvalidPadding, InvalidCharacter };
 pub const LoadOptions = struct { limits: Limits = .{}, timeout: std.Io.Timeout = .none };
 pub const AddFileError = AddPemError || std.Io.Dir.ReadFileAllocError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error || std.Io.ConcurrentError || std.Io.Event.WaitTimeoutError;
@@ -47,7 +48,6 @@ pub fn deinit(t: *Trust) void {
 
 pub fn addDer(t: *Trust, der: []const u8, limits: Limits) AddDerError!void {
     @setRuntimeSafety(true);
-    if (t.system != .portable) return error.MixedTrustPolicies;
     if (der.len > limits.certificate_bytes) return error.TrustLimit;
     _ = try certificate.parse(der, .{});
     for (t.roots.items) |root| if (std.mem.eql(u8, root, der)) return;
@@ -74,18 +74,27 @@ fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: L
     errdefer t.rollback(count, bytes);
     const begin = "-----BEGIN CERTIFICATE-----";
     const end = "-----END CERTIFICATE-----";
-    var remaining = std.mem.trim(u8, pem, " \t\r\n");
-    if (remaining.len == 0) return error.InvalidPem;
+    var at: usize = 0;
     var blocks: usize = 0;
-    while (remaining.len != 0) {
+    var certificates: usize = 0;
+    // Text before a block is skipped (RFC 7468 section 5.2): bundles name each root in a
+    // comment before it. Text after the last block is not.
+    while (Pem.boundary(pem, at)) |start| {
         if (system_bundle) {
             if (blocks >= limits.roots) return error.TrustLimit;
             blocks += 1;
         }
-        if (!std.mem.startsWith(u8, remaining, begin)) return error.InvalidPem;
-        remaining = remaining[begin.len..];
-        const finish = std.mem.find(u8, remaining, end) orelse return error.InvalidPem;
-        const encoded = remaining[0..finish];
+        const rest = pem[start..];
+        if (!std.mem.startsWith(u8, rest, begin)) {
+            // Another kind of block: refused when named, passed over in a system bundle.
+            if (!system_bundle) return error.InvalidPem;
+            const close = std.mem.findPos(u8, pem, start, "-----END ") orelse return error.InvalidPem;
+            at = (std.mem.findPos(u8, pem, close + "-----END ".len, "-----") orelse return error.InvalidPem) + "-----".len;
+            continue;
+        }
+        const body = rest[begin.len..];
+        const finish = std.mem.find(u8, body, end) orelse return error.InvalidPem;
+        const encoded = body[0..finish];
         const compact = try t.gpa.alloc(u8, encoded.len);
         defer t.gpa.free(compact);
         var len: usize = 0;
@@ -101,11 +110,13 @@ fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: L
         defer t.gpa.free(der);
         decoder.decode(der, compact[0..len]) catch return error.InvalidPem;
         t.addDer(der, limits) catch |err| switch (err) {
-            error.OutOfMemory, error.TrustLimit, error.MixedTrustPolicies => return err,
+            error.OutOfMemory, error.TrustLimit => return err,
             else => if (!system_bundle) return err,
         };
-        remaining = std.mem.trim(u8, remaining[finish + end.len ..], " \t\r\n");
+        certificates += 1;
+        at = start + begin.len + finish + end.len;
     }
+    if (certificates == 0 or std.mem.trim(u8, pem[at..], " \t\r\n").len != 0) return error.InvalidPem;
 }
 
 /// Loading occurs before traffic. Finite deadlines use caller-provided Io concurrency;
@@ -224,10 +235,10 @@ fn directory(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddDirErro
     }
 }
 
-/// System policy on Apple/Windows is native policy, never a root dump.
+/// System policy on Apple/Windows is native policy, never a root dump; roots added besides it
+/// are trusted besides the system's, by the portable verifier.
 fn systemLoad(t: *Trust, io: std.Io, limits: Limits) AddSystemError!void {
     @setRuntimeSafety(true);
-    if ((builtin.os.tag == .macos or builtin.os.tag == .windows) and t.roots.items.len != 0) return error.MixedTrustPolicies;
     switch (builtin.os.tag) {
         .macos => t.system = .macos,
         .windows => t.system = .windows,
@@ -341,4 +352,20 @@ test {
 test "trust system bundle omits unusable roots without weakening explicit import" {
     @setRuntimeSafety(true);
     try tests.systemBundle(firstBundle);
+}
+
+test "trust bundles name their roots in text before each one" {
+    @setRuntimeSafety(true);
+    var trust = Trust.init(std.testing.allocator);
+    defer trust.deinit();
+    const root = @embedFile("credentials/testdata/p256.cert.pem");
+    try trust.addPem("##\n## Bundle of CA Root Certificates\n##\n\nWork root\n=========\n" ++ root, .{});
+    try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
+    // A system bundle passes over a block of another kind; a named file refuses it.
+    const key = "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\n";
+    var system = Trust.init(std.testing.allocator);
+    defer system.deinit();
+    try importPem(true, &system, "# key\n" ++ key ++ "# Work root\n" ++ root, .{});
+    try std.testing.expectEqual(@as(usize, 1), system.roots.items.len);
+    try std.testing.expectError(error.InvalidPem, trust.addPem(key ++ root, .{}));
 }

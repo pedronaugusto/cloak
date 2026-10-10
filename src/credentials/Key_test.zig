@@ -63,6 +63,13 @@ test "credential PEM complete input and declared key format are strict" {
     try rejectKey(error.EntropyRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.pkcs1.pem"), .{}));
 }
 
+test "credential PEM key after the attributes a PKCS #12 export writes" {
+    @setRuntimeSafety(true);
+    const key = try PrivateKey.parse(std.testing.allocator, "Bag Attributes\n    localKeyID: 01\nKey Attributes: <No Attributes>\n" ++ @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    defer key.deinit();
+    try std.testing.expectEqual(@as(?usize, 0), key.noiseLength());
+}
+
 // The unencrypted RFC 8410 seed is a public dummy fixture, not a deployed key.
 test "credential PKCS8 attributes require Attribute grammar and implicit SET order" {
     @setRuntimeSafety(true);

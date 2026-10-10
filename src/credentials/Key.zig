@@ -30,7 +30,11 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
     }
     if (bytes.len > options.bytes) return error.InputLimit;
     if (options.passphrase) |password| if (password.len > options.password_bytes) return error.KdfLimit;
-    if (std.mem.startsWith(u8, std.mem.trim(u8, bytes, " \t\r\n"), "-----BEGIN ")) {
+    // Armor may follow explanatory text, as `openssl pkcs12` writes it; a DER key starts with
+    // its SEQUENCE tag, which no text before armor does.
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    const armored = std.mem.startsWith(u8, trimmed, "-----BEGIN ") or (trimmed.len != 0 and trimmed[0] != 0x30 and Pem.boundary(bytes, 0) != null);
+    if (armored) {
         var pem = Pem.init(bytes);
         var found: ?Material = null;
         defer if (found != null) std.crypto.secureZero(u8, std.mem.asBytes(&found));

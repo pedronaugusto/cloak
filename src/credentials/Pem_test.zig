@@ -12,6 +12,26 @@ test "credential PEM strict armor and bounded inputs" {
     try std.testing.expectEqualSlices(u8, &.{0}, block.der);
     try std.testing.expectEqual(@as(?Pem.Block, null), try pem.next(std.testing.allocator, 1024));
 }
+test "credential PEM skips text before a block and refuses text after the last" {
+    @setRuntimeSafety(true);
+    const gpa = std.testing.allocator;
+    // Attributes before the first block, as a PKCS #12 export writes them, a comment before
+    // the second, and the trailing blank lines a file may end with.
+    var pem = Pem.init("Bag Attributes\n    localKeyID: 01\nsubject=/CN=x\n-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\n" ++
+        "# second\n  -----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n" ++ "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    var first = (try pem.next(gpa, 1024)).?;
+    defer first.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{0}, first.der);
+    var second = (try pem.next(gpa, 1024)).?;
+    defer second.deinit(gpa);
+    try std.testing.expectEqualStrings("CERTIFICATE", second.label);
+    try std.testing.expectEqualSlices(u8, &.{1}, second.der);
+    try std.testing.expectEqual(@as(?Pem.Block, null), try pem.next(gpa, 1024));
+    pem = Pem.init("-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\njunk\n");
+    var only = (try pem.next(gpa, 1024)).?;
+    defer only.deinit(gpa);
+    try std.testing.expectError(error.InvalidPem, pem.next(gpa, 1024));
+}
 test "credential PEM allocation failures" {
     @setRuntimeSafety(true);
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);

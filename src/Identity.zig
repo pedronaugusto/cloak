@@ -8,7 +8,16 @@ const Pem = @import("credentials/Pem.zig");
 const Identity = @This();
 /// Private: immutable material is wiped/released by the final owner.
 state: *State,
-pub const Options = struct { chain_bytes: usize = 65536, certificates: usize = 16, generation: types.IdentityGeneration = .fromRaw(1) };
+pub const Options = struct {
+    chain_bytes: usize = 65536,
+    certificates: usize = 16,
+    generation: types.IdentityGeneration = .fromRaw(1),
+    /// What `initPem` does with a block that is not a CERTIFICATE: `skip` reads a file that
+    /// holds the key too, as OpenSSL's chain reader does.
+    other_blocks: OtherBlocks = .refuse,
+
+    pub const OtherBlocks = enum { refuse, skip };
+};
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
 pub const InitPemError = InitError || Pem.Error || error{NotCertificate};
 const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
@@ -18,8 +27,9 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
     return build(gpa, certificates, key, options);
 }
 
-/// `init` over a chain in PEM: every block is a CERTIFICATE, the leaf first, as the usual
-/// `cert.pem` of a leaf and its intermediates lays them out.
+/// `init` over a chain in PEM: the CERTIFICATE blocks, the leaf first, as the usual
+/// `cert.pem` of a leaf and its intermediates lays them out. Another block is refused or
+/// skipped as `options.other_blocks` says; text between blocks is skipped.
 pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, options: Options) InitPemError!Identity {
     @setRuntimeSafety(true);
     var blocks: std.ArrayList(Pem.Block) = .empty;
@@ -35,7 +45,13 @@ pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, o
     while (try reader.next(gpa, limit)) |block| {
         var owned = block;
         errdefer owned.deinit(gpa);
-        if (!std.mem.eql(u8, owned.label, "CERTIFICATE")) return error.NotCertificate;
+        if (!std.mem.eql(u8, owned.label, "CERTIFICATE")) switch (options.other_blocks) {
+            .refuse => return error.NotCertificate,
+            .skip => {
+                owned.deinit(gpa);
+                continue;
+            },
+        };
         if (blocks.items.len == options.certificates) return error.IdentityLimit;
         try blocks.append(gpa, owned);
         errdefer _ = blocks.pop();

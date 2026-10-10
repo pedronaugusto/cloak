@@ -141,6 +141,19 @@ test "credential identity reads its chain from PEM, the leaf first, and refuses 
     try std.testing.expectEqual(@as(usize, 2), auth.chain().len);
 }
 
+test "credential identity skips a key in its chain file when asked" {
+    @setRuntimeSafety(true);
+    const gpa = std.testing.allocator;
+    const key = try PrivateKey.parse(gpa, @embedFile("testdata/p256.pkcs8.pem"), .{});
+    defer key.deinit();
+    const both = @embedFile("testdata/p256.cert.pem") ++ @embedFile("testdata/p256.pkcs8.pem") ++ @embedFile("testdata/rsa.cert.pem");
+    const auth = try ClientAuth.initPem(gpa, both, key, .{ .other_blocks = .skip });
+    defer auth.deinit();
+    try std.testing.expectEqual(@as(usize, 2), auth.chain().len);
+    try std.testing.expect(key.matches(auth.chain()[0]));
+    try rejectPem(error.EmptyChain, Identity.initPem(gpa, @embedFile("testdata/p256.pkcs8.pem"), key, .{ .other_blocks = .skip }));
+}
+
 fn pemLifetime(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
     const key = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});

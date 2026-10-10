@@ -21,7 +21,9 @@ const Session = @This();
 pub const Trust = union(enum) {
     /// No verification: the connection reports itself unauthenticated.
     none,
-    /// The portable verifier over a retained root snapshot.
+    /// A retained root snapshot, checked as its policy says: by the portable verifier, or,
+    /// for the system's policy on macOS and Windows, by the system's verifier and then the
+    /// portable one over the path it chose, with the snapshot's own roots trusted besides.
     snapshot: certificates.Trust.Snapshot,
     /// The caller's verifier, for native or custom policy.
     custom: Custom,
@@ -372,7 +374,10 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
     @setRuntimeSafety(true);
     const result: VerifyError!certificates.types.Verification = switch (session.trust) {
         .none => error.Failed,
-        .snapshot => |snapshot| certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
+        .snapshot => |snapshot| switch (snapshot.systemPolicy()) {
+            .portable => certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
+            .macos, .windows => session.verifyNative(request, snapshot),
+        },
         .custom => |custom| custom.verify(custom.context, session.gpa, request),
     };
     if (result) |verified| {
@@ -392,6 +397,34 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
             else => return provide_err,
         };
     }
+}
+
+/// The system's verdict on `request`, then the portable verifier's over the path the system
+/// chose; failing that, a path to one of the snapshot's own roots.
+fn verifyNative(session: *Session, request: certificates.types.Request, snapshot: certificates.Trust.Snapshot) VerifyError!certificates.types.Verification {
+    @setRuntimeSafety(true);
+    const native = session.systemVerdict(request);
+    if (native) |receipt| return receipt else |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        if (snapshot.anchors().len != 0) return certificates.verify.indexed(session.gpa, request, snapshot.issuers());
+        return switch (err) {
+            error.VerificationExpired => error.InvalidValidity,
+            else => error.NoTrustedPath,
+        };
+    }
+}
+
+fn systemVerdict(session: *Session, request: certificates.types.Request) (certificates.NativeVerification.InitError || certificates.NativeVerification.TakeError)!certificates.types.Verification {
+    @setRuntimeSafety(true);
+    // One job at a time, run here: no executor means the system is asked on this task.
+    var budget: certificates.services.Budget = .{ .max_jobs = 1 };
+    const job = try certificates.NativeVerification.init(session.gpa, &budget, request, .{});
+    defer job.deinit();
+    const now = switch (session.clock) {
+        .real => std.Io.Clock.real.now(session.io).toSeconds(),
+        .fixed => |seconds| seconds,
+    };
+    return job.take(session.gpa, request, now);
 }
 
 /// Moves committed ciphertext to the transport writer. Returns whether any moved.

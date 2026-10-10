@@ -22,6 +22,27 @@ test "native verification receipt binds request and rechecks expiry at completio
     try std.testing.expectError(error.VerificationExpired, late.take(std.testing.allocator, request, std.math.maxInt(i64)));
 }
 
+test "native verification checks a public server against the system's own authorities" {
+    @setRuntimeSafety(true);
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const chain: []const []const u8 = &.{ @embedFile("services/fixtures/public/leaf.der"), @embedFile("services/fixtures/public/intermediate.der"), @embedFile("services/fixtures/public/cross.der") };
+    const time = try std.fmt.parseInt(i64, std.mem.trimEnd(u8, @embedFile("services/fixtures/public/time.txt"), "\n"), 10);
+    const request: types.Request = .{ .chain = chain, .identity = .{ .dns = "github.com" }, .time = time, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    var budget: services.Budget = .{};
+    const native = try Native.init(gpa, &budget, request, .{});
+    defer native.deinit();
+    var receipt = try native.take(gpa, request, time);
+    defer receipt.deinit();
+    try receipt.check(request);
+    try std.testing.expect(receipt.authenticated);
+    var other = request;
+    other.identity = .{ .dns = "example.com" };
+    const refused = try Native.init(gpa, &budget, other, .{});
+    defer refused.deinit();
+    try std.testing.expect(std.meta.isError(refused.take(gpa, other, time)));
+}
+
 test "native verification late receipt rejects a backwards real clock" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;

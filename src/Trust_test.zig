@@ -118,12 +118,16 @@ fn signalRead(io: std.Io, context: ?*anyopaque) void {
     started.set(io);
 }
 
-test "trust native system policy cannot mix with explicit anchors" {
+test "trust native system policy keeps explicit anchors besides it" {
     @setRuntimeSafety(true);
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
     trust.system = .macos;
-    try std.testing.expectError(error.MixedTrustPolicies, trust.addDer(@embedFile("credentials/testdata/p256.cert.der"), .{}));
+    try trust.addDer(@embedFile("credentials/testdata/p256.cert.der"), .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    try std.testing.expectEqual(Trust.System.macos, snapshot.systemPolicy());
+    try std.testing.expectEqual(@as(usize, 1), snapshot.anchors().len);
 }
 
 test "trust Linux system bundle freezes into the indexed explicit store" {

@@ -139,7 +139,7 @@ The build exposes one module, `cloak`, with `cloak.certificates` for certificate
 
 ## Platforms
 
-Portable verification uses explicit trust. Linux and BSD system policy loads bounded root files. macOS and Windows system policy requires native verification with network retrieval disabled.
+Portable verification uses explicit trust. Linux and BSD system policy loads bounded root files. macOS and Windows system policy requires native verification with network retrieval disabled; `tls.Session` does it for a snapshot of that policy, and roots added besides it are trusted by the portable verifier when the system refuses a chain.
 
 ## Built with
 

@@ -26,10 +26,16 @@ pub fn init(text: []const u8) Pem {
 pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     @setRuntimeSafety(true);
     if (it.text.len > max_bytes) return error.InputLimit;
-    const rest = std.mem.trim(u8, it.text[it.offset..], " \t\r\n");
-    if (rest.len == 0) return null;
     const begin = "-----BEGIN ";
-    if (!std.mem.startsWith(u8, rest, begin)) return error.InvalidPem;
+    // Text before a block is permitted and skipped (RFC 7468 section 5.2), as the
+    // attributes a PKCS #12 export writes and a bundle's comments are; text after the last
+    // block is not.
+    const start = boundary(it.text, it.offset) orelse {
+        if (std.mem.trim(u8, it.text[it.offset..], " \t\r\n").len != 0) return error.InvalidPem;
+        it.offset = it.text.len;
+        return null;
+    };
+    const rest = it.text[start..];
     const cut = std.mem.find(u8, rest[begin.len..], "-----") orelse return error.InvalidPem;
     const label = rest[begin.len..][0..cut];
     if (label.len == 0 or label.len > 64) return error.InvalidPem;
@@ -70,10 +76,23 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     storage.resizeWithinCapacity(size) catch return error.InputLimit;
     const der = storage.exposeMut();
     Base64.decode(der, compact[0..len]) catch return error.InvalidPem;
-    it.offset = it.text.len - rest.len + end + ending.len;
+    it.offset = start + end + ending.len;
     var block: Block = .{ .label = label, .der = der, .storage = undefined, .legacy = legacy, .dek = dek };
     storage.moveInto(&block.storage);
     return block;
+}
+/// Where the next `-----BEGIN ` that starts a line is, at or after `from`; only blanks may
+/// come before it on its line.
+pub fn boundary(text: []const u8, from: usize) ?usize {
+    @setRuntimeSafety(true);
+    var at = from;
+    while (std.mem.findPos(u8, text, at, "-----BEGIN ")) |found| {
+        var line = found;
+        while (line > 0 and (text[line - 1] == ' ' or text[line - 1] == '\t')) line -= 1;
+        if (line == 0 or text[line - 1] == '\n' or text[line - 1] == '\r') return found;
+        at = found + 1;
+    }
+    return null;
 }
 test {
     @setRuntimeSafety(true);

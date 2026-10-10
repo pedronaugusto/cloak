@@ -1,0 +1,3 @@
+The chain github.com:443 served on 2026-10-10 (leaf, intermediate, cross-signed root), as
+DER, for checking a public server against the system's own authorities offline. time.txt is
+a moment inside every certificate's validity.

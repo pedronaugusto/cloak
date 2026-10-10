@@ -210,6 +210,42 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
     try std.testing.expect(!peer.server_finished_ok);
 }
 
+test "C2 session checks a snapshot of the system's policy with the system, and its own roots besides" {
+    if (@import("builtin").os.tag != .macos and @import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addSystem(std.testing.io, .{});
+    const system_only = try trust.freeze();
+    defer system_only.deinit();
+    try trust.addSystem(std.testing.io, .{});
+    try trust.addDer(pki.ca, .{});
+    const besides = try trust.freeze();
+    defer besides.deinit();
+    for ([_]certificates.Trust.Snapshot{ system_only, besides }, [_]bool{ false, true }) |snapshot, trusted| {
+        var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+        defer peer.deinit();
+        var transport: Loopback(@TypeOf(peer)) = undefined;
+        var transport_read: [4096]u8 = undefined;
+        transport.init(&peer, &transport_read, &.{});
+        var session: Session = undefined;
+        var read_buffer: [256]u8 = undefined;
+        var write_buffer: [256]u8 = undefined;
+        var report: Session.Diagnostics = .{};
+        var settings = options(snapshot);
+        settings.diagnostics = &report;
+        if (!trusted) {
+            // The system does not know the test root.
+            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &write_buffer));
+            try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
+            continue;
+        }
+        try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, settings, &read_buffer, &write_buffer);
+        defer session.deinit();
+        try std.testing.expect(session.info().peer_authenticated);
+    }
+}
+
 test "C2 session reports a rejected server chain as the alert it sent" {
     const gpa = std.testing.allocator;
     // Trust a root that did not sign the server's chain.
