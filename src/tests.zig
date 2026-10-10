@@ -31,4 +31,5 @@ test {
     _ = @import("services/Path.zig");
     _ = @import("services/macos.zig");
     _ = @import("services/windows.zig");
+    _ = @import("crypto.zig");
 }
