@@ -2,6 +2,7 @@
 const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const A = @import("../certificate/Algorithm.zig");
+const p256 = @import("../crypto/p256.zig");
 pub const Error = error{ InvalidSignature, UnsupportedAlgorithm, InvalidPublicKey };
 pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
@@ -63,6 +64,7 @@ fn ecdsa(comptime Curve: type, comptime H: type, bytes: []const u8, message: []c
         _ = Der.integer((r.expect(2) catch return error.InvalidSignature).value) catch return error.InvalidSignature;
     }
     r.finish() catch return error.InvalidSignature;
+    if (Curve == std.crypto.ecc.P256) return ecdsaP256(H, bytes, message, signature);
     const E = std.crypto.sign.ecdsa.Ecdsa(Curve, H);
     const key = E.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
     const sig = E.Signature.fromDer(signature) catch return error.InvalidSignature;
@@ -139,6 +141,17 @@ fn rsaPss(comptime H: type, comptime M: type, key: rsa_key, salt_length: usize, 
     final.update(&digest);
     final.update(db[db_len - salt_length ..][0..salt_length]);
     if (!std.mem.eql(u8, h, &final.finalResult())) return error.InvalidSignature;
+}
+/// P-256 through cloak's kernel: the base comb plus a width-5 NAF over the key, public inputs only.
+fn ecdsaP256(comptime H: type, bytes: []const u8, message: []const u8, signature: []const u8) Error!void {
+    @setRuntimeSafety(true);
+    const key = p256.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
+    const sig = std.crypto.sign.ecdsa.EcdsaP256Sha256.Signature.fromDer(signature) catch return error.InvalidSignature;
+    var digest: [H.digest_length]u8 = undefined;
+    H.hash(message, &digest, .{});
+    // The leftmost 256 bits of the digest, reduced modulo the order.
+    const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest[0..32]));
+    if (!p256.verify(key, e, &sig.r, &sig.s)) return error.InvalidSignature;
 }
 test {
     _ = @import("signature_test.zig");

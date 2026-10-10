@@ -8,6 +8,7 @@
 //! deterministic.
 const std = @import("std");
 const Curve = @import("Curve.zig");
+const p256 = @import("../crypto/p256.zig");
 
 pub const Error = error{SigningFailed};
 
@@ -35,6 +36,7 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
             var k_bytes = k.toBytes(.big);
             defer std.crypto.secureZero(u8, &k_bytes);
+            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, &digest, &k_bytes, out);
             var point = Curve.base(Point, .big, &k_bytes) catch return error.SigningFailed;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
             const r = reduce(Point.Fe.encoded_length, point.affineCoordinates().x.toBytes(.big));
@@ -49,6 +51,31 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;
             const signature: Scheme.Signature = .{ .r = r.toBytes(.big), .s = s.toBytes(.big) };
+            var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
+            const encoded = signature.toDer(&der);
+            @memcpy(out[0..encoded.len], encoded);
+            return out[0..encoded.len];
+        }
+
+        /// P-256 through cloak's own kernel: comb multiplication by the nonce, Montgomery
+        /// scalars with a fixed-exponent inversion. Every secret scalar is erased.
+        fn signP256(secret: *const [32]u8, digest: *const [32]u8, k_bytes: *const [32]u8, out: *[max_signature]u8) Error![]const u8 {
+            @setRuntimeSafety(true);
+            const r = p256.signR(k_bytes) orelse return error.SigningFailed;
+            // r is part of the signature: public.
+            if (r.isZero()) return error.SigningFailed;
+            var d = p256.Scalar.fromBytes(secret) catch return error.SigningFailed;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&d));
+            if (d.isZeroMask() != 0) return error.SigningFailed;
+            var k = p256.Scalar.fromBytes(k_bytes) catch return error.SigningFailed;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
+            var k_inverse = k.powModulusMinusTwo();
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
+            var blend = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest)).add(r.mul(d));
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
+            const s = k_inverse.mul(blend);
+            if (s.isZero()) return error.SigningFailed;
+            const signature: Scheme.Signature = .{ .r = r.toBytes(), .s = s.toBytes() };
             var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
             const encoded = signature.toDer(&der);
             @memcpy(out[0..encoded.len], encoded);
