@@ -249,10 +249,10 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
         defer receipt.deinit();
         try session.conn.provide(token, .{ .verified = &receipt });
     } else |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         const why: Connection.VerifyFailure = switch (err) {
             error.NoTrustedPath => .untrusted,
             error.InvalidValidity => .expired,
-            error.OutOfMemory => .internal,
             else => .bad_certificate,
         };
         session.conn.provide(token, .{ .verification_failed = why }) catch |provide_err| switch (provide_err) {

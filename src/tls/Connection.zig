@@ -638,7 +638,7 @@ fn onAlert(self: *Connection) ReceiveError!void {
     if (body.len != 2 or (body[0] != 1 and body[0] != 2)) return error.UnexpectedRecord;
     const alert: Alert = @enumFromInt(body[1]);
     self.alert_received = alert;
-    if (alert == .close_notify) {
+    if (alert == .close_notify and self.phase_now == .connected) {
         self.read_done = true;
         self.settlePhase();
         return;
@@ -663,6 +663,7 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
             if (total > self.limits.handshake.message) return error.HandshakeLimit;
             if (self.message.len < total) {
                 if (self.message.len != 0) self.gpa.free(self.message);
+                self.message = &.{};
                 self.message = try self.gpa.alloc(u8, total);
             }
             @memcpy(self.message[0..4], &self.header);

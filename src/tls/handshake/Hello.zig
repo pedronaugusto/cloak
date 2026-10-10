@@ -132,7 +132,7 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.vector(u16, bytes);
 }
 pub const ServerHello = struct { suite: Suite, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
-pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired };
+pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired, UnsupportedVersion, NoApplicationProtocol, MissingExtension };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!ServerHello {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
@@ -170,7 +170,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         }
         try value.finish();
     }
-    if (!version) return error.InvalidHello;
+    if (!version) return error.UnsupportedVersion;
     if (retry and group == null and cookie.len != 0) return .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie };
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
@@ -225,7 +225,8 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
         },
         else => return error.InvalidHello,
     };
-    if (((options.require_alpn or options.quic) and alpn.len == 0) or (options.quic and !has_parameters)) return error.InvalidHello;
+    if ((options.require_alpn or options.quic) and alpn.len == 0) return error.NoApplicationProtocol;
+    if (options.quic and !has_parameters) return error.MissingExtension;
     return .{ .alpn = alpn, .parameters = parameters };
 }
 test {

@@ -67,7 +67,6 @@ pub const Tamper = enum {
     ticket_flood,
     key_update_flood,
     certificate_request_late,
-    encrypted_ccs,
     ccs_after_finished,
 };
 
@@ -176,6 +175,7 @@ pub fn Peer(comptime suite: Suite) type {
         transcript: Transcript(Hash) = .{},
         sent_retry: bool = false,
         sent_ccs: bool = false,
+        sent_second_retry: bool = false,
         connected: bool = false,
         seen: Seen = .{},
         session_id: [32]u8 = undefined,
@@ -387,7 +387,7 @@ pub fn Peer(comptime suite: Suite) type {
                 self.sent_retry = true;
                 return self.sendRetry(self.config.group);
             }
-            if (self.config.tamper == .second_retry and seen.hellos == 2) return self.sendRetry(self.config.group);
+            if (self.config.tamper == .second_retry and seen.hellos == 2) return self.sendRetry(.p384);
             const want = @backingInt(self.config.group);
             for (shares[0..seen.share_count]) |share| if (share.group == want) return self.sendFlight(share.bytes);
             return error.PeerNoMatchingShare;
@@ -418,7 +418,7 @@ pub fn Peer(comptime suite: Suite) type {
             std.mem.writeInt(u16, message[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
             std.mem.writeInt(u24, message[1..4], @intCast(w.pos - 4), .big);
             const hrr = message[0..w.pos];
-            try self.transcript.retry(hrr);
+            if (self.sent_second_retry) {} else if (self.seen.hellos == 2) self.sent_second_retry = true else try self.transcript.retry(hrr);
             try self.plainRecord(hrr);
             try self.compatCcs();
         }
@@ -576,12 +576,9 @@ pub fn Peer(comptime suite: Suite) type {
             if (self.config.tamper == .finished_not_at_record_end) {
                 try appendMessage(&flight, self.gpa, 4, &.{ 0, 0, 0x1c, 0x20, 0, 0, 0, 0, 0, 0, 1, 'x', 0, 0 });
             }
+            if (self.config.tamper == .application_before_finished) try self.sealOne(.application, "early");
             try self.sealFlight(flight.items, marks[0..mark_count]);
             if (self.config.tamper == .bad_tag) self.out.items[self.out.items.len - 1] ^= 1;
-            if (self.config.tamper == .application_before_finished) {
-                try self.out.appendSlice(self.gpa, &.{ 23, 3, 3, 0, 20 });
-                try self.out.appendSlice(self.gpa, &@as([20]u8, @splat(0)));
-            }
             var app: K.Traffic = .{};
             defer app.deinit();
             try self.schedule.?.application(&self.server_finished_hash, &app);
@@ -814,7 +811,6 @@ pub fn Peer(comptime suite: Suite) type {
             if (self.config.tamper == .ticket_flood) for (0..200) |_| try self.sealOne(.handshake, &ticket);
             if (self.config.tamper == .key_update_flood) for (0..200) |_| try self.keyUpdate(true);
             if (self.config.tamper == .ccs_after_finished) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
-            if (self.config.tamper == .encrypted_ccs) try self.sealOne(.handshake, &.{ 20, 0, 0, 1, 1 });
         }
 
         // ------------------------------------------------------------ after the handshake

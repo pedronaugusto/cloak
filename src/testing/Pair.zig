@@ -26,6 +26,12 @@ pub const Options = struct {
     groups: []const @import("../tls/crypto/Group.zig").Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     limits: Connection.Limits = .{},
     compat: bool = true,
+    /// Suites the client offers; the peer always selects the pair's suite.
+    offer: ?[]const Suite = null,
+    trusted_root: ?[]const u8 = null,
+    key_log: ?Connection.KeyLog = null,
+    /// Leave signing requests open so a test can answer them itself.
+    hold_sign: bool = false,
 };
 
 pub fn Pair(comptime suite: Suite) type {
@@ -55,7 +61,7 @@ pub fn Pair(comptime suite: Suite) type {
             self.rng = .init(options.seed);
             self.trust = certificates.Trust.init(gpa);
             errdefer self.trust.deinit();
-            try self.trust.addDer(pki.ca, .{});
+            try self.trust.addDer(options.trusted_root orelse pki.ca, .{});
             self.snapshot = try self.trust.freeze();
             errdefer self.snapshot.deinit();
             self.peer = PeerType.init(gpa, config);
@@ -63,7 +69,7 @@ pub fn Pair(comptime suite: Suite) type {
             self.conn = try Connection.client(gpa, .{
                 .identity = options.identity,
                 .verify = if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins } },
-                .suites = &.{suite},
+                .suites = options.offer orelse &.{suite},
                 .groups = options.groups,
                 .alpn = options.alpn,
                 .require_alpn = options.require_alpn,
@@ -71,6 +77,7 @@ pub fn Pair(comptime suite: Suite) type {
                 .auth = options.client_auth,
                 .limits = options.limits,
                 .compat = options.compat,
+                .key_log = options.key_log,
                 .generation = .fromRaw(7),
             });
             return self;
@@ -89,6 +96,7 @@ pub fn Pair(comptime suite: Suite) type {
         pub fn service(self: *Self) !bool {
             var answered = false;
             while (self.conn.request()) |request| {
+                if (request.service == .sign and self.options.hold_sign) return answered;
                 answered = true;
                 switch (request.service) {
                     .entropy => |len| {
@@ -105,6 +113,7 @@ pub fn Pair(comptime suite: Suite) type {
                             self.verified += 1;
                             try self.conn.provide(request.token, .{ .verified = &owned });
                         } else |err| {
+                            if (err == error.OutOfMemory) return err;
                             self.last_verification_error = err;
                             try self.conn.provide(request.token, .{ .verification_failed = failure(err) });
                         }

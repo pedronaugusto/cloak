@@ -141,6 +141,8 @@ pub fn alertFor(err: anyerror) Alert {
         error.UnsolicitedExtension => .unsupported_extension,
         error.MissingExtension => .missing_extension,
         error.HybridRequired => .insufficient_security,
+        error.UnsupportedVersion => .protocol_version,
+        error.NoApplicationProtocol => .no_application_protocol,
         error.UnofferedScheme, error.SchemeKeyMismatch => .illegal_parameter,
         error.BadSignature, error.BadFinished => .decrypt_error,
         error.HandshakeLimit => .internal_error,
@@ -604,7 +606,7 @@ fn makeTraffic(self: *const Client, suite: Suite, len: usize, secret: []const u8
 fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
     @setRuntimeSafety(true);
     const sink = self.options.key_log orelse return;
-    var line: [160]u8 = undefined;
+    var line: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &line);
     const hex = "0123456789abcdef";
     var at: usize = 0;
@@ -824,7 +826,7 @@ pub fn settle(self: *Client) void {
 
 pub fn info(self: *const Client) ?Info {
     @setRuntimeSafety(true);
-    if (!self.established) return null;
+    if (!self.established or self.state.phase == .failed) return null;
     return .{
         .suite = self.suite.?,
         .group = self.group.?,

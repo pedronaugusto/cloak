@@ -61,7 +61,7 @@ test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .require_alpn = true });
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
     try std.testing.expectError(error.UnofferedSelection, H.encrypted(ee, .{ .alpn = &.{"http/1.1"} }));
-    try std.testing.expectError(error.InvalidHello, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
+    try std.testing.expectError(error.NoApplicationProtocol, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .sni = "*.example.com" }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .alpn = &.{""} }));
     try std.testing.expectError(error.HybridRequired, H.server(fixture, "", &shares, .{ .require_hybrid = true }));
