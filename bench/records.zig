@@ -36,8 +36,7 @@ fn measure(comptime suite: Suite, comptime size: usize, init: std.process.Init, 
         .name = @tagName(suite) ++ "/" ++ std.fmt.comptimePrint("{d}", .{size}) ++ " seal/open/check",
         .unit = "record-pair",
         .run = Context(suite, size).run,
-        .setup = Context(suite, size).setup,
-        .teardown = Context(suite, size).teardown,
+        .fixture = .{ .lifetime = .row, .setup = Context(suite, size).setup, .teardown = Context(suite, size).teardown },
     }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 31 });
 }
 pub fn main(init: std.process.Init) !void {

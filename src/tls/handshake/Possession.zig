@@ -1,7 +1,7 @@
 //! Key possession: CertificateVerify scheme restrictions and signature checks. The TLS
 //! scheme is bound to the key's type and curve here, separately from certificate policy.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../../certificates.zig");
 const Scheme = @import("Hello.zig").SignatureScheme;
 
 const Algorithm = certificates.certificate.Algorithm;

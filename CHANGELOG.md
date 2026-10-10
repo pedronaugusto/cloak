@@ -18,6 +18,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 - Cumulative name-constraint and policy work is bounded separately from discovery and policy-node storage, including failed candidate paths and native-selected verification.
 
+### Changed
+
+- Breaking: `cloak` is one build module. `cloak.certificates` and `cloak.tls` are no longer modules to import; use `cloak.certificates` and `cloak.tls` as namespaces of `@import("cloak")`. TLS builds on the certificates, which link the native trust store, so every TLS user linked it already and a second module bought nothing. Code that wrote `@import("cloak").tls` is unchanged. DTLS, when it exists, is a namespace unless it gains a dependency others should not fetch.
+
 ### Added
 
 - `tls.Connection.server`, `tls.Session.accept` and `tls.quic.Handshake.server`: the TLS 1.3 server, with a hostile-input ClientHello parser, one HelloRetryRequest checked against the first hello, credential selection by server name (exact or one-label wildcard), the server's order for suite, group and ALPN, optional or required client certificates verified through the same request and receipt path, and CertificateVerify signed by the caller's signer and checked against the leaf before it is sent. In QUIC the client's transport parameters are accepted before the server sends anything.
@@ -28,7 +32,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `certificates.ecdh`, ephemeral ECDH on P-256 and P-384 with masked private-scalar arithmetic, plus `certificates.certificate` and `certificates.signature` for strict certificate parsing and public-key signature checks.
 - Bounded handshake messages (Certificate, CertificateRequest, CertificateVerify, Finished, NewSessionTicket, KeyUpdate), TLS key shares, a shared service gateway with request tokens, and a scripted test peer with named misbehaviours.
 - Benchmarks for client handshake CPU and private-scalar ECDH.
-- Independent certificate/key and TLS concern modules.
+- `certificates` and `tls` namespaces of the `cloak` module.
 - Private TLS 1.3 AEAD epochs, strict inner/outer records, checked usage caps, erased HKDF/Finished, bounded transcripts and client/server transition foundations.
 - Strict ClientHello/ServerHello/EncryptedExtensions negotiation, full erased TLS 1.3 key schedules and directional traffic-secret updates. Portable probes execute all suites and published schedule checkpoints without hosted Io.
 - RFC 8448 protected-flight vectors and adversarial record, transition and extension-parser regressions. These foundations do not yet provide an encrypted stream.

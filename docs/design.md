@@ -127,10 +127,19 @@ OS paging or process abort, nor hardware constant-time behavior.
 
 ## TLS 1.3 foundations (C2 in progress)
 
-Certificates and keys use `cloak.certificates` (`certificates` at the facade).
-TLS uses `cloak.tls` (`tls`); its only current consumer declaration is `Suite`.
-DTLS is reserved for a separate datagram concern at C8, with no empty module or
-claim of datagram support. The private TLS handshake imports crypto and wire;
+Certificates and keys are the `certificates` namespace of the one `cloak` module,
+and TLS is `tls`. A separate build module buys something only where it keeps
+dependencies from users who do not need that part, or keeps a part from linking
+something. Here it bought neither: the TLS client and server use the certificates
+directly, and the certificates link the native trust store (Security and
+CoreFoundation on macOS, crypt32 on Windows), so every TLS user links it already,
+and both parts have the same package dependencies (aegis). Zig's lazy analysis
+leaves out what a program does not use. The layering inside the module is
+enforced by the layer check at file level: the TLS layers import the certificates
+facade downward and nothing in the certificates imports TLS. The portable probes are a private
+module of their own, since they reach files the public surface does not.
+DTLS is reserved for a datagram concern at C8 with no claim of datagram support;
+it will be a namespace unless it brings a dependency others should not fetch. The private TLS handshake imports crypto and wire;
 record protection imports crypto only. Neither imports an adapter or facade.
 
 `record.Epoch` owns one direction's key, IV, sequence and byte/record counts.

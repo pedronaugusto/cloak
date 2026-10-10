@@ -1,9 +1,9 @@
-//! Certificates/keys and TLS as independent concern modules.
+//! Certificates, keys and trust policy, and TLS: one module, two namespaces.
 
 /// Certificates, keys and trust policy independent of transport.
-pub const certificates = @import("cloak.certificates");
-/// TLS vocabulary; the client connection is under construction.
-pub const tls = @import("cloak.tls");
+pub const certificates = @import("certificates.zig");
+/// TLS 1.3, sans-I/O and over `std.Io`.
+pub const tls = @import("tls.zig");
 
 /// Builds and retains immutable trust material before traffic.
 pub const Trust = certificates.Trust;

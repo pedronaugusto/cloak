@@ -1,7 +1,7 @@
 //! One handshake machine of either role behind the surface the drivers use. Connection and
 //! the QUIC handshake hold a machine, ask it for outputs and requests, and answer through it.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("Client.zig");
 const Flight = @import("Flight.zig");

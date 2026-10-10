@@ -2,7 +2,7 @@
 //! a real driver: deterministic entropy, a fixed clock, the portable verifier for a client's
 //! chain, and server signatures from the fixture keys.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const client_module = @import("ClientPeer.zig");
 const Connection = @import("../tls/Connection.zig");

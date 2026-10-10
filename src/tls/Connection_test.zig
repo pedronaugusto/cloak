@@ -1,6 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
 const Group = @import("crypto/Group.zig").Group;

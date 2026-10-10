@@ -3,7 +3,7 @@
 //! reads authenticated plaintext from `readable`. The connection owns record keys, sequence
 //! numbers and the handshake; it never touches a socket, a clock or a random source.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const types = certificates.types;
 const Client = @import("handshake/Client.zig");
 const Machine = @import("handshake/Machine.zig");

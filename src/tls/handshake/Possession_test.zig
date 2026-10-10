@@ -1,5 +1,5 @@
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../../certificates.zig");
 const P = @import("Possession.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");

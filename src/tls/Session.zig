@@ -7,7 +7,7 @@
 //! connection and are not synchronized. The session stores `io` for the entropy and clock
 //! requests and for the adapters' vtables; open it in place and do not move it afterwards.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Server = @import("handshake/Server.zig");
 const Suite = @import("crypto/Suite.zig").Suite;

@@ -18,7 +18,7 @@ pub const layers: []const gantry.rules.Layer = &.{
 };
 pub const required = [_][]const u8{"src/root.zig"};
 pub const entries: []const []const u8 = &.{"src/root.zig"};
-pub const modules: []const gantry.NamedModule = &.{ .{ .name = "cloak.certificates", .path = "src/certificates.zig" }, .{ .name = "cloak.tls", .path = "src/tls.zig" }, .{ .name = "tls_vectors", .path = "src/portable.zig" } };
+pub const modules: []const gantry.NamedModule = &.{.{ .name = "probes", .path = "src/portable.zig" }};
 // Runtime sibling owners cannot import one another; test edges remain free.
 const sibling_references = [_]gantry.rules.ReferenceRule{
     .{ .name = "independent authentication owners", .from = "src/verify.zig", .target = "src/credentials.zig", .relative = true, .kind = .import },

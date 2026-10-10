@@ -1,9 +1,10 @@
-//! Package-wide test entry, separate from consumer concern modules.
+//! Package-wide test entry.
 const std = @import("std");
 const certificates = @import("certificates.zig");
 test {
     @setRuntimeSafety(true);
     std.testing.refAllDecls(certificates);
+    _ = @import("tls.zig");
     _ = @import("Trust.zig");
     _ = @import("verify.zig");
     _ = @import("services.zig");

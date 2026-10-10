@@ -1,6 +1,6 @@
 //! The service requests of a client handshake and their answers. One gateway per
 //! connection issues tokens, so a stale or repeated answer cannot reach a newer request.
-const certificates = @import("cloak.certificates");
+const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("Client.zig");
 const Machine = @import("Machine.zig");

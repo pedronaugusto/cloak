@@ -5,7 +5,7 @@
 //! records and QUIC levels belong to the callers that translate its outputs.
 const std = @import("std");
 const aegis = @import("aegis");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
 const Suite = suites.Suite;

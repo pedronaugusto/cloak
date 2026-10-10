@@ -3,7 +3,7 @@
 //! recorded, and requests are answered from fixture keys. The scripted-peer tests pin each role
 //! to independent code; this checks that the two roles agree with each other.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Handshake = @import("../tls/quic/Handshake.zig");
 const Server = @import("../tls/handshake/Server.zig");

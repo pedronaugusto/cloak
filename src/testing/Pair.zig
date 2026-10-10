@@ -2,7 +2,7 @@
 //! request the way a real driver would: deterministic entropy, a fixed clock, the portable
 //! verifier over a snapshot of the test root, and signatures from the fixture client keys.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Connection = @import("../tls/Connection.zig");
 const Suite = @import("../tls/crypto/Suite.zig").Suite;

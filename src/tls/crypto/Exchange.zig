@@ -2,7 +2,7 @@
 //! Entropy is an explicit input; nothing here reads a generator or a clock.
 const std = @import("std");
 const aegis = @import("aegis");
-const ecdh = @import("cloak.certificates").ecdh;
+const ecdh = @import("../../certificates.zig").ecdh;
 const Group = @import("Group.zig").Group;
 
 const X25519 = std.crypto.dh.X25519;

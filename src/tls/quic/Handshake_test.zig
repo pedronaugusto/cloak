@@ -173,7 +173,7 @@ test "C2 quic post-handshake messages: tickets accepted, key updates and request
 
 test "C2 quic client certificate response goes out at the handshake level" {
     const gpa = std.testing.allocator;
-    const certificates = @import("cloak.certificates");
+    const certificates = @import("../../certificates.zig");
     const key = try certificates.PrivateKey.parse(gpa, peer_module.pki.client_pem, .{});
     defer key.deinit();
     const auth = try certificates.ClientAuth.init(gpa, &.{peer_module.pki.client}, key, .{});

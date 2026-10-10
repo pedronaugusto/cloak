@@ -1,7 +1,7 @@
 //! Drives a record-free QUIC `Handshake` against a scripted `Peer` speaking the QUIC dialect,
 //! answering requests like a real driver and recording every event it sees.
 const std = @import("std");
-const certificates = @import("cloak.certificates");
+const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Handshake = @import("../tls/quic/Handshake.zig");
 const Suite = @import("../tls/crypto/Suite.zig").Suite;
