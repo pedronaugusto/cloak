@@ -1,6 +1,5 @@
 //! The service requests of a client handshake and their answers. One gateway per
 //! connection issues tokens, so a stale or repeated answer cannot reach a newer request.
-const std = @import("std");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("Client.zig");
@@ -56,13 +55,16 @@ pub fn request(self: *Services, client: *const Client) ?Request {
         self.open = .{ .generation = self.generation, .id = .fromRaw(self.issued) };
     }
     const token = self.open.?;
-    return .{ .token = token, .service = switch (need) {
-        .entropy => |e| .{ .entropy = e.len },
-        .time => .time,
-        .verify => .{ .verify = client.verification(token) },
-        .sign => .{ .sign = client.signRequest() },
-        .none, .parameters => unreachable, // filtered above
-    } };
+    return .{
+        .token = token,
+        .service = switch (need) {
+            .entropy => |e| .{ .entropy = e.len },
+            .time => .time,
+            .verify => .{ .verify = client.verification(token) },
+            .sign => .{ .sign = client.signRequest() },
+            .none, .parameters => unreachable, // filtered above
+        },
+    };
 }
 
 /// Delivers an answer to the request `token` names. A rejected scalar draw

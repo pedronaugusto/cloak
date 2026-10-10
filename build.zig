@@ -77,6 +77,10 @@ pub fn build(b: *std.Build) void {
     example_module.addImport("cloak", b.modules.get("cloak").?);
     const example = b.addTest(.{ .name = "cloak-readme-example", .root_module = example_module });
     b.step("check-example", "Execute the documented authentication example").dependOn(&b.addRunArtifact(example).step);
+    const session_module = b.createModule(.{ .root_source_file = b.path("ci/session.zig"), .target = host, .optimize = .safe });
+    session_module.addImport("cloak", b.modules.get("cloak").?);
+    const session_example = b.addTest(.{ .name = "cloak-readme-session", .root_module = session_module });
+    b.step("check-session", "Compile the documented session example against the public surface").dependOn(&b.addRunArtifact(session_example).step);
     preflight.addConsumerCheck(b, .{ .package = "cloak", .modules = &.{ "cloak", "cloak.certificates", "cloak.tls" }, .packages = &.{b.dependency("aegis", .{ .target = target, .optimize = optimize })}, .program = b.path("ci/consumer.zig") });
 }
 

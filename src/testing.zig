@@ -5,9 +5,3 @@ pub const Peer = @import("testing/Peer.zig");
 pub const Pair = @import("testing/Pair.zig");
 pub const QuicPair = @import("testing/QuicPair.zig");
 pub const Loopback = @import("testing/Loopback.zig");
-test {
-    _ = Peer;
-    _ = Pair;
-    _ = QuicPair;
-    _ = Loopback;
-}

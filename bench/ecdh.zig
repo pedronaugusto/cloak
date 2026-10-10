@@ -34,21 +34,21 @@ pub fn main(init: std.process.Init) !void {
         const peer = try curve.fromSec1(&b_public);
         const Cloak = struct {
             fn publicKey(scalar: *const [group.scalar_length]u8, public: *[group.public_length]u8) void {
-                group.publicKey(scalar, public) catch unreachable; // the benchmark's scalar is in range
+                group.publicKey(scalar, public) catch unreachable; // unreachable: the benchmark's scalar is in range
                 std.mem.doNotOptimizeAway(public);
             }
             fn agree(scalar: *const [group.scalar_length]u8, public: []const u8, secret: *[group.scalar_length]u8) void {
-                group.agree(scalar, public, secret) catch unreachable; // the benchmark's peer key is valid
+                group.agree(scalar, public, secret) catch unreachable; // unreachable: the benchmark's peer key is valid
                 std.mem.doNotOptimizeAway(secret);
             }
         };
         const Std = struct {
             fn base(scalar: [group.scalar_length]u8) void {
-                const point = curve.basePoint.mul(scalar, .big) catch unreachable; // in range
+                const point = curve.basePoint.mul(scalar, .big) catch unreachable; // unreachable: in range
                 std.mem.doNotOptimizeAway(&point);
             }
             fn mul(point: curve, scalar: [group.scalar_length]u8) void {
-                const product = point.mul(scalar, .big) catch unreachable; // in range
+                const product = point.mul(scalar, .big) catch unreachable; // unreachable: in range
                 std.mem.doNotOptimizeAway(&product);
             }
         };

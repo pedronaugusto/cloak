@@ -5,6 +5,7 @@ const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
 const QuicPair = @import("../../testing/QuicPair.zig").QuicPair;
 const peer_module = @import("../../testing/Peer.zig");
+const Alert = @import("../wire/Alert.zig").Alert;
 
 fn retrying(group: Group) ?Group {
     return if (group == .p256 or group == .p384) group else null;
@@ -63,7 +64,7 @@ test "C2 catalogue_quic_levels_hrr_parameters_and_secret_authority" {
         defer pair.deinit();
         try std.testing.expectError(error.Closed, pair.run());
         try std.testing.expect(!pair.authenticated);
-        try std.testing.expectEqual(@as(?@import("../wire/Alert.zig").Alert, .illegal_parameter), pair.alert);
+        try std.testing.expectEqual(@as(?Alert, .illegal_parameter), pair.alert);
         try std.testing.expect(pair.hs.info() == null);
         // Only the handshake secrets were ever handed out: no application secret.
         for (pair.secrets.items) |secret| try std.testing.expectEqual(Handshake.Level.handshake, secret.level);

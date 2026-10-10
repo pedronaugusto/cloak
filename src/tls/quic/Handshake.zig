@@ -3,7 +3,6 @@
 //! secrets to install, the peer's transport parameters, authentication) and answers each
 //! `request`. There is no TLS record, ChangeCipherSpec, KeyUpdate or close_notify here.
 const std = @import("std");
-const aegis = @import("aegis");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("../handshake/Client.zig");

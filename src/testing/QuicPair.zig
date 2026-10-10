@@ -126,7 +126,7 @@ pub fn QuicPair(comptime suite: Suite) type {
                     .handshake_data => |d| {
                         const take = @min(d.bytes.len, self.options.chunk);
                         try self.sent[@backingInt(d.level)].appendSlice(self.gpa, d.bytes[0..take]);
-                        try self.peer.feedLevel(@enumFromInt(@backingInt(d.level)), d.bytes[0..take]);
+                        try self.peer.feedLevel(@fromBackingInt(@intCast(@backingInt(d.level))), d.bytes[0..take]);
                         try self.note('d');
                         self.hs.ack(take);
                     },
@@ -176,7 +176,7 @@ pub fn QuicPair(comptime suite: Suite) type {
                 const bytes = self.peer.level(which);
                 if (bytes.len != 0) {
                     const take = bytes[0..@min(bytes.len, self.options.chunk)];
-                    const n = try self.hs.receive(@enumFromInt(@backingInt(which)), take);
+                    const n = try self.hs.receive(@fromBackingInt(@intCast(@backingInt(which))), take);
                     if (n != 0) moved = true;
                     self.peer.levelDrained(which, n);
                     break;

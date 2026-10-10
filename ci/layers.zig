@@ -13,7 +13,6 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "TLS connection", .patterns = &.{ "src/tls/Connection.zig", "src/tls/connection/**", "src/tls/quic.zig", "src/tls/quic/**" } },
     .{ .name = "TLS stream", .patterns = &.{ "src/tls/Session.zig", "src/tls/session/**" } },
     .{ .name = "TLS module", .patterns = &.{"src/tls.zig"} },
-    .{ .name = "test support", .patterns = &.{ "src/testing.zig", "src/testing/**" } },
     .{ .name = "portable probes", .patterns = &.{ "src/portable.zig", "src/portable/**" } },
     .{ .name = "cloak", .patterns = &.{"src/root.zig"} },
 };
