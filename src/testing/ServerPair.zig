@@ -54,6 +54,10 @@ pub fn ServerPair(comptime suite: Suite) type {
         identities: [3]?certificates.Identity = .{ null, null, null },
         signed: usize = 0,
         verified: usize = 0,
+        /// Set to time the server side: the nanoseconds spent inside its calls and the services it
+        /// asked for (entropy, client verification, signing), the scripted client excluded.
+        clock: ?std.Io = null,
+        server_ns: u64 = 0,
 
         pub fn init(gpa: std.mem.Allocator, config: client_module.Config, options: Options) !*Self {
             const self = try gpa.create(Self);
@@ -63,6 +67,8 @@ pub fn ServerPair(comptime suite: Suite) type {
             self.rng = .init(options.seed ^ 0x5eed);
             self.signed = 0;
             self.verified = 0;
+            self.server_ns = 0;
+            self.clock = null;
             self.identities = .{ null, null, null };
             self.trust = certificates.Trust.init(gpa);
             errdefer self.trust.deinit();
@@ -170,7 +176,19 @@ pub fn ServerPair(comptime suite: Suite) type {
             };
         }
 
+        fn now(self: *const Self) u64 {
+            const io = self.clock orelse return 0;
+            // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+            return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+        }
+
         pub fn service(self: *Self) !bool {
+            const start = self.now();
+            defer self.server_ns += self.now() - start;
+            return self.serveAll();
+        }
+
+        fn serveAll(self: *Self) !bool {
             var answered = false;
             while (self.conn.request()) |request| {
                 answered = true;
@@ -214,6 +232,8 @@ pub fn ServerPair(comptime suite: Suite) type {
             const chunk = self.options.chunk;
             const from_client = self.client.pending();
             if (from_client.len != 0) {
+                const start = self.now();
+                defer self.server_ns += self.now() - start;
                 const take = from_client[0..@min(from_client.len, chunk)];
                 const n = self.conn.receive(take) catch |err| {
                     self.client.drained(from_client.len);

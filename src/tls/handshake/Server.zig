@@ -439,7 +439,7 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
 fn credentialFor(self: *const Server, name: []const u8) ?usize {
     @setRuntimeSafety(true);
     for (self.options.credentials, 0..) |credential, i| {
-        if (credential.names.len == 0 and name.len == 0) return i;
+        if (credential.names.len == 0) return i;
         for (credential.names) |pattern| if (nameMatches(pattern, name)) return i;
     }
     return null;

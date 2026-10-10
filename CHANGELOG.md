@@ -20,6 +20,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
+- `tls.Connection.server`, `tls.Session.accept` and `tls.quic.Handshake.server`: the TLS 1.3 server, with a hostile-input ClientHello parser, one HelloRetryRequest checked against the first hello, credential selection by server name (exact or one-label wildcard), the server's order for suite, group and ALPN, optional or required client certificates verified through the same request and receipt path, and CertificateVerify signed by the caller's signer and checked against the leaf before it is sent. In QUIC the client's transport parameters are accepted before the server sends anything.
+- Benchmarks for server handshake CPU, and a scripted client peer for testing servers.
 - `tls.Connection`, a sans-I/O TLS 1.3 client with X25519MLKEM768, X25519, P-256 and P-384 key exchange (P-curves through HelloRetryRequest), ALPN, SNI, an explicit reference identity, client certificates through a signing request, key updates, exporters and an NSS key-log sink. A server's certificate chain, CertificateVerify and Finished must all verify before any application byte is readable or writable.
 - `tls.Session`, the same client over `std.Io` readers and writers, with a strict truncation default.
 - `tls.quic.Handshake`, the record-free client handshake for QUIC: per-level handshake data, traffic secrets, provisional transport parameters and authentication as events.

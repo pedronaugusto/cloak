@@ -81,7 +81,7 @@ pub fn answer(self: *Services, client: Machine, token: types.Token, response: An
         .verified => |receipt| try client.provideVerification(token, receipt),
         .signature => |signature| try client.provideSignature(signature),
         .entropy_failed => return error.EntropyUnavailable,
-        .signing_failed => return error.BadSignature,
+        .signing_failed => return error.SigningFailed,
         .verification_failed => |why| {
             client.rejectVerification();
             self.rejection = why;

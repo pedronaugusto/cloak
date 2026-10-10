@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials, certificate verification and a TLS 1.3 client for Zig. The client is complete as a stream, a sans-I/O connection and a QUIC handshake; the server, TLS 1.2, resumption and datagrams are not built yet.
+Work in progress: credentials, certificate verification and a TLS 1.3 client and server for Zig. Both roles exist as a stream, a sans-I/O connection and a QUIC handshake; TLS 1.2, resumption and datagrams are not built yet.
 
 ## Install
 
@@ -97,7 +97,7 @@ One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/
 
 ## Scope
 
-Cloak implements credentials and certificate verification, and a TLS 1.3 client: X25519MLKEM768, X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ALPN, SNI, client certificates, key updates and exporters, as a stream, a sans-I/O connection and a QUIC handshake. It has no server, TLS 1.2, resumption, early data or datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, and a TLS 1.3 client and server: X25519MLKEM768, X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ALPN, SNI, client certificates, key updates and exporters, as a stream, a sans-I/O connection and a QUIC handshake. The server holds no private key: it asks its caller to sign. It has no TLS 1.2, resumption, early data or datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
 
 The build exposes `cloak.certificates` for certificates, keys and trust, and
 `cloak.tls` for TLS. `cloak` exposes both as namespaces and keeps the credential

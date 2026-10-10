@@ -239,6 +239,15 @@ pub fn writer(session: *Session) *std.Io.Writer {
 
 fn handshake(session: *Session) OpenError!void {
     @setRuntimeSafety(true);
+    session.handshakeLoop() catch |err| {
+        // A failed handshake leaves an alert queued; the peer is owed it, best effort.
+        if (session.pushOutput()) {} else |push_err| session.failure = session.failure orelse push_err;
+        return err;
+    };
+}
+
+fn handshakeLoop(session: *Session) OpenError!void {
+    @setRuntimeSafety(true);
     var stalls: usize = 0;
     while (session.conn.phase() == .handshaking) {
         const served = try session.serve();

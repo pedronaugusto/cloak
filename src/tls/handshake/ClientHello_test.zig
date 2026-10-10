@@ -9,7 +9,7 @@ fn encode(out: []u8, options: Hello.Options, session: []const u8, cookie: []cons
     return Hello.client(out, &@as([32]u8, @splat(9)), session, &shares, cookie, options);
 }
 
-test "C2 client hello parser reads what the client encoder writes" {
+test "C3 client hello parser reads what the client encoder writes" {
     var out: [4096]u8 = undefined;
     const wire = try encode(&out, .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .quic = true, .parameters = "tp" }, "", "");
     const hello = try ClientHello.parse(wire);
@@ -26,7 +26,7 @@ test "C2 client hello parser reads what the client encoder writes" {
     try std.testing.expect(!hello.early_data and !hello.has_psk);
 }
 
-test "C2 client hello parser rejects hostile structure" {
+test "C3 client hello parser rejects hostile structure" {
     var out: [4096]u8 = undefined;
     const good = try encode(&out, .{ .sni = "example.com" }, "0123456789abcdef0123456789abcdef", "");
     var copy: [4096]u8 = undefined;
@@ -46,13 +46,13 @@ test "C2 client hello parser rejects hostile structure" {
     try std.testing.expectError(error.InvalidLength, ClientHello.parse(copy[0 .. good.len + 1]));
 }
 
-test "C2 client hello parser enforces extension rules" {
+test "C3 client hello parser enforces extension rules" {
     // body: version, random, empty session, one suite, null compression, then extensions.
     const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";
     const versions = "\x00\x2b\x00\x03\x02\x03\x04";
     const cases = [_]struct { extensions: []const u8, err: ?anyerror }{
         .{ .extensions = versions, .err = null },
-        .{ .extensions = "", .err = error.MissingExtension },
+        .{ .extensions = "", .err = null },
         .{ .extensions = versions ++ versions, .err = error.DuplicateExtension },
         .{ .extensions = versions ++ "\x00\x2a\x00\x01x", .err = error.DecodeError },
         .{ .extensions = versions ++ "\x00\x29\x00\x01x\x00\x2d\x00\x02\x01\x01", .err = error.IllegalParameter },
@@ -78,7 +78,7 @@ test "C2 client hello parser enforces extension rules" {
     }
 }
 
-test "C2 client hello fingerprint ignores the extensions a retry may change" {
+test "C3 client hello fingerprint ignores the extensions a retry may change" {
     var first_buf: [4096]u8 = undefined;
     var second_buf: [4096]u8 = undefined;
     const x: [32]u8 = @splat(7);
@@ -117,4 +117,17 @@ fn fuzz(_: void, smith: *std.testing.Smith) !void {
         _ = hello.selectAlpn(&.{"h2"});
         _ = hello.sharesOutsideGroups();
     } else |_| {}
+}
+
+test "C3 client hello without an extension block parses and offers no version" {
+    // A TLS 1.2 style hello: version, random, empty session, one suite, null compression, nothing more.
+    const body = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\xc0\x2b\x01\x00";
+    var message: [64]u8 = undefined;
+    message[0] = 1;
+    std.mem.writeInt(u24, message[1..4], body.len, .big);
+    @memcpy(message[4..][0..body.len], body);
+    const hello = try ClientHello.parse(message[0 .. 4 + body.len]);
+    try std.testing.expect(!hello.offersVersion(0x0304));
+    try std.testing.expect(hello.offersSuite(0xc02b));
+    try std.testing.expectEqual(@as(usize, 0), hello.extensions.len);
 }

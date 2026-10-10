@@ -115,7 +115,7 @@ test "C3 catalogue_extension_uniqueness_and_negotiation_allowlist" {
 }
 
 test "C3 server names what a hello is missing" {
-    try fails(.aes_128_gcm_sha256, .{ .tamper = .no_versions }, .{}, error.MissingExtension, .missing_extension);
+    try fails(.aes_128_gcm_sha256, .{ .tamper = .no_versions }, .{}, error.UnsupportedVersion, .protocol_version);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .no_groups }, .{}, error.MissingExtension, .missing_extension);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .no_signature_algorithms }, .{}, error.MissingExtension, .missing_extension);
 }

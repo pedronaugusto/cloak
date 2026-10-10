@@ -54,8 +54,8 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     if (self.suites.len < 2 or self.suites.len % 2 != 0) return error.DecodeError;
     const compression = (try r.vector(u8)).bytes;
     if (compression.len != 1 or compression[0] != 0) return error.IllegalParameter;
-    if (r.pos == r.bytes.len) return error.MissingExtension;
-    const block = try r.vector(u16);
+    // A TLS 1.2 hello may carry no extensions at all; the caller refuses it by its versions.
+    const block: Reader = if (r.pos == r.bytes.len) .{ .bytes = "" } else try r.vector(u16);
     self.extensions = block.bytes;
     try r.finish();
     self.groups = "";
@@ -83,7 +83,6 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
         if (last != 41) return error.IllegalParameter;
         if (!modes) return error.MissingExtension;
     }
-    if (self.versions.len == 0) return error.MissingExtension;
     return self;
 }
 

@@ -293,9 +293,61 @@ installs a level's secrets before it yields data at that level. It has no record
 ChangeCipherSpec, no close_notify and no KeyUpdate, and it refuses a post-handshake
 CertificateRequest. Transport parameters are opaque bytes to cloak.
 
+## TLS 1.3 server
+
+`Connection.server` is the same sans-I/O connection around `handshake.Server`;
+`Session.accept` drives it over `std.Io`, and `quic.Handshake.server` yields the
+per-level QUIC events. `handshake.Machine` is the one dispatch between the two roles
+(a tagged choice, not an interface), so records, key slots, request tokens and
+trimming have one implementation.
+
+The server holds no private key and no signing code. A `Credential` is a certificate
+chain (a `certificates.Identity`) plus the names it answers for: exact, or `*.` plus a
+domain for exactly one label, matched without case. A credential without names
+answers for any name. The first matching credential answers; when none matches, the
+first answers, or with `unknown_name = .reject` the connection ends with
+unrecognized_name. The signature scheme is the first the client accepts that the
+leaf's key type and curve can make; the server asks its driver to sign the
+CertificateVerify content through a `sign` request, then checks the answer against
+the leaf's public key before it can reach the wire, so a faulty signer cannot put a
+bad CertificateVerify on the wire. A signer that fails ends the connection with
+internal_error.
+
+A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
+and uniqueness but no policy: duplicate extensions, a key share for a group
+`supported_groups` does not list, a repeated share group, a compression other than
+null, a pre_shared_key that is not last or lacks its exchange modes, a cookie in a
+first hello, a malformed host name and a missing supported_versions are refused
+before anything is negotiated. Policy then follows the server's order: its suite,
+its group (a group with a share beats one that needs a retry), its ALPN. A client
+with no usable share gets one HelloRetryRequest; the second hello must equal the
+first except for the key share, cookie, early data and PSK, which a SHA-256 over
+the random, session id, suites and sorted remaining extensions decides, so a client
+cannot change its offer between the hellos. The server never accepts a PSK or early
+data: it answers every hello with a full handshake, and it does not skip early-data records
+a client sends anyway.
+
+Client authentication is `none`, `optional` or `required`. A presented chain goes out
+as a `verify` request, the receipt is bound to the request digest as on the client,
+and possession is proven by the engine against the leaf of the accepted path before
+the connection reports an authenticated peer. An empty Certificate under `required`
+ends the connection with certificate_required.
+
+In QUIC the client's transport parameters are provisional: the server emits them as
+an event before it asks for entropy or sends anything, and sends nothing, not even
+a ServerHello, until the caller accepts them. ALPN is required.
+
+The server flight, the application keys and the handshake scratch are built under
+the same bounds and released at the same moments as the client's. Measured here:
+about 15 KiB at the handshake peak and 891 bytes of heap beside the 584-byte struct
+once established (counting allocator, ReleaseSafe test), no tickets are sent, and key
+updates behave as in the client. The server's CPU rows are in
+`bench/handshake.zig`; they include harness signing with std's ECDSA.
+
 Test support lives in `src/testing`: a scripted server peer that speaks real records
-or per-level QUIC messages and can misbehave in named ways, and drivers that run a
-client against it in memory. The peer reuses cloak's HKDF, schedule and record
+or per-level QUIC messages and a scripted client peer (with a hostile ClientHello and
+client flight in named ways), both able to misbehave on purpose, and drivers that run a
+client or a server against them in memory, or the two QUIC roles against each other. The peer reuses cloak's HKDF, schedule and record
 protection, which the RFC 8448 vectors pin; its parsing, message assembly and
 signatures are its own. The test PKI is disposable material generated once with
 OpenSSL, recorded in `src/testing/pki/provenance.md`.

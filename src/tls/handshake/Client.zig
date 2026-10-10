@@ -108,6 +108,7 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     InvalidEntropy,
     EntropyUnavailable,
     BadSignature,
+    SigningFailed,
     VerificationFailed,
     VerificationRejected,
     ParametersRejected,
