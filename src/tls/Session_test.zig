@@ -71,6 +71,8 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
             try std.testing.expectEqual(error.Truncated, session.failure.?);
         } else {
             try std.testing.expectEqual(@as(usize, 0), try session.reader().readSliceShort(&line));
+            // The end came without close_notify, and the caller can tell.
+            try std.testing.expect(!session.closeNotified());
         }
     }
 }

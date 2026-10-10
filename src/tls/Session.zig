@@ -292,6 +292,13 @@ pub fn diagnostics(session: *const Session) Diagnostics {
 
 /// Names the `Io` later reads and writes use for entropy and the clock, for a session that
 /// outlives the task that opened it. The session itself stays where it is.
+/// Whether the peer ended its writing with close_notify. Under `eof = .allow` a bare transport
+/// end is also `EndOfStream`; this tells a caller whose framing cannot detect truncation (an
+/// HTTP body that runs to the close) whether the end was authenticated.
+pub fn closeNotified(session: *const Session) bool {
+    return session.conn.readClosed();
+}
+
 pub fn rebind(session: *Session, io: std.Io) void {
     session.io = io;
 }
