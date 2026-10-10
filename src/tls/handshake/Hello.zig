@@ -4,7 +4,7 @@ const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
-pub const Group = enum(u16) { x25519 = 29, p256 = 23, p384 = 24, x25519_mlkem768 = 4588 };
+pub const Group = @import("../crypto/Group.zig").Group;
 pub const retry_random = std.crypto.tls.hello_retry_request_sequence;
 pub const Share = struct { group: Group, bytes: []const u8 };
 pub const Options = struct {
@@ -59,7 +59,7 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
     try validate(options);
     if (session.len > 32 or (options.quic and session.len != 0) or shares.len == 0 or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
     for (shares, 0..) |share, i| {
-        if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != clientShareLength(share.group)) return error.InvalidOptions;
+        if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != share.group.clientShareLength()) return error.InvalidOptions;
         for (shares[0..i]) |old| if (old.group == share.group) return error.InvalidOptions;
     }
     var w: Writer = .{ .bytes = out };
@@ -131,24 +131,8 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
 }
-pub fn clientShareLength(group: Group) usize {
-    return switch (group) {
-        .x25519 => 32,
-        .p256 => 65,
-        .p384 => 97,
-        .x25519_mlkem768 => 1216,
-    };
-}
-pub fn serverShareLength(group: Group) usize {
-    return switch (group) {
-        .x25519 => 32,
-        .p256 => 65,
-        .p384 => 97,
-        .x25519_mlkem768 => 1120,
-    };
-}
 pub const ServerHello = struct { suite: Suite, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
-pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired };
+pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!ServerHello {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
@@ -157,10 +141,10 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     const random = try r.take(32);
     const retry = std.mem.eql(u8, random, &retry_random);
     if (!std.mem.eql(u8, (try r.vector(u8)).bytes, session)) return error.InvalidHello;
-    const suite = std.enums.fromInt(Suite, try r.int(u16)) orelse return error.UnofferedSelection;
-    if (!std.mem.containsAtLeast(Suite, options.suites, 1, &.{suite})) return error.UnofferedSelection;
+    const suite_id = try r.int(u16);
     if (try r.int(u8) != 0) return error.InvalidHello;
-    var ext: Extensions = .{ .reader = try r.vector(u16) };
+    // An older server may send no extension block at all; for TLS 1.3 that is a missing version.
+    var ext: Extensions = .{ .reader = if (r.pos == r.bytes.len) .{ .bytes = "" } else try r.vector(u16) };
     try r.finish();
     var version = false;
     var group: ?Group = null;
@@ -186,7 +170,13 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         }
         try value.finish();
     }
-    if (!version) return error.InvalidHello;
+    if (!version) {
+        // A server answering an older version marks its random (RFC 8446 section 4.1.3).
+        if (std.mem.eql(u8, random[24..], "DOWNGRD\x01") or std.mem.eql(u8, random[24..], "DOWNGRD\x00")) return error.Downgrade;
+        return error.UnsupportedVersion;
+    }
+    const suite = std.enums.fromInt(Suite, suite_id) orelse return error.UnofferedSelection;
+    if (!std.mem.containsAtLeast(Suite, options.suites, 1, &.{suite})) return error.UnofferedSelection;
     if (retry and group == null and cookie.len != 0) return .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie };
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
@@ -198,7 +188,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (retry) {
         if (shared) return error.InvalidHello;
     } else {
-        if (!shared or share.len != serverShareLength(selected)) return error.InvalidHello;
+        if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
     return .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie };
 }
@@ -241,7 +231,8 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
         },
         else => return error.InvalidHello,
     };
-    if (((options.require_alpn or options.quic) and alpn.len == 0) or (options.quic and !has_parameters)) return error.InvalidHello;
+    if ((options.require_alpn or options.quic) and alpn.len == 0) return error.NoApplicationProtocol;
+    if (options.quic and !has_parameters) return error.MissingExtension;
     return .{ .alpn = alpn, .parameters = parameters };
 }
 test {

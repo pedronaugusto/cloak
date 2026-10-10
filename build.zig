@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
         // programs require OS I/O/threads and cannot run on a freestanding target.
         const core_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = target, .optimize = optimize });
         core_module.addImport("cloak", b.modules.get("cloak.certificates").?);
-        addTlsVectors(b, core_module, target, optimize);
+        addTlsVectors(b, core_module, target, optimize, b.modules.get("cloak.certificates").?);
         const core = b.addObject(.{ .name = "cloak-core-check", .root_module = core_module });
         check.dependOn(&core.step);
         test_step.dependOn(&core.step);
@@ -28,17 +28,26 @@ pub fn build(b: *std.Build) void {
         nativeLinks(test_module, target);
         const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
         test_step.dependOn(&b.addRunArtifact(tests).step);
+        // TLS is its own module, importing the certificates module by name; its tests are
+        // rooted in that module rather than reaching its files through the package-wide root.
+        const tls_tests = b.addTest(.{ .root_module = tlsTestModule(b, target, optimize, shakedown.module("shakedown")), .filters = filters });
+        test_step.dependOn(&b.addRunArtifact(tls_tests).step);
         const check_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegis(b, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
+        const tls_checked = b.addTest(.{ .name = "check-tls", .root_module = tlsTestModule(b, target, optimize, shakedown.module("shakedown")), .emit_object = true });
+        check.dependOn(&tls_checked.step);
         const fuzz_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
         fuzz_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegis(b, fuzz_module, target, optimize);
         nativeLinks(fuzz_module, target);
         const fuzz_tests = b.addTest(.{ .name = "cloak-fuzz", .root_module = fuzz_module, .filters = filters, .use_llvm = true });
-        b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner").dependOn(&b.addRunArtifact(fuzz_tests).step);
+        const fuzz_step = b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner");
+        fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
+        const tls_fuzz = b.addTest(.{ .name = "cloak-tls-fuzz", .root_module = tlsTestModule(b, target, optimize, shakedown.module("shakedown")), .filters = filters, .use_llvm = true });
+        fuzz_step.dependOn(&b.addRunArtifact(tls_fuzz).step);
     }
     const host = b.graph.host;
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
@@ -56,7 +65,7 @@ pub fn build(b: *std.Build) void {
     const wasm_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
     const wasm_cloak = createCloak(b, wasm_target, .safe);
     wasm_module.addImport("cloak", wasm_cloak.import_table.get("cloak.certificates").?);
-    addTlsVectors(b, wasm_module, wasm_target, .safe);
+    addTlsVectors(b, wasm_module, wasm_target, .safe, wasm_cloak.import_table.get("cloak.certificates").?);
     const wasm = b.addExecutable(.{ .name = "cloak-core-vectors", .root_module = wasm_module });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
@@ -83,11 +92,12 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Op
 fn createCloak(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     @setRuntimeSafety(true);
     const result = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    const tls = b.createModule(.{ .root_source_file = b.path("src/tls.zig"), .target = target, .optimize = optimize });
-    addAegis(b, tls, target, optimize);
     const certificates = b.createModule(.{ .root_source_file = b.path("src/certificates.zig"), .target = target, .optimize = optimize });
     addAegis(b, certificates, target, optimize);
     nativeLinks(certificates, target);
+    const tls = b.createModule(.{ .root_source_file = b.path("src/tls.zig"), .target = target, .optimize = optimize });
+    addAegis(b, tls, target, optimize);
+    tls.addImport("cloak.certificates", certificates);
     result.addImport("cloak.tls", tls);
     result.addImport("cloak.certificates", certificates);
     return result;
@@ -126,9 +136,18 @@ fn addAegis(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarge
     m.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
 }
 
-fn addTlsVectors(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+fn addTlsVectors(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, certificates: *std.Build.Module) void {
     @setRuntimeSafety(true);
     const vectors = b.createModule(.{ .root_source_file = b.path("src/portable.zig"), .target = target, .optimize = optimize });
     addAegis(b, vectors, target, optimize);
+    vectors.addImport("cloak.certificates", certificates);
     m.addImport("tls_vectors", vectors);
+}
+
+/// The TLS module as a test root: tests there import the certificates module by name.
+fn tlsTestModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, shakedown: *std.Build.Module) *std.Build.Module {
+    @setRuntimeSafety(true);
+    const tls = createCloak(b, target, optimize).import_table.get("cloak.tls").?;
+    tls.addImport("shakedown", shakedown);
+    return tls;
 }

@@ -5,6 +5,10 @@ pub const Suite = enum(u16) {
     aes_256_gcm_sha384 = 0x1302,
     chacha20_poly1305_sha256 = 0x1303,
 };
+/// Digest length of the suite's hash, known at run time.
+pub fn digestLength(suite: Suite) usize {
+    return if (suite == .aes_256_gcm_sha384) 48 else 32;
+}
 pub fn Aead(comptime suite: Suite) type {
     comptime {
         if (std.options.side_channels_mitigations == .none)

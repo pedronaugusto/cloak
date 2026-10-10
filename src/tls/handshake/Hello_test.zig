@@ -61,7 +61,7 @@ test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .require_alpn = true });
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
     try std.testing.expectError(error.UnofferedSelection, H.encrypted(ee, .{ .alpn = &.{"http/1.1"} }));
-    try std.testing.expectError(error.InvalidHello, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
+    try std.testing.expectError(error.NoApplicationProtocol, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .sni = "*.example.com" }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .alpn = &.{""} }));
     try std.testing.expectError(error.HybridRequired, H.server(fixture, "", &shares, .{ .require_hybrid = true }));
@@ -78,7 +78,7 @@ fn fuzz(_: void, smith: *std.testing.Smith) !void {
     var bytes: [4096]u8 = undefined;
     const input = bytes[0..smith.slice(&bytes)];
     if (H.server(input, "", &shares, .{})) |parsed| {
-        try std.testing.expect(parsed.retry or parsed.share.len == H.serverShareLength(parsed.group.?));
+        try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength());
     } else |_| {}
     if (H.encrypted(input, .{})) |parsed| {
         try std.testing.expectEqual(@as(usize, 0), parsed.alpn.len);

@@ -2,12 +2,17 @@ const family = @import("preflight_rules");
 const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "types", .patterns = &.{"src/types.zig"} },
-    .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**", "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },
+    .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**" } },
     .{ .name = "certificate", .patterns = &.{ "src/certificate.zig", "src/certificate/**" } },
-    .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Trust.zig", "src/services.zig", "src/services/**", "src/tls/record.zig", "src/tls/record/**" } },
+    .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Trust.zig", "src/services.zig", "src/services/**" } },
     .{ .name = "native verification driver", .patterns = &.{"src/NativeVerification.zig"} },
+    .{ .name = "certificates module", .patterns = &.{"src/certificates.zig"} },
+    .{ .name = "TLS wire and crypto", .patterns = &.{ "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },
+    .{ .name = "TLS record", .patterns = &.{ "src/tls/record.zig", "src/tls/record/**" } },
     .{ .name = "TLS handshake", .patterns = &.{ "src/tls/handshake.zig", "src/tls/handshake/**" } },
-    .{ .name = "concern modules", .patterns = &.{ "src/tls.zig", "src/certificates.zig" } },
+    .{ .name = "TLS connection", .patterns = &.{ "src/tls/Connection.zig", "src/tls/connection/**", "src/tls/quic.zig", "src/tls/quic/**" } },
+    .{ .name = "TLS stream", .patterns = &.{ "src/tls/Session.zig", "src/tls/session/**" } },
+    .{ .name = "TLS module", .patterns = &.{"src/tls.zig"} },
     .{ .name = "portable probes", .patterns = &.{ "src/portable.zig", "src/portable/**" } },
     .{ .name = "cloak", .patterns = &.{"src/root.zig"} },
 };
