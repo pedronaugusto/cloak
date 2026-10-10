@@ -5,6 +5,7 @@
 //! multiplications (its lowest limb is 2^64 - 1, so each Montgomery factor is the limb itself).
 const std = @import("std");
 const builtin = @import("builtin");
+const arm64 = @import("arm64.zig");
 
 pub const Limbs = [4]u64;
 
@@ -120,7 +121,15 @@ pub fn Field(comptime modulus: u256) type {
             return r;
         }
 
+        /// Whether this field runs the AArch64 assembly (P-256 only).
+        const assembly = special and builtin.cpu.arch == .aarch64;
+
         pub fn mul(a: Self, b: Self) Self {
+            if (assembly and !@inComptime()) return .{ .limbs = arm64.mul(a.limbs, b.limbs) };
+            return mulPortable(a, b);
+        }
+
+        pub fn mulPortable(a: Self, b: Self) Self {
             var t: [6]u64 = .{ 0, 0, 0, 0, 0, 0 };
             inline for (0..4) |i| {
                 const r = row(a.limbs[i], b.limbs);
@@ -163,7 +172,12 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn sqr(a: Self) Self {
-            if (!special) return mul(a, a);
+            if (assembly and !@inComptime()) return .{ .limbs = arm64.sqr(a.limbs) };
+            return sqrPortable(a);
+        }
+
+        pub fn sqrPortable(a: Self) Self {
+            if (!special) return mulPortable(a, a);
             const x = a.limbs;
             const l01, const h01 = wide(x[0], x[1]);
             const l02, const h02 = wide(x[0], x[2]);
@@ -225,6 +239,11 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn add(a: Self, b: Self) Self {
+            if (assembly and !@inComptime()) return .{ .limbs = arm64.add(a.limbs, b.limbs) };
+            return addPortable(a, b);
+        }
+
+        pub fn addPortable(a: Self, b: Self) Self {
             var t: [5]u64 = undefined;
             var c: u1 = 0;
             inline for (0..4) |i| t[i], c = addc(a.limbs[i], b.limbs[i], c);
@@ -237,6 +256,11 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn sub(a: Self, b: Self) Self {
+            if (assembly and !@inComptime()) return .{ .limbs = arm64.sub(a.limbs, b.limbs) };
+            return subPortable(a, b);
+        }
+
+        pub fn subPortable(a: Self, b: Self) Self {
             var d: Limbs = undefined;
             var borrow: u1 = 0;
             inline for (0..4) |i| d[i], borrow = subb(a.limbs[i], b.limbs[i], borrow);

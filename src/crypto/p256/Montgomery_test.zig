@@ -66,3 +66,19 @@ test "P-256 field arithmetic matches std's field" {
         try std.testing.expectEqualSlices(u64, &theirs.sq().mul(theirs).limbs, &ours.sqr().mul(ours).limbs);
     }
 }
+
+test "P-256 field: the platform kernel equals the portable arithmetic" {
+    var prng = std.Random.DefaultPrng.init(17);
+    const edges = [_]u256{ 0, 1, 2, p - 1, p - 2, (1 << 255), (1 << 224), p >> 1 };
+    for (0..20000 + edges.len * edges.len) |i| {
+        const pair = i < edges.len * edges.len;
+        const a: u256 = if (pair) edges[i / edges.len] else prng.random().int(u256) % p;
+        const b: u256 = if (pair) edges[i % edges.len] else prng.random().int(u256) % p;
+        const x: Fe = .{ .limbs = fromU256(a) };
+        const y: Fe = .{ .limbs = fromU256(b) };
+        try std.testing.expectEqualSlices(u64, &x.mulPortable(y).limbs, &x.mul(y).limbs);
+        try std.testing.expectEqualSlices(u64, &x.sqrPortable().limbs, &x.sqr().limbs);
+        try std.testing.expectEqualSlices(u64, &x.addPortable(y).limbs, &x.add(y).limbs);
+        try std.testing.expectEqualSlices(u64, &x.subPortable(y).limbs, &x.sub(y).limbs);
+    }
+}
