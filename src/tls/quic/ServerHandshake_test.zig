@@ -39,7 +39,8 @@ test "C3 quic roles agree for every suite and group and hand off matching secret
             try pair.client.hs.exportKeyingMaterial(&ours, "EXPERIMENTAL quic", "");
             try pair.server.hs.exportKeyingMaterial(&theirs, "EXPERIMENTAL quic", "");
             try std.testing.expectEqualSlices(u8, &theirs, &ours);
-            try std.testing.expectEqual(@as(usize, 1), pair.server.signed);
+            // Cloak signed with the credential's key: no signing request reached the driver.
+            try std.testing.expectEqual(@as(usize, 0), pair.server.signed);
         }
     }
 }
@@ -61,6 +62,15 @@ test "C3 quic server accepts a client certificate and rejects what is missing or
         try pair.run();
         try std.testing.expect(pair.server.hs.info().?.peer_authenticated);
         try std.testing.expectEqual(@as(usize, 1), pair.server.verified);
+        try std.testing.expectEqual(@as(usize, 0), pair.client.signed);
+    }
+    {
+        // Keys held elsewhere: both roles ask the driver to sign.
+        const pair = try QuicLoop(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .mutual = true, .external = true });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expect(pair.server.hs.info().?.peer_authenticated);
+        try std.testing.expectEqual(@as(usize, 1), pair.server.signed);
         try std.testing.expectEqual(@as(usize, 1), pair.client.signed);
     }
     {

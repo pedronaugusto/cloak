@@ -89,7 +89,7 @@ pub fn fetch(
 ```
 <!-- END GENERATED zig build docs -- session -->
 
-The server side of the same session. The server holds no private key: `signer` signs the CertificateVerify content for the leaf of a chosen credential, and the connection checks the signature against that leaf before it sends it.
+The server side of the same session. Cloak signs the CertificateVerify with the key of the chosen credential for ECDSA on P-256 and P-384 and for Ed25519. A credential made with `Identity.initExternal` holds no key, and so does an RSA one for now (RSA-PSS signing comes with TLS 1.2): `signer` signs for those, and the connection checks the signature against the leaf before it sends it.
 
 <!-- BEGIN GENERATED zig build docs -- serve -->
 ```zig
@@ -101,7 +101,6 @@ pub fn serve(
     io: std.Io,
     stream: std.Io.net.Stream,
     credentials: []const cloak.tls.Credential,
-    signer: cloak.tls.Session.Signer,
 ) !void {
     @setRuntimeSafety(true);
     var transport_in: [16 * 1024]u8 = undefined;
@@ -113,7 +112,6 @@ pub fn serve(
     var plain_out: [4096]u8 = undefined;
     try session.accept(gpa, io, &reader.interface, &writer.interface, .{
         .credentials = credentials,
-        .signer = signer,
         .alpn = &.{"http/1.1"},
     }, &plain_in, &plain_out);
     defer session.deinit();
@@ -126,7 +124,7 @@ pub fn serve(
 ```
 <!-- END GENERATED zig build docs -- serve -->
 
-The same client without I/O is `cloak.tls.Connection`: feed it bytes, write what it holds, and answer its requests for entropy, time, peer verification and signing. `cloak.tls.quic.Handshake` is the record-free form for QUIC. Verification has no default: pass a trust snapshot, a verifier of your own, or `.none` and accept an unauthenticated connection.
+The same client without I/O is `cloak.tls.Connection`: feed it bytes, write what it holds, and answer its requests for entropy, time and peer verification, and for signing when a key is held elsewhere. `cloak.tls.quic.Handshake` is the record-free form for QUIC. Verification has no default: pass a trust snapshot, a verifier of your own, or `.none` and accept an unauthenticated connection.
 
 ## Design
 

@@ -12,6 +12,11 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
     @setRuntimeSafety(true);
     return .{ .identity = try Identity.init(gpa, certificates, key, options) };
 }
+/// A client chain whose key is held elsewhere; see `Identity.initExternal`.
+pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, options: Options) InitError!ClientAuth {
+    @setRuntimeSafety(true);
+    return .{ .identity = try Identity.initExternal(gpa, certificates, options) };
+}
 pub fn retain(auth: ClientAuth) ClientAuth {
     @setRuntimeSafety(true);
     return .{ .identity = auth.identity.retain() };

@@ -47,3 +47,74 @@ fn rejectIdentity(expected: anyerror, result: anyerror!Identity) !void {
         return error.TestUnexpectedResult;
     } else |err| try std.testing.expectEqual(expected, err);
 }
+
+const certificate = @import("../certificate.zig");
+const signature = @import("../verify/signature.zig");
+
+const Held = struct { cert: []const u8, key: []const u8, noise: ?usize, algorithm: certificate.Algorithm.Signature };
+
+test "credential identity signs for the keys cloak holds and says so for the rest" {
+    @setRuntimeSafety(true);
+    const gpa = std.testing.allocator;
+    const cases = [_]Held{
+        .{ .cert = @embedFile("testdata/ed25519.cert.pem"), .key = @embedFile("testdata/ed25519.pkcs8.pem"), .noise = 0, .algorithm = .ed25519 },
+        .{ .cert = @embedFile("testdata/p256.cert.pem"), .key = @embedFile("testdata/p256.pkcs8.pem"), .noise = 32, .algorithm = .{ .ecdsa = .sha256 } },
+        .{ .cert = @embedFile("testdata/p384.cert.pem"), .key = @embedFile("testdata/p384.pkcs8.pem"), .noise = 48, .algorithm = .{ .ecdsa = .sha384 } },
+        .{ .cert = @embedFile("testdata/rsa.cert.pem"), .key = @embedFile("testdata/rsa.pkcs8.pem"), .noise = null, .algorithm = .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } } },
+    };
+    for (cases) |case| {
+        var pem = Pem.init(case.cert);
+        var block = (try pem.next(gpa, 65536)).?;
+        defer block.deinit(gpa);
+        const io = std.testing.io;
+        const key = try PrivateKey.parse(gpa, case.key, .{ .entropy = PrivateKey.Entropy.fromIo(&io) });
+        defer key.deinit();
+        const identity = try Identity.init(gpa, &.{block.der}, key, .{});
+        defer identity.deinit();
+        try std.testing.expectEqual(case.noise, identity.noiseLength());
+        var out: [PrivateKey.max_signature]u8 = undefined;
+        const noise: [PrivateKey.max_noise + 1]u8 = @splat(0x5a);
+        const leaf = try certificate.parse(block.der, .{});
+        if (case.noise) |length| {
+            const made = try identity.sign(case.algorithm, "content", noise[0..length], &out);
+            try signature.verify(leaf.public_key, case.algorithm, "content", made);
+            // The algorithm must be the one the key fixes, and the noise the length it draws.
+            const other: certificate.Algorithm.Signature = if (case.algorithm == .ed25519) .{ .ecdsa = .sha256 } else if (case.algorithm.ecdsa == .sha256) .{ .ecdsa = .sha384 } else .{ .ecdsa = .sha256 };
+            try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(other, "content", noise[0..length], &out));
+            try std.testing.expectError(error.SigningFailed, identity.sign(case.algorithm, "content", noise[0 .. length + 1], &out));
+        } else try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(case.algorithm, "content", "", &out));
+    }
+}
+
+test "credential identity without a key holds the chain and never signs" {
+    @setRuntimeSafety(true);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, externalLifetime, .{});
+    const gpa = std.testing.allocator;
+    var pem = Pem.init(@embedFile("testdata/p256.cert.pem"));
+    var block = (try pem.next(gpa, 65536)).?;
+    defer block.deinit(gpa);
+    const identity = try Identity.initExternal(gpa, &.{block.der}, .{});
+    defer identity.deinit();
+    try std.testing.expectEqual(@as(?usize, null), identity.noiseLength());
+    var out: [PrivateKey.max_signature]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(.{ .ecdsa = .sha256 }, "content", "", &out));
+    try rejectIdentity(error.EmptyChain, Identity.initExternal(gpa, &.{}, .{}));
+    try rejectIdentity(error.IdentityLimit, Identity.initExternal(gpa, &.{block.der}, .{ .chain_bytes = 1 }));
+    // A leaf that is not a certificate cannot name the schemes a peer may be offered.
+    try std.testing.expect(if (Identity.initExternal(gpa, &.{"not a certificate"}, .{})) |unexpected| blk: {
+        unexpected.deinit();
+        break :blk false;
+    } else |_| true);
+}
+
+fn externalLifetime(gpa: std.mem.Allocator) !void {
+    @setRuntimeSafety(true);
+    var pem = Pem.init(@embedFile("testdata/ed25519.cert.pem"));
+    var block = (try pem.next(gpa, 65536)).?;
+    defer block.deinit(gpa);
+    const auth = try ClientAuth.initExternal(gpa, &.{block.der}, .{});
+    defer auth.deinit();
+    const held = auth.retain();
+    defer held.deinit();
+    try std.testing.expectEqual(@as(usize, 1), held.chain().len);
+}

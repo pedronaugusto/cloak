@@ -347,11 +347,28 @@ test "C2 client certificate response: signed, empty, or refused by an unsuitable
     }
 }
 
-test "C2 a bad client signature from the signer never reaches the wire" {
+test "C2 the client draws signature noise up front for a key it holds, and asks to sign for a key held elsewhere" {
     const gpa = std.testing.allocator;
     const key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
     defer key.deinit();
-    const auth = try certificates.ClientAuth.init(gpa, &.{pki.client}, key, .{});
+    const held = try certificates.ClientAuth.init(gpa, &.{pki.client}, key, .{});
+    defer held.deinit();
+    const elsewhere = try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{});
+    defer elsewhere.deinit();
+    var lengths: [3]usize = undefined;
+    for ([_]?certificates.ClientAuth{ null, held, elsewhere }, &lengths) |auth, *length| {
+        var conn = try Connection.client(gpa, .{ .identity = .{ .dns = "example.com" }, .verify = .none, .auth = auth });
+        defer conn.deinit();
+        length.* = conn.request().?.service.entropy;
+    }
+    // No identity and a key held elsewhere draw the same; a held P-256 key adds its 32 noise bytes.
+    try std.testing.expectEqual(lengths[0], lengths[2]);
+    try std.testing.expectEqual(lengths[0] + 32, lengths[1]);
+}
+
+test "C2 a bad client signature from the signer never reaches the wire" {
+    const gpa = std.testing.allocator;
+    const auth = try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{});
     defer auth.deinit();
     const pair = try Pair(.aes_128_gcm_sha256).init(gpa, .{ .request_client_cert = true }, .{ .client_auth = auth, .hold_sign = true });
     defer pair.deinit();

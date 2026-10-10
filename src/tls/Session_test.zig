@@ -103,7 +103,6 @@ test "C3 session accepts over std.Io, serves a request and closes cleanly" {
     var write_buffer: [256]u8 = undefined;
     try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
         .credentials = &credentials,
-        .signer = .{ .sign = signWithFixtures },
         .alpn = &.{ "http/1.1", "h2" },
         .clock = .{ .fixed = pki.time },
     }, &read_buffer, &write_buffer);
@@ -142,18 +141,41 @@ test "C3 session sends the alert for a failed handshake before it returns" {
     var read_buffer: [64]u8 = undefined;
     try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
         .credentials = &credentials,
-        .signer = .{ .sign = signWithFixtures },
         .alpn = &.{"h2"},
         .clock = .{ .fixed = pki.time },
     }, &read_buffer, &.{}));
     try std.testing.expectEqual(@as(?u8, 120), peer.plain_alert);
 }
 
+test "C3 session accept needs a signer for an identity without a key, and uses it" {
+    const gpa = std.testing.allocator;
+    const identity = try certificates.Identity.initExternal(gpa, &.{ pki.p256, pki.ca }, .{});
+    defer identity.deinit();
+    const credentials = [_]Server.Credential{.{ .identity = identity }};
+    var peer = client_module.ClientPeer(.aes_128_gcm_sha256).init(gpa, .{}, 5);
+    defer peer.deinit();
+    try peer.start();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [64]u8 = undefined;
+    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+        .credentials = &credentials,
+        .clock = .{ .fixed = pki.time },
+    }, &read_buffer, &.{}));
+    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, .{
+        .credentials = &credentials,
+        .signer = .{ .sign = signWithFixtures },
+        .clock = .{ .fixed = pki.time },
+    }, &read_buffer, &.{});
+    defer session.deinit();
+    try std.testing.expect(peer.certificate_verify_ok and peer.server_finished_ok);
+}
+
 test "C3 session accept reports a signer that fails as a failed handshake" {
     const gpa = std.testing.allocator;
-    const key = try certificates.PrivateKey.parse(gpa, pki.p256_pem, .{});
-    defer key.deinit();
-    const identity = try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
+    const identity = try certificates.Identity.initExternal(gpa, &.{ pki.p256, pki.ca }, .{});
     defer identity.deinit();
     const credentials = [_]Server.Credential{.{ .identity = identity }};
     var peer = client_module.ClientPeer(.aes_128_gcm_sha256).init(gpa, .{}, 5);

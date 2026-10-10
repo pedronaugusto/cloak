@@ -6,6 +6,7 @@ const Scheme = @import("Hello.zig").SignatureScheme;
 
 const Algorithm = certificates.certificate.Algorithm;
 
+pub const SignError = error{SigningFailed};
 pub const Error = error{ UnofferedScheme, SchemeKeyMismatch, BadSignature, UnsupportedKey } || certificates.certificate.ParseError;
 
 /// Checks `signature` over `content` under `scheme` with the public key of `leaf_der`.
@@ -20,6 +21,15 @@ pub fn verify(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, con
         error.InvalidSignature => error.BadSignature,
         error.UnsupportedAlgorithm, error.InvalidPublicKey => error.UnsupportedKey,
     };
+}
+
+/// Signs `content` under `scheme` with an identity cloak holds the key of. `noise` is
+/// `identity.noiseLength()` fresh bytes.
+pub fn sign(identity: certificates.Identity, scheme: Scheme, content: []const u8, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) SignError![]const u8 {
+    @setRuntimeSafety(true);
+    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.SigningFailed;
+    const algorithm = bind(scheme, leaf.public_key) catch return error.SigningFailed;
+    return identity.sign(algorithm, content, noise, out) catch error.SigningFailed;
 }
 
 /// The certificate-signature algorithm a scheme denotes, only for a key it may use.

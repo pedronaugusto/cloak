@@ -32,6 +32,8 @@ pub const Options = struct {
     /// Trust no root on the client, so the server chain fails.
     distrust: bool = false,
     chunk: usize = 1 << 20,
+    /// The identities carry no key: every signature comes from the harness, as for a key held elsewhere.
+    external: bool = false,
 };
 
 pub const Secret = struct { level: Handshake.Level, direction: Handshake.Direction, bytes: [48]u8, len: usize };
@@ -85,12 +87,18 @@ pub fn QuicLoop(comptime suite: Suite) type {
             errdefer self.snapshot.deinit();
             const key = try certificates.PrivateKey.parse(gpa, pki.p256_pem, .{});
             defer key.deinit();
-            self.server_identity = try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
+            self.server_identity = if (options.external)
+                try certificates.Identity.initExternal(gpa, &.{ pki.p256, pki.ca }, .{})
+            else
+                try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
             errdefer self.server_identity.deinit();
             if (options.mutual) {
                 const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
                 defer client_key.deinit();
-                self.client_auth = try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
+                self.client_auth = if (options.external)
+                    try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{})
+                else
+                    try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
             }
             errdefer if (self.client_auth) |auth| auth.deinit();
             const creds = [_]Server.Credential{.{ .identity = self.server_identity }};

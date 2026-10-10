@@ -1,6 +1,6 @@
 //! Drives a server `Connection` against a scripted `ClientPeer`, answering every request like
 //! a real driver: deterministic entropy, a fixed clock, the portable verifier for a client's
-//! chain, and server signatures from the fixture keys.
+//! chain, and, for identities without a key, server signatures from the fixture keys.
 const std = @import("std");
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
@@ -30,7 +30,9 @@ pub const Options = struct {
     client_auth: Server.Auth = .none,
     verify_clients: bool = true,
     limits: Connection.Limits = .{},
-    /// Answer signing requests with a bad signature.
+    /// The identities carry no key: every signature comes from the harness, as for a key held elsewhere.
+    external: bool = false,
+    /// Answer signing requests with a bad signature; implies `external`.
     bad_signature: bool = false,
     key_log: ?Connection.KeyLog = null,
     /// The allocator the connection uses, to measure it; the harness uses `gpa` otherwise.
@@ -53,6 +55,8 @@ pub fn ServerPair(comptime suite: Suite) type {
         options: Options,
         identities: [3]?certificates.Identity = .{ null, null, null },
         signed: usize = 0,
+        /// The size of the last entropy request.
+        entropy_requested: usize = 0,
         verified: usize = 0,
         /// Set to time the server side: the nanoseconds spent inside its calls and the services it
         /// asked for (entropy, client verification, signing), the scripted client excluded.
@@ -66,6 +70,7 @@ pub fn ServerPair(comptime suite: Suite) type {
             self.options = options;
             self.rng = .init(options.seed ^ 0x5eed);
             self.signed = 0;
+            self.entropy_requested = 0;
             self.verified = 0;
             self.server_ns = 0;
             self.clock = null;
@@ -78,12 +83,12 @@ pub fn ServerPair(comptime suite: Suite) type {
             self.client = ClientType.init(gpa, config, options.seed);
             errdefer self.client.deinit();
             errdefer self.dropIdentities();
-            self.identities[0] = try identityFor(gpa, options.cert);
+            self.identities[0] = try identityFor(gpa, options.cert, options.external or options.bad_signature);
             var credentials: [2]Server.Credential = undefined;
             credentials[0] = .{ .identity = self.identities[0].?, .names = options.names };
             var count: usize = 1;
             if (options.extra) {
-                self.identities[1] = try identityFor(gpa, .ed25519);
+                self.identities[1] = try identityFor(gpa, .ed25519, options.external or options.bad_signature);
                 credentials[1] = .{ .identity = self.identities[1].?, .names = &.{"other.example.com"} };
                 count = 2;
             }
@@ -104,7 +109,7 @@ pub fn ServerPair(comptime suite: Suite) type {
             return self;
         }
 
-        fn identityFor(gpa: std.mem.Allocator, cert: Cert) !certificates.Identity {
+        fn identityFor(gpa: std.mem.Allocator, cert: Cert, external: bool) !certificates.Identity {
             const key = try certificates.PrivateKey.parse(gpa, switch (cert) {
                 .p256 => pki.p256_pem,
                 .p384 => pki.p384_pem,
@@ -116,6 +121,7 @@ pub fn ServerPair(comptime suite: Suite) type {
                 .p384 => pki.p384,
                 .ed25519 => pki.ed25519,
             };
+            if (external) return certificates.Identity.initExternal(gpa, &.{ leaf, pki.ca }, .{});
             return certificates.Identity.init(gpa, &.{ leaf, pki.ca }, key, .{});
         }
 
@@ -194,6 +200,7 @@ pub fn ServerPair(comptime suite: Suite) type {
                 answered = true;
                 switch (request.service) {
                     .entropy => |len| {
+                        self.entropy_requested = len;
                         var bytes: [512]u8 = undefined;
                         self.rng.random().bytes(bytes[0..len]);
                         try self.conn.provide(request.token, .{ .entropy = bytes[0..len] });

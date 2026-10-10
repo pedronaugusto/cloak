@@ -38,7 +38,6 @@ pub fn serve(
     io: std.Io,
     stream: std.Io.net.Stream,
     credentials: []const cloak.tls.Credential,
-    signer: cloak.tls.Session.Signer,
 ) !void {
     @setRuntimeSafety(true);
     var transport_in: [16 * 1024]u8 = undefined;
@@ -50,7 +49,6 @@ pub fn serve(
     var plain_out: [4096]u8 = undefined;
     try session.accept(gpa, io, &reader.interface, &writer.interface, .{
         .credentials = credentials,
-        .signer = signer,
         .alpn = &.{"http/1.1"},
     }, &plain_in, &plain_out);
     defer session.deinit();

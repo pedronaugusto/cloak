@@ -245,9 +245,10 @@ the engine issued, so a receipt for another chain, name, time or policy generati
 cannot authenticate. Possession is proven by the engine itself: it parses the
 leaf of the accepted path, binds the CertificateVerify scheme to that key's type
 and curve, and verifies the signature; `verify = .none` still proves possession
-and reports an unauthenticated connection. Client certificates are signed through a
-request; the engine verifies the answer against the identity's public key before it
-leaves, so a bad signer cannot put a bad CertificateVerify on the wire.
+and reports an unauthenticated connection. A client certificate whose key cloak holds
+is signed inside the engine; one held elsewhere is signed through a request, and the
+engine verifies the answer against the identity's public key before it leaves, so a
+bad signer cannot put a bad CertificateVerify on the wire.
 
 Key shares are fresh per hello and per retry. The default offer is X25519MLKEM768
 plus an independent X25519 share; P-256 and P-384 are obtained through
@@ -290,8 +291,8 @@ a counting allocator; stack use is not measured here.
 
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
 requests with the system's secure randomness and calendar clock (or a fixed time),
-the portable verifier over a trust snapshot (or a caller's verifier), and a caller's
-signer. It is used from one task at a time. A transport end without close_notify is
+the portable verifier over a trust snapshot (or a caller's verifier), and, for
+a key cloak does not hold, a caller's signer. It is used from one task at a time. A transport end without close_notify is
 a truncation unless the caller chose `.allow` for protocols whose framing detects it.
 Per-call deadlines are the transport's own; the session adds none.
 
@@ -310,17 +311,31 @@ per-level QUIC events. `handshake.Machine` is the one dispatch between the two r
 (a tagged choice, not an interface), so records, key slots, request tokens and
 trimming have one implementation.
 
-The server holds no private key and no signing code. A `Credential` is a certificate
-chain (a `certificates.Identity`) plus the names it answers for: exact, or `*.` plus a
-domain for exactly one label, matched without case. A credential without names
-answers for any name. The first matching credential answers; when none matches, the
-first answers, or with `unknown_name = .reject` the connection ends with
-unrecognized_name. The signature scheme is the first the client accepts that the
-leaf's key type and curve can make; the server asks its driver to sign the
-CertificateVerify content through a `sign` request, then checks the answer against
-the leaf's public key before it can reach the wire, so a faulty signer cannot put a
-bad CertificateVerify on the wire. A signer that fails ends the connection with
-internal_error.
+A `Credential` is a certificate chain (a `certificates.Identity`) plus the names it
+answers for: exact, or `*.` plus a domain for exactly one label, matched without case.
+A credential without names answers for any name. The first matching credential
+answers; when none matches, the first answers, or with `unknown_name = .reject` the
+connection ends with unrecognized_name. The signature scheme is the first the client
+accepts that the leaf's key type and curve can make.
+
+Cloak signs the CertificateVerify itself with the key its identity holds (`Sign.zig`):
+ECDSA on P-256 and P-384, and Ed25519. The secret multiplication is the masked
+fixed-window walk that builds public keys, the scalar arithmetic is std's constant-time
+field, and every temporary is erased. ECDSA nonces are hedged: derived from the key,
+the message hash and fresh noise, so a weak or repeated draw alone cannot repeat a
+nonce and one faulted signature does not give the key away. The noise is part of the
+entropy request the handshake already makes (the server's random and key exchange, the
+client's hello), 32 bytes for P-256 and 48 for P-384, so no signature waits on a second
+round trip to the driver. Ed25519 follows RFC 8032 and draws none. A signature is not
+verified after it is made: the key was matched to the leaf when the identity was built,
+and the cost of a verification (about as much as the signature) buys protection only
+against a fault in the signer.
+
+An identity made with `initExternal` holds no key, and an RSA key is parsed but not
+signed with until RSA-PSS lands. For these the server asks its driver to sign through
+a `sign` request, then checks the answer against the leaf's public key before it can
+reach the wire, so a faulty signer cannot put a bad CertificateVerify on the wire. A
+signer that fails ends the connection with internal_error.
 
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
 and uniqueness but no policy: duplicate extensions, a key share for a group

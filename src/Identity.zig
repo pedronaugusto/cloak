@@ -9,8 +9,22 @@ const Identity = @This();
 state: *State,
 pub const Options = struct { chain_bytes: usize = 65536, certificates: usize = 16, generation: types.IdentityGeneration = .fromRaw(1) };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
+const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
+/// A chain and the key that signs for its leaf; the key is retained and must match the leaf.
 pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: PrivateKey, options: Options) InitError!Identity {
+    @setRuntimeSafety(true);
+    return build(gpa, certificates, key, options);
+}
+
+/// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
+/// and every handshake asks the caller for the signature through a `sign` request. The leaf
+/// must still parse, since its public key fixes the signature schemes the peer can be offered.
+pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, options: Options) InitError!Identity {
+    @setRuntimeSafety(true);
+    return build(gpa, certificates, null, options);
+}
+
+fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
     if (certificates.len == 0) return error.EmptyChain;
     if (certificates.len > options.certificates) return error.IdentityLimit;
@@ -22,7 +36,7 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
         const cert = try certificate.parse(der, .{});
         expiry = @min(expiry, cert.not_after);
     }
-    if (!key.matches(certificates[0])) return error.KeyMismatch;
+    if (key) |owned| if (!owned.matches(certificates[0])) return error.KeyMismatch;
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
     const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();
     if (flight_size > 0xffffff) return error.IdentityLimit;
@@ -45,7 +59,7 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = key.retain(), .generation = options.generation, .expires = .fromRaw(expiry) };
+    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry) };
     return .{ .state = state };
 }
 pub fn retain(identity: Identity) Identity {
@@ -62,7 +76,7 @@ pub fn deinit(identity: Identity) void {
     if (identity.state.refs.fetchSub(1, .acq_rel) != 1) return;
     const state = identity.state;
     const gpa = state.gpa;
-    state.key.deinit();
+    if (state.key) |key| key.deinit();
     gpa.free(state.chain);
     gpa.free(state.storage);
     gpa.free(state.flight);
@@ -77,6 +91,19 @@ pub fn chain(identity: Identity) []const []const u8 {
 pub fn certificateList(identity: Identity) []const u8 {
     @setRuntimeSafety(true);
     return identity.state.flight;
+}
+/// How many bytes of fresh noise one signature draws, or null when cloak does not sign for this
+/// identity (its key is held elsewhere, or is a kind cloak does not sign with yet).
+pub fn noiseLength(identity: Identity) ?usize {
+    @setRuntimeSafety(true);
+    const key = identity.state.key orelse return null;
+    return key.noiseLength();
+}
+/// Signs `message` with the identity's key; see `PrivateKey.sign`.
+pub fn sign(identity: Identity, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[PrivateKey.max_signature]u8) PrivateKey.SignError![]const u8 {
+    @setRuntimeSafety(true);
+    const key = identity.state.key orelse return error.UnsupportedAlgorithm;
+    return key.sign(algorithm, message, noise, out);
 }
 pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);

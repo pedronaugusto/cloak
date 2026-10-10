@@ -3,6 +3,7 @@ const std = @import("std");
 const Der = @import("wire/Der.zig");
 const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
+const Sign = @import("credentials/Sign.zig");
 const Secret = @import("aegis").Secret;
 const PrivateKey = @This();
 /// Private: shares one immutable owner, never a caller's passphrase or DER.
@@ -51,6 +52,51 @@ pub fn matches(key: PrivateKey, der: []const u8) bool {
         },
     };
 }
+/// The most noise bytes one signature draws.
+pub const max_noise = Sign.P384.noise_length;
+/// The longest signature `sign` writes.
+pub const max_signature = Sign.max_signature;
+
+pub const SignError = error{ UnsupportedAlgorithm, SigningFailed };
+
+/// How many bytes of fresh noise one signature draws, or null when this key does not sign in
+/// this package: ECDSA on P-256 and P-384 hedge their nonces with noise, Ed25519 is
+/// deterministic (zero), and RSA keys are signed by the caller until RSA-PSS signing lands.
+pub fn noiseLength(key: PrivateKey) ?usize {
+    @setRuntimeSafety(true);
+    return switch (key.state.material.expose().*) {
+        .rsa => null,
+        .p256 => Sign.P256.noise_length,
+        .p384 => Sign.P384.noise_length,
+        .ed25519 => 0,
+    };
+}
+
+/// Signs `message` under `algorithm`, which must be the one this key's type and curve fix
+/// (ECDSA with SHA-256 on P-256, with SHA-384 on P-384, or Ed25519). `noise` is exactly
+/// `noiseLength` fresh bytes. Returns the DER ECDSA-Sig-Value or the 64 Ed25519 bytes in `out`.
+pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
+    @setRuntimeSafety(true);
+    const expected = key.noiseLength() orelse return error.UnsupportedAlgorithm;
+    if (noise.len != expected) return error.SigningFailed;
+    switch (key.state.material.expose().*) {
+        .rsa => unreachable,
+        .p256 => |*pair| {
+            if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
+            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], out) catch error.SigningFailed;
+        },
+        .p384 => |*pair| {
+            if (algorithm != .ecdsa or algorithm.ecdsa != .sha384) return error.UnsupportedAlgorithm;
+            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], out) catch error.SigningFailed;
+        },
+        .ed25519 => |*pair| {
+            if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
+            Sign.ed25519.sign(&pair.secret_key.bytes, message, out[0..Sign.ed25519.signature_length]) catch return error.SigningFailed;
+            return out[0..Sign.ed25519.signature_length];
+        },
+    }
+}
+
 pub fn retain(key: PrivateKey) PrivateKey {
     @setRuntimeSafety(true);
     var count = key.state.refs.load(.monotonic);

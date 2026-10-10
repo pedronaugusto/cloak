@@ -1,6 +1,7 @@
 //! The TLS 1.3 server handshake. Like the client it takes whole handshake messages with their
 //! epoch and record alignment and queues messages, traffic secrets and requests for the
-//! services it never performs itself: entropy, time, client verification and signing. Policy
+//! services it never performs itself: entropy, time, client verification and, for a key cloak
+//! does not hold, signing. A key it holds signs inside the machine. Policy
 //! lives in `Options`; the checked state table, transcript and key schedule are the same ones
 //! the client uses.
 const std = @import("std");
@@ -126,6 +127,8 @@ const Scratch = struct {
     chain_len: usize = 0,
     sign_content: [Messages.max_signed]u8 = undefined,
     sign_content_len: u8 = 0,
+    /// Fresh noise for the hedged signature, when the credential's key signs here.
+    sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
     /// Client signature_algorithms, kept to pick the CertificateVerify scheme.
     schemes: [256]u8 = undefined,
     schemes_len: u16 = 0,
@@ -246,13 +249,15 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
     };
     if (entropy.len != expected) return error.InvalidEntropy;
     const group = self.group.?;
-    var response = Exchange.respond(group, scratch.share[0..scratch.share_len], entropy[32..]) catch |err| return switch (err) {
+    const exchange_end = 32 + Exchange.respondEntropyLength(group);
+    var response = Exchange.respond(group, scratch.share[0..scratch.share_len], entropy[32..exchange_end]) catch |err| return switch (err) {
         error.InvalidEntropy => error.InvalidEntropy,
         error.InvalidShare => error.InvalidShare,
         error.WeakKey => error.WeakKey,
     };
     defer response.deinit();
     self.need_now = .none;
+    @memcpy(scratch.sign_noise[0 .. entropy.len - exchange_end], entropy[exchange_end..]);
     try self.sendServerFlight(entropy[0..32], &response);
 }
 
@@ -310,13 +315,24 @@ pub fn provideSignature(self: *Server, signature: []const u8) Client.Error!void 
     if (self.need_now != .sign) return error.UnexpectedService;
     const leaf = self.options.credentials[self.credential].identity.chain()[0];
     Possession.verify(@backingInt(self.scheme), &.{self.scheme}, leaf, self.signRequest().content, signature) catch return error.BadSignature;
+    try self.sendCertificateVerify(signature);
+    self.need_now = .none;
+}
+
+fn sendCertificateVerify(self: *Server, signature: []const u8) Client.Error!void {
+    @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const dst = try scratch.flight.reserve(self.gpa, 8 + signature.len, self.options.limits.handshake);
     const built = try Messages.buildCertificateVerify(dst, @backingInt(self.scheme), signature);
     try self.state.advance(.certificate_verify, .handshake, .possession, true);
     try self.queueMessage(.handshake, built);
-    self.need_now = .none;
     try self.finishFlight();
+}
+
+/// The fresh noise the chosen credential's signature draws with the key exchange's entropy; zero
+/// when its key is held elsewhere or signs without noise.
+fn signNoiseLength(self: *const Server) usize {
+    return self.options.credentials[self.credential].identity.noiseLength() orelse 0;
 }
 
 pub fn provideParameters(self: *Server, accept: bool) Client.Error!void {
@@ -489,7 +505,7 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
         @memcpy(scratch.share[0..share.len], share);
         scratch.share_len = share.len;
         self.answered = true;
-        const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) } };
+        const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) + self.signNoiseLength() } };
         // QUIC: the client's transport parameters are provisional, and the server says nothing
         // that depends on them until the caller accepts them.
         if (self.options.quic and !self.parameters_accepted) {
@@ -657,6 +673,12 @@ fn sendCertificate(self: *Server) Client.Error!void {
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
     scratch.sign_content_len = @intCast(content.len);
     scratch.signing = true;
+    // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
+    if (identity.noiseLength()) |noise_length| {
+        var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+        const signature = Possession.sign(identity, self.scheme, content, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+        return self.sendCertificateVerify(signature);
+    }
     self.need_now = .sign;
 }
 

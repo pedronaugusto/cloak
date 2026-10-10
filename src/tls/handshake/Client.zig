@@ -193,6 +193,8 @@ const Scratch = struct {
     cr_len: u16 = 0,
     sign_content: [Messages.max_signed]u8 = undefined,
     sign_content_len: u8 = 0,
+    /// Fresh noise for the hedged client signature, drawn with the first entropy.
+    sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
 };
 
 fn Keyed(comptime suite: Suite) type {
@@ -293,6 +295,8 @@ fn initialEntropy(self: *const Client) usize {
     var len: usize = 32 + @as(usize, if (self.options.compat) 32 else 0);
     const initial = self.initialGroups();
     for (initial.groups[0..initial.count]) |group| len += Exchange.entropyLength(group.?);
+    // A client certificate whose key cloak holds is signed for here, with noise drawn up front.
+    if (self.options.auth) |auth| len += auth.identity.noiseLength() orelse 0;
     return len;
 }
 
@@ -321,6 +325,7 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
             self.scratch.?.shares[i] = Exchange.Share.init(group.?, entropy[at..][0..length]) catch return error.InvalidEntropy;
             at += length;
         }
+        @memcpy(self.scratch.?.sign_noise[0 .. entropy.len - at], entropy[at..]);
         self.need_now = .none;
         try self.sendHello();
     } else {
@@ -410,11 +415,16 @@ pub fn provideSignature(self: *Client, signature: []const u8) Error!void {
     if (self.need_now != .sign) return error.UnexpectedService;
     const auth = self.options.auth.?;
     Possession.verify(@backingInt(self.sign_scheme), &.{self.sign_scheme}, auth.chain()[0], self.signRequest().content, signature) catch return error.BadSignature;
+    self.need_now = .none;
+    try self.sendCertificateVerify(signature);
+}
+
+fn sendCertificateVerify(self: *Client, signature: []const u8) Error!void {
+    @setRuntimeSafety(true);
     const dst = try self.reserve(Messages.max_signed + signature.len + 16);
     const built = try Messages.buildCertificateVerify(dst, @backingInt(self.sign_scheme), signature);
     try self.state.advance(.local_certificate_verify, .handshake, .possession, true);
     try self.queueMessage(.handshake, built);
-    self.need_now = .none;
     try self.finishFlight();
 }
 
@@ -749,6 +759,12 @@ fn continueFlight(self: *Client) Error!void {
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
     self.scratch.?.sign_content_len = @intCast(content.len);
     self.sign_scheme = scheme;
+    // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
+    if (auth.identity.noiseLength()) |noise_length| {
+        var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+        const signature = Possession.sign(auth.identity, scheme, content, self.scratch.?.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+        return self.sendCertificateVerify(signature);
+    }
     self.need_now = .sign;
 }
 

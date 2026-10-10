@@ -14,6 +14,7 @@ test {
     _ = @import("Identity.zig");
     _ = @import("ClientAuth.zig");
     _ = @import("credentials/Key.zig");
+    _ = @import("credentials/Sign.zig");
     _ = @import("credentials/Rsa.zig");
     _ = @import("credentials/Des3.zig");
     _ = @import("credentials/Pem.zig");

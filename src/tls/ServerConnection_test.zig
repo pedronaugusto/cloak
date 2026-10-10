@@ -4,6 +4,7 @@ const Connection = @import("Connection.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
 const Group = @import("crypto/Group.zig").Group;
 const Alert = @import("wire/Alert.zig").Alert;
+const Exchange = @import("crypto/Exchange.zig");
 const server_module = @import("../testing/ServerPair.zig");
 const ServerPair = server_module.ServerPair;
 const Options = server_module.Options;
@@ -65,13 +66,34 @@ test "C3 server asks for a retry when no offered share is acceptable" {
     }
 }
 
-test "C3 server presents every certificate type" {
+test "C3 server presents every certificate type, signed by cloak or by the caller" {
     inline for (.{ server_module.Cert.p256, .p384, .ed25519 }) |cert| {
-        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .schemes = &.{ 0x0403, 0x0503, 0x0807 } }, .{ .cert = cert });
+        inline for (.{ false, true }) |external| {
+            const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .schemes = &.{ 0x0403, 0x0503, 0x0807 } }, .{ .cert = cert, .external = external });
+            defer pair.deinit();
+            try pair.run();
+            try std.testing.expect(pair.client.certificate_verify_ok);
+            // A key cloak holds is never asked for; a key held elsewhere is asked for once.
+            try std.testing.expectEqual(@as(usize, if (external) 1 else 0), pair.signed);
+        }
+    }
+}
+
+test "C3 server draws the signature noise with the key exchange entropy, and only for a key it holds" {
+    const exchange = Exchange.respondEntropyLength(.x25519);
+    inline for (.{
+        .{ server_module.Cert.p256, false, 32 },
+        .{ server_module.Cert.p384, false, 48 },
+        .{ server_module.Cert.ed25519, false, 0 },
+        .{ server_module.Cert.p256, true, 0 },
+    }) |case| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .shares = &.{.x25519}, .schemes = &.{ 0x0403, 0x0503, 0x0807 } }, .{ .cert = case[0], .external = case[1] });
         defer pair.deinit();
-        try pair.run();
-        try std.testing.expect(pair.client.certificate_verify_ok);
-        try std.testing.expectEqual(@as(usize, 1), pair.signed);
+        try pair.client.start();
+        _ = try pair.conn.receive(pair.client.pending());
+        _ = try pair.service();
+        // The request the server made: random, the exchange, then the noise a held ECDSA key signs with.
+        try std.testing.expectEqual(@as(usize, 32 + exchange + case[2]), pair.entropy_requested);
     }
 }
 

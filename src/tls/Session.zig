@@ -1,7 +1,8 @@
 //! A TLS client stream over `std.Io` readers and writers. It drives a `Connection`: it
 //! answers the engine's requests with the system's entropy and clock and the configured
-//! verifier and signer, moves ciphertext between the connection and the transport, and
-//! presents plaintext as a `std.Io.Reader` and `std.Io.Writer`.
+//! verifier (and a signer, for a key cloak does not hold), moves ciphertext between the
+//! connection and the transport, and presents plaintext as a `std.Io.Reader` and
+//! `std.Io.Writer`.
 //!
 //! A session is used from one task at a time: the reader and the writer share one
 //! connection and are not synchronized. The session stores `io` for the entropy and clock
@@ -33,7 +34,8 @@ pub const Custom = struct {
 
 pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, Failed };
 
-/// Signs the CertificateVerify content for the client certificate with its private key.
+/// Signs the CertificateVerify content for a certificate whose key cloak does not hold: an
+/// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA).
 pub const Signer = struct {
     context: ?*anyopaque = null,
     sign: *const fn (context: ?*anyopaque, scheme: u16, content: []const u8, out: []u8) error{SigningFailed}!usize,
@@ -67,6 +69,7 @@ pub const Options = struct {
     require_alpn: bool = false,
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// Required when `auth` is an identity cloak holds no signing key for.
     signer: ?Signer = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
@@ -113,6 +116,7 @@ pub fn open(
     write_buffer: []u8,
 ) OpenError!void {
     @setRuntimeSafety(true);
+    if (options.auth) |auth| if (auth.identity.noiseLength() == null and options.signer == null) return error.SignerRequired;
     const policy: Connection.Verify = switch (options.trust) {
         .none => .none,
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
@@ -149,11 +153,12 @@ pub fn open(
     try session.handshake();
 }
 
-/// What a server session needs: the chains it presents, a signer for their keys (cloak holds no
-/// signing code; the key stays with the signer), and how it treats a client's certificate.
+/// What a server session needs: the chains it presents and how it treats a client's certificate.
+/// Cloak signs with the keys of its credentials; a `signer` covers the ones it does not hold.
 pub const ServerOptions = struct {
     credentials: []const Server.Credential,
-    signer: Signer,
+    /// Required when a credential is an identity cloak holds no signing key for.
+    signer: ?Signer = null,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
     suites: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 },
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
@@ -182,6 +187,9 @@ pub fn accept(
     write_buffer: []u8,
 ) OpenError!void {
     @setRuntimeSafety(true);
+    if (options.signer == null) for (options.credentials) |credential| {
+        if (credential.identity.noiseLength() == null) return error.SignerRequired;
+    };
     const policy: Connection.Verify = switch (options.client_trust) {
         .none => .none,
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.client_policy } },

@@ -1,5 +1,6 @@
-//! Private-scalar ECDH on P-256 and P-384: the masked fixed-window walk against std's
-//! multiplication of a secret scalar. Measurements run by hand in ReleaseFast.
+//! Private-scalar ECDH on P-256 and P-384 and signing with a private key: the masked
+//! fixed-window walk against std's multiplication of a secret scalar. Measurements run by hand
+//! in ReleaseFast.
 const std = @import("std");
 const cloak = @import("cloak");
 const ecdh = cloak.certificates.ecdh;
@@ -58,5 +59,55 @@ pub fn main(init: std.process.Init) !void {
         const std_mul = time(init.io, Std.mul, .{ peer, a }, iterations);
         try out.interface.print("{s}: cloak keygen={d}ns agree={d}ns | std basePoint.mul={d}ns point.mul={d}ns\n", .{ entry[0], cloak_base, cloak_agree, std_base, std_mul });
     }
+    try signing(init, &out.interface, iterations);
     try out.interface.flush();
+}
+
+/// A TLS CertificateVerify signature: cloak's `PrivateKey.sign` (hedged nonce, masked secret
+/// multiplication) against std's `KeyPair.sign` with noise.
+fn signing(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void {
+    const message = "TLS 1.3, server CertificateVerify                    0123456789abcdef0123456789abcdef";
+    var noise: [cloak.PrivateKey.max_noise]u8 = undefined;
+    init.io.random(&noise);
+    inline for (.{
+        .{ "P-256", @embedFile("data/p256.pem"), std.crypto.sign.ecdsa.EcdsaP256Sha256, cloak.certificates.certificate.Algorithm.Signature{ .ecdsa = .sha256 } },
+        .{ "P-384", @embedFile("data/p384.pem"), std.crypto.sign.ecdsa.EcdsaP384Sha384, cloak.certificates.certificate.Algorithm.Signature{ .ecdsa = .sha384 } },
+    }) |entry| {
+        const Ecdsa = entry[2];
+        const key = try cloak.PrivateKey.parse(init.gpa, entry[1], .{});
+        defer key.deinit();
+        const pair = Ecdsa.KeyPair.generate(init.io);
+        const Run = struct {
+            fn cloakSign(k: cloak.PrivateKey, n: []const u8) void {
+                var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
+                const signature = k.sign(entry[3], message, n, &buffer) catch unreachable; // unreachable: the key and algorithm agree
+                std.mem.doNotOptimizeAway(signature);
+            }
+            fn stdSign(p: Ecdsa.KeyPair, n: [Ecdsa.noise_length]u8) void {
+                const signature = p.sign(message, n) catch unreachable; // unreachable: any noise signs
+                std.mem.doNotOptimizeAway(&signature);
+            }
+        };
+        const ours = time(init.io, Run.cloakSign, .{ key, noise[0..Ecdsa.noise_length] }, iterations);
+        const theirs = time(init.io, Run.stdSign, .{ pair, noise[0..Ecdsa.noise_length].* }, iterations);
+        try out.print("{s} sign: cloak={d}ns | std={d}ns\n", .{ entry[0], ours, theirs });
+    }
+    const Ed = std.crypto.sign.Ed25519;
+    const key = try cloak.PrivateKey.parse(init.gpa, @embedFile("data/ed25519.pem"), .{});
+    defer key.deinit();
+    const pair = Ed.KeyPair.generate(init.io);
+    const Run = struct {
+        fn cloakSign(k: cloak.PrivateKey) void {
+            var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
+            const signature = k.sign(.ed25519, message, "", &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            std.mem.doNotOptimizeAway(signature);
+        }
+        fn stdSign(p: Ed.KeyPair) void {
+            const signature = p.sign(message, null) catch unreachable; // unreachable: the key pair is consistent
+            std.mem.doNotOptimizeAway(&signature);
+        }
+    };
+    const ours = time(init.io, Run.cloakSign, .{key}, iterations);
+    const theirs = time(init.io, Run.stdSign, .{pair}, iterations);
+    try out.print("Ed25519 sign: cloak={d}ns | std={d}ns\n", .{ ours, theirs });
 }
