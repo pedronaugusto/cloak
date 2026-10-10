@@ -154,7 +154,7 @@ zig build check
 zig build bench
 ```
 
-CI plans come from `zig build plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `zig build check-wasm` executes portable vectors without hosted Io. `zig build fuzz -Dtest-filter="credential key parser fuzz" --fuzz=100K` uses the compiler fuzz runner. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
+CI plans come from `zig build plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `zig build check-wasm` executes portable vectors without hosted Io. `zig build fuzz` fuzzes the check properties, with corpora and findings kept outside the package. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
 
 ## Licence
 

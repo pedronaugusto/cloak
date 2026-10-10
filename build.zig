@@ -32,13 +32,6 @@ pub fn build(b: *std.Build) void {
         addAegis(b, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
-        const fuzz_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
-        fuzz_module.addImport("shakedown", shakedown.module("shakedown"));
-        addAegis(b, fuzz_module, target, optimize);
-        nativeLinks(fuzz_module, target);
-        const fuzz_tests = b.addTest(.{ .name = "cloak-fuzz", .root_module = fuzz_module, .filters = filters, .use_llvm = true });
-        const fuzz_step = b.step("fuzz", "Run independent parser campaigns using the compiler fuzz runner");
-        fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
     }
     const host = b.graph.host;
     preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
