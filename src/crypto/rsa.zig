@@ -9,11 +9,14 @@
 //! addresses depend only on the key's size.
 //!
 //! One operation:
-//! 1. Blinding: r is drawn from a caller seed (SHAKE256), the message becomes m * r^e mod n.
+//! 1. Blinding: r is drawn by SHAKE256 from a caller seed, a secret the key derives from its
+//!    factors and the message, so a weak seed alone does not make r predictable; the message
+//!    becomes m * r^e mod n.
 //! 2. Each half raises the blinded message reduced mod p (and q) to dp (dq), then multiplies by
 //!    r^-1 mod p (q), computed as r^(p-2) by the same constant-time exponentiation (Fermat).
 //! 3. Garner recombination: s = sq + q * (qinv * (sp - sq) mod p), all in constant time.
-//! 4. Fault check: s^e mod n must equal m; a signature that fails it is never released.
+//! 4. Fault check on the exact bytes to be released: they must encode a value below n whose
+//!    e-th power mod n is m. A result that fails it is never written out.
 const std = @import("std");
 const builtin = @import("builtin");
 const ct = @import("p256/Montgomery.zig");
@@ -265,6 +268,8 @@ pub const PrivateKey = struct {
     /// The modulus in bytes and bits: the result's length and the PSS encoding's width.
     size: usize,
     bits: usize,
+    /// A secret hedge for the blinding draw, derived from the factors.
+    hedge: [32]u8,
 
     /// The key from its big-endian parts. They must be a consistent, validated key: odd n
     /// up to 4096 bits with odd prime factors up to 2048 bits each, dp and dq reduced, qinv
@@ -293,6 +298,12 @@ pub const PrivateKey = struct {
         for (0..half) |i| out.p2[i], borrow = subb(out.p.m[i], two[i], borrow);
         borrow = 0;
         for (0..half) |i| out.q2[i], borrow = subb(out.q.m[i], two[i], borrow);
+        var xof = std.crypto.hash.sha3.Shake256.init(.{});
+        defer wipe(&xof);
+        xof.update("cloak rsa blinding hedge");
+        xof.update(p);
+        xof.update(q);
+        xof.squeeze(&out.hedge);
     }
 
     /// `out = m^d mod n` for `m` big-endian of `size` bytes below n; `out` is `size` bytes.
@@ -302,8 +313,9 @@ pub const PrivateKey = struct {
         return key.privateFaulted(m, seed, out, .none);
     }
 
-    /// Faults a test injects into one half to prove the check catches them.
-    pub const Fault = enum { none, p_half, q_half };
+    /// Faults a test injects to prove the check catches them: into one half after its
+    /// exponentiation, or into the encoded bytes after recombination.
+    pub const Fault = enum { none, p_half, q_half, encoded };
 
     fn privateFaulted(key: *const PrivateKey, m_bytes: []const u8, seed: *const [seed_length]u8, out: []u8, comptime fault: Fault) Error!void {
         @setRuntimeSafety(true);
@@ -324,7 +336,9 @@ pub const PrivateKey = struct {
         var xof = std.crypto.hash.sha3.Shake256.init(.{});
         defer wipe(&xof);
         xof.update("cloak rsa blinding");
+        xof.update(&key.hedge);
         xof.update(seed);
+        xof.update(m_bytes);
         var draw: [(max_limbs + 1) * 8]u8 = undefined;
         defer wipe(&draw);
         xof.squeeze(draw[0 .. (l + 1) * 8]);
@@ -344,6 +358,7 @@ pub const PrivateKey = struct {
             .none => {},
             .p_half => s.sp[0] ^= 1,
             .q_half => s.sq[0] ^= 1,
+            .encoded => {},
         }
 
         // Garner: h = qinv * (sp - sq) mod p, s = sq + q * h. sq comes out of Montgomery form
@@ -370,15 +385,24 @@ pub const PrivateKey = struct {
         var high: u64 = 0;
         for (s.wide[l .. 2 * h + 1]) |limb| high |= limb;
 
-        // Fault check against the public key: unblinding and recombination must give m back.
-        n.mul(s.t[0..l], s.wide[0..l], n.rr[0..l]);
-        n.powPublic(s.t[0..l], s.t[0..l], key.e);
-        n.reduce(s.t[0..l], s.t[0..l]);
-        var difference: u64 = high;
-        for (0..l) |i| difference |= s.t[i] ^ s.m[i];
+        // The bytes to release, then the fault check against the public key on exactly those
+        // bytes: they must decode below n, and unblinding and recombination must give m back.
+        const bytes = s.bytes[0..key.size];
+        encode(bytes, s.wide[0..l]);
+        if (fault == .encoded) bytes[key.size / 2] ^= 0x10;
+        decode(s.t[0..l], bytes) catch return error.SigningFailed;
+        borrow = 0;
+        for (0..l) |i| _, borrow = subb(s.t[i], n.m[i], borrow);
+        // Montgomery multiplication takes an operand below R, so a faulty value at or above n
+        // still reduces correctly; the borrow above refuses it on its own.
+        n.mul(s.u[0..l], s.t[0..l], n.rr[0..l]);
+        n.powPublic(s.u[0..l], s.u[0..l], key.e);
+        n.reduce(s.u[0..l], s.u[0..l]);
+        var difference: u64 = high | (borrow ^ 1);
+        for (0..l) |i| difference |= s.u[i] ^ s.m[i];
         // Whether the signature is released is public: the branch reveals only a fault.
         if (ct.barrier(difference) != 0) return error.SigningFailed;
-        encode(out, s.wide[0..l]);
+        @memcpy(out, bytes);
     }
 
     /// One CRT half: `out = (mb mod m)^d * (r mod m)^-1 mod m`, in Montgomery form.
@@ -407,6 +431,8 @@ const Scratch = struct {
     sp: Limbs,
     sq: Limbs,
     wide: [2 * max_limbs + 1]u64,
+    /// The result as released, checked before it is copied out.
+    bytes: [max_bytes]u8,
 };
 
 /// Test seam: the operation with a fault injected into one half after its exponentiation.

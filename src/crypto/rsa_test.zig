@@ -113,7 +113,7 @@ test "RSA private operation rejects a message at or above n and a wrong length" 
     try std.testing.expectError(error.SigningFailed, key.private(k.n[1..], &seed, out[1..]));
 }
 
-test "RSA fault check withholds a result whose CRT half was corrupted" {
+test "RSA fault check withholds a result whose CRT half or encoding was corrupted" {
     inline for (keys) |der| {
         var key: rsa.PrivateKey = undefined;
         const k = try load(der, &key);
@@ -121,7 +121,7 @@ test "RSA fault check withholds a result whose CRT half was corrupted" {
         m[0] = 1;
         const seed: [32]u8 = @splat(3);
         var out: [rsa.max_bytes]u8 = @splat(0xaa);
-        inline for (.{ rsa.PrivateKey.Fault.p_half, .q_half }) |fault| {
+        inline for (.{ rsa.PrivateKey.Fault.p_half, .q_half, .encoded }) |fault| {
             try std.testing.expectError(error.SigningFailed, rsa.privateWithFault(&key, m[0..k.n.len], &seed, out[0..k.n.len], fault));
             // Nothing of the faulty result reached the output.
             for (out[0..k.n.len]) |b| try std.testing.expectEqual(@as(u8, 0xaa), b);
