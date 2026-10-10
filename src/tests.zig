@@ -32,4 +32,5 @@ test {
     _ = @import("services/macos.zig");
     _ = @import("services/windows.zig");
     _ = @import("crypto.zig");
+    _ = @import("RsaHandshake_test.zig");
 }

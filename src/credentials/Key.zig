@@ -1,4 +1,4 @@
-//! Bounded key parsing. Private RSA operations are supplied in a later phase.
+//! Bounded key parsing into the material `PrivateKey` signs with.
 const std = @import("std");
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;

@@ -60,7 +60,8 @@ test "credential identity signs for the keys cloak holds and says so for the res
         .{ .cert = @embedFile("testdata/ed25519.cert.pem"), .key = @embedFile("testdata/ed25519.pkcs8.pem"), .noise = 0, .algorithm = .ed25519 },
         .{ .cert = @embedFile("testdata/p256.cert.pem"), .key = @embedFile("testdata/p256.pkcs8.pem"), .noise = 32, .algorithm = .{ .ecdsa = .sha256 } },
         .{ .cert = @embedFile("testdata/p384.cert.pem"), .key = @embedFile("testdata/p384.pkcs8.pem"), .noise = 48, .algorithm = .{ .ecdsa = .sha384 } },
-        .{ .cert = @embedFile("testdata/rsa.cert.pem"), .key = @embedFile("testdata/rsa.pkcs8.pem"), .noise = null, .algorithm = .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } } },
+        .{ .cert = @embedFile("testdata/rsa.cert.pem"), .key = @embedFile("testdata/rsa.pkcs8.pem"), .noise = 96, .algorithm = .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } } },
+        .{ .cert = @embedFile("testdata/rsa.cert.pem"), .key = @embedFile("testdata/rsa.pkcs1.pem"), .noise = 96, .algorithm = .{ .rsa = .sha384 } },
     };
     for (cases) |case| {
         var pem = Pem.init(case.cert);
@@ -79,7 +80,10 @@ test "credential identity signs for the keys cloak holds and says so for the res
             const made = try identity.sign(case.algorithm, "content", noise[0..length], &out);
             try signature.verify(leaf.public_key, case.algorithm, "content", made);
             // The algorithm must be the one the key fixes, and the noise the length it draws.
-            const other: certificate.Algorithm.Signature = if (case.algorithm == .ed25519) .{ .ecdsa = .sha256 } else if (case.algorithm.ecdsa == .sha256) .{ .ecdsa = .sha384 } else .{ .ecdsa = .sha256 };
+            const other: certificate.Algorithm.Signature = switch (case.algorithm) {
+                .ecdsa => |hash| .{ .ecdsa = if (hash == .sha256) .sha384 else .sha256 },
+                else => .{ .ecdsa = .sha256 },
+            };
             try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(other, "content", noise[0..length], &out));
             try std.testing.expectError(error.InvalidNoise, identity.sign(case.algorithm, "content", noise[0 .. length + 1], &out));
         } else try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(case.algorithm, "content", "", &out));

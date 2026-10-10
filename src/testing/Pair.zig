@@ -56,6 +56,9 @@ pub fn Pair(comptime suite: Suite13) type {
         clock: ?std.Io = null,
         last_verification_error: ?anyerror = null,
         entropy_requests: usize = 0,
+        /// The size of the first entropy request, and how many signatures the harness made.
+        first_entropy: usize = 0,
+        signed: usize = 0,
 
         pub fn init(gpa: std.mem.Allocator, config: peer_module.Config, options: Options) !*Self {
             const self = try gpa.create(Self);
@@ -67,6 +70,8 @@ pub fn Pair(comptime suite: Suite13) type {
             self.clock = null;
             self.last_verification_error = null;
             self.entropy_requests = 0;
+            self.first_entropy = 0;
+            self.signed = 0;
             self.rng = .init(options.seed);
             self.trust = certificates.Trust.init(gpa);
             errdefer self.trust.deinit();
@@ -121,6 +126,7 @@ pub fn Pair(comptime suite: Suite13) type {
                 answered = true;
                 switch (request.service) {
                     .entropy => |len| {
+                        if (self.entropy_requests == 0) self.first_entropy = len;
                         self.entropy_requests += 1;
                         var bytes: [512]u8 = undefined;
                         self.rng.random().bytes(bytes[0..len]);
@@ -141,6 +147,7 @@ pub fn Pair(comptime suite: Suite13) type {
                     },
                     .sign => |signing| {
                         const signature = try self.sign(signing.content);
+                        self.signed += 1;
                         try self.conn.provide(request.token, .{ .signature = signature.bytes[0..signature.len] });
                     },
                 }
