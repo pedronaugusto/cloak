@@ -57,7 +57,7 @@ pub const max_noise = Sign.P384.noise_length;
 /// The longest signature `sign` writes.
 pub const max_signature = Sign.max_signature;
 
-pub const SignError = error{ UnsupportedAlgorithm, SigningFailed };
+pub const SignError = error{ UnsupportedAlgorithm, InvalidNoise, SigningFailed };
 
 /// How many bytes of fresh noise one signature draws, or null when this key does not sign in
 /// this package: ECDSA on P-256 and P-384 hedge their nonces with noise, Ed25519 is
@@ -78,7 +78,7 @@ pub fn noiseLength(key: PrivateKey) ?usize {
 pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
     const expected = key.noiseLength() orelse return error.UnsupportedAlgorithm;
-    if (noise.len != expected) return error.SigningFailed;
+    if (noise.len != expected) return error.InvalidNoise;
     switch (key.state.material.expose().*) {
         .rsa => unreachable,
         .p256 => |*pair| {

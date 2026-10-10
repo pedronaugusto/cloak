@@ -10,7 +10,7 @@ test "service owned request clones policies evidence identity and all allocation
 fn allocations(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
     var input = [_]u8{ 'a', 'b', 'c' };
-    const request: types.Request = .{ .chain = &.{&input}, .identity = .{ .dns = &input }, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3), .pins = &.{@splat(7)}, .policy = .{ .required_policies = &.{&input} }, .evidence = .{ .crls = &.{&input}, .ocsp = &.{&input} }, .anchor_policies = &.{.{ .name_constraints = &input, .required_policies = &.{&input} }} };
+    const request: types.Request = .{ .chain = &.{&input}, .identity = .{ .dns = &input }, .time = .fromNanoseconds(1 * std.time.ns_per_s), .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3), .pins = &.{@splat(7)}, .policy = .{ .required_policies = &.{&input} }, .evidence = .{ .crls = &.{&input}, .ocsp = &.{&input} }, .anchor_policies = &.{.{ .name_constraints = &input, .required_policies = &.{&input} }} };
     const digest = request.digest();
     var owned = try Owned.init(gpa, request, &.{&input});
     defer owned.deinit();

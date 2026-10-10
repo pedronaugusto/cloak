@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke");
     const commit = if (args.len == 3 and std.mem.eql(u8, args[1], "--commit")) args[2] else "unrecorded";
-    var context: Context = .{ .gpa = init.gpa, .request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) } };
+    var context: Context = .{ .gpa = init.gpa, .request = .{ .chain = &.{@embedFile("data/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) } };
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     try shakedown.bench.run(@typeInfo(@typeInfo(@TypeOf(Context.portable)).@"fn".return_type.?).error_union.error_set || @typeInfo(@typeInfo(@TypeOf(Context.native)).@"fn".return_type.?).error_union.error_set, init.gpa, init.io, &out.interface, &context, &.{.{ .name = "P-256 two-certificate portable path/receipt", .unit = "verification", .initial = 500, .run = Context.portable }}, .{ .commit = commit }, .{ .smoke = smoke, .samples = 9 });

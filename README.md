@@ -24,7 +24,7 @@ pub fn authenticate(
     roots: []const []const u8,
     chain: []const []const u8,
     name: []const u8,
-    time: i64,
+    time: std.Io.Timestamp,
     token: cloak.types.Token,
 ) !cloak.types.Verification {
     @setRuntimeSafety(true);
@@ -73,11 +73,11 @@ pub fn fetch(
     var session: cloak.tls.Session = undefined;
     var plain_in: [4096]u8 = undefined;
     var plain_out: [4096]u8 = undefined;
-    try session.open(gpa, io, &reader.interface, &writer.interface, .{
+    try session.open(gpa, io, &reader.interface, &writer.interface, &plain_in, &plain_out, .{
         .identity = .{ .dns = host },
         .trust = .{ .snapshot = roots },
         .alpn = &.{"http/1.1"},
-    }, &plain_in, &plain_out);
+    });
     defer session.deinit();
     try session.writer().print("GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
     try session.writer().flush();
@@ -110,10 +110,10 @@ pub fn serve(
     var session: cloak.tls.Session = undefined;
     var plain_in: [4096]u8 = undefined;
     var plain_out: [4096]u8 = undefined;
-    try session.accept(gpa, io, &reader.interface, &writer.interface, .{
+    try session.accept(gpa, io, &reader.interface, &writer.interface, &plain_in, &plain_out, .{
         .credentials = credentials,
         .alpn = &.{"http/1.1"},
-    }, &plain_in, &plain_out);
+    });
     defer session.deinit();
     const request = try session.reader().peekGreedy(1);
     std.mem.doNotOptimizeAway(request);

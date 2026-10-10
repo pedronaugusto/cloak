@@ -1,5 +1,6 @@
 //! The service requests of a client handshake and their answers. One gateway per
 //! connection issues tokens, so a stale or repeated answer cannot reach a newer request.
+const std = @import("std");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("Client.zig");
@@ -11,7 +12,7 @@ pub const SignRequest = Client.SignRequest;
 pub const Service = union(enum) {
     /// Exactly this many fresh CSPRNG bytes.
     entropy: usize,
-    /// Real (calendar) time in seconds.
+    /// Real (calendar) time.
     time,
     /// Verify this chain and answer with the receipt or the failure.
     verify: types.Request,
@@ -26,7 +27,7 @@ pub const VerifyFailure = enum { untrusted, bad_certificate, expired, revoked, u
 pub const Answer = union(enum) {
     entropy: []const u8,
     entropy_failed,
-    time: i64,
+    time: std.Io.Timestamp,
     verified: *const types.Verification,
     verification_failed: VerifyFailure,
     signature: []const u8,

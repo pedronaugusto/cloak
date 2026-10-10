@@ -5,7 +5,7 @@ const shakedown = @import("shakedown");
 test "service selected path owns poisoned input and binds every request field" {
     @setRuntimeSafety(true);
     var input = [_]u8{ 1, 2, 3 };
-    var request: types.Request = .{ .chain = &.{&input}, .time = 10, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
+    var request: types.Request = .{ .chain = &.{&input}, .time = .fromNanoseconds(10 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
     var path = try Path.init(std.testing.allocator, request, &.{&input});
     defer path.deinit();
     try path.check(request);
@@ -22,7 +22,7 @@ test "service path all allocation failures without resize" {
 }
 fn allocations(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
-    const request: types.Request = .{ .chain = &.{"abc"}, .time = 10, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
+    const request: types.Request = .{ .chain = &.{"abc"}, .time = .fromNanoseconds(10 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
     var path = try Path.init(gpa, request, request.chain);
     defer path.deinit();
     try path.check(request);

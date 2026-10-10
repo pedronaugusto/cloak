@@ -1,11 +1,11 @@
 const std = @import("std");
 const T = @import("../types.zig");
 test "verification request digest binds token name time policy pins and evidence" {
-    var a: T.Request = .{ .chain = &.{"leaf"}, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
+    var a: T.Request = .{ .chain = &.{"leaf"}, .time = .fromNanoseconds(1 * std.time.ns_per_s), .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
     const digest = a.digest();
-    a.time = 2;
+    a.time = .fromNanoseconds(2 * std.time.ns_per_s);
     try std.testing.expect(!std.mem.eql(u8, &digest, &a.digest()));
-    a.time = 1;
+    a.time = .fromNanoseconds(1 * std.time.ns_per_s);
     a.token.id = .fromRaw(1);
     try std.testing.expect(!std.mem.eql(u8, &digest, &a.digest()));
     a.token.id = .fromRaw(0);
@@ -17,7 +17,7 @@ test "verification request digest binds token name time policy pins and evidence
 }
 
 test "verification request digest binds every public work limit" {
-    const request: T.Request = .{ .chain = &.{"leaf"}, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
+    const request: T.Request = .{ .chain = &.{"leaf"}, .time = .fromNanoseconds(1 * std.time.ns_per_s), .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
     const digest = request.digest();
     inline for (@typeInfo(T.Limits).@"struct".field_names) |field| {
         var changed = request;
@@ -32,7 +32,7 @@ test "W0 receipt domains retain ABI and cannot alias request trust or policy IDs
         if (T.ConnectionGeneration == T.RequestId or T.TrustGeneration == T.PolicyGeneration or T.IdentityGeneration == T.TrustGeneration) @compileError("receipt domains overlap");
         if (@sizeOf(T.Token) != 16 or @alignOf(T.Token) != @alignOf(u64)) @compileError("token representation changed");
     }
-    var a: T.Request = .{ .chain = &.{"leaf"}, .time = 1, .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
+    var a: T.Request = .{ .chain = &.{"leaf"}, .time = .fromNanoseconds(1 * std.time.ns_per_s), .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3) };
     const original = a.digest();
     a.token.generation = .fromRaw(std.math.maxInt(u64));
     try std.testing.expect(!std.mem.eql(u8, &original, &a.digest()));

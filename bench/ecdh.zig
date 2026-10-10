@@ -2,8 +2,9 @@
 //! fixed-window walk against std's multiplication of a secret scalar. Measurements run by hand
 //! in ReleaseFast.
 const std = @import("std");
-const cloak = @import("cloak");
-const ecdh = cloak.certificates.ecdh;
+const cloak = @import("harness").cloak;
+const harness = @import("harness");
+const ecdh = harness.ecdh;
 
 fn time(io: std.Io, comptime body: anytype, args: anytype, iterations: usize) u64 {
     const start = std.Io.Clock.awake.now(io).nanoseconds;

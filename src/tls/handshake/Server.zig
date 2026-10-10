@@ -98,7 +98,7 @@ credential: usize = 0,
 scheme: Hello.SignatureScheme = .ed25519,
 keys: ?Keys = null,
 peer_parameters: []u8 = &.{},
-now: ?i64 = null,
+now: ?std.Io.Timestamp = null,
 authenticated: bool = false,
 peer_certificate: bool = false,
 established: bool = false,
@@ -265,7 +265,7 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
     try self.sendServerFlight(entropy[0..32], &response);
 }
 
-pub fn provideTime(self: *Server, now: i64) Client.Error!void {
+pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;
     self.need_now = .verify;

@@ -81,7 +81,7 @@ test "credential identity signs for the keys cloak holds and says so for the res
             // The algorithm must be the one the key fixes, and the noise the length it draws.
             const other: certificate.Algorithm.Signature = if (case.algorithm == .ed25519) .{ .ecdsa = .sha256 } else if (case.algorithm.ecdsa == .sha256) .{ .ecdsa = .sha384 } else .{ .ecdsa = .sha256 };
             try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(other, "content", noise[0..length], &out));
-            try std.testing.expectError(error.SigningFailed, identity.sign(case.algorithm, "content", noise[0 .. length + 1], &out));
+            try std.testing.expectError(error.InvalidNoise, identity.sign(case.algorithm, "content", noise[0 .. length + 1], &out));
         } else try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(case.algorithm, "content", "", &out));
     }
 }

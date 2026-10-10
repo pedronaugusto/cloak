@@ -157,7 +157,7 @@ pub fn QuicLoop(comptime suite: Suite) type {
                         self.rng.random().bytes(bytes[0..len]);
                         try side.hs.provide(request.token, .{ .entropy = bytes[0..len] });
                     },
-                    .time => try side.hs.provide(request.token, .{ .time = self.options.time }),
+                    .time => try side.hs.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, self.options.time) * std.time.ns_per_s) }),
                     .verify => |verify_request| {
                         if (certificates.verify.indexed(self.gpa, verify_request, self.snapshot.issuers())) |receipt| {
                             var owned = receipt;

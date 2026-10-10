@@ -14,7 +14,7 @@ pub fn init(gpa: std.mem.Allocator, budget: *services.Budget, request: types.Req
 pub const TakeError = services.Job.TakeError || types.Verification.CheckError || verify.VerifyError || error{ VerificationExpired, ValidationTimeChanged };
 /// `now` is fresh real time from the caller, independent of the captured validation time.
 /// Take once; successful native policy alone never becomes an authenticated receipt.
-pub fn take(service: NativeVerification, gpa: std.mem.Allocator, request: types.Request, now: i64) TakeError!types.Verification {
+pub fn take(service: NativeVerification, gpa: std.mem.Allocator, request: types.Request, now: std.Io.Timestamp) TakeError!types.Verification {
     @setRuntimeSafety(true);
     var path = try service.job.take(request);
     defer path.deinit();
@@ -22,8 +22,8 @@ pub fn take(service: NativeVerification, gpa: std.mem.Allocator, request: types.
     var receipt = try verify.nativePath(gpa, request, path.chain);
     errdefer receipt.deinit();
     try receipt.check(request);
-    if (now < receipt.validation_time) return error.ValidationTimeChanged;
-    if (receipt.expires < now) return error.VerificationExpired;
+    if (now.nanoseconds < receipt.validation_time.nanoseconds) return error.ValidationTimeChanged;
+    if (types.seconds(receipt.expires) < types.seconds(now)) return error.VerificationExpired;
     return receipt;
 }
 pub fn abandon(service: NativeVerification) void {

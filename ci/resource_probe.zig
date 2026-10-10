@@ -19,10 +19,10 @@ fn run(raw: ?*anyopaque) callconv(.c) ?*anyopaque {
         s.peak = count.peak_bytes;
         s.live = count.live_bytes;
     }
-    const req: cloak.types.Request = .{ .chain = if (s.profile == 0) &.{leaf} else &peers, .identity = .{ .dns = "example.com" }, .time = std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch {
+    const req: cloak.types.Request = .{ .chain = if (s.profile == 0) &.{leaf} else &peers, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("data/time.txt"), 10) catch {
         s.failed = true;
         return null;
-    }, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    }) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var receipt = if (s.profile == 0) cloak.verify.verify(count.allocator(), req, &.{anchor}) catch {
         s.failed = true;
         return null;

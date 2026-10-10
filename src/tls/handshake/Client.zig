@@ -169,7 +169,7 @@ keys: ?Keys = null,
 alpn: []const u8 = "",
 peer_parameters: []u8 = &.{},
 held: []u8 = &.{},
-now: ?i64 = null,
+now: ?std.Io.Timestamp = null,
 request_id: u64 = 0,
 authenticated: bool = false,
 requested_certificate: bool = false,
@@ -359,7 +359,7 @@ fn releaseScratch(self: *Client) void {
     self.scratch = null;
 }
 
-pub fn provideTime(self: *Client, now: i64) Error!void {
+pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;

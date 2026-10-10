@@ -2,7 +2,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const Exchange = @import("Exchange.zig");
 const Group = @import("Group.zig").Group;
-const ecdh = @import("../../certificates.zig").ecdh;
+const ecdh = @import("../../credentials/Ecdh.zig");
 
 const X25519 = std.crypto.dh.X25519;
 const MlKem = std.crypto.kem.ml_kem.MLKem768;
