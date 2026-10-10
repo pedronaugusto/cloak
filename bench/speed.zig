@@ -232,7 +232,7 @@ fn curve(ctx: *const Context, comptime G: type, comptime Point: type, comptime n
     defer ctx.gpa.free(pem);
     state.key = try cloak.PrivateKey.parse(ctx.gpa, pem, .{});
     defer state.key.deinit();
-    state.noise_len = state.key.noiseLength().?;
+    state.noise_len = state.key.noiseLength();
     ctx.io.random(&state.noise);
     state.message = ctx.message;
     const der = try ctx.file(cert_file);

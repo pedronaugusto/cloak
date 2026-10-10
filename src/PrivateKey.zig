@@ -52,35 +52,37 @@ pub fn matches(key: PrivateKey, der: []const u8) bool {
         },
     };
 }
-/// The most noise bytes one signature draws.
-pub const max_noise = Sign.P384.noise_length;
-/// The longest signature `sign` writes.
+/// The most noise bytes one signature draws: RSA's blinding seed and salt.
+pub const max_noise = @max(Sign.P384.noise_length, Sign.rsa.noise_length);
+/// The longest signature `sign` writes: RSA's, 512 bytes for a 4096-bit key.
 pub const max_signature = Sign.max_signature;
 
 pub const SignError = error{ UnsupportedAlgorithm, InvalidNoise, SigningFailed };
 
-/// How many bytes of fresh noise one signature draws, or null when this key does not sign in
-/// this package: ECDSA on P-256 and P-384 hedge their nonces with noise, Ed25519 is
-/// deterministic (zero), and RSA keys are signed by the caller until RSA-PSS signing lands.
-pub fn noiseLength(key: PrivateKey) ?usize {
+/// How many bytes of fresh noise one signature draws: ECDSA on P-256 and P-384 hedges its
+/// nonces with 32 or 48, Ed25519 is deterministic (zero), and RSA draws 96 for every scheme,
+/// a 32-byte blinding seed and room for the longest PSS salt.
+pub fn noiseLength(key: PrivateKey) usize {
     @setRuntimeSafety(true);
     return switch (key.state.material.expose().*) {
-        .rsa => null,
+        .rsa => Sign.rsa.noise_length,
         .p256 => Sign.P256.noise_length,
         .p384 => Sign.P384.noise_length,
         .ed25519 => 0,
     };
 }
 
-/// Signs `message` under `algorithm`, which must be the one this key's type and curve fix
-/// (ECDSA with SHA-256 on P-256, with SHA-384 on P-384, or Ed25519). `noise` is exactly
-/// `noiseLength` fresh bytes. Returns the DER ECDSA-Sig-Value or the 64 Ed25519 bytes in `out`.
+/// Signs `message` under `algorithm`, which must be one this key's type and curve can make:
+/// ECDSA with SHA-256 on P-256, with SHA-384 on P-384, Ed25519, and for RSA `.pss` (MGF1 on
+/// the same hash, a salt as long as the hash, as TLS requires) or `.rsa` (PKCS#1 v1.5, for
+/// TLS 1.2) on SHA-256, SHA-384 or SHA-512. `noise` is exactly `noiseLength` fresh bytes.
+/// Returns the DER ECDSA-Sig-Value, the 64 Ed25519 bytes, or the modulus-sized RSA signature
+/// in `out`; an RSA signature is checked against the public key before it is returned.
 pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
-    const expected = key.noiseLength() orelse return error.UnsupportedAlgorithm;
-    if (noise.len != expected) return error.InvalidNoise;
+    if (noise.len != key.noiseLength()) return error.InvalidNoise;
     switch (key.state.material.expose().*) {
-        .rsa => unreachable,
+        .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
             if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
             return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], out) catch error.SigningFailed;
@@ -95,6 +97,55 @@ pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message
             return out[0..Sign.ed25519.signature_length];
         },
     }
+}
+
+pub const SignDigestError = SignError || error{InvalidDigest};
+
+/// `sign` over a digest the caller already computed with `algorithm`'s hash, as TLS 1.2 keeps
+/// its transcript: 32, 48 or 64 bytes for SHA-256, SHA-384 or SHA-512, `InvalidDigest`
+/// otherwise. RSA only, PSS or PKCS#1 v1.5, with the same public check; Ed25519 signs the
+/// message itself and has no digest form.
+pub fn signDigest(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignDigestError![]const u8 {
+    @setRuntimeSafety(true);
+    if (noise.len != key.noiseLength()) return error.InvalidNoise;
+    return switch (key.state.material.expose().*) {
+        .rsa => |*rsa| rsaSign(SignDigestError, &rsa.crt, algorithm, digest, true, noise[0..Sign.rsa.noise_length], out),
+        // ECDSA: added with TLS 1.2
+        .p256, .p384 => error.UnsupportedAlgorithm,
+        .ed25519 => error.UnsupportedAlgorithm,
+    };
+}
+
+/// An RSA signature under `algorithm` over `input`, a message or, when `prehashed`, its digest.
+fn rsaSign(comptime E: type, key: *const Sign.rsa.Key, algorithm: certificate.Algorithm.Signature, input: []const u8, comptime prehashed: bool, noise: *const [Sign.rsa.noise_length]u8, out: *[max_signature]u8) E![]const u8 {
+    @setRuntimeSafety(true);
+    const hash: certificate.Algorithm.Hash, const pss = switch (algorithm) {
+        // TLS's PSS schemes: MGF1 on the signing hash, a salt as long as the hash.
+        .pss => |p| if (p.mgf_hash == p.hash and p.trailer == 1) .{ p.hash, true } else return error.UnsupportedAlgorithm,
+        .rsa => |h| .{ h, false },
+        else => return error.UnsupportedAlgorithm,
+    };
+    switch (hash) {
+        inline else => |tag| {
+            const Hash = HashOf(tag);
+            if (pss and algorithm.pss.salt_length != Hash.digest_length) return error.UnsupportedAlgorithm;
+            var digest: [Hash.digest_length]u8 = undefined;
+            if (prehashed) {
+                if (input.len != Hash.digest_length) return error.InvalidDigest;
+                @memcpy(&digest, input);
+            } else Hash.hash(input, &digest, .{});
+            const made = if (pss) Sign.rsa.pssDigest(Hash, key, &digest, noise, out) else Sign.rsa.pkcs1Digest(Hash, key, &digest, noise, out);
+            return made catch error.SigningFailed;
+        },
+    }
+}
+
+fn HashOf(comptime hash: certificate.Algorithm.Hash) type {
+    return switch (hash) {
+        .sha256 => std.crypto.hash.sha2.Sha256,
+        .sha384 => std.crypto.hash.sha2.Sha384,
+        .sha512 => std.crypto.hash.sha2.Sha512,
+    };
 }
 
 pub fn retain(key: PrivateKey) PrivateKey {

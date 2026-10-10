@@ -85,6 +85,8 @@ pub const Config = struct {
     retry: ?Group = null,
     alpn: ?[]const u8 = null,
     request_client_cert: bool = false,
+    /// The signature_algorithms of that CertificateRequest.
+    request_schemes: []const u16 = &.{0x0403},
     layout: Layout = .coalesced,
     ccs: bool = true,
     tickets: usize = 1,
@@ -165,6 +167,43 @@ fn appendMessage(gpa: std.mem.Allocator, list: *std.ArrayList(u8), kind: u8, bod
     std.mem.writeInt(u24, &len, @intCast(body.len), .big);
     try list.appendSlice(gpa, &len);
     try list.appendSlice(gpa, body);
+}
+
+/// A CertificateRequest body: an empty context and only signature_algorithms.
+fn certificateRequest(gpa: std.mem.Allocator, list: *std.ArrayList(u8), schemes: []const u16) !void {
+    var body: [9 + 2 * 16]u8 = undefined;
+    std.debug.assert(schemes.len <= 16);
+    const list_len = 2 * schemes.len;
+    body[0] = 0;
+    std.mem.writeInt(u16, body[1..3], @intCast(list_len + 6), .big);
+    std.mem.writeInt(u16, body[3..5], 13, .big);
+    std.mem.writeInt(u16, body[5..7], @intCast(list_len + 2), .big);
+    std.mem.writeInt(u16, body[7..9], @intCast(list_len), .big);
+    for (schemes, 0..) |scheme, i| std.mem.writeInt(u16, body[9 + 2 * i ..][0..2], scheme, .big);
+    try appendMessage(gpa, list, 13, body[0 .. 9 + list_len]);
+}
+
+pub fn rsaPssScheme(scheme: u16) bool {
+    return scheme >= 0x0804 and scheme <= 0x0806;
+}
+
+/// An rsa_pss_rsae signature by the key of the certificate `der`, checked by std alone.
+pub fn verifyRsaPss(der: []const u8, scheme: u16, sig: []const u8, content: []const u8) bool {
+    const StdCertificate = std.crypto.Certificate;
+    const sha2 = std.crypto.hash.sha2;
+    const parsed = (StdCertificate{ .buffer = der, .index = 0 }).parse() catch return false;
+    const parts = StdCertificate.rsa.PublicKey.parseDer(parsed.pubKey()) catch return false;
+    const key = StdCertificate.rsa.PublicKey.fromBytes(parts.exponent, parts.modulus) catch return false;
+    inline for (.{ 256, 384, 512 }) |len| if (sig.len == len) {
+        const result = switch (scheme) {
+            0x0804 => StdCertificate.rsa.PSSSignature.verify(len, sig[0..len], content, key, sha2.Sha256),
+            0x0805 => StdCertificate.rsa.PSSSignature.verify(len, sig[0..len], content, key, sha2.Sha384),
+            else => StdCertificate.rsa.PSSSignature.verify(len, sig[0..len], content, key, sha2.Sha512),
+        };
+        result catch return false;
+        return true;
+    };
+    return false;
 }
 
 fn signedContent(digest: []const u8, server: bool, out: *[64 + 34 + 48]u8) []const u8 {
@@ -636,7 +675,7 @@ pub fn Peer(comptime suite: Suite) type {
 
             var start = flight.items.len;
             if (self.config.request_client_cert and self.config.tamper != .certificate_request_late) {
-                try appendMessage(self.gpa, &flight, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
+                try certificateRequest(self.gpa, &flight, self.config.request_schemes);
                 marks[mark_count] = flight.items.len;
                 mark_count += 1;
             }
@@ -646,7 +685,7 @@ pub fn Peer(comptime suite: Suite) type {
             if (self.config.tamper == .certificate_request_late) {
                 try self.commitAll(flight.items[start..]);
                 start = flight.items.len;
-                try appendMessage(self.gpa, &flight, 13, &.{ 0, 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 });
+                try certificateRequest(self.gpa, &flight, self.config.request_schemes);
                 marks[mark_count] = flight.items.len;
                 mark_count += 1;
             }
@@ -895,6 +934,7 @@ pub fn Peer(comptime suite: Suite) type {
         }
 
         fn verifyClient(scheme: u16, sig: []const u8, content: []const u8) bool {
+            if (rsaPssScheme(scheme)) return verifyRsaPss(pki.rsa, scheme, sig, content);
             if (scheme == 0x0403) {
                 const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
                 const kp = Ecdsa.KeyPair.fromSecretKey(Ecdsa.SecretKey.fromBytes(pki.client_secret[0..32].*) catch return false) catch return false;

@@ -121,7 +121,7 @@ pub fn certificateList(identity: Identity) []const u8 {
     return identity.state.flight;
 }
 /// How many bytes of fresh noise one signature draws, or null when cloak does not sign for this
-/// identity (its key is held elsewhere, or is a kind cloak does not sign with yet).
+/// identity: its key is held elsewhere.
 pub fn noiseLength(identity: Identity) ?usize {
     @setRuntimeSafety(true);
     const key = identity.state.key orelse return null;

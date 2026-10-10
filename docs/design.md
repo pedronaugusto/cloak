@@ -334,20 +334,41 @@ connection ends with unrecognized_name. The signature scheme is the first the cl
 accepts that the leaf's key type and curve can make.
 
 Cloak signs the CertificateVerify itself with the key its identity holds (`Sign.zig`):
-ECDSA on P-256 and P-384, and Ed25519. The secret multiplication is the masked
+ECDSA on P-256 and P-384, Ed25519, and RSA (rsa_pss_rsae with SHA-256, SHA-384 or
+SHA-512, SHA-256 first among what the peer accepts). The secret multiplication is the masked
 fixed-window walk that builds public keys, the scalar arithmetic is std's constant-time
 field, and every temporary is erased. ECDSA nonces are hedged: derived from the key,
 the message hash and fresh noise, so a weak or repeated draw alone cannot repeat a
 nonce and one faulted signature does not give the key away. The noise is part of the
 entropy request the handshake already makes (the server's random and key exchange, the
-client's hello), 32 bytes for P-256 and 48 for P-384, so no signature waits on a second
-round trip to the driver. Ed25519 follows RFC 8032 and draws none. A signature is not
-verified after it is made: the key was matched to the leaf when the identity was built,
-and the cost of a verification (about as much as the signature) buys protection only
-against a fault in the signer.
+client's hello), 32 bytes for P-256, 48 for P-384 and 96 for RSA, so no signature waits
+on a second round trip to the driver. Ed25519 follows RFC 8032 and draws none. An ECDSA
+or Ed25519 signature is not verified after it is made: the key was matched to the leaf
+when the identity was built, and the cost of a verification (about as much as the
+signature) buys protection only against a fault in the signer.
 
-An identity made with `initExternal` holds no key, and an RSA key is parsed but not
-signed with until RSA-PSS lands. For these the server asks its driver to sign through
+RSA signing is the private operation of `crypto/rsa.zig` under the RFC 8017 encodings
+(EMSA-PSS with MGF1 and a salt as long as the hash, and EMSA-PKCS1-v1_5 with the exact
+DigestInfo for TLS 1.2). The key keeps n, e, p, q, dp, dq and qinv, validated at parse
+(primality, n = pq, the CRT congruences) and erased with the key; d is checked and not
+kept. Moduli of 2048 to 4096 bits sign; a valid key with a factor above 2048 bits is
+refused at parse as `UnsupportedKey`. The operation uses the Chinese remainder theorem:
+each half raises the message to dp or dq modulo its factor in fixed four-bit windows over
+the factor's full width, every window's multiple read by a masked scan of the whole table,
+on 64-bit limbs at the key's public widths with masked conditional subtractions, so the
+instructions and addresses depend only on the key's size. The message is blinded first,
+m r^e with r drawn by SHAKE256 from 32 bytes of the noise, a secret the key derives from
+its factors and the message, and r^-1 is taken in each half by Fermat with the same
+exponentiation; Garner recombines the halves. A fault in either half would give the
+factors away (Bellcore), so every result is checked against the public key on the exact
+bytes to be released: they must encode a value below n whose e-th power is the encoded
+message, and nothing is written otherwise. The check costs a public exponentiation, a
+small share of the private one. The rest of the 96 noise bytes is the PSS salt;
+PKCS#1 v1.5 draws the same 96 and leaves the salt unused, so a key's noise length does not
+depend on the scheme. `PrivateKey.signDigest` signs a digest computed elsewhere, for the
+TLS 1.2 transcript hash.
+
+An identity made with `initExternal` holds no key. For it the server asks its driver to sign through
 a `sign` request, then checks the answer against the leaf's public key before it can
 reach the wire, so a faulty signer cannot put a bad CertificateVerify on the wire. A
 signer that fails ends the connection with internal_error.

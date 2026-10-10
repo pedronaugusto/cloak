@@ -11,7 +11,8 @@ const Suite = @import("../tls/crypto/Suite.zig").Suite;
 const Group = @import("../tls/crypto/Group.zig").Group;
 
 pub const pki = peer_module.pki;
-pub const Cert = peer_module.Cert;
+/// The server certificate: the scripted server's kinds, and RSA, which only cloak signs for here.
+pub const Cert = enum { p256, p384, ed25519, rsa };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -114,15 +115,26 @@ pub fn ServerPair(comptime suite: Suite) type {
                 .p256 => pki.p256_pem,
                 .p384 => pki.p384_pem,
                 .ed25519 => pki.ed25519_pem,
-            }, .{});
+                .rsa => pki.rsa_pem,
+            }, .{ .entropy = witnesses });
             defer key.deinit();
             const leaf = switch (cert) {
                 .p256 => pki.p256,
                 .p384 => pki.p384,
                 .ed25519 => pki.ed25519,
+                .rsa => pki.rsa,
             };
             if (external) return certificates.Identity.initExternal(gpa, &.{ leaf, pki.ca }, .{});
             return certificates.Identity.init(gpa, &.{ leaf, pki.ca }, key, .{});
+        }
+
+        /// Primality witnesses for parsing the RSA fixture: a fixed stream is enough for a test key.
+        const witnesses: certificates.PrivateKey.Entropy = .{ .context = &witness_anchor, .fill = fill };
+        const witness_anchor: u8 = 0;
+
+        fn fill(_: *const anyopaque, out: []u8) certificates.PrivateKey.Entropy.FillError!void {
+            var prng: std.Random.DefaultPrng = .init(0x7e57);
+            prng.random().bytes(out);
         }
 
         fn dropIdentities(self: *Self) void {
@@ -167,6 +179,8 @@ pub fn ServerPair(comptime suite: Suite) type {
                     @memcpy(out[0..64], &sig);
                     len = 64;
                 },
+                // An RSA key held elsewhere is not a case the harness answers.
+                .rsa => return error.ExternalRsaUnsupported,
             }
             if (self.options.bad_signature) out[len - 1] ^= 1;
             return len;
@@ -178,6 +192,7 @@ pub fn ServerPair(comptime suite: Suite) type {
             return switch (scheme) {
                 0x0403 => .p256,
                 0x0503 => .p384,
+                0x0804, 0x0805, 0x0806 => .rsa,
                 else => .ed25519,
             };
         }

@@ -92,3 +92,46 @@ fn rejectKey(expected: anyerror, result: anyerror!PrivateKey) !void {
         return error.TestUnexpectedResult;
     } else |err| try std.testing.expectEqual(expected, err);
 }
+
+test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a message or its digest" {
+    @setRuntimeSafety(true);
+    const signature = @import("../verify/signature.zig");
+    const certificate = @import("../certificate.zig");
+    const gpa = std.testing.allocator;
+    const key = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{ .entropy = Entropy.fromIo(&std.testing.io) });
+    defer key.deinit();
+    var cert_pem = Pem.init(@embedFile("testdata/rsa.cert.pem"));
+    var block = (try cert_pem.next(gpa, 65536)).?;
+    defer block.deinit(gpa);
+    const leaf = try certificate.parse(block.der, .{});
+    try std.testing.expectEqual(@as(usize, 96), key.noiseLength());
+    const noise: [PrivateKey.max_noise + 1]u8 = @splat(0x6b);
+    var out: [PrivateKey.max_signature]u8 = undefined;
+    inline for (.{ .{ certificate.Algorithm.Hash.sha256, std.crypto.hash.sha2.Sha256 }, .{ .sha384, std.crypto.hash.sha2.Sha384 }, .{ .sha512, std.crypto.hash.sha2.Sha512 } }) |pair| {
+        const hash, const Hash = pair;
+        var digest: [Hash.digest_length]u8 = undefined;
+        Hash.hash("content", &digest, .{});
+        const algorithms = [_]certificate.Algorithm.Signature{ .{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = Hash.digest_length } }, .{ .rsa = hash } };
+        for (algorithms) |algorithm| {
+            const made = try key.sign(algorithm, "content", noise[0..96], &out);
+            try signature.verify(leaf.public_key, algorithm, "content", made);
+            var again: [PrivateKey.max_signature]u8 = undefined;
+            // The digest form signs the same message: equal for PKCS#1 v1.5 and for PSS with one salt.
+            try std.testing.expectEqualSlices(u8, made, try key.signDigest(algorithm, &digest, noise[0..96], &again));
+            try std.testing.expectError(error.InvalidDigest, key.signDigest(algorithm, digest[1..], noise[0..96], &again));
+            try std.testing.expectError(error.InvalidNoise, key.sign(algorithm, "content", noise[0..95], &out));
+            try std.testing.expectError(error.InvalidNoise, key.sign(algorithm, "content", noise[0..97], &out));
+            try std.testing.expectError(error.InvalidNoise, key.signDigest(algorithm, &digest, noise[0..32], &out));
+        }
+        // PSS other than TLS's: another MGF hash, another salt length.
+        const other: certificate.Algorithm.Hash = if (hash == .sha256) .sha384 else .sha256;
+        try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .pss = .{ .hash = hash, .mgf_hash = other, .salt_length = Hash.digest_length } }, "content", noise[0..96], &out));
+        try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = 20 } }, "content", noise[0..96], &out));
+    }
+    try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .ecdsa = .sha256 }, "content", noise[0..96], &out));
+    try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.ed25519, "content", noise[0..96], &out));
+    // The digest form is RSA's alone until ECDSA gains one; Ed25519 never has it.
+    const ed = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    defer ed.deinit();
+    try std.testing.expectError(error.UnsupportedAlgorithm, ed.signDigest(.ed25519, &@as([64]u8, @splat(0)), "", &out));
+}
