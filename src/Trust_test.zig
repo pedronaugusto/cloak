@@ -154,7 +154,7 @@ test "catalogue_trust_snapshot_concurrent_verify_reload_release" {
     var started: usize = 0;
     defer {
         gate.set(io);
-        for (workers[0..started]) |*worker| _ = worker.cancel(io) catch {};
+        for (workers[0..started]) |*worker| _ = worker.cancel(io) catch {}; // glint-ignore: Z026 -- reaping on exit; the success path awaits every worker and checks its result, so only a test that is already failing drops one here
     }
     for (&workers) |*worker| {
         worker.* = try snapshotWorker(io, first.?, &gate);

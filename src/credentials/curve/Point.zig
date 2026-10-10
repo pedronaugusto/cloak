@@ -79,7 +79,7 @@ pub fn Point(comptime Public: type) type {
         z: Field,
         pub const identityElement: Self = .{ .x = Field.fromPublic(Public.Fe.zero), .y = Field.fromPublic(Public.Fe.one), .z = Field.fromPublic(Public.Fe.zero) };
         pub const basePoint: Self = .{ .x = Field.fromPublic(Public.basePoint.x), .y = Field.fromPublic(Public.basePoint.y), .z = Field.fromPublic(Public.basePoint.z) };
-        const B = Field.fromPublic(Public.B);
+        const curve_b = Field.fromPublic(Public.B);
         /// Imports a public point; its coordinates carry no secret.
         pub fn fromPublic(p: Public) Self {
             @setRuntimeSafety(true);
@@ -114,7 +114,7 @@ pub fn Point(comptime Public: type) type {
             scratch.t3 = scratch.t3.dbl();
             scratch.Z3 = p.x.mul(p.z);
             scratch.Z3 = scratch.Z3.add(scratch.Z3);
-            scratch.Y3 = B.mul(scratch.t2);
+            scratch.Y3 = curve_b.mul(scratch.t2);
             scratch.Y3 = scratch.Y3.sub(scratch.Z3);
             scratch.X3 = scratch.Y3.dbl();
             scratch.Y3 = scratch.X3.add(scratch.Y3);
@@ -124,7 +124,7 @@ pub fn Point(comptime Public: type) type {
             scratch.X3 = scratch.X3.mul(scratch.t3);
             scratch.t3 = scratch.t2.dbl();
             scratch.t2 = scratch.t2.add(scratch.t3);
-            scratch.Z3 = B.mul(scratch.Z3);
+            scratch.Z3 = curve_b.mul(scratch.Z3);
             scratch.Z3 = scratch.Z3.sub(scratch.t2);
             scratch.Z3 = scratch.Z3.sub(scratch.t0);
             scratch.t3 = scratch.Z3.dbl();
@@ -169,13 +169,13 @@ pub fn Point(comptime Public: type) type {
             scratch.X3 = scratch.X3.mul(scratch.Y3);
             scratch.Y3 = scratch.t0.add(scratch.t2);
             scratch.Y3 = scratch.X3.sub(scratch.Y3);
-            scratch.Z3 = B.mul(scratch.t2);
+            scratch.Z3 = curve_b.mul(scratch.t2);
             scratch.X3 = scratch.Y3.sub(scratch.Z3);
             scratch.Z3 = scratch.X3.dbl();
             scratch.X3 = scratch.X3.add(scratch.Z3);
             scratch.Z3 = scratch.t1.sub(scratch.X3);
             scratch.X3 = scratch.t1.add(scratch.X3);
-            scratch.Y3 = B.mul(scratch.Y3);
+            scratch.Y3 = curve_b.mul(scratch.Y3);
             scratch.t1 = scratch.t2.dbl();
             scratch.t2 = scratch.t1.add(scratch.t2);
             scratch.Y3 = scratch.Y3.sub(scratch.t2);

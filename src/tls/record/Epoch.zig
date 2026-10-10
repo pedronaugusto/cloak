@@ -18,9 +18,10 @@ pub const Plaintext = struct { content: Content, bytes: []u8 };
 pub fn Epoch(comptime suite: suites.Suite) type {
     const A = suites.Aead(suite);
     const Hash = suites.Hash(suite);
-    const TrafficSecret = aegis.Secret([Hash.digest_length]u8);
     return struct {
         const Self = @This();
+        /// The traffic secret an epoch consumes.
+        pub const TrafficSecret = aegis.Secret([Hash.digest_length]u8);
         key: aegis.Secret([A.key_length]u8),
         iv: aegis.Secret([12]u8),
         traffic: ?TrafficSecret = null,

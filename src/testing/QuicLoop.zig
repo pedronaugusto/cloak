@@ -36,7 +36,7 @@ pub const Options = struct {
 
 pub const Secret = struct { level: Handshake.Level, direction: Handshake.Direction, bytes: [48]u8, len: usize };
 
-const Side = struct {
+pub const Side = struct {
     hs: Handshake,
     inbox: [3]std.ArrayList(u8) = .{ .empty, .empty, .empty },
     secrets: std.ArrayList(Secret) = .empty,

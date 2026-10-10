@@ -234,7 +234,7 @@ test "catalogue_verify_job_native_concurrent_abandon_retains_charge_until_reap" 
     // Reap before the borrowed allocator, pause or backend can expire, on errors too.
     defer {
         pause.proceed.set(io);
-        _ = worker.cancel(io) catch {};
+        _ = worker.cancel(io) catch {}; // glint-ignore: Z026 -- reaping on exit; the success path awaits the worker and checks its result, so only a test that is already failing drops it here
     }
     try pause.entered.wait(io);
     caller.?.abandon();
