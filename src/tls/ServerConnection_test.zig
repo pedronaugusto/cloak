@@ -378,6 +378,30 @@ test "C3 server memory: handshake peak and idle residue are bounded" {
     try std.testing.expect(idle + @sizeOf(Connection) <= 2560);
 }
 
+test "C3 server memory: a connection holds no handshake scratch until a peer sends a hello" {
+    const Counting = shakedown.alloc.Counting;
+    var count = Counting.init(std.testing.allocator);
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .conn_gpa = count.allocator() });
+    defer pair.deinit();
+    const created = count.live_bytes;
+    std.debug.print("\nC3 memory server created={d} bytes\n", .{created});
+    // The server state and the credential table only: the scratch is the large allocation.
+    try std.testing.expect(created <= 1024);
+    // A connection the peer never speaks on is released without ever having built it.
+    try std.testing.expect(!pair.conn.hs.state.server.pending());
+    try pair.client.start();
+    const hello = pair.client.pending();
+    // The first byte of a hello buffers the record but still needs no handshake scratch.
+    _ = try pair.conn.receive(hello[0..1]);
+    const first_byte = count.live_bytes;
+    try std.testing.expect(pair.conn.hs.state.server.scratch == null);
+    // The whole hello builds it.
+    _ = try pair.conn.receive(hello[1..]);
+    try std.testing.expect(pair.conn.hs.state.server.scratch != null);
+    std.debug.print("C3 memory server first byte={d} bytes, after the hello={d} bytes\n", .{ first_byte, count.live_bytes });
+    try std.testing.expect(count.live_bytes > first_byte + 4096);
+}
+
 test "C3 fuzz server random bytes never reach a connected state" {
     try std.testing.fuzz({}, fuzzReceive, .{ .corpus = shakedown.corpus.entries(&.{ "\x16\x03\x01\x00\x01\x01", "\x15\x03\x03\x00\x02\x02\x28", "\x14\x03\x03\x00\x01\x01\x16\x03\x03\xff\xff" }) });
 }

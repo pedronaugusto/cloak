@@ -90,7 +90,7 @@ deferred: Need = .none,
 parameters_accepted: bool = false,
 post: ?Emit = null,
 held: []u8 = &.{},
-scratch: ?*Scratch,
+scratch: ?*Scratch = null,
 suite: ?Suite = null,
 group: ?Group = null,
 alpn: []const u8 = "",
@@ -160,9 +160,6 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     const self = try gpa.create(Server);
     errdefer gpa.destroy(self);
-    const scratch = try gpa.create(Scratch);
-    errdefer gpa.destroy(scratch);
-    scratch.* = .{};
     // The credential table is copied; the names it points at and the identities (retained below)
     // are the caller's to keep alive.
     const credentials = try gpa.dupe(Credential, options.credentials);
@@ -171,7 +168,6 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
         .gpa = gpa,
         .options = options,
         .state = .{ .role = .server, .mode = if (options.quic) .quic else .stream, .auth = options.client_auth },
-        .scratch = scratch,
     };
     self.options.credentials = credentials;
     for (credentials) |credential| _ = credential.identity.retain();
@@ -216,6 +212,14 @@ pub fn wipe(self: *Server) void {
         self.server_name_copy = &.{};
     }
     self.state.phase = .failed;
+}
+
+fn startScratch(self: *Server) std.mem.Allocator.Error!*Scratch {
+    @setRuntimeSafety(true);
+    const scratch = try self.gpa.create(Scratch);
+    scratch.* = .{};
+    self.scratch = scratch;
+    return scratch;
 }
 
 fn releaseScratch(self: *Server) void {
@@ -475,7 +479,9 @@ pub fn nameMatches(pattern: []const u8, name: []const u8) bool {
 fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.client_hello, epoch, .parsed, boundary);
-    const scratch = self.scratch.?;
+    // The scratch is the connection's one large allocation, made when a peer first sends a
+    // ClientHello the state table accepts; a connection that never speaks holds none.
+    const scratch = self.scratch orelse try self.startScratch();
     const hello = try ClientHello.parse(msg);
     if (!hello.offersVersion(0x0304)) return error.UnsupportedVersion;
     const second = self.retried;

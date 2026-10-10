@@ -337,6 +337,11 @@ a `sign` request, then checks the answer against the leaf's public key before it
 reach the wire, so a faulty signer cannot put a bad CertificateVerify on the wire. A
 signer that fails ends the connection with internal_error.
 
+A server connection holds no handshake scratch until a peer sends a ClientHello that
+the state table accepts: a connection created and never spoken to, or one fed a few
+bytes, costs its state and credential table (896 bytes), not the scratch (3.7 KB
+before the first flight grows it). Established connections release it as before.
+
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
 and uniqueness but no policy: duplicate extensions, a key share for a group
 `supported_groups` does not list, a repeated share group, a compression other than
