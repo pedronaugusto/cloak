@@ -97,6 +97,25 @@ pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message
     }
 }
 
+/// Signs an already computed `digest` of the algorithm's hash, for a TLS 1.2 CertificateVerify
+/// over the running transcript hash. ECDSA (and RSA) only: Ed25519 signs messages.
+pub fn signDigest(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
+    @setRuntimeSafety(true);
+    const expected = key.noiseLength() orelse return error.UnsupportedAlgorithm;
+    if (noise.len != expected) return error.InvalidNoise;
+    switch (key.state.material.expose().*) {
+        .rsa, .ed25519 => return error.UnsupportedAlgorithm,
+        .p256 => |*pair| {
+            if (algorithm != .ecdsa or algorithm.ecdsa != .sha256 or digest.len != 32) return error.UnsupportedAlgorithm;
+            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], out) catch error.SigningFailed;
+        },
+        .p384 => |*pair| {
+            if (algorithm != .ecdsa or algorithm.ecdsa != .sha384 or digest.len != 48) return error.UnsupportedAlgorithm;
+            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], out) catch error.SigningFailed;
+        },
+    }
+}
+
 pub fn retain(key: PrivateKey) PrivateKey {
     @setRuntimeSafety(true);
     var count = key.state.refs.load(.monotonic);

@@ -38,6 +38,14 @@ has_psk: bool,
 has_groups: bool,
 has_shares: bool,
 has_schemes: bool,
+/// legacy_version: what a client without supported_versions offers.
+legacy_version: u16,
+/// TLS 1.2: extended_master_secret was sent (RFC 7627).
+extended_master_secret: bool,
+/// TLS 1.2: an empty renegotiation_info was sent (RFC 5746). The SCSV counts too; see `secureRenegotiation`.
+renegotiation_info: bool,
+/// TLS 1.2: ec_point_formats was absent or listed the uncompressed form.
+uncompressed_points: bool,
 /// The whole extension block, for the comparison a retry requires.
 extensions: []const u8,
 
@@ -45,8 +53,9 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 1 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
     var r: Reader = .{ .bytes = message[4..] };
-    _ = try r.int(u16); // legacy_version: ignored when supported_versions is present
     var self: ClientHello = undefined;
+    // legacy_version decides only when supported_versions is absent.
+    self.legacy_version = try r.int(u16);
     self.random = try r.take(32);
     self.session = (try r.vector(u8)).bytes;
     if (self.session.len > 32) return error.DecodeError;
@@ -71,6 +80,9 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     self.has_groups = false;
     self.has_shares = false;
     self.has_schemes = false;
+    self.extended_master_secret = false;
+    self.renegotiation_info = false;
+    self.uncompressed_points = true;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -166,6 +178,22 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.has_shares = true;
         },
         57 => self.parameters = bytes,
+        11 => {
+            const formats = (try value.vector(u8)).bytes;
+            try value.finish();
+            if (formats.len == 0) return error.DecodeError;
+            self.uncompressed_points = std.mem.findScalar(u8, formats, 0) != null;
+        },
+        23 => {
+            if (bytes.len != 0) return error.DecodeError;
+            self.extended_master_secret = true;
+        },
+        0xff01 => {
+            // The initial handshake's renegotiated_connection is empty (RFC 5746 section 3.6).
+            if ((try value.vector(u8)).bytes.len != 0) return error.IllegalParameter;
+            try value.finish();
+            self.renegotiation_info = true;
+        },
         else => {},
     }
 }
@@ -190,6 +218,23 @@ fn hostName(name: []const u8) bool {
 
 pub fn offersVersion(self: *const ClientHello, version: u16) bool {
     return containsU16(self.versions, version);
+}
+
+/// Whether TLS 1.2 is offered: listed in supported_versions, or the legacy version when that
+/// extension is absent.
+pub fn offers12(self: *const ClientHello) bool {
+    if (self.versions.len != 0) return containsU16(self.versions, 0x0303);
+    return self.legacy_version == 0x0303;
+}
+
+/// Secure renegotiation is indicated by the extension or TLS_EMPTY_RENEGOTIATION_INFO_SCSV.
+pub fn secureRenegotiation(self: *const ClientHello) bool {
+    return self.renegotiation_info or containsU16(self.suites, 0x00ff);
+}
+
+/// TLS_FALLBACK_SCSV: the client retried with a lower version than it supports (RFC 7507).
+pub fn fallback(self: *const ClientHello) bool {
+    return containsU16(self.suites, 0x5600);
 }
 
 pub fn offersSuite(self: *const ClientHello, id: u16) bool {

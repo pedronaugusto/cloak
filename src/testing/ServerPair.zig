@@ -2,6 +2,7 @@
 //! a real driver: deterministic entropy, a fixed clock, the portable verifier for a client's
 //! chain, and, for identities without a key, server signatures from the fixture keys.
 const std = @import("std");
+const SuiteAll = @import("../tls/crypto/Suite.zig").Suite;
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const client_module = @import("ClientPeer.zig");
@@ -99,7 +100,7 @@ pub fn ServerPair(comptime suite: Suite13) type {
                 .require_alpn = options.require_alpn,
                 .require_hybrid = options.require_hybrid,
                 .groups = options.groups,
-                .suites = &.{suite},
+                .suites = &.{comptime SuiteAll.from13(suite)},
                 .client_auth = options.client_auth,
                 .client_verify = if (options.client_auth != .none and options.verify_clients) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
                 .limits = options.limits,

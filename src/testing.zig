@@ -14,3 +14,4 @@ pub const cloak = @import("root.zig");
 pub const ecdh = @import("credentials/Ecdh.zig");
 pub const p256 = @import("crypto/p256.zig");
 pub const suites = @import("tls/crypto/Suite.zig");
+pub const Duo = @import("testing/Duo.zig");

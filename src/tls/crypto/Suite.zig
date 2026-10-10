@@ -33,6 +33,9 @@ pub const Suite = enum(u16) {
         .ecdhe_rsa_aes_256_gcm_sha384,
     };
 
+    /// The TLS 1.3 suites alone, for QUIC and other TLS 1.3-only policies.
+    pub const tls13_only: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 };
+
     pub fn version(suite: Suite) Version {
         return if (suite.tls13() != null) .tls13 else .tls12;
     }

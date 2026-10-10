@@ -32,11 +32,17 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             @setRuntimeSafety(true);
             var digest: [Hash.digest_length]u8 = undefined;
             Hash.hash(message, &digest, .{});
-            var k = nonce(&digest, secret, noise);
+            return signDigest(secret, &digest, noise, out);
+        }
+
+        /// The same signature over an already computed digest of the scheme's hash.
+        pub fn signDigest(secret: *const [secret_length]u8, digest: *const [Hash.digest_length]u8, noise: ?*const [noise_length]u8, out: *[max_signature]u8) Error![]const u8 {
+            @setRuntimeSafety(true);
+            var k = nonce(digest, secret, noise);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
             var k_bytes = k.toBytes(.big);
             defer std.crypto.secureZero(u8, &k_bytes);
-            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, &digest, &k_bytes, out);
+            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, digest, &k_bytes, out);
             var point = Curve.base(Point, .big, &k_bytes) catch return error.SigningFailed;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
             const r = reduce(Point.Fe.encoded_length, point.affineCoordinates().x.toBytes(.big));
@@ -46,7 +52,7 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             if (d.isZero()) return error.SigningFailed;
             var k_inverse = k.invert();
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
-            var blend = reduce(secret_length, digest).add(r.mul(d));
+            var blend = reduce(secret_length, digest.*).add(r.mul(d));
             defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;

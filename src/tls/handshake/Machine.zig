@@ -41,6 +41,20 @@ pub fn wipe(self: Machine) void {
     }
 }
 
+/// The negotiated version; TLS 1.3 until a hello says otherwise.
+pub fn version(self: Machine) @import("../crypto/Suite.zig").Version {
+    return switch (self.state) {
+        inline else => |m| m.version,
+    };
+}
+
+/// A ChangeCipherSpec record arrived at a message boundary.
+pub fn receiveCcs(self: Machine) Error!void {
+    return switch (self.state) {
+        inline else => |m| m.receiveCcs(),
+    };
+}
+
 pub fn need(self: Machine) Need {
     return switch (self.state) {
         inline else => |m| m.need(),

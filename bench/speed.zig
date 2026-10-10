@@ -9,7 +9,8 @@ const harness = @import("harness");
 const cloak = harness.cloak;
 const ecdh = harness.ecdh;
 const Connection = cloak.tls.Connection;
-const Suite13 = cloak.tls.Suite13;
+const Suite13 = harness.suites.Suite13;
+const Suite = cloak.tls.Suite;
 const Group = cloak.tls.Group;
 
 const fixtures = .{ "message.bin", "root.der", "chain.pem", "leaf.key.pem", "leaf.der", "p384.key.pem", "p384.der", "ed25519.key.pem", "ed25519.der", "rsa2048.der", "rsa2048.pss.sig", "rsa4096.der", "rsa4096.pss.sig" };
@@ -380,7 +381,7 @@ const Pair = struct {
         var client = try Connection.client(ctx.gpa, .{
             .identity = .{ .dns = "bench.example" },
             .verify = .{ .full = .{ .trust_generation = fixture.snapshot.generation() } },
-            .suites = &.{suite},
+            .suites = &.{comptime Suite.from13(suite)},
             .groups = &.{group},
             .compat = false,
         });
@@ -389,7 +390,7 @@ const Pair = struct {
         start = ctx.now();
         const server = try Connection.server(ctx.gpa, .{
             .credentials = &.{.{ .identity = fixture.identity }},
-            .suites = &.{suite},
+            .suites = &.{comptime Suite.from13(suite)},
             .groups = &.{group},
         });
         return .{ .ctx = ctx, .fixture = fixture, .client = .{ .conn = client, .ns = client_ns }, .server = .{ .conn = server, .ns = ctx.now() - start } };

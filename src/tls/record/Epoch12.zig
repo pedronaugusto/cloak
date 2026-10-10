@@ -105,7 +105,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             return wire;
         }
 
-        /// Opens one record into `out` after checking the tag; any failure erases the epoch.
+        /// Opens one record into `out` after checking the tag; any failure erases the epoch. When
+        /// `out` starts right after the header (decrypting in the record's own buffer) the
+        /// plaintext stays where the ciphertext was, after the explicit nonce.
         pub fn open(self: *Self, wire: []const u8, out: []u8) OpenError!Plaintext {
             @setRuntimeSafety(true);
             if (self.closed) return error.Closed;
@@ -114,9 +116,11 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             const content = std.enums.fromInt(Content, wire[0]) orelse return self.bad();
             const len = wire.len - overhead;
             if (content != .application and len == 0) return self.bad();
-            if (out.len < len) return error.BufferTooSmall;
-            const plain = out[0..len];
             const cipher_text = wire[5 + explicit ..][0..len];
+            const in_place = @intFromPtr(out.ptr) == @intFromPtr(wire.ptr) + 5; // safe: live addresses compared only to detect the in-buffer form
+            const skip: usize = if (in_place) explicit else 0;
+            if (out.len < skip + len) return error.BufferTooSmall;
+            const plain = out[skip..][0..len];
             if (overlap(wire, plain) and plain.ptr != cipher_text.ptr) return error.PartialOverlap;
             try self.admit(len);
             var n = self.nonce();

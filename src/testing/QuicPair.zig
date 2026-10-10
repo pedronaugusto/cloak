@@ -1,6 +1,7 @@
 //! Drives a record-free QUIC `Handshake` against a scripted `Peer` speaking the QUIC dialect,
 //! answering requests like a real driver and recording every event it sees.
 const std = @import("std");
+const SuiteAll = @import("../tls/crypto/Suite.zig").Suite;
 const certificates = @import("../certificates.zig");
 const peer_module = @import("Peer.zig");
 const Handshake = @import("../tls/quic/Handshake.zig");
@@ -63,7 +64,7 @@ pub fn QuicPair(comptime suite: Suite13) type {
                 .verify = .{ .full = .{ .trust_generation = self.snapshot.generation() } },
                 .parameters = options.parameters,
                 .alpn = options.alpn,
-                .suites = &.{suite},
+                .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.groups,
                 .require_hybrid = options.require_hybrid,
                 .auth = options.client_auth,
