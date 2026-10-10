@@ -664,9 +664,9 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
 
 fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
+    try self.state.advance(.certificate_request, epoch, .parsed, boundary);
     const parsed = try Messages.certificateRequest(msg);
     if (parsed.context.len != 0) return error.IllegalParameter;
-    try self.state.advance(.certificate_request, epoch, .parsed, boundary);
     try self.transcripts.commit(msg);
     self.requested_certificate = true;
     const keep = @min(parsed.schemes.len, self.cr_schemes.len) & ~@as(usize, 1);

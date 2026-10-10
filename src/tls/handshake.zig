@@ -31,3 +31,7 @@ pub const Client = @import("handshake/Client.zig");
 test {
     _ = Client;
 }
+pub const Services = @import("handshake/Services.zig");
+test {
+    _ = Services;
+}

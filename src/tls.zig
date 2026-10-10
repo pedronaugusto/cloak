@@ -8,6 +8,8 @@ pub const Group = @import("tls/crypto/Group.zig").Group;
 pub const Alert = @import("tls/wire/Alert.zig").Alert;
 /// A sans-I/O client connection.
 pub const Connection = @import("tls/Connection.zig");
+/// The record-free handshake for QUIC.
+pub const quic = @import("tls/quic.zig");
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
@@ -17,4 +19,5 @@ test {
     _ = @import("tls/crypto.zig");
     _ = Connection;
     _ = Session;
+    _ = quic;
 }

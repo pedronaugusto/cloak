@@ -84,6 +84,13 @@ pub const Config = struct {
     cookie: []const u8 = "",
     /// Only the cookie in the retry request, no group change.
     cookie_only: bool = false,
+    /// Speak the record-free QUIC dialect: messages per level, no records, no CCS.
+    quic: bool = false,
+    /// The transport parameters the server sends in EncryptedExtensions (QUIC only).
+    quic_parameters: []const u8 = "server-params",
+    /// Omit the transport parameters extension (QUIC only).
+    omit_quic_parameters: bool = false,
+    duplicate_quic_parameters: bool = false,
 };
 
 /// What the peer parsed from the client's hello, for assertions.
@@ -111,6 +118,9 @@ pub const Seen = struct {
     hellos: usize = 0,
     ccs: usize = 0,
     first_hello_record_version: u16 = 0,
+    quic_parameters: [64]u8 = undefined,
+    quic_parameters_len: usize = 0,
+    has_quic_parameters: bool = false,
 
     pub fn offeredGroup(self: *const Seen, group: Group) bool {
         for (self.groups[0..self.group_count]) |g| if (g == @backingInt(group)) return true;
@@ -184,6 +194,8 @@ pub fn Peer(comptime suite: Suite) type {
         tx: ?E = null,
         rx: ?E = null,
         client_hs: Secret = undefined,
+        level_out: [3]std.ArrayList(u8) = .{ .empty, .empty, .empty },
+        quic_client_messages: [3]std.ArrayList(u8) = .{ .empty, .empty, .empty },
         server_hs: Secret = undefined,
         client_app: Secret = undefined,
         server_app: Secret = undefined,
@@ -209,6 +221,8 @@ pub fn Peer(comptime suite: Suite) type {
             self.hello_bytes.deinit(self.gpa);
             self.client_flight.deinit(self.gpa);
             self.received.deinit(self.gpa);
+            for (&self.level_out) |*list| list.deinit(self.gpa);
+            for (&self.quic_client_messages) |*list| list.deinit(self.gpa);
             self.client_chain.deinit(self.gpa);
             if (self.schedule) |*s| s.deinit();
             if (self.tx) |*e| e.deinit();
@@ -275,6 +289,7 @@ pub fn Peer(comptime suite: Suite) type {
 
         fn onHelloBytes(self: *Self, bytes: []const u8) !void {
             try self.hello_bytes.appendSlice(self.gpa, bytes);
+            if (self.hello_bytes.items.len < 4) return;
             const total = 4 + @as(usize, std.mem.readInt(u24, self.hello_bytes.items[1..4], .big));
             if (self.hello_bytes.items.len < total) return;
             const hello = try self.gpa.dupe(u8, self.hello_bytes.items[0..total]);
@@ -360,6 +375,11 @@ pub fn Peer(comptime suite: Suite) type {
                     },
                     43 => seen.versions_only_13 = body.len == 3 and body[0] == 2 and body[1] == 3 and body[2] == 4,
                     41 => seen.has_psk = true,
+                    57 => {
+                        seen.has_quic_parameters = true;
+                        seen.quic_parameters_len = body.len;
+                        @memcpy(seen.quic_parameters[0..@min(body.len, 64)], body[0..@min(body.len, 64)]);
+                    },
                     42 => seen.has_early_data = true,
                     44 => seen.cookie_len = std.mem.readInt(u16, body[0..2], .big),
                     51 => {
@@ -419,6 +439,7 @@ pub fn Peer(comptime suite: Suite) type {
             std.mem.writeInt(u24, message[1..4], @intCast(w.pos - 4), .big);
             const hrr = message[0..w.pos];
             if (self.sent_second_retry) {} else if (self.seen.hellos == 2) self.sent_second_retry = true else try self.transcript.retry(hrr);
+            if (self.config.quic) return self.emit(.initial, hrr);
             try self.plainRecord(hrr);
             try self.compatCcs();
         }
@@ -428,6 +449,31 @@ pub fn Peer(comptime suite: Suite) type {
             if (!self.config.ccs or self.session_len == 0 or self.sent_ccs) return;
             self.sent_ccs = true;
             try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
+        }
+
+        pub const Level = enum { initial, handshake, application };
+
+        /// QUIC: server handshake bytes for a level, to be delivered to the client's `receive`.
+        pub fn level(self: *const Self, which: Level) []const u8 {
+            return self.level_out[@backingInt(which)].items;
+        }
+        pub fn levelDrained(self: *Self, which: Level, n: usize) void {
+            const list = &self.level_out[@backingInt(which)];
+            const rest = list.items.len - n;
+            @memmove(list.items[0..rest], list.items[n..]);
+            list.shrinkRetainingCapacity(rest);
+        }
+        fn emit(self: *Self, which: Level, bytes: []const u8) !void {
+            try self.level_out[@backingInt(which)].appendSlice(self.gpa, bytes);
+        }
+
+        /// QUIC: the client's handshake bytes at a level.
+        pub fn feedLevel(self: *Self, which: Level, bytes: []const u8) !void {
+            switch (which) {
+                .initial => try self.onHelloBytes(bytes),
+                .handshake => try self.onClientHandshake(bytes),
+                .application => {},
+            }
         }
 
         fn plainRecord(self: *Self, body: []const u8) !void {
@@ -516,8 +562,10 @@ pub fn Peer(comptime suite: Suite) type {
             self.schedule = try K.init(kex.secret[0..kex.secret_len], &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
-            self.tx = try epochFrom(&self.server_hs);
-            self.rx = try epochFrom(&self.client_hs);
+            if (!self.config.quic) {
+                self.tx = try epochFrom(&self.server_hs);
+                self.rx = try epochFrom(&self.client_hs);
+            }
 
             var flight: std.ArrayList(u8) = .empty;
             defer flight.deinit(self.gpa);
@@ -535,8 +583,12 @@ pub fn Peer(comptime suite: Suite) type {
                 mark_count += 1;
                 try self.commitAll(flight.items);
             }
-            try self.plainRecord(hello_record.items);
-            try self.compatCcs();
+            if (self.config.quic) {
+                try self.emit(.initial, hello_record.items);
+            } else {
+                try self.plainRecord(hello_record.items);
+                try self.compatCcs();
+            }
 
             var start = flight.items.len;
             if (self.config.request_client_cert and self.config.tamper != .certificate_request_late) {
@@ -577,7 +629,11 @@ pub fn Peer(comptime suite: Suite) type {
                 try appendMessage(self.gpa, &flight, 4, &.{ 0, 0, 0x1c, 0x20, 0, 0, 0, 0, 0, 0, 1, 'x', 0, 0 });
             }
             if (self.config.tamper == .application_before_finished) try self.sealOne(.application, "early");
-            try self.sealFlight(flight.items, marks[0..mark_count]);
+            if (self.config.quic) {
+                try self.emit(.handshake, flight.items);
+            } else {
+                try self.sealFlight(flight.items, marks[0..mark_count]);
+            }
             if (self.config.tamper == .bad_tag) self.out.items[self.out.items.len - 1] ^= 1;
             var app: K.Traffic = .{};
             defer app.deinit();
@@ -604,6 +660,14 @@ pub fn Peer(comptime suite: Suite) type {
                 const advertised = if (self.config.tamper == .unoffered_alpn) "zz" else alpn;
                 try body.appendSlice(self.gpa, &.{ 0, 16, 0, @intCast(advertised.len + 3), 0, @intCast(advertised.len + 1), @intCast(advertised.len) });
                 try body.appendSlice(self.gpa, advertised);
+            }
+            if (self.config.quic and !self.config.omit_quic_parameters) {
+                const params = self.config.quic_parameters;
+                const copies: usize = if (self.config.duplicate_quic_parameters) 2 else 1;
+                for (0..copies) |_| {
+                    try body.appendSlice(self.gpa, &.{ 0, 57, @intCast(params.len >> 8), @intCast(params.len & 255) });
+                    try body.appendSlice(self.gpa, params);
+                }
             }
             if (self.config.tamper == .duplicate_extension_in_encrypted) {
                 try body.appendSlice(self.gpa, &.{ 0, 10, 0, 4, 0, 2, 0, 29 });
@@ -801,11 +865,16 @@ pub fn Peer(comptime suite: Suite) type {
         }
 
         fn connect(self: *Self) !void {
+            self.connected = true;
+            if (self.config.quic) {
+                const ticket = [_]u8{ 4, 0, 0, 18, 0, 0, 0x1c, 0x20, 0x12, 0x34, 0x56, 0x78, 1, 7, 0, 4, 't', 'k', 't', '!', 0, 0 };
+                for (0..self.config.tickets) |_| try self.emit(.application, &ticket);
+                return;
+            }
             self.tx.?.deinit();
             self.rx.?.deinit();
             self.tx = try epochFrom(&self.server_app);
             self.rx = try epochFrom(&self.client_app);
-            self.connected = true;
             const ticket = [_]u8{ 4, 0, 0, 18, 0, 0, 0x1c, 0x20, 0x12, 0x34, 0x56, 0x78, 1, 7, 0, 4, 't', 'k', 't', '!', 0, 0 };
             for (0..self.config.tickets) |_| try self.sealOne(.handshake, &ticket);
             if (self.config.tamper == .ticket_flood) for (0..200) |_| try self.sealOne(.handshake, &ticket);

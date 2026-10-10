@@ -6,6 +6,7 @@ const std = @import("std");
 const certificates = @import("cloak.certificates");
 const types = certificates.types;
 const Client = @import("handshake/Client.zig");
+const Services = @import("handshake/Services.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
 const Suite = @import("crypto/Suite.zig").Suite;
@@ -58,30 +59,10 @@ pub const ClientOptions = struct {
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
-pub const Service = union(enum) {
-    /// Exactly this many fresh CSPRNG bytes.
-    entropy: usize,
-    /// Real (calendar) time in seconds.
-    time,
-    /// Verify this chain and answer with the receipt or the failure.
-    verify: types.Request,
-    /// Sign this CertificateVerify content for the client certificate.
-    sign: SignRequest,
-};
-
-pub const Request = struct { token: types.Token, service: Service };
-
-pub const VerifyFailure = enum { untrusted, bad_certificate, expired, revoked, unsupported, internal };
-
-pub const Answer = union(enum) {
-    entropy: []const u8,
-    entropy_failed,
-    time: i64,
-    verified: *const types.Verification,
-    verification_failed: VerifyFailure,
-    signature: []const u8,
-    signing_failed,
-};
+pub const Service = Services.Service;
+pub const Request = Services.Request;
+pub const VerifyFailure = Services.VerifyFailure;
+pub const Answer = Services.Answer;
 
 pub const Phase = enum { handshaking, connected, closed, failed };
 
@@ -121,9 +102,7 @@ tx: ?Protection = null,
 rx_epoch: Epoch = .initial,
 tx_epoch: Epoch = .initial,
 phase_now: Phase = .handshaking,
-generation: types.ConnectionGeneration,
-next_request: u64 = 0,
-token: ?types.Token = null,
+services: Services,
 // Inbound record and handshake message reassembly.
 record: []u8 = &.{},
 record_have: usize = 0,
@@ -147,7 +126,6 @@ rx_asked_update: bool = false,
 failure: ?Error = null,
 alert_sent: ?Alert = null,
 alert_received: ?Alert = null,
-rejection: VerifyFailure = .internal,
 
 pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connection {
     @setRuntimeSafety(true);
@@ -176,7 +154,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .key_log = options.key_log,
         .generation = options.generation,
     });
-    return .{ .gpa = gpa, .hs = hs, .limits = options.limits, .generation = options.generation };
+    return .{ .gpa = gpa, .hs = hs, .limits = options.limits, .services = .init(options.generation) };
 }
 
 pub fn deinit(self: *Connection) void {
@@ -227,57 +205,20 @@ pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u
 pub fn request(self: *Connection) ?Request {
     @setRuntimeSafety(true);
     if (self.phase_now == .failed) return null;
-    const need = self.hs.need();
-    if (need == .none or need == .parameters) return null;
-    if (self.token == null) {
-        self.next_request += 1;
-        self.token = .{ .generation = self.generation, .id = .fromRaw(self.next_request) };
-    }
-    const token = self.token.?;
-    return .{
-        .token = token,
-        .service = switch (need) {
-            .entropy => |e| .{ .entropy = e.len },
-            .time => .time,
-            .verify => .{ .verify = self.hs.verification(token) },
-            .sign => .{ .sign = self.hs.signRequest() },
-            .none, .parameters => unreachable, // filtered above
-        },
-    };
+    return self.services.request(self.hs);
 }
 
 pub fn provide(self: *Connection, token: types.Token, answer: Answer) ProvideError!void {
     @setRuntimeSafety(true);
     if (self.phase_now == .failed) return error.Closed;
-    const open = self.token orelse return error.NoRequest;
-    if (token.generation != open.generation or token.id != open.id) return error.StaleToken;
-    self.serve(token, answer) catch |err| {
-        // A rejected scalar draw is public; the request stays open for a fresh one.
-        if (err == error.InvalidEntropy) return err;
-        self.fail(err);
-        return err;
+    self.services.answer(self.hs, token, answer) catch |err| switch (err) {
+        // These leave the request open: a wrong token or a rejected scalar draw is not fatal.
+        error.InvalidEntropy, error.StaleToken, error.NoRequest => |open| return open,
+        else => |fatal| return self.failed(fatal),
     };
-    self.token = null;
     self.drain() catch |err| return self.failed(err);
     // Plaintext buffered while the engine waited continues without new input.
     _ = self.receiveChecked(&.{}) catch |err| return self.failed(err);
-}
-
-fn serve(self: *Connection, token: types.Token, answer: Answer) Error!void {
-    @setRuntimeSafety(true);
-    switch (answer) {
-        .entropy => |bytes| try self.hs.provideEntropy(bytes),
-        .time => |now| try self.hs.provideTime(now),
-        .verified => |receipt| try self.hs.provideVerification(token, receipt),
-        .signature => |signature| try self.hs.provideSignature(signature),
-        .entropy_failed => return error.EntropyUnavailable,
-        .signing_failed => return error.BadSignature,
-        .verification_failed => |why| {
-            self.hs.rejectVerification();
-            self.rejection = why;
-            return error.VerificationRejected;
-        },
-    }
 }
 
 // ---------------------------------------------------------------- failure
@@ -287,15 +228,7 @@ fn alertFor(self: *const Connection, err: Error) Alert {
         error.BadRecord => .bad_record_mac,
         error.RecordOverflow => .record_overflow,
         error.UnexpectedRecord, error.ControlFlood => .unexpected_message,
-        error.VerificationRejected => switch (self.rejection) {
-            .untrusted => .unknown_ca,
-            .bad_certificate => .bad_certificate,
-            .expired => .certificate_expired,
-            .revoked => .certificate_revoked,
-            .unsupported => .unsupported_certificate,
-            .internal => .internal_error,
-        },
-        else => Client.alertFor(err),
+        else => self.services.alertFor(err),
     };
 }
 
