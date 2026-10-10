@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../testing/inputs.zig");
 const Connection = @import("Connection.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
 const Group = @import("crypto/Group.zig").Group;
@@ -402,13 +403,22 @@ test "C3 server memory: a connection holds no handshake scratch until a peer sen
     try std.testing.expect(count.live_bytes > first_byte + 4096);
 }
 
-test "C3 fuzz server random bytes never reach a connected state" {
-    try std.testing.fuzz({}, fuzzReceive, .{ .corpus = shakedown.corpus.entries(&.{ "\x16\x03\x01\x00\x01\x01", "\x15\x03\x03\x00\x02\x02\x28", "\x14\x03\x03\x00\x01\x01\x16\x03\x03\xff\xff" }) });
+const receive_examples = [_][]const u8{ "\x16\x03\x01\x00\x01\x01", "\x15\x03\x03\x00\x02\x02\x28", "\x14\x03\x03\x00\x01\x01\x16\x03\x03\xff\xff" };
+
+test "C3 server takes odd records without reaching a connected state" {
+    for (receive_examples) |input| try receiveGarbage(input);
 }
 
-fn fuzzReceive(_: void, smith: *std.testing.Smith) !void {
+test "C3 fuzz server random bytes never reach a connected state" {
+    try shakedown.check(std.testing.allocator, {}, fuzzReceive, .{ .cases = 64 });
+}
+
+fn fuzzReceive(_: void, case: *shakedown.Case) !void {
     var bytes: [4096]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
+    try receiveGarbage(inputs.draw(case, &bytes, &receive_examples, 48));
+}
+
+fn receiveGarbage(input: []const u8) !void {
     const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
     defer pair.deinit();
     var fed: usize = 0;
@@ -425,10 +435,11 @@ fn fuzzReceive(_: void, smith: *std.testing.Smith) !void {
 }
 
 test "C3 fuzz server mutated client hellos never connect" {
-    try std.testing.fuzz({}, fuzzHello, .{ .corpus = shakedown.corpus.entries(&.{"\x01"}) });
+    try shakedown.check(std.testing.allocator, {}, fuzzHello, .{ .cases = 64 });
 }
 
-fn fuzzHello(_: void, smith: *std.testing.Smith) !void {
+fn fuzzHello(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
     // Start from a real hello and let the fuzzer overwrite bytes of it.
     const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
     defer pair.deinit();
@@ -436,10 +447,10 @@ fn fuzzHello(_: void, smith: *std.testing.Smith) !void {
     const wire = try std.testing.allocator.dupe(u8, pair.client.pending());
     defer std.testing.allocator.free(wire);
     var edits: [8]struct { at: usize, value: u8 } = undefined;
-    const count = smith.value(u3);
+    const count = shakedown.gen.int(s, u3);
     for (edits[0..count]) |*edit| {
-        edit.at = 5 + smith.valueRangeAtMost(u16, 0, @intCast(wire.len - 6));
-        edit.value = smith.value(u8);
+        edit.at = 5 + shakedown.gen.intRange(s, u16, 0, @intCast(wire.len - 6));
+        edit.value = shakedown.gen.int(s, u8);
     }
     for (edits[0..count]) |edit| wire[edit.at] = edit.value;
     var fed: usize = 0;

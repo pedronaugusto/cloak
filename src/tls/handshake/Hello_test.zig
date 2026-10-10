@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const H = @import("Hello.zig");
 const Reader = @import("../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
@@ -72,11 +73,17 @@ test "C2 hello parser truncation at every RFC byte" {
     }
 }
 test "C2 fuzz TLS hello selections and extension placement" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{ fixture, "\x08\x00\x00\x02\x00\x00" }) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{});
 }
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [4096]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
+    try parseAny(inputs.draw(case, &bytes, &.{ fixture, "\x08\x00\x00\x02\x00\x00" }, 48));
+}
+test "C2 TLS hello selections take the fixture and an empty encrypted extensions" {
+    try parseAny(fixture);
+    try parseAny("\x08\x00\x00\x02\x00\x00");
+}
+fn parseAny(input: []const u8) !void {
     if (H.server(input, "", &shares, .{})) |parsed| {
         try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength());
     } else |_| {}

@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const M = @import("Messages.zig");
 
 fn message(kind: u8, body: []const u8, out: []u8) []u8 {
@@ -123,12 +124,21 @@ test "C2 messages signed content follows RFC 8446 section 4.4.3" {
 }
 
 test "C2 fuzz message parsers reject or bound every input" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{ "\x0b\x00\x00\x04\x00\x00\x00\x00", "\x0d\x00\x00\x0b\x00\x00\x08\x00\x0d\x00\x04\x00\x02\x04\x03", "\x04\x00\x00\x10\x00\x00\x1c\x20\x01\x02\x03\x04\x01\x09\x00\x02ok\x00\x00", "\x18\x00\x00\x01\x01" }) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{});
 }
 
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+const examples = [_][]const u8{ "\x0b\x00\x00\x04\x00\x00\x00\x00", "\x0d\x00\x00\x0b\x00\x00\x08\x00\x0d\x00\x04\x00\x02\x04\x03", "\x04\x00\x00\x10\x00\x00\x1c\x20\x01\x02\x03\x04\x01\x09\x00\x02ok\x00\x00", "\x18\x00\x00\x01\x01" };
+
+test "C2 message parsers reject or bound the odd examples" {
+    for (examples) |input| try parseAll(input);
+}
+
+fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [2048]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
+    try parseAll(inputs.draw(case, &bytes, &examples, 48));
+}
+
+fn parseAll(input: []const u8) !void {
     var chain: [M.max_certificates][]const u8 = undefined;
     if (M.certificate(input, 16, 4096, &chain)) |parsed| {
         try std.testing.expect(parsed.count <= 16 and parsed.total_bytes <= 4096);

@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const E = @import("Extensions.zig");
 const R = @import("Reader.zig");
 test "C2 catalogue_extension_uniqueness_and_negotiation_allowlist" {
@@ -40,9 +41,13 @@ fn check(bytes: []const u8) !void {
     }
 }
 test "C2 fuzz TLS extension lengths and duplicates" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{ "", "\x00\x33\x00\x02xy", "\x0a\x0a\x00\x00\x0a\x0a\x00\x00", "\x00\x33\xff\xffx" }) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{});
 }
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+const examples = [_][]const u8{ "", "\x00\x33\x00\x02xy", "\x0a\x0a\x00\x00\x0a\x0a\x00\x00", "\x00\x33\xff\xffx" };
+test "C2 TLS extension blocks take the odd examples" {
+    for (examples) |input| try check(input);
+}
+fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [4096]u8 = undefined;
-    try check(bytes[0..smith.slice(&bytes)]);
+    try check(inputs.draw(case, &bytes, &examples, 48));
 }

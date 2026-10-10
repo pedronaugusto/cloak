@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const ClientHello = @import("ClientHello.zig");
 const Hello = @import("Hello.zig");
 
@@ -96,22 +97,25 @@ test "C3 client hello fingerprint ignores the extensions a retry may change" {
 }
 
 test "C3 fuzz client hello parser" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{"\x01\x00\x00\x00"}) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{});
 }
 
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+fn fuzz(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
     var bytes: [4096]u8 = undefined;
-    var input: []u8 = bytes[0..smith.slice(&bytes)];
+    var input: []u8 = inputs.draw(case, &bytes, &.{}, 48);
     var real: [1024]u8 = undefined;
-    if (smith.value(bool)) {
+    if (shakedown.gen.boolean(s)) {
         // Start from a real hello and overwrite a few bytes of it.
         const seed = try encode(&real, .{ .sni = "example.com", .alpn = &.{"h2"} }, "", "");
-        for (0..smith.value(u3)) |_| seed[smith.valueRangeAtMost(u16, 0, @intCast(seed.len - 1))] = smith.value(u8);
+        for (0..shakedown.gen.int(s, u3)) |_| seed[shakedown.gen.intRange(s, u16, 0, @intCast(seed.len - 1))] = shakedown.gen.int(s, u8);
         input = seed;
     }
     if (ClientHello.parse(input)) |hello| {
         try std.testing.expect(hello.random.len == 32 and hello.session.len <= 32);
-        try std.testing.expect(hello.versions.len >= 2 and hello.suites.len >= 2);
+        // No supported_versions extension (a TLS 1.2 hello, or the extension's type edited away) leaves no versions.
+        try std.testing.expect(hello.versions.len == 0 or (hello.versions.len >= 2 and hello.versions.len % 2 == 0));
+        try std.testing.expect(hello.suites.len >= 2);
         _ = hello.fingerprint();
         _ = hello.shareFor(.x25519);
         _ = hello.selectAlpn(&.{"h2"});

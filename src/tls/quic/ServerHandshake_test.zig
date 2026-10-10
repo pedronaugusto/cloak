@@ -1,5 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
+const inputs = @import("../../testing/inputs.zig");
 const Handshake = @import("Handshake.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
@@ -192,13 +193,23 @@ test "C3 quic server options require application protocols and credentials" {
 }
 
 test "C3 fuzz quic server input at every level never authenticates" {
-    try std.testing.fuzz({}, fuzz, .{ .corpus = shakedown.corpus.entries(&.{ "\x01\x00\x00\x00", "\x0b\x00\x00\x04\x00\x00\x00\x00", "\x14\x00\x00\x20" }) });
+    try shakedown.check(std.testing.allocator, {}, fuzz, .{ .cases = 64 });
 }
 
-fn fuzz(_: void, smith: *std.testing.Smith) !void {
+const examples = [_][]const u8{ "\x01\x00\x00\x00", "\x0b\x00\x00\x04\x00\x00\x00\x00", "\x14\x00\x00\x20" };
+
+test "C3 quic server takes odd messages at every level without authenticating" {
+    for (examples) |input| for ([_]bool{ false, true }) |mutual| try feedLevels(input, mutual);
+}
+
+fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [2048]u8 = undefined;
-    const input = bytes[0..smith.slice(&bytes)];
-    const pair = try QuicLoop(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .mutual = smith.value(bool) });
+    const mutual = shakedown.gen.boolean(case.source);
+    try feedLevels(inputs.draw(case, &bytes, &examples, 48), mutual);
+}
+
+fn feedLevels(input: []const u8, mutual: bool) !void {
+    const pair = try QuicLoop(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .mutual = mutual });
     defer pair.deinit();
     var at: usize = 0;
     var level: Handshake.Level = .initial;

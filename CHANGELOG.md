@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- The Smith fuzz tests are shakedown `check` properties.
+
 ### Fixed
 
 - The private TLS transition table requires the requested client certificate response before local Finished and gates supplied credentials on possession proof.
