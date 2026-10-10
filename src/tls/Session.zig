@@ -11,12 +11,10 @@ const std = @import("std");
 const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Server = @import("handshake/Server.zig");
-const Suite13 = @import("crypto/Suite.zig").Suite13;
 const Suite = @import("crypto/Suite.zig").Suite;
 const Version = @import("crypto/Suite.zig").Version;
 const Alert = @import("wire/Alert.zig").Alert;
 const Group = @import("crypto/Group.zig").Group;
-const SignatureScheme = @import("handshake/Hello.zig").SignatureScheme;
 
 const Session = @This();
 

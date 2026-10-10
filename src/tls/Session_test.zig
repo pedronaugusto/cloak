@@ -3,7 +3,6 @@ const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
 const Connection = @import("Connection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
-const SignatureScheme = @import("handshake/Hello.zig").SignatureScheme;
 const peer_module = @import("../testing/Peer.zig");
 const Loopback = @import("../testing/Loopback.zig").Loopback;
 

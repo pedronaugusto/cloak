@@ -11,7 +11,6 @@ const Server = @import("handshake/Server.zig");
 const Services = @import("handshake/Services.zig");
 const Messages = @import("handshake/Messages.zig");
 const Group = @import("crypto/Group.zig").Group;
-const Suite13 = @import("crypto/Suite.zig").Suite13;
 const Suite = @import("crypto/Suite.zig").Suite;
 const Version = @import("crypto/Suite.zig").Version;
 const Protection = @import("record/Protection.zig");
@@ -650,8 +649,7 @@ fn checkHeader(self: *Connection) ReceiveError!void {
 /// Where opened plaintext starts in the record buffer: after the header, and after a TLS 1.2
 /// explicit nonce.
 fn offsetOf(self: *const Connection, plain: []const u8) usize {
-    // safe: the plaintext is a slice of the record buffer, so its address is not below the buffer's.
-    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.ptr);
+    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.ptr); // safe: the plaintext is a slice of the record buffer, so its address is not below the buffer's
 }
 
 fn openRecord(self: *Connection) Error!void {
