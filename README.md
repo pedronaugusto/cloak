@@ -143,18 +143,20 @@ Portable verification uses explicit trust. Linux and BSD system policy loads bou
 
 ## Built with
 
-[preflight](https://github.com/pedronaugusto/preflight) supplies the build and CI gate. [shakedown](https://github.com/pedronaugusto/shakedown) is a lazy test-only dependency. Neither belongs to the runtime closure.
+cloak ships with aegis. [preflight](https://github.com/pedronaugusto/preflight) (the build and CI gate) and [shakedown](https://github.com/pedronaugusto/shakedown) (the tests) are dev dependencies, which [bay](https://github.com/pedronaugusto/bay) gives cloak's own development and a project that depends on cloak never sees.
 
 ## Testing
 
+Development runs through bay.
+
 ```sh
-zig build test -Dtest-filter=trust
-zig build lint
-zig build check
-zig build bench
+bay test -Dtest-filter=trust
+bay lint
+bay check
+bay bench
 ```
 
-CI plans come from `zig build plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `zig build check-wasm` executes portable vectors without hosted Io. `zig build fuzz` fuzzes the check properties, with corpora and findings kept outside the package. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
+CI plans come from `bay plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `bay check-wasm` executes portable vectors without hosted Io. `bay fuzz` fuzzes the check properties, with corpora and findings kept outside the package. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
 
 ## Licence
 

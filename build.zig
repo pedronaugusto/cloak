@@ -1,57 +1,65 @@
 const std = @import("std");
 
+/// What a project that depends on cloak builds: the `cloak` module, with aegis.
 pub fn build(b: *std.Build) void {
-    // lazyImport compares every package of the dependency tree at comptime;
-    // a large tree runs past the default quota of 1000 branches.
-    @setEvalBranchQuota(100_000);
+    @setRuntimeSafety(true);
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    b.modules.put(b.allocator, "cloak", createCloak(b, b, target, optimize)) catch @panic("out of memory configuring cloak");
+}
+
+/// cloak's development: its tests, checks and benchmarks, under preflight's
+/// gate, with shakedown bound to cloak's aegis. Run through bay.
+pub fn dev(b: *std.Build, tools: type) void {
     @setRuntimeSafety(true);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const filters = b.option([]const []const u8, "test-filter", "Run tests containing this name") orelse &.{};
-    b.modules.put(b.allocator, "cloak", createCloak(b, target, optimize)) catch @panic("out of memory configuring cloak");
-    if (b.pkg_hash.len != 0) return;
-    const preflight = b.lazyImport(@This(), "preflight") orelse return;
+    const package = b.dependency("cloak", .{ .target = target, .optimize = optimize });
+    const p = package.builder;
+    const preflight = tools.preflight;
+    use_aegis = tools.shakedown.useAegis;
     const test_step = b.step("test", "Run targeted credential and verification tests");
     const check = b.step("check", "Compile all declarations and tests");
     const freestanding = target.result.os.tag == .freestanding;
     if (freestanding) {
         // The core takes caller-provided services. Hosted tests and measurement
         // programs require OS I/O/threads and cannot run on a freestanding target.
-        const core_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = target, .optimize = optimize });
-        core_module.addImport("probes", createProbes(b, target, optimize));
+        const core_module = b.createModule(.{ .root_source_file = p.path("ci/core.zig"), .target = target, .optimize = optimize });
+        core_module.addImport("probes", createProbes(b, p, target, optimize));
         const core = b.addObject(.{ .name = "cloak-core-check", .root_module = core_module });
         check.dependOn(&core.step);
         test_step.dependOn(&core.step);
     } else {
-        const shakedown = shakedownFor(b, target, optimize) catch return;
-        const test_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
+        const shakedown = shakedownFor(b, target, optimize);
+        const test_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         test_module.addImport("shakedown", shakedown.module("shakedown"));
-        addAegis(b, test_module, target, optimize);
+        addAegis(p, test_module, target, optimize);
         nativeLinks(test_module, target);
         const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
         test_step.dependOn(&b.addRunArtifact(tests).step);
-        const check_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = optimize });
+        const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
-        addAegis(b, check_module, target, optimize);
+        addAegis(p, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
     }
     const host = b.graph.host;
-    preflight.addCi(b, .{ .tests = test_step, .portable_tests = true, .bench = .{
+    preflight.addCi(b, p, .{ .tests = test_step, .portable_tests = true, .bench = .{
         .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,
         .optimize = optimize,
     } });
-    const options_checker = b.addExecutable(.{ .name = "cloak-options-check", .root_module = b.createModule(.{ .root_source_file = b.path("ci/options.zig"), .target = host, .optimize = .safe }) });
+    const options_checker = b.addExecutable(.{ .name = "cloak-options-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/options.zig"), .target = host, .optimize = .safe }) });
     const run_options = b.addRunArtifact(options_checker);
     run_options.addArg(b.graph.zig_exe);
-    run_options.addFileArg(b.dependency("aegis", .{ .target = target, .optimize = optimize }).path("src/root.zig"));
-    run_options.setCwd(b.path("."));
+    run_options.addFileArg(p.dependency("aegis", .{ .target = target, .optimize = optimize }).path("src/root.zig"));
+    run_options.setCwd(p.path("."));
     b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
-    const wasm_module = b.createModule(.{ .root_source_file = b.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
-    wasm_module.addImport("probes", createProbes(b, wasm_target, .safe));
+    const wasm_module = b.createModule(.{ .root_source_file = p.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
+    wasm_module.addImport("probes", createProbes(b, p, wasm_target, .safe));
     const wasm = b.addExecutable(.{ .name = "cloak-core-vectors", .root_module = wasm_module });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
@@ -59,23 +67,24 @@ pub fn build(b: *std.Build) void {
     const wasm_run = b.addSystemCommand(&.{ "node", "-e", "const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[1]), {}).then(({instance}) => { const code = instance.exports.cloakCoreVectors(); if (code !== 0) throw new Error('cloak core vector failure ' + code); });" });
     wasm_run.addFileArg(wasm.getEmittedBin());
     b.step("check-wasm", "Run portable credential and authenticated path vectors without hosted Io").dependOn(&wasm_run.step);
-    const example_module = b.createModule(.{ .root_source_file = b.path("ci/example.zig"), .target = host, .optimize = .safe });
-    example_module.addImport("cloak", b.modules.get("cloak").?);
+    const example_module = b.createModule(.{ .root_source_file = p.path("ci/example.zig"), .target = host, .optimize = .safe });
+    example_module.addImport("cloak", package.module("cloak"));
     const example = b.addTest(.{ .name = "cloak-readme-example", .root_module = example_module });
     b.step("check-example", "Execute the documented authentication example").dependOn(&b.addRunArtifact(example).step);
-    const session_module = b.createModule(.{ .root_source_file = b.path("ci/session.zig"), .target = host, .optimize = .safe });
-    session_module.addImport("cloak", b.modules.get("cloak").?);
+    const session_module = b.createModule(.{ .root_source_file = p.path("ci/session.zig"), .target = host, .optimize = .safe });
+    session_module.addImport("cloak", package.module("cloak"));
     const session_example = b.addTest(.{ .name = "cloak-readme-session", .root_module = session_module });
     b.step("check-session", "Compile the documented session example against the public surface").dependOn(&b.addRunArtifact(session_example).step);
-    preflight.addConsumerCheck(b, .{ .package = "cloak", .modules = &.{"cloak"}, .packages = &.{b.dependency("aegis", .{ .target = target, .optimize = optimize })}, .program = b.path("ci/consumer.zig") });
+    preflight.addConsumerCheck(b, p, .{ .package = "cloak", .modules = &.{"cloak"}, .packages = &.{p.dependency("aegis", .{ .target = target, .optimize = optimize })}, .program = p.path("ci/consumer.zig") });
 }
 
 /// One module: certificates and TLS are namespaces of the root. TLS builds on certificates, which
 /// link the native trust store, so every TLS user links it and a second module would buy nothing.
-fn createCloak(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
+/// `p` is the package's own build, which holds its files and aegis.
+fn createCloak(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     @setRuntimeSafety(true);
-    const result = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
-    addAegis(b, result, target, optimize);
+    const result = b.createModule(.{ .root_source_file = p.path("src/root.zig"), .target = target, .optimize = optimize });
+    addAegis(p, result, target, optimize);
     nativeLinks(result, target);
     return result;
 }
@@ -94,47 +103,48 @@ fn nativeLinks(m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
 
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     @setRuntimeSafety(true);
-    const bench_module = createCloak(b, target, optimize);
-    const records = b.createModule(.{ .root_source_file = b.path("src/tls/record.zig"), .target = target, .optimize = optimize });
-    addAegis(b, records, target, optimize);
-    const armor = b.createModule(.{ .root_source_file = b.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
-    addAegis(b, armor, target, optimize);
-    const shakedown = shakedownFor(b, target, optimize) catch @panic("missing test dependency for benchmarks");
+    const package = b.dependency("cloak", .{ .target = target, .optimize = optimize });
+    const p = package.builder;
+    const records = b.createModule(.{ .root_source_file = p.path("src/tls/record.zig"), .target = target, .optimize = optimize });
+    addAegis(p, records, target, optimize);
+    const armor = b.createModule(.{ .root_source_file = p.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
+    addAegis(p, armor, target, optimize);
+    const shakedown = shakedownFor(b, target, optimize);
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
-    const harness = b.createModule(.{ .root_source_file = b.path("src/testing.zig"), .target = target, .optimize = optimize });
-    addAegis(b, harness, target, optimize);
+    const harness = b.createModule(.{ .root_source_file = p.path("src/testing.zig"), .target = target, .optimize = optimize });
+    addAegis(p, harness, target, optimize);
     nativeLinks(harness, target);
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "harness", .module = harness },
-        .{ .name = "cloak", .module = bench_module },
+        .{ .name = "cloak", .module = package.module("cloak") },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },
         .{ .name = "shakedown", .module = shakedown.module("shakedown") },
     }) catch @panic("out of memory configuring benchmark");
 }
 
+/// `tools.shakedown.useAegis`, set by `dev` for the benchmark imports, which are built without `tools`.
+var use_aegis: *const fn (*std.Build.Dependency, *std.Build.Module) void = undefined;
+
 /// shakedown bound to cloak's aegis, so a build links one aegis.
-fn shakedownFor(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) error{LazyDependencyNeeded}!*std.Build.Dependency {
-    // lazyImport compares every package of the dependency tree at comptime;
-    // a large tree runs past the default quota of 1000 branches.
-    @setEvalBranchQuota(100_000);
-    const shakedown = try b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
-    const shakedown_build = b.lazyImport(@This(), "shakedown") orelse return error.LazyDependencyNeeded;
-    shakedown_build.useAegis(shakedown, b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+fn shakedownFor(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Dependency {
+    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
+    const p = b.dependency("cloak", .{ .target = target, .optimize = optimize }).builder;
+    use_aegis(shakedown, p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
     return shakedown;
 }
 
-fn addAegis(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
-    m.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+    m.addImport("aegis", p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
 }
 
 /// The portable probes: certificates and the record and handshake kernels under one module, since a
 /// source file belongs to one module and the probes reach files the public surface does not.
-fn createProbes(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
+fn createProbes(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     @setRuntimeSafety(true);
-    const probes = b.createModule(.{ .root_source_file = b.path("src/portable.zig"), .target = target, .optimize = optimize });
-    addAegis(b, probes, target, optimize);
+    const probes = b.createModule(.{ .root_source_file = p.path("src/portable.zig"), .target = target, .optimize = optimize });
+    addAegis(p, probes, target, optimize);
     nativeLinks(probes, target);
     return probes;
 }
