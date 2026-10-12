@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-12
+
 ### Breaking
 
 - cloak is developed with [bay](https://github.com/pedronaugusto/bay): preflight and shakedown are dev dependencies, and the tests, checks, examples and benchmarks are the development build's (`bay test`, `bay check`). cloak ships with aegis alone; what a project that depends on it builds is unchanged.
