@@ -17,3 +17,13 @@ test "service macOS scoped anchors selected chain and policy rejection offline" 
     request.identity = .{ .dns = "example.com" };
     try std.testing.expectError(error.NativePolicyFailure, Native.evaluate(std.testing.allocator, request, &.{@embedFile("../verify/fixtures/vectors/p384.der")}));
 }
+test "service macOS Security opens once and refuses a missing framework or symbol" {
+    @setRuntimeSafety(true);
+    if (builtin.os.tag != .macos) return;
+    const table = try Native.Security.load();
+    try std.testing.expectEqual(table, try Native.Security.load());
+    var refused: Native.Security = undefined;
+    try std.testing.expectError(error.SystemTrustUnavailable, Native.Security.open("/System/Library/Frameworks/Missing.framework/Missing", &refused));
+    // CoreFoundation is there, and the SecTrust functions are not in it.
+    try std.testing.expectError(error.SystemTrustUnavailable, Native.Security.open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", &refused));
+}

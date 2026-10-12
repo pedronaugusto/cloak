@@ -78,7 +78,7 @@ pub fn dev(b: *std.Build, tools: type) void {
 }
 
 /// One module: certificates and TLS are namespaces of the root. TLS builds on certificates, which
-/// link the native trust store, so every TLS user links it and a second module would buy nothing.
+/// reach the native trust store, so every TLS user reaches it and a second module would buy nothing.
 /// `p` is the package's own build, which holds its files and aegis.
 fn createCloak(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     @setRuntimeSafety(true);
@@ -88,13 +88,11 @@ fn createCloak(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, o
     return result;
 }
 
+/// The native trust store a target links: crypt32 on Windows. macOS opens Security at run time
+/// (src/services/macos.zig), so an Apple target links only libSystem and needs no SDK.
 fn nativeLinks(m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
     @setRuntimeSafety(true);
     switch (target.result.os.tag) {
-        .macos => {
-            m.linkFramework("Security", .{});
-            m.linkFramework("CoreFoundation", .{});
-        },
         .windows => m.linkSystemLibrary("crypt32", .{}),
         else => {},
     }
