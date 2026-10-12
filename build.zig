@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
 }
 
 /// cloak's development: its tests, checks and benchmarks, under preflight's
-/// gate, with shakedown bound to cloak's aegis. Run through bay.
+/// gate. Run through bay.
 pub fn dev(b: *std.Build, tools: type) void {
     @setRuntimeSafety(true);
     const target = b.standardTargetOptions(.{});
@@ -18,7 +18,6 @@ pub fn dev(b: *std.Build, tools: type) void {
     const package = b.dependency("cloak", .{ .target = target, .optimize = optimize });
     const p = package.builder;
     const preflight = tools.preflight;
-    use_aegis = tools.shakedown.useAegis;
     const test_step = b.step("test", "Run targeted credential and verification tests");
     const check = b.step("check", "Compile all declarations and tests");
     const freestanding = target.result.os.tag == .freestanding;
@@ -31,7 +30,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         check.dependOn(&core.step);
         test_step.dependOn(&core.step);
     } else {
-        const shakedown = shakedownFor(b, target, optimize);
+        const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
         const test_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         test_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegis(p, test_module, target, optimize);
@@ -109,7 +108,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     addAegis(p, records, target, optimize);
     const armor = b.createModule(.{ .root_source_file = p.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
     addAegis(p, armor, target, optimize);
-    const shakedown = shakedownFor(b, target, optimize);
+    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
     const harness = b.createModule(.{ .root_source_file = p.path("src/testing.zig"), .target = target, .optimize = optimize });
     addAegis(p, harness, target, optimize);
@@ -121,17 +120,6 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "armor", .module = armor },
         .{ .name = "shakedown", .module = shakedown.module("shakedown") },
     }) catch @panic("out of memory configuring benchmark");
-}
-
-/// `tools.shakedown.useAegis`, set by `dev` for the benchmark imports, which are built without `tools`.
-var use_aegis: *const fn (*std.Build.Dependency, *std.Build.Module) void = undefined;
-
-/// shakedown bound to cloak's aegis, so a build links one aegis.
-fn shakedownFor(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Dependency {
-    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
-    const p = b.dependency("cloak", .{ .target = target, .optimize = optimize }).builder;
-    use_aegis(shakedown, p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
-    return shakedown;
 }
 
 fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
