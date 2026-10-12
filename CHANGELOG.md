@@ -7,70 +7,66 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Breaking
 
 - cloak is developed with [bay](https://github.com/pedronaugusto/bay): preflight and shakedown are dev dependencies, and the tests, checks, examples and benchmarks are the development build's (`bay test`, `bay check`). cloak ships with aegis alone; what a project that depends on it builds is unchanged.
-
-### Changed
-
-- The Smith fuzz tests are shakedown `check` properties.
-
-### Fixed
-
-- `tls.Session` checks a snapshot of the system's policy (`Trust.addSystem` on macOS and Windows) with the system's verifier and then the portable one over the path the system chose. It used to hand such a snapshot, which holds no roots, to the portable verifier alone, so no public server verified there.
-- A client given a fully qualified name with its trailing dot (`example.com.`) sends and checks the name without it, as RFC 6066 section 3 writes it; it used to refuse the name with `InvalidOptions`.
-- PEM text before a block is skipped, as RFC 7468 section 5.2 permits: the attributes a PKCS #12 export writes before a key or certificate, and the comments a CA bundle names each root with (curl's bundle, the p11-kit bundles of Fedora and RHEL). Text after the last block is still refused. Reading several blocks no longer loses its place when the text ends in more blank lines than separate two blocks.
-
-- The private TLS transition table requires the requested client certificate response before local Finished and gates supplied credentials on possession proof.
-
-- P-256/P-384 private-key derivation uses compiler-resistant masked field reduction and returns only affine public coordinates; named temporary owners are erased, with compiler-created copy limits documented.
-
-- Private PEM enforces its input cap before trimming and decodes Base64 with arithmetic classification instead of character-indexed tables.
-- Native completion cleanup releases its mutation guard before allocator callbacks; request hashing also runs outside that guard.
-- Freestanding cross checks compile the caller-service core root, while hosted test and measurement programs keep their OS I/O contract. The integer oracle uses a word-sized small addend on 32-bit targets.
-
-- System CA bundles omit roots the strict parser cannot use, retaining usable roots without weakening explicit imports or resource limits.
-
-- Cumulative name-constraint and policy work is bounded separately from discovery and policy-node storage, including failed candidate paths and native-selected verification.
-
-### Changed
-
-- Breaking: `cloak` is one build module. `cloak.certificates` and `cloak.tls` are no longer modules to import; use `cloak.certificates` and `cloak.tls` as namespaces of `@import("cloak")`. TLS builds on the certificates, which link the native trust store, so every TLS user linked it already and a second module bought nothing. Code that wrote `@import("cloak").tls` is unchanged. DTLS, when it exists, is a namespace unless it gains a dependency others should not fetch.
+- `cloak` is one build module. `cloak.certificates` and `cloak.tls` are no longer modules to import; they are namespaces of `@import("cloak")`. TLS builds on the certificates, which link the native trust store, so every TLS user linked it already and a second module bought nothing. Code that wrote `@import("cloak").tls` is unchanged.
+- Trust and policy generations, completion token fields, and identity and snapshot generations are distinct aegis ID types. Construct them with `.fromRaw(value)`; use `.raw()` only at encoding and native boundaries.
+- `MixedTrustPolicies` is gone from `AddDerError`: a `Trust` may hold roots beside the system's policy.
 
 ### Added
 
-- `Trust` keeps roots added besides the system's policy on macOS and Windows: a chain the system refuses is accepted when it reaches one of them under the portable verifier. `MixedTrustPolicies` is gone from `AddDerError`. `Identity.Options.other_blocks` (`.skip`) lets `initPem` read a file that holds the key beside the chain.
-- `Identity.initPem` and `ClientAuth.initPem`: a chain from the usual PEM file of a leaf and its intermediates, every block a certificate. `tls.Session.Diagnostics`, filled by `open` and `accept` when the handshake fails and by `Session.diagnostics` afterwards, says why a connection ended, which alerts crossed it, and whether a certificate was asked for; `Session.rebind` gives a kept session the `Io` of the task that reads it next.
-- `PrivateKey.sign` and `Identity.sign`: ECDSA on P-256 and P-384 and Ed25519 signatures from a parsed key, with hedged nonces for ECDSA (32 or 48 bytes of noise, taken from the entropy request a handshake already makes), a masked secret multiplication and erased temporaries. The server's CertificateVerify and a client's response to a CertificateRequest are signed by cloak with them; `tls.Session`'s `signer` is needed only for a key cloak does not hold, and `open` and `accept` return `SignerRequired` up front when one is missing. `Identity.initExternal` and `ClientAuth.initExternal` carry a chain whose key is held elsewhere (a module, another process); a handshake then raises a `sign` request, and the signature is checked against the leaf before it is sent. RSA keys are parsed but not signed with until RSA-PSS signing lands with TLS 1.2.
-- `tls.Connection.server`, `tls.Session.accept` and `tls.quic.Handshake.server`: the TLS 1.3 server, with a hostile-input ClientHello parser, one HelloRetryRequest checked against the first hello, credential selection by server name (exact or one-label wildcard), the server's order for suite, group and ALPN, optional or required client certificates verified through the same request and receipt path, and CertificateVerify signed by cloak for the credential's key. In QUIC the client's transport parameters are accepted before the server sends anything. A server connection allocates its handshake scratch when the first ClientHello arrives, not when it is created, so a connection nobody has spoken to costs 896 bytes.
-- Benchmarks for server handshake CPU, and a scripted client peer for testing servers.
-- `tls.Connection`, a sans-I/O TLS 1.3 client with X25519MLKEM768, X25519, P-256 and P-384 key exchange (P-curves through HelloRetryRequest), ALPN, SNI, an explicit reference identity, client certificates, key updates, exporters and an NSS key-log sink. A server's certificate chain, CertificateVerify and Finished must all verify before any application byte is readable or writable.
-- `tls.Session`, the same client over `std.Io` readers and writers, with a strict truncation default.
-- `tls.quic.Handshake`, the record-free client handshake for QUIC: per-level handshake data, traffic secrets, provisional transport parameters and authentication as events.
-- `certificates.ecdh`, ephemeral ECDH on P-256 and P-384 with masked private-scalar arithmetic, plus `certificates.certificate` and `certificates.signature` for strict certificate parsing and public-key signature checks.
-- Bounded handshake messages (Certificate, CertificateRequest, CertificateVerify, Finished, NewSessionTicket, KeyUpdate), TLS key shares, a shared service gateway with request tokens, and a scripted test peer with named misbehaviours.
-- Benchmarks for client handshake CPU and private-scalar ECDH.
-- `certificates` and `tls` namespaces of the `cloak` module.
-- Private TLS 1.3 AEAD epochs, strict inner/outer records, checked usage caps, erased HKDF/Finished, bounded transcripts and client/server transition foundations.
-- Strict ClientHello/ServerHello/EncryptedExtensions negotiation, full erased TLS 1.3 key schedules and directional traffic-secret updates. Portable probes execute all suites and published schedule checkpoints without hosted Io.
-- RFC 8448 protected-flight vectors and adversarial record, transition and extension-parser regressions. These foundations do not yet provide an encrypted stream.
-- Published green aegis, preflight and shakedown pins; benchmark callers use shakedown's typed error parameter.
+- `tls.Connection`, a sans-I/O TLS 1.3 client and server:
+  - X25519MLKEM768, X25519, P-256 and P-384 key exchange (the P-curves through HelloRetryRequest);
+  - ALPN, SNI and an explicit reference identity;
+  - client certificates, key updates and exporters;
+  - an NSS key-log sink.
 
+  A peer's certificate chain, CertificateVerify and Finished must all verify before any application byte is readable or writable.
+- The TLS 1.3 server: `tls.Connection.server`, `tls.Session.accept` and `tls.quic.Handshake.server`. It has:
+  - a hostile-input ClientHello parser, and one HelloRetryRequest checked against the first hello;
+  - credential selection by server name (exact, or a one-label wildcard);
+  - the server's order for suite, group and ALPN;
+  - optional or required client certificates.
 
-- Structured shakedown benchmark rows and additional private-armor and native ownership regressions.
+  A server connection allocates its handshake scratch when the first ClientHello arrives, so a connection nobody has spoken to costs 896 bytes. In QUIC the client's transport parameters are accepted before the server sends anything.
+- `tls.Session`, the same client and server over `std.Io` readers and writers, with a strict truncation default.
+  - `tls.Session.Diagnostics`, filled by `open` and `accept` when a handshake fails and by `Session.diagnostics` afterwards, says why a connection ended, which alerts crossed it, and whether a certificate was asked for.
+  - `Session.rebind` gives a kept session the `Io` of the task that reads it next.
+- `tls.quic.Handshake`, the record-free handshake for QUIC: per-level handshake data, traffic secrets, provisional transport parameters, and authentication as events.
+- `PrivateKey.sign` and `Identity.sign`: ECDSA on P-256 and P-384, and Ed25519, from a parsed key.
+  - ECDSA uses hedged nonces (32 or 48 bytes of noise, from the entropy request a handshake already makes), a masked secret multiplication and erased temporaries.
+  - cloak signs a server's CertificateVerify and a client's response to a CertificateRequest itself. `tls.Session`'s `signer` is needed only for a key cloak does not hold, and `open` and `accept` return `SignerRequired` up front when one is missing.
+  - `Identity.initExternal` and `ClientAuth.initExternal` carry a chain whose key is held elsewhere (a module, another process): a handshake raises a `sign` request, and the signature is checked against the leaf before it is sent.
+  - RSA keys are parsed but not yet signed with.
+- `Identity.initPem` and `ClientAuth.initPem`: a chain from the usual PEM file of a leaf and its intermediates. `Identity.Options.other_blocks` (`.skip`) reads a file that holds the key beside the chain.
+- `Trust`: immutable indexed snapshots of the system's roots and of roots added by hand. On macOS and Windows, a chain the system refuses is still accepted when it reaches an added root under the portable verifier.
+- Certificate verification:
+  - bounded portable path building;
+  - request-bound receipts;
+  - modern signatures and pins;
+  - offline CRL and OCSP evidence;
+  - name-constraint and policy work bounded separately from discovery and storage.
 
-- Package build, preflight CI and production layer checks.
-- Immutable indexed trust snapshots, retained private keys, identities and client authentication.
-- Bounded portable paths, request-bound receipts, modern signatures, pins and offline CRL/OCSP evidence.
-- Offline macOS/Windows native jobs with bounded admission, caller executors and late-completion ownership.
-- Complete bounded RSA/EC/Ed key formats, encrypted PKCS8/legacy PEM, mathematical RSA validation and caller entropy.
-- Safety-pilot local secret/guarded owners, optimized checks, vectors, parser fuzz targets and owned benchmark rows.
-- Checked README usage and the private vulnerability reporting policy.
+  Native verification on macOS and Windows runs offline, with bounded admission, caller executors and late-completion ownership.
+- Key formats: RSA, EC and Ed keys in their standard encodings, encrypted PKCS #8 and legacy PEM, mathematical RSA validation, and caller entropy.
+- `certificates.ecdh`, ephemeral ECDH on P-256 and P-384 with masked private-scalar arithmetic; `certificates.certificate` and `certificates.signature` for strict certificate parsing and public-key signature checks.
+- A scripted TLS peer with named misbehaviours for testing clients and servers, and RFC 8448 vectors.
+- Benchmarks for client and server handshake CPU and private-scalar ECDH.
 
+### Changed
+
+- The fuzz tests are shakedown `check` properties.
+- Secrets, byte capacities and spin guards are aegis's owners.
+- System CA bundles leave out roots the strict parser cannot use, and keep the usable ones; explicit imports and resource limits are unchanged.
+- Pins aegis 0.1.0.
+
+### Fixed
+
+- `tls.Session` checks a snapshot of the system's policy (`Trust.addSystem` on macOS and Windows) with the system's verifier, then with the portable one over the path the system chose. It used to hand such a snapshot, which holds no roots, to the portable verifier alone, so no public server verified there.
+- A client given a fully qualified name with its trailing dot (`example.com.`) sends and checks the name without it, as RFC 6066 section 3 writes it. It used to refuse the name with `InvalidOptions`.
+- PEM text before a block is skipped, as RFC 7468 section 5.2 permits: the attributes a PKCS #12 export writes, and the comments a CA bundle names each root with. Text after the last block is still refused. Reading several blocks no longer loses its place when the text ends in extra blank lines.
+- The client's TLS state machine requires the response to a client certificate request before its own Finished, and accepts supplied credentials only after their possession is proved.
+- P-256 and P-384 private-key derivation uses masked field reduction the compiler cannot shortcut, returns only affine public coordinates, and erases its named temporaries.
+- PEM input is capped before it is trimmed, and Base64 is decoded by arithmetic, without character-indexed tables.
+- Native completion cleanup releases its mutation guard before allocator callbacks; request hashing also runs outside it.
+- On 32-bit targets the integer oracle uses a word-sized small addend.
 
 [Unreleased]: https://github.com/pedronaugusto/cloak/commits/main
-
-## Unreleased
-
-- Adopt published aegis secret, full-capacity byte and spin-guard owners, with
-  checked C1 parser/allocation boundaries and typed admission counts.
-- Breaking: verification trust/policy generations, completion token fields and
-  identity/snapshot generations use distinct aegis ID domains. Construct them
-  with `.fromRaw(value)`; use `.raw()` only at encoding/native boundaries.
