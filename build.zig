@@ -108,7 +108,6 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     addAegis(p, records, target, optimize);
     const armor = b.createModule(.{ .root_source_file = p.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
     addAegis(p, armor, target, optimize);
-    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
     const harness = b.createModule(.{ .root_source_file = p.path("src/testing.zig"), .target = target, .optimize = optimize });
     addAegis(p, harness, target, optimize);
@@ -118,7 +117,6 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "cloak", .module = package.module("cloak") },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },
-        .{ .name = "shakedown", .module = shakedown.module("shakedown") },
     }) catch @panic("out of memory configuring benchmark");
 }
 
