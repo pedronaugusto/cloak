@@ -54,6 +54,11 @@ pub fn bind(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signature 
 fn pss(key: Algorithm.PublicKey, restricted: bool, hash: Algorithm.Hash, salt: usize) Error!Algorithm.Signature {
     @setRuntimeSafety(true);
     if (key != .rsa or key.rsa.pss_only != restricted) return error.SchemeKeyMismatch;
+    // A key restricted to PSS parameters signs only with those: its hash and mask hash, and a
+    // salt at least as long as the one it names (RFC 4055 section 3.1; RFC 8446 section 4.2.3).
+    if (key.rsa.pss) |only| {
+        if (only.hash != hash or only.mgf_hash != hash or salt < only.salt_length) return error.SchemeKeyMismatch;
+    }
     return .{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = salt } };
 }
 
@@ -65,8 +70,15 @@ pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512 },
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme))) return scheme;
+    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind, scheme, key)) return scheme;
     return null;
+}
+
+/// Whether `key` may sign under `scheme`: a PSS-restricted key rules out schemes its
+/// parameters do not name.
+fn usable(comptime binding: fn (Scheme, Algorithm.PublicKey) Error!Algorithm.Signature, scheme: Scheme, key: Algorithm.PublicKey) bool {
+    _ = binding(scheme, key) catch return false;
+    return true;
 }
 
 // ---------------------------------------------------------------- TLS 1.2
@@ -144,7 +156,7 @@ pub fn chooseServer12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 },
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme))) return scheme;
+    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
     return null;
 }
 
@@ -157,7 +169,7 @@ pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ed25519 => &.{},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme))) return scheme;
+    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
     return null;
 }
 test {

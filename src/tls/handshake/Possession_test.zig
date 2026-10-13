@@ -84,3 +84,24 @@ test "C2 possession chooses the client scheme from the key and the server's list
     try std.testing.expectEqual(Hello.SignatureScheme.ed25519, P.choose(try key(pki.ed25519), request).?);
     try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha256, P.choose(try key(pki.rsa), request).?);
 }
+
+test "C4 a key restricted to PSS parameters signs only under the schemes they name" {
+    const rsa = try key(pki.rsa);
+    // RSASSA-PSS with SHA-384, MGF1-SHA-384 and a 48-byte salt.
+    const sha384: certificates.certificate.PublicKey = .{ .rsa = .{ .modulus = rsa.rsa.modulus, .exponent = rsa.rsa.exponent, .pss_only = true, .pss = .{ .hash = .sha384, .mgf_hash = .sha384, .salt_length = 48 } } };
+    try std.testing.expectError(error.SchemeKeyMismatch, P.bind(.rsa_pss_pss_sha256, sha384));
+    try std.testing.expect((try P.bind(.rsa_pss_pss_sha384, sha384)).pss.salt_length == 48);
+    try std.testing.expectError(error.SchemeKeyMismatch, P.bind(.rsa_pss_pss_sha512, sha384));
+    // A salt minimum longer than a hash rules that hash's scheme out.
+    const long_salt: certificates.certificate.PublicKey = .{ .rsa = .{ .modulus = rsa.rsa.modulus, .exponent = rsa.rsa.exponent, .pss_only = true, .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 48 } } };
+    try std.testing.expectError(error.SchemeKeyMismatch, P.bind(.rsa_pss_pss_sha256, long_salt));
+    const Accepts = struct {
+        pub fn accepts(_: @This(), scheme: u16) bool {
+            return scheme == 0x0809 or scheme == 0x080a or scheme == 0x080b;
+        }
+    };
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.choose(sha384, Accepts{}).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseServer12(sha384, Accepts{}).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseClient12(sha384, Accepts{}).?);
+    try std.testing.expect(P.choose(long_salt, Accepts{}) == null);
+}
