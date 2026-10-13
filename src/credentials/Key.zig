@@ -6,6 +6,7 @@ const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Entropy = @import("Entropy.zig");
 const Rsa = @import("Rsa.zig");
+const p256 = @import("../crypto/p256.zig");
 const Kdf = @import("Kdf.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
@@ -162,10 +163,13 @@ fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
         if (scalar.len != 32) return error.InvalidKey;
         var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        Curve.validate(P256.Curve, &sk.bytes) catch return error.InvalidKey;
-        var point = Curve.base(P256.Curve, .big, &sk.bytes) catch return error.InvalidKey;
+        // 0 < d < n, checked in constant time; the comb of cloak's kernel derives the point.
+        if (!p256.scalarInRange(&sk.bytes)) return error.InvalidKey;
+        var point = p256.baseMul(&sk.bytes);
         defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
+        // The derived public key is public; only its verdict and coordinates leave.
+        const encoded = point.affine().toSec1();
+        var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
         if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
         return .{ .p256 = kp };

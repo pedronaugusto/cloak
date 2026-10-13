@@ -119,7 +119,7 @@ pub fn Field(comptime Public: type) type {
 
 test "credential Montgomery selection live mask owner wipes full capacity" {
     @setRuntimeSafety(true);
-    inline for (.{ std.crypto.ecc.P256.Fe, std.crypto.ecc.P384.Fe }) |Public| {
+    inline for (.{std.crypto.ecc.P384.Fe}) |Public| {
         const M = Field(Public);
         const n = Public.encoded_length / 8;
         var mask: u64 = std.math.maxInt(u64);

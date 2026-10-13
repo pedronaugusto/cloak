@@ -120,10 +120,11 @@ const StdRsa = std.crypto.Certificate.rsa;
 const sha2 = std.crypto.hash.sha2;
 
 /// The OpenSSL keys of the private-operation tests: every modulus size the parser accepts has
-/// the same shape, 2056 bits is a width that is not a multiple of a limb, and 2049 and 3070
-/// bits are not multiples of a byte (PSS's top bits; at 2049 its encoding is a byte shorter
-/// than the modulus).
-const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("../crypto/testdata/rsa2056.der"), @embedFile("../crypto/testdata/rsa3072.der"), @embedFile("../crypto/testdata/rsa4096.der"), @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("../crypto/testdata/rsa3070.der") };
+/// the same shape, and 2056 bits is a width that is not a multiple of a limb.
+const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("../crypto/testdata/rsa2056.der"), @embedFile("../crypto/testdata/rsa3072.der"), @embedFile("../crypto/testdata/rsa4096.der") };
+/// Moduli that are not a whole number of bytes, for PSS's top bits: at 2049 bits its encoding
+/// is a byte shorter than the modulus.
+const odd_keys = .{ @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("../crypto/testdata/rsa3070.der") };
 
 fn rsaKey(der: []const u8) !Rsa.Key {
     return Rsa.parse(der, .{ .entropy = Entropy.fromIo(&std.testing.io) });
@@ -142,7 +143,7 @@ fn noiseFrom(random: std.Random) [Sign.rsa.noise_length]u8 {
 test "rsa pss signatures verify under std's and cloak's verifiers for every key size and hash" {
     var prng: std.Random.DefaultPrng = .init(0x9055);
     const random = prng.random();
-    inline for (rsa_keys) |der| {
+    inline for (rsa_keys ++ odd_keys) |der| {
         var key = try rsaKey(der);
         defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
         const public: @FieldType(certificate.PublicKey, "rsa") = .{ .modulus = key.n[0..key.size], .exponent = key.e[0..key.exponent_size] };
@@ -176,8 +177,8 @@ fn stdVerify(comptime Scheme: type, comptime Hash: type, key: *const Rsa.Key, me
 test "rsa pss signatures OpenSSL made with moduli of 2049 and 3070 bits verify, and others do not" {
     const message = "cloak rsa known answer";
     const answers = .{
-        .{ rsa_keys[4], certificate.Algorithm.Hash.sha256, @embedFile("../crypto/testdata/rsa2049-pss-sha256.sig") },
-        .{ rsa_keys[5], certificate.Algorithm.Hash.sha384, @embedFile("../crypto/testdata/rsa3070-pss-sha384.sig") },
+        .{ odd_keys[0], certificate.Algorithm.Hash.sha256, @embedFile("../crypto/testdata/rsa2049-pss-sha256.sig") },
+        .{ odd_keys[1], certificate.Algorithm.Hash.sha384, @embedFile("../crypto/testdata/rsa3070-pss-sha384.sig") },
     };
     inline for (answers) |answer| {
         const der, const hash, const made = answer;

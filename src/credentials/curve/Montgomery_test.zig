@@ -8,7 +8,7 @@ test "credential Montgomery carry reduction and alias properties" {
 }
 fn differential(_: void, case: *shakedown.Case) !void {
     @setRuntimeSafety(true);
-    inline for (.{ std.crypto.ecc.P256.Fe, std.crypto.ecc.P384.Fe }) |Public| {
+    inline for (.{std.crypto.ecc.P384.Fe}) |Public| {
         var bytes: [2][Public.encoded_length]u8 = undefined;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&bytes));
         for (&bytes) |*part| for (part) |*byte| {
@@ -21,7 +21,7 @@ fn differential(_: void, case: *shakedown.Case) !void {
 }
 test "credential Montgomery prime and word boundary vectors" {
     @setRuntimeSafety(true);
-    inline for (.{ std.crypto.ecc.P256.Fe, std.crypto.ecc.P384.Fe }) |Public| {
+    inline for (.{std.crypto.ecc.P384.Fe}) |Public| {
         inline for (.{ 0, 1, 2, 0xffffffffffffffff, 0x10000000000000000, Public.field_order / 2, Public.field_order - 2, Public.field_order - 1 }) |a| {
             inline for (.{ 0, 1, 0xffffffffffffffff, Public.field_order / 2, Public.field_order - 1 }) |b| {
                 try compare(Public, try Public.fromInt(a), try Public.fromInt(b));

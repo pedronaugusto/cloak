@@ -6,7 +6,7 @@ test "credential curve borrowed scalar matches independent std base multiplicati
     try shakedown.check(std.testing.allocator, {}, differential, .{ .cases = 96, .seed = 0xc1b017 });
 }
 fn differential(_: void, case: *shakedown.Case) !void {
-    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
+    inline for (.{ std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
         var scalar: [@sizeOf(Point.scalar.CompressedScalar)]u8 = undefined;
         defer std.crypto.secureZero(u8, &scalar);
         for (&scalar) |*byte| byte.* = shakedown.gen.int(case.source, u8);
@@ -24,7 +24,7 @@ fn differential(_: void, case: *shakedown.Case) !void {
     }
 }
 test "credential curve zero and subgroup order reject with cleanup" {
-    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
+    inline for (.{ std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
         var scalar: [@sizeOf(Point.scalar.CompressedScalar)]u8 = @splat(0);
         defer std.crypto.secureZero(u8, &scalar);
         try std.testing.expectError(error.IdentityElement, Curve.base(Point, .little, &scalar));
@@ -54,7 +54,8 @@ test "credential SEC1 rejects congruent out of range P256 and P384 scalars" {
 
 test "credential curve carry boundaries and public affine owner match std" {
     @setRuntimeSafety(true);
-    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384 }) |Point| {
+    // P-384; P-256's edges are crypto/p256_test.zig's.
+    inline for (.{std.crypto.ecc.P384}) |Point| {
         const n = @sizeOf(Point.scalar.CompressedScalar);
         inline for (.{ 1, 2, 15, 16, 17, Point.scalar.field_order - 2, Point.scalar.field_order - 1 }) |value| {
             var scalar: [n]u8 = undefined;

@@ -14,7 +14,9 @@ pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *
     return baseOwned(Point, endian, scalar, &scratch);
 }
 fn PrivatePoint(comptime Point: type) type {
-    return if (Point == std.crypto.ecc.P256 or Point == std.crypto.ecc.P384) curve_point.Point(Point) else Point;
+    // P-256 is crypto/p256.zig's: its comb and windows replace this walk.
+    if (Point == std.crypto.ecc.P256) @compileError("P-256 private multiplication is crypto/p256.zig's");
+    return if (Point == std.crypto.ecc.P384) curve_point.Point(Point) else Point;
 }
 fn Scratch(comptime Point: type) type {
     return struct { q: Point, selected: Point, digit: u8, choice: u1 };
@@ -27,12 +29,12 @@ fn baseOwned(comptime Point: type, comptime endian: std.builtin.Endian, scalar: 
 }
 /// Fixed-window multiplication of an arbitrary public point by a private scalar.
 /// The window table is public data built from the peer; the walk over the secret
-/// scalar is the same masked selection as `base`. P-256 and P-384 only.
+/// scalar is the same masked selection as `base`. P-384 only (P-256 is crypto/p256.zig's).
 pub fn mul(comptime Point: type, comptime endian: std.builtin.Endian, peer: Point, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8) MultiplyError!Point {
     @setRuntimeSafety(true);
     comptime {
         if (std.options.side_channels_mitigations == .none) @compileError("cloak private-scalar multiplication requires std side-channel mitigations");
-        if (Point != std.crypto.ecc.P256 and Point != std.crypto.ecc.P384) @compileError("variable-point multiplication is defined for P-256 and P-384");
+        if (Point != std.crypto.ecc.P384) @compileError("variable-point multiplication is defined for P-384; P-256 is crypto/p256.zig's");
     }
     const private = PrivatePoint(Point);
     // Public table: peer multiples never depend on the scalar.
@@ -106,7 +108,7 @@ test {
 
 test "credential curve live scratch wipes full capacity on success and rejection" {
     @setRuntimeSafety(true);
-    inline for (.{ std.crypto.ecc.P256, std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
+    inline for (.{ std.crypto.ecc.P384, std.crypto.ecc.Edwards25519 }) |Point| {
         var scalar: [@sizeOf(Point.scalar.CompressedScalar)]u8 = @splat(0);
         defer std.crypto.secureZero(u8, &scalar);
         var owner: Scratch(PrivatePoint(Point)) = undefined;
