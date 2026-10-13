@@ -4,6 +4,37 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `tls.Suite` lists the suites of both versions by IANA number (the three of TLS 1.3 and six of TLS 1.2); `suites` options take both and default to all nine, and `min_version` and `max_version` (`tls.Version`) bound the versions. A version is offered only when one of its suites is listed, and a client whose versions leave only TLS 1.2 must list a TLS 1.2 suite. `Info` says the `version`.
+- `tls.Session.open` and `accept` take their options last, after the buffers. `tls.Session.Signer.sign` takes the whole `SignRequest`: the scheme as a `tls.SignatureScheme`, the content, and `prehashed` for a TLS 1.2 digest. `tls.Session.finish` returns `tls.Session.FinishError`.
+- Times are `std.Io.Timestamp` and spans `std.Io.Duration` across the public surface: `types.Request.time`, a receipt's `validation_time`, `expires` and `revocation_expires`, `Identity.expires`, `NativeVerification.take`'s `now`, the `time` a handshake asks for (`tls.Connection.Answer.time`), `tls.Session.Clock.fixed`, and `types.RevocationPolicy.clock_skew` and `max_age` (still at most a day and a year). Certificates and revocation evidence still count whole seconds inside, rounded down from the request's time once.
+- `PrivateKey.noiseLength` returns `usize`: every key a parse returns signs in the package (`Identity.noiseLength` stays optional for keys held elsewhere). `PrivateKey.max_noise` is 96 and `PrivateKey.max_signature` 512, RSA's needs. `PrivateKey.sign` with noise of the wrong length is `InvalidNoise`, no longer `SigningFailed`.
+- A parsed RSA key keeps its CRT form instead of the private exponent; a valid key with a factor above 2048 bits is refused at parse as `UnsupportedKey`.
+- `certificates.ecdh` is no longer public: key exchange is the TLS engine's, on cloak's own P-256 kernel and the masked P-384 walk.
+
+### Added
+
+- TLS 1.2, both roles, in `tls.Connection` and `tls.Session`: ECDHE (X25519, P-256, P-384) with the six AEAD suites (ECDHE-ECDSA and ECDHE-RSA with AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305); the extended master secret and secure renegotiation indication required; ECDSA, Ed25519 and RSA (PSS and PKCS#1 v1.5) certificates; client certificates, ALPN and RFC 5705 exporters. The downgrade sentinel and TLS_FALLBACK_SCSV are enforced; renegotiation is refused with a warning no_renegotiation and the connection goes on; compression, RSA key exchange, CBC and legacy suites are refused.
+- RSA signing: `PrivateKey.sign` takes `.pss` (MGF1 on the signing hash, a salt as long as the hash) or `.rsa` (PKCS#1 v1.5) on SHA-256, SHA-384 or SHA-512 for RSA keys of 2048 to 4096 bits, of any bit length. The private operation is constant time in the key (fixed-window CRT exponentiation with masked table reads), blinded with a value drawn from 96 bytes of noise that also carry the PSS salt, and checked against the public key on the exact bytes it releases. A TLS 1.3 CertificateVerify and a client's answer to a CertificateRequest are signed by cloak for RSA keys with rsa_pss_rsae_sha256/384/512; a key restricted to RSASSA-PSS parameters signs only under the schemes they allow.
+- `PrivateKey.signDigest` and `certificates.signature.verifyDigest`: signatures over a digest already computed, as a TLS 1.2 CertificateVerify needs.
+- `tls.Session.closeNotified`: whether the peer ended with close_notify, for a caller that allows a bare transport end but whose framing cannot detect truncation.
+- Wycheproof campaigns for ECDH on raw P-256 and P-384 points, RSA PKCS#1 v1.5 signing known answers at 2048, 3072 and 4096 bits, and every PSS salt length of `rsa_pss_misc`.
+
+### Changed
+
+- P-256 key generation, agreement, ECDSA signing and verification, and a parsed key's public point, run cloak's own kernel: a precomputed base comb with complete additions, constant-time signed windows over the peer's multiples, a public double-base walk for verification, and the field in assembly on AArch64 (portable Zig elsewhere, tested equal on every pair of 256-bit operands).
+- Key parsing, signing and key agreement run in a frame of their own under data-independent timing (PSTATE.DIT on AArch64 with FEAT_DIT), and the stack below them is erased when they return: the compiler's spills and copies of key material no owner can name. Keys are parsed into the owner that keeps them; parsing an RSA key reaches about 40 KB of stack, where it reached about 180 KB.
+
+### Fixed
+
+- Keying material asked of a failed connection returned through erased secrets and stopped the process; it is `WrongPhase`.
+- A TLS key or traffic secret handed from the handshake to the record layer left a copy in its queue slot and in the frames between; each copy is erased.
+- A TLS 1.2 ServerHello answered ec_point_formats when the client had not sent it.
+- A TLS 1.2 ClientHello that lists another compression method beside null, or a legacy version above TLS 1.2 without supported_versions, is answered in TLS 1.2, as RFC 8446 requires; TLS 1.3 hellos still list null alone.
+- TLS 1.2 warning alerts (unrecognized_name before a ServerHello) are passed over a few times instead of ending the handshake; TLS 1.3 keeps every alert but close_notify and user_canceled fatal.
+- TLS 1.2 failures send TLS 1.2's alerts: unsupported_extension for an unsolicited ServerHello extension, handshake_failure for a non-empty initial renegotiation_info or a hello without signature_algorithms or supported_groups, record_overflow for an oversized record.
+
 ## [0.3.0] - 2026-10-13
 
 ### Breaking
