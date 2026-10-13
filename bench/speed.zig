@@ -13,7 +13,7 @@ const Suite13 = harness.suites.Suite13;
 const Suite = cloak.tls.Suite;
 const Group = cloak.tls.Group;
 
-const fixtures = .{ "message.bin", "root.der", "chain.pem", "leaf.key.pem", "leaf.der", "p384.key.pem", "p384.der", "ed25519.key.pem", "ed25519.der", "rsa2048.der", "rsa2048.pss.sig", "rsa4096.der", "rsa4096.pss.sig" };
+const fixtures = .{ "message.bin", "root.der", "chain.pem", "leaf.key.pem", "leaf.der", "p384.key.pem", "p384.der", "ed25519.key.pem", "ed25519.der", "rsa2048.der", "rsa2048.pss.sig", "rsa2048.key.pem", "rsa4096.der", "rsa4096.pss.sig", "rsa4096.key.pem" };
 
 const Context = struct {
     io: std.Io,
@@ -330,6 +330,30 @@ fn rsa(ctx: *const Context, comptime name: []const u8) !void {
     var state: State = .{ .key = (try cloak.certificates.certificate.parse(der, .{})).public_key, .message = ctx.message, .signature = signature };
     State.verify(&state);
     try ctx.primitive("cloak", name ++ "/verify", &state, State.verify);
+
+    // Signing: the blinded constant-time CRT operation with its public check, PSS and PKCS#1.
+    const Signing = struct {
+        key: cloak.PrivateKey,
+        message: []const u8,
+        noise: [cloak.PrivateKey.max_noise]u8,
+        fn pss(s: *@This()) void {
+            var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
+            const made = s.key.sign(.{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            std.mem.doNotOptimizeAway(made);
+        }
+        fn pkcs1(s: *@This()) void {
+            var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
+            const made = s.key.sign(.{ .rsa = .sha256 }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            std.mem.doNotOptimizeAway(made);
+        }
+    };
+    const pem = try ctx.file(name ++ ".key.pem");
+    defer ctx.gpa.free(pem);
+    var signing: Signing = .{ .key = try cloak.PrivateKey.parse(ctx.gpa, pem, .{ .entropy = cloak.PrivateKey.Entropy.fromIo(&ctx.io) }), .message = ctx.message, .noise = undefined };
+    defer signing.key.deinit();
+    ctx.io.random(&signing.noise);
+    try ctx.primitive("cloak", name ++ "/sign-pss", &signing, Signing.pss);
+    try ctx.primitive("cloak", name ++ "/sign-pkcs1", &signing, Signing.pkcs1);
 }
 
 // ---------------------------------------------------------------- connections
