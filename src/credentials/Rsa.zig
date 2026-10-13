@@ -30,7 +30,10 @@ pub fn parse(encoded: []const u8, options: Options) Error!Key {
     const n = integers[0];
     const e = integers[1];
     const d = integers[2];
-    if (n.len < 256 or n.len > 512 or n[0] & 0x80 == 0 or n[n.len - 1] & 1 == 0 or e.len > 4 or d.len > n.len) return error.InvalidKey;
+    if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0 or e.len > 4 or d.len > n.len) return error.InvalidKey;
+    // At least 2048 bits, any length up to 4096: the bounds a public key has.
+    // safe: clz on u8 is at most eight and widens to usize.
+    if (n.len * 8 - @as(usize, @clz(n[0])) < 2048) return error.InvalidKey;
     const exponent = try Der.number(e);
     if (exponent < 3 or exponent & 1 == 0) return error.InvalidKey;
     var values: [8]Uint = undefined;

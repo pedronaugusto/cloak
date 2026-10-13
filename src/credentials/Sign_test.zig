@@ -120,8 +120,10 @@ const StdRsa = std.crypto.Certificate.rsa;
 const sha2 = std.crypto.hash.sha2;
 
 /// The OpenSSL keys of the private-operation tests: every modulus size the parser accepts has
-/// the same shape, and 2056 bits is a width that is not a multiple of a limb.
-const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("../crypto/testdata/rsa2056.der"), @embedFile("../crypto/testdata/rsa3072.der"), @embedFile("../crypto/testdata/rsa4096.der") };
+/// the same shape, 2056 bits is a width that is not a multiple of a limb, and 2049 and 3070
+/// bits are not multiples of a byte (PSS's top bits; at 2049 its encoding is a byte shorter
+/// than the modulus).
+const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("../crypto/testdata/rsa2056.der"), @embedFile("../crypto/testdata/rsa3072.der"), @embedFile("../crypto/testdata/rsa4096.der"), @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("../crypto/testdata/rsa3070.der") };
 
 fn rsaKey(der: []const u8) !Rsa.Key {
     return Rsa.parse(der, .{ .entropy = Entropy.fromIo(&std.testing.io) });
@@ -153,7 +155,10 @@ test "rsa pss signatures verify under std's and cloak's verifiers for every key 
             const made = try Sign.rsa.pss(Hash, &key.crt, &message, &noise, &out);
             try std.testing.expectEqual(key.size, made.len);
             try signature.verify(.{ .rsa = public }, .{ .pss = .{ .hash = name, .mgf_hash = name, .salt_length = Hash.digest_length } }, &message, made);
-            try stdVerify(StdRsa.PSSSignature, Hash, &key, &message, made);
+            // std's EMSA-PSS-VERIFY asserts that the encoding is as long as the modulus, which a
+            // modulus of 8k+1 bits breaks (its encoding is a byte shorter): the 2049-bit key is
+            // checked against OpenSSL's known answer instead.
+            if (key.size * 8 - @clz(key.n[0]) != 2049) try stdVerify(StdRsa.PSSSignature, Hash, &key, &message, made);
             // A different message does not verify.
             try std.testing.expectError(error.InvalidSignature, signature.verify(.{ .rsa = public }, .{ .pss = .{ .hash = name, .mgf_hash = name, .salt_length = Hash.digest_length } }, "other", made));
         }
@@ -166,6 +171,23 @@ fn stdVerify(comptime Scheme: type, comptime Hash: type, key: *const Rsa.Key, me
         return Scheme.verify(len, made[0..len], message, rsaPublic(key), Hash);
     };
     return error.TestUnexpectedResult;
+}
+
+test "rsa pss signatures OpenSSL made with moduli of 2049 and 3070 bits verify, and others do not" {
+    const message = "cloak rsa known answer";
+    const answers = .{
+        .{ rsa_keys[4], certificate.Algorithm.Hash.sha256, @embedFile("../crypto/testdata/rsa2049-pss-sha256.sig") },
+        .{ rsa_keys[5], certificate.Algorithm.Hash.sha384, @embedFile("../crypto/testdata/rsa3070-pss-sha384.sig") },
+    };
+    inline for (answers) |answer| {
+        const der, const hash, const made = answer;
+        var key = try rsaKey(der);
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+        const public: @FieldType(certificate.PublicKey, "rsa") = .{ .modulus = key.n[0..key.size], .exponent = key.e[0..key.exponent_size] };
+        const scheme: certificate.Algorithm.Signature = .{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = if (hash == .sha256) 32 else 48 } };
+        try signature.verify(.{ .rsa = public }, scheme, message, made);
+        try std.testing.expectError(error.InvalidSignature, signature.verify(.{ .rsa = public }, scheme, "cloak rsa known answeR", made));
+    }
 }
 
 test "rsa pkcs1 signatures equal OpenSSL's known answers and std's encoding" {
