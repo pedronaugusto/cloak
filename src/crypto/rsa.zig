@@ -325,32 +325,7 @@ pub const PrivateKey = struct {
         const h = key.p.len;
         var s: Scratch = undefined;
         defer wipe(&s);
-        decode(s.m[0..l], m_bytes) catch return error.SigningFailed;
-        // The message is public (the signature reveals it): range-checking it may branch.
-        var borrow: u1 = 0;
-        for (0..l) |i| _, borrow = subb(s.m[i], n.m[i], borrow);
-        if (borrow == 0) return error.SigningFailed;
-
-        // Blinding: r_mont is the Montgomery form of a uniform r (bias below 2^-64): the reduction
-        // of a uniform (l + 1)-limb draw, read as Montgomery form, is uniform mod n.
-        var xof = std.crypto.hash.sha3.Shake256.init(.{});
-        defer wipe(&xof);
-        xof.update("cloak rsa blinding");
-        xof.update(&key.hedge);
-        xof.update(seed);
-        xof.update(m_bytes);
-        var draw: [(max_limbs + 1) * 8]u8 = undefined;
-        defer wipe(&draw);
-        xof.squeeze(draw[0 .. (l + 1) * 8]);
-        for (0..l + 1) |i| s.wide[i] = std.mem.readInt(u64, draw[i * 8 ..][0..8], .little);
-        n.reduce(s.r[0..l], s.wide[0 .. l + 1]);
-        // mb = m * r^e mod n, plain.
-        n.mul(s.t[0..l], s.m[0..l], n.rr[0..l]);
-        n.powPublic(s.u[0..l], s.r[0..l], key.e);
-        n.mul(s.t[0..l], s.t[0..l], s.u[0..l]);
-        n.reduce(s.mb[0..l], s.t[0..l]);
-        // r plain, for its inverses mod p and q.
-        n.reduce(s.r[0..l], s.r[0..l]);
+        try key.blind(m_bytes, seed, &s);
 
         key.crtHalf(&key.p, &key.dp, &key.p2, &s, s.sp[0..h]);
         key.crtHalf(&key.q, &key.dq, &key.q2, &s, s.sq[0..h]);
@@ -391,7 +366,7 @@ pub const PrivateKey = struct {
         encode(bytes, s.wide[0..l]);
         if (fault == .encoded) bytes[key.size / 2] ^= 0x10;
         decode(s.t[0..l], bytes) catch return error.SigningFailed;
-        borrow = 0;
+        var borrow: u1 = 0;
         for (0..l) |i| _, borrow = subb(s.t[i], n.m[i], borrow);
         // Montgomery multiplication takes an operand below R, so a faulty value at or above n
         // still reduces correctly; the borrow above refuses it on its own.
@@ -403,6 +378,40 @@ pub const PrivateKey = struct {
         // Whether the signature is released is public: the branch reveals only a fault.
         if (ct.barrier(difference) != 0) return error.SigningFailed;
         @memcpy(out, bytes);
+    }
+
+    /// Fills `s.m` with the message, `s.r` with a fresh blinding value r and `s.mb` with
+    /// m * r^e mod n, all plain.
+    fn blind(key: *const PrivateKey, m_bytes: []const u8, seed: *const [seed_length]u8, s: *Scratch) Error!void {
+        @setRuntimeSafety(true);
+        const n = &key.n;
+        const l = n.len;
+        decode(s.m[0..l], m_bytes) catch return error.SigningFailed;
+        // The message is public (the signature reveals it): range-checking it may branch.
+        var borrow: u1 = 0;
+        for (0..l) |i| _, borrow = subb(s.m[i], n.m[i], borrow);
+        if (borrow == 0) return error.SigningFailed;
+
+        // r_mont is the Montgomery form of a uniform r (bias below 2^-64): the reduction of a
+        // uniform (l + 1)-limb draw, read as Montgomery form, is uniform mod n.
+        var xof = std.crypto.hash.sha3.Shake256.init(.{});
+        defer wipe(&xof);
+        xof.update("cloak rsa blinding");
+        xof.update(&key.hedge);
+        xof.update(seed);
+        xof.update(m_bytes);
+        var draw: [(max_limbs + 1) * 8]u8 = undefined;
+        defer wipe(&draw);
+        xof.squeeze(draw[0 .. (l + 1) * 8]);
+        for (0..l + 1) |i| s.wide[i] = std.mem.readInt(u64, draw[i * 8 ..][0..8], .little);
+        n.reduce(s.r[0..l], s.wide[0 .. l + 1]);
+        // mb = m * r^e mod n, plain.
+        n.mul(s.t[0..l], s.m[0..l], n.rr[0..l]);
+        n.powPublic(s.u[0..l], s.r[0..l], key.e);
+        n.mul(s.t[0..l], s.t[0..l], s.u[0..l]);
+        n.reduce(s.mb[0..l], s.t[0..l]);
+        // r plain, for its inverses mod p and q.
+        n.reduce(s.r[0..l], s.r[0..l]);
     }
 
     /// One CRT half: `out = (mb mod m)^d * (r mod m)^-1 mod m`, in Montgomery form.
@@ -439,6 +448,17 @@ const Scratch = struct {
 pub fn privateWithFault(key: *const PrivateKey, m: []const u8, seed: *const [seed_length]u8, out: []u8, comptime fault: PrivateKey.Fault) Error!void {
     if (!builtin.is_test) @compileError("fault injection is a test seam");
     return key.privateFaulted(m, seed, out, fault);
+}
+
+/// Test seam: the blinding value r and the blinded message m * r^e mod n an operation on `m`
+/// with `seed` would exponentiate, as little-endian limbs.
+pub fn blindingForTest(key: *const PrivateKey, m: []const u8, seed: *const [seed_length]u8, r: []u64, mb: []u64) Error!void {
+    if (!builtin.is_test) @compileError("the blinding values are a test seam");
+    var s: Scratch = undefined;
+    defer wipe(&s);
+    try key.blind(m, seed, &s);
+    @memcpy(r, s.r[0..key.n.len]);
+    @memcpy(mb, s.mb[0..key.n.len]);
 }
 
 test {

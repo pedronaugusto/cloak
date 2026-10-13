@@ -143,3 +143,45 @@ test "RSA key shapes outside the kernel are refused" {
     // A factor wider than half of the largest modulus.
     try std.testing.expectError(error.InvalidKey, key.init(k.n, k.e, &@as([257]u8, @splat(0xff)), k.q, k.dp, k.dq, k.qinv));
 }
+
+test "RSA blinding is real: r is fresh per seed and key, and the exponentiated value is m * r^e" {
+    var key_a: rsa.PrivateKey = undefined;
+    const a = try load(keys[0], &key_a);
+    var key_b: rsa.PrivateKey = undefined;
+    _ = try load(keys[1], &key_b);
+    var m: [256]u8 = undefined;
+    var prng: std.Random.DefaultPrng = .init(0xb11d);
+    message(prng.random(), a.n, &m);
+    const N = std.crypto.ff.Modulus(2048);
+    const n = try N.fromBytes(a.n, .big);
+    var seen: [4][32]u64 = undefined;
+    for (0..4) |i| {
+        var r: [32]u64 = undefined;
+        var mb: [32]u64 = undefined;
+        try rsa.blindingForTest(&key_a, &m, &@as([32]u8, @splat(@intCast(i))), &r, &mb);
+        // Never the identity, never the message itself, never a value seen before.
+        try std.testing.expect(!(r[0] == 1 and std.mem.allEqual(u64, r[1..], 0)));
+        for (seen[0..i]) |earlier| try std.testing.expect(!std.mem.eql(u64, &earlier, &r));
+        seen[i] = r;
+        var r_bytes: [256]u8 = undefined;
+        var mb_bytes: [256]u8 = undefined;
+        for (0..32) |j| {
+            std.mem.writeInt(u64, r_bytes[256 - 8 * (j + 1) ..][0..8], r[j], .big);
+            std.mem.writeInt(u64, mb_bytes[256 - 8 * (j + 1) ..][0..8], mb[j], .big);
+        }
+        try std.testing.expect(!std.mem.eql(u8, &mb_bytes, &m));
+        // mb = m * r^e mod n, by std's arithmetic.
+        const re = try n.powPublic(try N.Fe.fromBytes(n, &r_bytes, .big), try N.Fe.fromBytes(n, a.e, .big));
+        const want = n.mul(try N.Fe.fromBytes(n, &m, .big), re);
+        var want_bytes: [256]u8 = undefined;
+        try want.toBytes(&want_bytes, .big);
+        try std.testing.expectEqualSlices(u8, &want_bytes, &mb_bytes);
+    }
+    // The same seed and message under another key: another r.
+    var m_b: [257]u8 = @splat(0);
+    @memcpy(m_b[1..], &m);
+    var r_b: [33]u64 = undefined;
+    var mb_b: [33]u64 = undefined;
+    try rsa.blindingForTest(&key_b, &m_b, &@as([32]u8, @splat(0)), &r_b, &mb_b);
+    try std.testing.expect(!std.mem.eql(u64, &seen[0], r_b[0..32]));
+}
