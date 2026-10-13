@@ -131,6 +131,8 @@ const Scratch = struct {
     session_len: u8 = 0,
     server_name: [253]u8 = undefined,
     server_name_len: u8 = 0,
+    /// TLS 1.2: the client sent ec_point_formats, so the ServerHello answers it.
+    point_formats: bool = false,
     /// The client's key share for the chosen group.
     share: [Exchange.max_share]u8 = undefined,
     share_len: usize = 0,
@@ -382,14 +384,17 @@ pub fn provideParameters(self: *Server, accept: bool) Client.Error!void {
 
 // ---------------------------------------------------------------- outputs
 
-pub fn pop(self: *Server) ?Emit {
+/// Moves the next output into `out`; see `Flight.pop`.
+pub fn pop(self: *Server, out: *Emit) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
-        const emit = self.post;
+        const post = &(self.post orelse return false);
+        out.* = post.*;
+        std.crypto.secureZero(u8, std.mem.asBytes(&self.post));
         self.post = null;
-        return emit;
+        return true;
     };
-    return scratch.flight.pop();
+    return scratch.flight.pop(out);
 }
 
 pub fn pending(self: *const Server) bool {
@@ -524,6 +529,8 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
         if (second or !self.allows12() or !hello.offers12()) return error.UnsupportedVersion;
         return Server12.onClientHello(self, msg, &hello, epoch, boundary);
     }
+    // A TLS 1.3 hello offers the null compression method alone (RFC 8446 section 4.1.2).
+    if (!hello.null_compression_only) return error.IllegalParameter;
     if (second) {
         if (!std.mem.eql(u8, &hello.fingerprint(), &scratch.first)) return error.IllegalParameter;
         if (hello.cookie.len != 0) return error.UnexpectedCookie;
@@ -875,9 +882,14 @@ pub const ExportError = Client.ExportError;
 
 pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     @setRuntimeSafety(true);
-    if (!self.established) return error.WrongPhase;
-    if (self.version == .tls12) return Server12.exportKeyingMaterial(self, out, label, context);
-    switch (self.keys.?) {
+    // A failed connection has erased its secrets; established stays true for the record.
+    if (!self.established or self.state.phase == .failed) return error.WrongPhase;
+    if (self.version == .tls12) {
+        const secrets = self.tls12 orelse return error.WrongPhase;
+        return secrets.exportKeyingMaterial(self.suite12 orelse return error.WrongPhase, out, label, context);
+    }
+    const keys = if (self.keys) |*keys| keys else return error.WrongPhase;
+    switch (keys.*) {
         inline else => |*k| try k.schedule.exportBytes(out, label, context),
     }
 }

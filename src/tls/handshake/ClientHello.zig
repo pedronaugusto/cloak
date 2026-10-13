@@ -9,6 +9,7 @@ pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     InvalidHello,
     IllegalParameter,
     MissingExtension,
+    NoSecureRenegotiation,
     DecodeError,
 };
 
@@ -46,6 +47,11 @@ extended_master_secret: bool,
 renegotiation_info: bool,
 /// TLS 1.2: ec_point_formats was absent or listed the uncompressed form.
 uncompressed_points: bool,
+/// TLS 1.2: ec_point_formats was sent, so a server may answer it (RFC 8422 section 5.2).
+point_formats: bool,
+/// legacy_compression_methods was exactly the null method, as TLS 1.3 requires; a TLS 1.2
+/// hello need only list it (RFC 8446 section 4.1.2).
+null_compression_only: bool,
 /// The whole extension block, for the comparison a retry requires.
 extensions: []const u8,
 
@@ -62,7 +68,9 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     self.suites = (try r.vector(u16)).bytes;
     if (self.suites.len < 2 or self.suites.len % 2 != 0) return error.DecodeError;
     const compression = (try r.vector(u8)).bytes;
-    if (compression.len != 1 or compression[0] != 0) return error.IllegalParameter;
+    // The null method must be offered; a server never compresses (CRIME).
+    if (std.mem.findScalar(u8, compression, 0) == null) return error.IllegalParameter;
+    self.null_compression_only = compression.len == 1;
     // A TLS 1.2 hello may carry no extensions at all; the caller refuses it by its versions.
     const block: Reader = if (r.pos == r.bytes.len) .{ .bytes = "" } else try r.vector(u16);
     self.extensions = block.bytes;
@@ -83,6 +91,7 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     self.extended_master_secret = false;
     self.renegotiation_info = false;
     self.uncompressed_points = true;
+    self.point_formats = false;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -182,6 +191,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             const formats = (try value.vector(u8)).bytes;
             try value.finish();
             if (formats.len == 0) return error.DecodeError;
+            self.point_formats = true;
             self.uncompressed_points = std.mem.findScalar(u8, formats, 0) != null;
         },
         23 => {
@@ -189,8 +199,9 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.extended_master_secret = true;
         },
         0xff01 => {
-            // The initial handshake's renegotiated_connection is empty (RFC 5746 section 3.6).
-            if ((try value.vector(u8)).bytes.len != 0) return error.IllegalParameter;
+            // The initial handshake's renegotiated_connection is empty; anything else is
+            // handshake_failure (RFC 5746 section 3.6).
+            if ((try value.vector(u8)).bytes.len != 0) return error.NoSecureRenegotiation;
             try value.finish();
             self.renegotiation_info = true;
         },
@@ -220,11 +231,12 @@ pub fn offersVersion(self: *const ClientHello, version: u16) bool {
     return containsU16(self.versions, version);
 }
 
-/// Whether TLS 1.2 is offered: listed in supported_versions, or the legacy version when that
-/// extension is absent.
+/// Whether TLS 1.2 is offered: listed in supported_versions, or, when that extension is
+/// absent, a legacy version of at least TLS 1.2 (RFC 8446 section 4.2.1: a server that speaks
+/// TLS 1.2 negotiates it even for a legacy_version of 0x0304 or later).
 pub fn offers12(self: *const ClientHello) bool {
     if (self.versions.len != 0) return containsU16(self.versions, 0x0303);
-    return self.legacy_version == 0x0303;
+    return self.legacy_version >= 0x0303;
 }
 
 /// Secure renegotiation is indicated by the extension or TLS_EMPTY_RENEGOTIATION_INFO_SCSV.

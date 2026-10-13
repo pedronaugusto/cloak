@@ -52,11 +52,12 @@ test "C2 a rejected scalar draw leaves the entropy request open for a fresh one"
     var good: [128]u8 = @splat(7);
     try client.provideEntropy(good[0..client.need().entropy.len]);
     try std.testing.expect(client.need() == .none);
-    const emit = client.pop().?;
+    var emit: @import("Flight.zig").Emit = undefined;
+    try std.testing.expect(client.pop(&emit));
     try std.testing.expectEqual(Client.Epoch.initial, emit.message.epoch);
     const hello = client.flightBytes(emit.message.start, emit.message.len);
     try std.testing.expectEqual(@as(u8, 1), hello[0]);
-    try std.testing.expect(client.pop() == null);
+    try std.testing.expect(!client.pop(&emit));
 }
 
 test "C2 a message while a service answer is owed is refused" {

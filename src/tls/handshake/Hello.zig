@@ -31,12 +31,10 @@ pub const Options = struct {
     /// (QUIC, hybrid-only), and a TLS 1.2 suite is listed. The version follows from the suites.
     pub fn allows12(options: Options) bool {
         if (options.min_version != .tls12 or options.quic or options.require_hybrid) return false;
-        if (options.max_version == .tls12) return true;
         for (options.suites) |suite| if (suite.version() == .tls12) return true;
         return false;
     }
 
-    /// Whether TLS 1.3 is offered or accepted.
     /// Whether TLS 1.3 is offered or accepted: allowed, and one of its suites listed.
     pub fn allows13(options: Options) bool {
         if (options.max_version != .tls13) return false;
@@ -213,7 +211,7 @@ pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u
 /// renegotiation indicated.
 pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8 };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
-pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
+pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!Answer {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
@@ -254,7 +252,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             // The rest belong to a TLS 1.2 ServerHello.
             0 => {
                 only12 = true;
-                if (options.sni.len == 0) return error.InvalidHello;
+                if (options.sni.len == 0) return error.UnsolicitedExtension;
             },
             11 => {
                 only12 = true;
@@ -282,7 +280,10 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 if ((try value.vector(u8)).bytes.len != 0) return error.NoSecureRenegotiation;
                 renegotiation = true;
             },
-            else => return error.InvalidHello,
+            // One this client sends that has no place in a ServerHello is illegal_parameter; one
+            // it never sends is unsupported_extension (RFC 5246 section 7.4.1.4, RFC 8446 section 4.2).
+            10, 13, 45, 57 => return error.InvalidHello,
+            else => return error.UnsolicitedExtension,
         }
         try value.finish();
     }
@@ -393,9 +394,13 @@ pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite:
     return out[0..w.pos];
 }
 
+/// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
+/// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
+pub const Echo12 = struct { server_name: bool, point_formats: bool };
+
 /// A TLS 1.2 ServerHello: an empty session id (nothing to resume), the suite, and the extended
 /// master secret, renegotiation_info, point formats and ALPN answers.
-pub fn buildServer12(out: []u8, random: *const [32]u8, suite: Suite12, alpn: []const u8, server_name: bool) Writer.WriteError![]u8 {
+pub fn buildServer12(out: []u8, random: *const [32]u8, suite: Suite12, alpn: []const u8, echo: Echo12) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0, 3, 3 });
@@ -405,8 +410,8 @@ pub fn buildServer12(out: []u8, random: *const [32]u8, suite: Suite12, alpn: []c
     try w.put(&.{0});
     const ext_at = w.pos;
     try w.int(u16, 0);
-    if (server_name) try w.put(&.{ 0, 0, 0, 0 });
-    try w.put(&.{ 0, 11, 0, 2, 1, 0 });
+    if (echo.server_name) try w.put(&.{ 0, 0, 0, 0 });
+    if (echo.point_formats) try w.put(&.{ 0, 11, 0, 2, 1, 0 });
     try w.put(&.{ 0, 23, 0, 0 });
     try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
     if (alpn.len != 0) {

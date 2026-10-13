@@ -205,7 +205,9 @@ pub const State = struct {
                     self.phase = if (self.role == .client) .local_verify12 else .c_verify12;
                 }
             }
-            if (self.role == .server and action == .local_finished and !self.requested_certificate) self.phase = .client_finished;
+            // TLS 1.3: a server that asked for no certificate waits only for the client's Finished.
+            // A TLS 1.2 server sends its Finished last, so its table already ends at connected.
+            if (self.version == .tls13 and self.role == .server and action == .local_finished and !self.requested_certificate) self.phase = .client_finished;
             return;
         }
         return error.UnexpectedMessage;

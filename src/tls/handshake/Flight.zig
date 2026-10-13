@@ -5,6 +5,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const State = @import("State.zig");
 const suites = @import("../crypto/Suite.zig");
+const Prf = @import("../crypto/Prf.zig");
 const Suite13 = suites.Suite13;
 const Transcripts = @import("Transcripts.zig");
 
@@ -61,12 +62,59 @@ pub const Secrets12 = struct {
         return secrets;
     }
 
+    /// The record keys of both directions from the key block (RFC 5246 section 6.3), written
+    /// straight into the slots: `read` holds the peer's write keys, `write` this side's.
+    pub fn deriveKeys(self: *Secrets12, comptime Hash: type, comptime suite: suites.Suite12, role: enum { client, server }) void {
+        @setRuntimeSafety(true);
+        const cipher = comptime suite.cipher();
+        const key_len = comptime Keys12.keyLength(cipher);
+        const iv_len = comptime cipher.fixedIvLength12();
+        var block = aegis.Secret([2 * (key_len + iv_len)]u8).init(undefined);
+        defer block.deinit();
+        Prf.keyBlock(Hash, block.exposeMut(), self.master.expose(), self.serverRandom(), self.clientRandom());
+        const b = block.expose();
+        const client, const server = switch (role) {
+            .client => .{ &self.write, &self.read },
+            .server => .{ &self.read, &self.write },
+        };
+        for ([_]*?Keys12{ client, server }) |slot| {
+            if (slot.*) |*old| old.deinit();
+            slot.* = .{ .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)) };
+        }
+        @memcpy(client.*.?.key.exposeMut()[0..key_len], b[0..key_len]);
+        @memcpy(server.*.?.key.exposeMut()[0..key_len], b[key_len..][0..key_len]);
+        @memcpy(client.*.?.iv.exposeMut()[0..iv_len], b[2 * key_len ..][0..iv_len]);
+        @memcpy(server.*.?.iv.exposeMut()[0..iv_len], b[2 * key_len + iv_len ..][0..iv_len]);
+    }
+
+    /// Hands the keys in `slot` to the driver for `direction` and erases the slot.
+    pub fn release(self: *Secrets12, machine: anytype, direction: Direction) !void {
+        const slot = switch (direction) {
+            .read => &self.read,
+            .write => &self.write,
+        };
+        defer if (slot.*) |*keys| {
+            keys.deinit();
+            slot.* = null;
+        };
+        const keys = if (slot.*) |*keys| keys else return error.UnexpectedMessage;
+        try machine.push(.{ .keys12 = .{ .direction = direction, .keys = keys.* } });
+    }
+
     pub fn clientRandom(self: *const Secrets12) *const [32]u8 {
         return self.randoms[0..32];
     }
 
     pub fn serverRandom(self: *const Secrets12) *const [32]u8 {
         return self.randoms[32..64];
+    }
+
+    /// RFC 5705 keying material over the extended master secret; the context is always included.
+    pub fn exportKeyingMaterial(self: *const Secrets12, suite: suites.Suite12, out: []u8, label: []const u8, context: []const u8) Prf.ExportError!void {
+        @setRuntimeSafety(true);
+        switch (suite) {
+            inline else => |tag| try Prf.exporter(suites.Hash12(tag), out, self.master.expose(), label, self.clientRandom(), self.serverRandom(), context),
+        }
     }
 
     pub fn destroy(self: *Secrets12, gpa: std.mem.Allocator) void {
@@ -92,6 +140,9 @@ pub const Emit = union(enum) {
     key_update: struct { request_peer: bool },
     /// A well-formed NewSessionTicket was received (not used before resumption).
     ticket,
+    /// TLS 1.2: the peer asked to renegotiate after the handshake. Answer with a warning
+    /// no_renegotiation (always a warning, RFC 5246 section 7.2.2) and go on.
+    refuse_renegotiation,
     /// Everything this side owes has been queued and the peer is authenticated.
     complete,
 };
@@ -121,14 +172,18 @@ pub fn push(self: *Flight, emit: Emit) error{QueueFull}!void {
     self.len += 1;
 }
 
-pub fn pop(self: *Flight) ?Emit {
+/// Moves the next output into `out`, which the caller then owns and erases with `eraseEmit`,
+/// and erases the queue slot it came from. False when nothing is queued.
+pub fn pop(self: *Flight, out: *Emit) bool {
     @setRuntimeSafety(true);
-    if (self.len == 0) return null;
-    const emit = self.queue[self.head].?;
-    self.queue[self.head] = null;
+    if (self.len == 0) return false;
+    const slot = &self.queue[self.head];
+    out.* = slot.*.?;
+    std.crypto.secureZero(u8, std.mem.asBytes(slot));
+    slot.* = null;
     self.head = (self.head + 1) % self.queue.len;
     self.len -= 1;
-    return emit;
+    return true;
 }
 
 pub fn pending(self: *const Flight) bool {

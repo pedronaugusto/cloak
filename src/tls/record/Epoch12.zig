@@ -111,7 +111,13 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         pub fn open(self: *Self, wire: []const u8, out: []u8) OpenError!Plaintext {
             @setRuntimeSafety(true);
             if (self.closed) return error.Closed;
-            if (wire.len < overhead or wire.len > overhead + max_content) return self.bad();
+            if (wire.len < overhead) return self.bad();
+            // A ciphertext whose plaintext would pass 2^14 bytes: record_overflow (RFC 5246
+            // section 6.2.3), refused before any decryption work.
+            if (wire.len > overhead + max_content) {
+                self.deinit();
+                return error.RecordOverflow;
+            }
             if (!std.mem.eql(u8, wire[1..3], &.{ 3, 3 }) or std.mem.readInt(u16, wire[3..5], .big) != wire.len - 5) return self.bad();
             const content = std.enums.fromInt(Content, wire[0]) orelse return self.bad();
             const len = wire.len - overhead;

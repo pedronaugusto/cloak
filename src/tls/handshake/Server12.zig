@@ -10,7 +10,6 @@ const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
 const Exchange = @import("../crypto/Exchange.zig");
-const Client12 = @import("Client12.zig");
 const ClientHello = @import("ClientHello.zig");
 const Hello = @import("Hello.zig");
 const Flight = @import("Flight.zig");
@@ -20,7 +19,6 @@ const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 
 const Error = @import("Errors.zig").Error;
-const ExportError = @import("Errors.zig").ExportError;
 const Epoch = Flight.Epoch;
 
 pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, epoch: Epoch, boundary: bool) Error!void {
@@ -33,12 +31,16 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     if (!hello.extended_master_secret) return error.NoExtendedMasterSecret;
     if (!hello.secureRenegotiation()) return error.NoSecureRenegotiation;
     if (!hello.uncompressed_points) return error.IllegalParameter;
-    if (!hello.has_schemes or !hello.has_groups) return error.MissingExtension;
+    // TLS 1.2 has no missing_extension alert: without the lists there is no scheme or curve
+    // both sides accept (SHA-1 and the default curves are not), a handshake_failure.
+    if (!hello.has_schemes) return error.NoSignatureScheme;
+    if (!hello.has_groups) return error.NoSharedGroup;
     if (self.tls12 == null) self.tls12 = try @import("Flight.zig").Secrets12.create(self.gpa);
     scratch.client_random = hello.random[0..32].*;
     @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
     // safe: parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
+    scratch.point_formats = hello.point_formats;
     self.credential = self.credentialFor(hello.server_name) orelse switch (self.options.unknown_name) {
         .first => 0,
         .reject => return error.UnrecognizedName,
@@ -91,7 +93,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. entropy.len - share_end], entropy[share_end..]);
     var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, &random, self.suite12.?, self.alpn, scratch.server_name_len != 0);
+    const hello = try Hello.buildServer12(&hello_buffer, &random, self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
@@ -158,8 +160,12 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
         .client_key_exchange => try onClientKeyExchange(self, msg, epoch, boundary),
         .certificate_verify => try onCertificateVerify(self, msg, epoch, boundary),
         .finished => try onFinished(self, msg, epoch, boundary),
-        // A second ClientHello on a TLS 1.2 connection is renegotiation: refused.
-        .client_hello => return error.Renegotiation,
+        // A ClientHello after the handshake asks to renegotiate: refused with a warning, and the
+        // connection goes on. One during the handshake is out of order.
+        .client_hello => {
+            if (!self.established) return error.UnexpectedMessage;
+            try self.push(.refuse_renegotiation);
+        },
         else => return error.UnexpectedMessage,
     }
 }
@@ -209,9 +215,7 @@ fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
             var digest_buf: [Transcripts.max_digest]u8 = undefined;
             // The session hash covers the handshake through ClientKeyExchange (RFC 7627).
             Prf.masterSecret(Hash, self.tls12.?.master.exposeMut(), agreed.bytes(), scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
-            const keys = Client12.expand(Hash, suite, self.tls12.?.master.expose(), self.tls12.?.clientRandom(), self.tls12.?.serverRandom());
-            self.tls12.?.read = keys.client;
-            self.tls12.?.write = keys.server;
+            self.tls12.?.deriveKeys(Hash, suite, .server);
         },
     }
     self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
@@ -236,9 +240,7 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
 pub fn onCcs(self: anytype) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.ccs, .initial, .parsed, true);
-    const keys = self.tls12.?.read orelse return error.UnexpectedMessage;
-    self.tls12.?.read = null;
-    try self.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });
+    try self.tls12.?.release(self, .read);
 }
 
 fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -256,9 +258,7 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             // ChangeCipherSpec, the server write keys, then its Finished under them.
             try self.state.advance(.local_ccs, .initial, .parsed, true);
             try self.push(.change_cipher_spec);
-            const keys = self.tls12.?.write orelse return error.UnexpectedMessage;
-            self.tls12.?.write = null;
-            try self.push(.{ .keys12 = .{ .direction = .write, .keys = keys } });
+            try self.tls12.?.release(self, .write);
             var verify_data: [Prf.verify_length]u8 = undefined;
             Prf.finished(Hash, &verify_data, self.tls12.?.master.expose(), false, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
             const message = try Messages.buildFinished(try self.reserve(4 + verify_data.len), &verify_data);
@@ -269,11 +269,4 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     self.established = true;
     self.authenticated = self.authenticated and self.options.client_verify == .full;
     try self.push(.complete);
-}
-
-pub fn exportKeyingMaterial(self: anytype, out: []u8, label: []const u8, context: []const u8) ExportError!void {
-    @setRuntimeSafety(true);
-    switch (self.suite12.?) {
-        inline else => |suite| try Prf.exporter(suites.Hash12(suite), out, self.tls12.?.master.expose(), label, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), context),
-    }
 }

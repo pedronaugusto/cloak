@@ -394,10 +394,10 @@ fn sealCompatCcs(self: *Connection) Error!void {
     self.outbox.commit(6);
 }
 
+/// Installs a traffic secret; `drain` erases the output that carried it.
 fn install(self: *Connection, s: anytype) Error!void {
     @setRuntimeSafety(true);
-    var traffic = s.traffic;
-    defer traffic.secret.deinit();
+    const traffic = &s.traffic;
     var protection = try Protection.init(traffic.suite, traffic.secret.expose()[0..traffic.len], .{ .records = self.limits.records, .bytes = self.limits.bytes });
     errdefer protection.deinit();
     switch (s.direction) {
@@ -416,10 +416,8 @@ fn install(self: *Connection, s: anytype) Error!void {
 }
 
 /// TLS 1.2 record keys for one direction; they protect the application epoch.
-fn install12(self: *Connection, direction: Flight.Direction, keys_in: Flight.Keys12) Error!void {
+fn install12(self: *Connection, direction: Flight.Direction, keys: *const Flight.Keys12) Error!void {
     @setRuntimeSafety(true);
-    var keys = keys_in;
-    defer keys.deinit();
     var protection = try Protection.init12(keys.cipher, keys.keyBytes(), keys.ivBytes(), .{ .records = self.limits.records, .bytes = self.limits.bytes });
     errdefer protection.deinit();
     switch (direction) {
@@ -439,18 +437,27 @@ fn install12(self: *Connection, direction: Flight.Direction, keys_in: Flight.Key
 /// Moves everything the handshake queued onto the wire and into the key slots, in order.
 fn drain(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    while (self.hs.pop()) |emit| switch (emit) {
-        .message => |m| try self.sealMessage(m.epoch, self.hs.flightBytes(m.start, m.len)),
-        .secret => |s| try self.install(s),
-        .compat_ccs, .change_cipher_spec => try self.sealCompatCcs(),
-        .keys12 => |k| try self.install12(k.direction, k.keys),
-        .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
-        .ticket => try self.onControl(),
-        .complete => {
-            self.phase_now = .connected;
-            self.hs.settle();
-        },
-    };
+    // One named copy of each output, erased once used: a secret or key passes through here.
+    var emit: Flight.Emit = undefined;
+    while (self.hs.pop(&emit)) {
+        defer Flight.eraseEmit(&emit);
+        switch (emit) {
+            .message => |m| try self.sealMessage(m.epoch, self.hs.flightBytes(m.start, m.len)),
+            .secret => |*s| try self.install(s),
+            .compat_ccs, .change_cipher_spec => try self.sealCompatCcs(),
+            .keys12 => |*k| try self.install12(k.direction, &k.keys),
+            .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
+            .ticket => try self.onControl(),
+            .refuse_renegotiation => {
+                try self.onControl();
+                self.sendAlert(1, .no_renegotiation);
+            },
+            .complete => {
+                self.phase_now = .connected;
+                self.hs.settle();
+            },
+        }
+    }
     self.hs.recycle();
 }
 
@@ -742,7 +749,9 @@ fn onAlert(self: *Connection) ReceiveError!void {
         self.settlePhase();
         return;
     }
-    if (alert == .user_canceled and body[0] == 1 and self.alerts_ignored < 4) {
+    // A warning is passed over a few times, then the run of them is a flood.
+    const ignorable = alert == .user_canceled or (alert != .close_notify and self.hs.warningsAllowed());
+    if (ignorable and body[0] == 1 and self.alerts_ignored < 4) {
         self.alerts_ignored += 1;
         return;
     }

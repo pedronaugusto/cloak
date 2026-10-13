@@ -4,7 +4,6 @@
 //! Finished; then the server's ChangeCipherSpec and Finished. Only ECDHE with AEAD suites and
 //! the extended master secret (RFC 7627); no renegotiation and no resumption.
 const std = @import("std");
-const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
@@ -18,7 +17,6 @@ const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 
 const Error = @import("Errors.zig").Error;
-const ExportError = @import("Errors.zig").ExportError;
 const Epoch = Flight.Epoch;
 
 /// Bits of `Scratch.cr_types`: the certificate types a CertificateRequest named.
@@ -51,9 +49,12 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
         .certificate_request => try onCertificateRequest(self, msg, epoch, boundary),
         .server_hello_done => try onServerHelloDone(self, msg, epoch, boundary),
         .finished => try onFinished(self, msg, epoch, boundary),
-        // A server asking to renegotiate: refused, at any time (RFC 5746 is not enough; cloak
-        // does not renegotiate at all).
-        .hello_request => return error.Renegotiation,
+        // A server asking to renegotiate. cloak never renegotiates: while negotiating the request
+        // is ignored, as RFC 5246 section 7.4.1.1 says, and afterwards refused with a warning.
+        .hello_request => {
+            if (msg.len != 4) return error.DecodeError;
+            if (self.established) try self.push(.refuse_renegotiation);
+        },
         else => return error.UnexpectedMessage,
     }
 }
@@ -240,11 +241,8 @@ fn finishFlight(self: anytype) Error!void {
     switch (self.suite12.?) {
         inline else => |suite| {
             const Hash = suites.Hash12(suite);
-            var keys = expand(Hash, suite, self.tls12.?.master.expose(), self.tls12.?.clientRandom(), self.tls12.?.serverRandom());
-            errdefer keys.client.deinit();
-            errdefer keys.server.deinit();
-            try self.push(.{ .keys12 = .{ .direction = .write, .keys = keys.client } });
-            self.tls12.?.read = keys.server;
+            self.tls12.?.deriveKeys(Hash, suite, .client);
+            try self.tls12.?.release(self, .write);
             var digest_buf: [Transcripts.max_digest]u8 = undefined;
             var verify_data: [Prf.verify_length]u8 = undefined;
             Prf.finished(Hash, &verify_data, self.tls12.?.master.expose(), true, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
@@ -255,32 +253,11 @@ fn finishFlight(self: anytype) Error!void {
     }
 }
 
-/// The record keys of both directions from the key block (RFC 5246 section 6.3).
-pub fn expand(comptime Hash: type, comptime suite: suites.Suite12, master: *const [Prf.master_length]u8, client_random: *const [32]u8, server_random: *const [32]u8) struct { client: Flight.Keys12, server: Flight.Keys12 } {
-    @setRuntimeSafety(true);
-    const cipher = comptime suite.cipher();
-    const key_len = comptime Flight.Keys12.keyLength(cipher);
-    const iv_len = comptime cipher.fixedIvLength12();
-    var block = aegis.Secret([2 * (key_len + iv_len)]u8).init(undefined);
-    defer block.deinit();
-    Prf.keyBlock(Hash, block.exposeMut(), master, server_random, client_random);
-    const b = block.expose();
-    var client: Flight.Keys12 = .{ .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)) };
-    var server: Flight.Keys12 = .{ .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)) };
-    @memcpy(client.key.exposeMut()[0..key_len], b[0..key_len]);
-    @memcpy(server.key.exposeMut()[0..key_len], b[key_len..][0..key_len]);
-    @memcpy(client.iv.exposeMut()[0..iv_len], b[2 * key_len ..][0..iv_len]);
-    @memcpy(server.iv.exposeMut()[0..iv_len], b[2 * key_len + iv_len ..][0..iv_len]);
-    return .{ .client = client, .server = server };
-}
-
 /// The server's ChangeCipherSpec: its keys protect what follows.
 pub fn onCcs(self: anytype) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.ccs, .initial, .parsed, true);
-    const keys = self.tls12.?.read orelse return error.UnexpectedMessage;
-    self.tls12.?.read = null;
-    try self.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });
+    try self.tls12.?.release(self, .read);
 }
 
 fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -300,12 +277,4 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     self.established = true;
     self.authenticated = self.authenticated and self.options.verify == .full;
     try self.push(.complete);
-}
-
-/// RFC 5705 keying material over the extended master secret; the context is always included.
-pub fn exportKeyingMaterial(self: anytype, out: []u8, label: []const u8, context: []const u8) ExportError!void {
-    @setRuntimeSafety(true);
-    switch (self.suite12.?) {
-        inline else => |suite| try Prf.exporter(suites.Hash12(suite), out, self.tls12.?.master.expose(), label, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), context),
-    }
 }

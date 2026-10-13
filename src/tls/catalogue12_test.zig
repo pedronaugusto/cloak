@@ -176,8 +176,10 @@ test "F57 catalogue_renegotiation_prefix_and_initial_signal" {
     // The initial hello must signal secure renegotiation, with an empty renegotiated_connection.
     const no_signal = "\x00\x0a\x00\x04\x00\x02\x00\x1d" ++ "\x00\x0d\x00\x04\x00\x02\x04\x03" ++ "\x00\x17\x00\x00";
     try std.testing.expectEqual(error.NoSecureRenegotiation, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{0}, no_signal)));
+    // A non-empty renegotiated_connection in an initial hello is handshake_failure (RFC 5746
+    // section 3.6).
     const prefixed = no_signal ++ "\xff\x01\x00\x0d\x0c" ++ "verify_data!";
-    try std.testing.expectEqual(error.IllegalParameter, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{0}, prefixed)));
+    try std.testing.expectEqual(error.NoSecureRenegotiation, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{0}, prefixed)));
     // The SCSV counts as the signal.
     var scsv_hello: [512]u8 = undefined;
     const scsv = clientHello12(&scsv_hello, &.{ 0xc02b, 0x00ff }, &.{0}, no_signal);
@@ -252,8 +254,13 @@ test "F61 catalogue_kci_static_dh_and_role_reflection" {
 
 test "F62 catalogue_crime_record_compression_refused" {
     var hello: [512]u8 = undefined;
-    // Only the null compression method is accepted, from a client or a server.
-    try std.testing.expectEqual(error.IllegalParameter, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{ 1, 0 }, modern)));
+    // A server never compresses: a hello without the null method is refused, and a TLS 1.2
+    // hello that also lists another gets null, as RFC 8446 section 4.1.2 requires of a TLS 1.3
+    // server answering TLS 1.2. A TLS 1.3 hello must list null alone.
+    try std.testing.expectEqual(error.IllegalParameter, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{1}, modern)));
+    const p256_modern = "\x00\x0a\x00\x04\x00\x02\x00\x17" ++ modern[8..];
+    try std.testing.expectEqual(error.NoFailure, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{ 1, 0 }, p256_modern)));
+    // (A TLS 1.3 hello listing another method: ServerConnection_test's bad_compression row.)
     var buffer: [256]u8 = undefined;
     try std.testing.expectError(error.InvalidHello, answer(serverHello12(&buffer, 0xc02b, 1, good_extensions, &random), client12));
 }

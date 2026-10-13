@@ -121,7 +121,6 @@ pub fn alertFor(err: anyerror) Alert {
         error.HybridRequired => .insufficient_security,
         error.UnsupportedVersion => .protocol_version,
         error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate => .handshake_failure,
-        error.Renegotiation => .no_renegotiation,
         error.InappropriateFallback => .inappropriate_fallback,
         error.Downgrade => .illegal_parameter,
         error.NoApplicationProtocol => .no_application_protocol,
@@ -459,14 +458,17 @@ pub fn provideParameters(self: *Client, accept: bool) Error!void {
 
 // ---------------------------------------------------------------- outputs
 
-pub fn pop(self: *Client) ?Emit {
+/// Moves the next output into `out`; see `Flight.pop`.
+pub fn pop(self: *Client, out: *Emit) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
-        const emit = self.post;
+        const post = &(self.post orelse return false);
+        out.* = post.*;
+        std.crypto.secureZero(u8, std.mem.asBytes(&self.post));
         self.post = null;
-        return emit;
+        return true;
     };
-    return scratch.flight.pop();
+    return scratch.flight.pop(out);
 }
 
 pub fn pending(self: *const Client) bool {
@@ -879,9 +881,14 @@ pub const ExportError = @import("Errors.zig").ExportError;
 /// RFC 8446 section 7.5 exporter; only after the connection is established.
 pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     @setRuntimeSafety(true);
-    if (!self.established) return error.WrongPhase;
-    if (self.version == .tls12) return Client12.exportKeyingMaterial(self, out, label, context);
-    switch (self.keys.?) {
+    // A failed connection has erased its secrets; established stays true for the record.
+    if (!self.established or self.state.phase == .failed) return error.WrongPhase;
+    if (self.version == .tls12) {
+        const secrets = self.tls12 orelse return error.WrongPhase;
+        return secrets.exportKeyingMaterial(self.suite12 orelse return error.WrongPhase, out, label, context);
+    }
+    const keys = if (self.keys) |*keys| keys else return error.WrongPhase;
+    switch (keys.*) {
         inline else => |*k| try k.schedule.exportBytes(out, label, context),
     }
 }

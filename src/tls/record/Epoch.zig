@@ -12,7 +12,7 @@ pub const max_ciphertext = max_content + 256;
 pub const Limits = struct { records: u64 = 1 << 24, bytes: u64 = 1 << 38 };
 pub const InitError = error{InvalidLimits};
 pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength, PartialOverlap };
-pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap };
+pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap, RecordOverflow };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
 
 pub fn Epoch(comptime suite: suites.Suite13) type {

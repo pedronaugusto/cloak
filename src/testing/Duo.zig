@@ -197,3 +197,8 @@ pub fn handshakeUntilServerFlight(self: *Duo) !void {
 pub fn serveClient(self: *Duo) !void {
     try self.serve(&self.client);
 }
+
+/// Answers whatever the server asks for now.
+pub fn serveServer(self: *Duo) !void {
+    try self.serve(&self.server);
+}

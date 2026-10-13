@@ -31,7 +31,6 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     UnrecognizedName,
     CertificateRequired,
     UnexpectedCookie,
-    Renegotiation,
     InappropriateFallback,
     NoClientCertificate,
 } || ClientHello.ParseError;

@@ -82,9 +82,10 @@ pub fn receive(self: Machine, bytes: []const u8, epoch: Epoch, boundary: bool) E
     };
 }
 
-pub fn pop(self: Machine) ?Emit {
+/// Moves the next output into `out`; see `Flight.pop`.
+pub fn pop(self: Machine, out: *Emit) bool {
     return switch (self.state) {
-        inline else => |m| m.pop(),
+        inline else => |m| m.pop(out),
     };
 }
 
@@ -183,6 +184,16 @@ pub fn messageLimit(self: Machine) usize {
 pub fn peerParameters(self: Machine) []const u8 {
     return switch (self.state) {
         inline else => |m| m.peer_parameters,
+    };
+}
+
+/// Whether a warning-level alert may be passed over. TLS 1.2 has warnings (RFC 5246 section
+/// 7.2: a server may warn unrecognized_name before its ServerHello); TLS 1.3 treats every alert
+/// but close_notify and user_canceled as fatal (RFC 8446 section 6.2).
+pub fn warningsAllowed(self: Machine) bool {
+    return switch (self.state) {
+        .client => |m| m.version == .tls12 or (m.group == null and m.options.hello.allows12()),
+        .server => |m| m.version == .tls12,
     };
 }
 

@@ -7,6 +7,7 @@ const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("../handshake/Client.zig");
 const Machine = @import("../handshake/Machine.zig");
+const Emit = @import("../handshake/Flight.zig").Emit;
 const Server = @import("../handshake/Server.zig");
 const Services = @import("../handshake/Services.zig");
 const Suite13 = @import("../crypto/Suite.zig").Suite13;
@@ -345,14 +346,17 @@ fn levelOf(e: Client.Epoch) Level {
 /// Takes the next queued output as the current event.
 fn advance(self: *Handshake) void {
     @setRuntimeSafety(true);
-    while (self.hs.pop()) |emit| switch (emit) {
+    var emit: Emit = undefined;
+    while (self.hs.pop(&emit)) switch (emit) {
         .message => |m| {
             // safe: the flight buffer is bounded by the handshake limit, below 4 GiB.
             self.current = .{ .data = .{ .level = levelOf(m.epoch), .start = m.start, .len = m.len, .acked = 0, .flight_end = !self.hs.pending() } };
             return;
         },
-        .secret => |s| {
+        .secret => |*s| {
+            // The secret moves to the event; the copy it came in is erased.
             self.current = .{ .secret = .{ .level = levelOf(s.epoch), .direction = s.direction, .traffic = s.traffic } };
+            std.crypto.secureZero(u8, std.mem.asBytes(&emit));
             return;
         },
         .complete => {
@@ -360,7 +364,7 @@ fn advance(self: *Handshake) void {
             return;
         },
         .ticket => {},
-        .compat_ccs, .key_update, .keys12, .change_cipher_spec => {
+        .compat_ccs, .key_update, .keys12, .change_cipher_spec, .refuse_renegotiation => {
             // Neither exists in QUIC: the state table rejects them before they can be queued.
             self.fail(.internal_error);
             return;
