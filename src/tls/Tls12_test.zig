@@ -256,8 +256,9 @@ test "C4 TLS 1.2 renegotiation is refused with a warning, and the connection goe
     // A HelloRequest from the server.
     const request = try duo.server.tx.?.seal(.handshake, "\x00\x00\x00\x00", 0, &buffer);
     _ = try duo.client.receive(request);
-    try std.testing.expectEqual(.no_renegotiation, duo.client.diagnostics().alert_sent.?);
+    // The warning is the write half's to send: it goes out with the client's next output.
     _ = try duo.server.receive(duo.client.output());
+    try std.testing.expectEqual(.no_renegotiation, duo.client.diagnostics().alert_sent.?);
     duo.client.acknowledge(duo.client.output().len);
     try std.testing.expectEqual(.no_renegotiation, duo.server.diagnostics().alert_received.?);
     var out: [64]u8 = undefined;
@@ -265,8 +266,8 @@ test "C4 TLS 1.2 renegotiation is refused with a warning, and the connection goe
     // A ClientHello after the handshake.
     const hello = try duo.client.tx.?.seal(.handshake, "\x01\x00\x00\x00", 0, &buffer);
     _ = try duo.server.receive(hello);
-    try std.testing.expectEqual(.no_renegotiation, duo.server.diagnostics().alert_sent.?);
     _ = try duo.client.receive(duo.server.output());
+    try std.testing.expectEqual(.no_renegotiation, duo.server.diagnostics().alert_sent.?);
     duo.server.acknowledge(duo.server.output().len);
     try std.testing.expectEqualSlices(u8, "and here", try duo.echo(&duo.server, &duo.client, "and here", &out));
 }

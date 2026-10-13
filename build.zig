@@ -37,6 +37,12 @@ pub fn dev(b: *std.Build, tools: type) void {
         nativeLinks(test_module, target);
         const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
         test_step.dependOn(&b.addRunArtifact(tests).step);
+        // The hardened tier's suites: the parser properties the fuzzer drives, and the tests
+        // whose tasks share a session, a snapshot or a job, under ThreadSanitizer.
+        const fuzz_tests = b.addTest(.{ .name = "parser-fuzz", .root_module = test_module, .filters = &.{"fuzz"} });
+        b.step("parser-fuzz", "Run the parser fuzz properties alone").dependOn(&b.addRunArtifact(fuzz_tests).step);
+        const concurrent_tests = b.addTest(.{ .name = "concurrent", .root_module = test_module, .filters = &.{"concurrent"} });
+        b.step("concurrent", "Run the tests whose tasks share a session, a snapshot or a job").dependOn(&b.addRunArtifact(concurrent_tests).step);
         const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegis(p, check_module, target, optimize);
@@ -44,7 +50,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         check.dependOn(&checked.step);
     }
     const host = b.graph.host;
-    preflight.addCi(b, p, .{ .tests = test_step, .portable_tests = true, .bench = .{
+    preflight.addCi(b, p, .{ .tests = test_step, .portable_tests = true, .hardened = if (freestanding) null else .{ .fuzz_step = "parser-fuzz", .tsan_step = "concurrent", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" }, .{ .name = "speed", .source = "bench/speed.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,

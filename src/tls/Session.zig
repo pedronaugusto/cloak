@@ -4,9 +4,18 @@
 //! connection and the transport, and presents plaintext as a `std.Io.Reader` and
 //! `std.Io.Writer`.
 //!
-//! A session is used from one task at a time: the reader and the writer share one
-//! connection and are not synchronized. The session stores `io` for the entropy and clock
-//! requests and for the adapters' vtables; open it in place and do not move it afterwards.
+//! After `open` or `accept` returns, one task may read (`reader`) while another writes
+//! (`writer`, `keyUpdate`, `finish`): the connection's halves keep their own record states, and
+//! what crosses them (the KeyUpdate a peer's request owes, a key update of its own, an alert) is
+//! written under the session's write lock by whichever task holds it. The reading task never
+//! waits for that lock: while the writing task holds it (blocked, perhaps, on a peer that is not
+//! reading) what the read owes is left for the writer, which writes it before its next record
+//! or as it lets the lock go, so neither end can wait on the other's reader. The transport's reader is
+//! the reading task's alone, its writer is used under the write lock. Two tasks may not read at
+//! once, nor two write at once; `rebind` and `deinit` run with neither. `info`, `diagnostics`,
+//! `closeNotified`, `failure` and `exportKeyingMaterial` may be called from either task. The
+//! session stores `io` for the entropy and clock requests and for the adapters' vtables; open it
+//! in place and do not move it afterwards.
 const std = @import("std");
 const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
@@ -128,8 +137,13 @@ trust: Trust,
 signer: ?Signer,
 eof: Eof,
 clock: Clock,
-/// The last failure behind a `ReadFailed` or `WriteFailed` from an adapter.
-failure: ?anyerror = null,
+/// The first failure behind a `ReadFailed` or `WriteFailed` from an adapter, as an error's
+/// integer; zero for none. Read it with `failure`.
+failure_code: std.atomic.Value(u16) = .init(0),
+/// Held by the reading task through each read.
+read_lock: std.Io.Mutex = .init,
+/// Held by whichever task writes to the connection's write half or the transport's writer.
+write_lock: std.Io.Mutex = .init,
 reader_interface: std.Io.Reader,
 writer_interface: std.Io.Writer,
 
@@ -301,6 +315,23 @@ pub fn closeNotified(session: *const Session) bool {
     return session.conn.readClosed();
 }
 
+/// The first failure behind a `ReadFailed` or `WriteFailed` from the reader or the writer.
+pub fn failure(session: *const Session) ?anyerror {
+    const code = session.failure_code.load(.acquire);
+    if (code == 0) return null;
+    return @errorFromInt(code);
+}
+
+/// Keeps the first failure; a later one, from the other task, does not replace it.
+fn noteFailure(session: *Session, err: anyerror) void {
+    _ = session.failure_code.cmpxchgStrong(0, @intFromError(err), .acq_rel, .acquire);
+}
+
+/// RFC 5705/8446 keying material; see `Connection.exportKeyingMaterial`.
+pub fn exportKeyingMaterial(session: *const Session, out: []u8, label: []const u8, context: []const u8) Connection.ExportError!void {
+    return session.conn.exportKeyingMaterial(out, label, context);
+}
+
 pub fn rebind(session: *Session, io: std.Io) void {
     session.io = io;
 }
@@ -319,7 +350,7 @@ fn handshake(session: *Session) OpenError!void {
     @setRuntimeSafety(true);
     session.handshakeLoop() catch |err| {
         // A failed handshake leaves an alert queued; the peer is owed it, best effort.
-        if (session.pushOutput()) {} else |push_err| session.failure = session.failure orelse push_err;
+        if (session.pushOutput()) {} else |push_err| session.noteFailure(push_err);
         return err;
     };
 }
@@ -352,12 +383,12 @@ fn handshakeLoop(session: *Session) OpenError!void {
 }
 
 fn transportFailedWith(session: *Session, err: anyerror) error{ReadFailed} {
-    session.failure = err;
+    session.noteFailure(err);
     return error.ReadFailed;
 }
 
 fn transportFailed(session: *Session, err: error{ ReadFailed, WriteFailed }) @TypeOf(err) {
-    session.failure = err;
+    session.noteFailure(err);
     return err;
 }
 
@@ -471,6 +502,27 @@ fn pushOutput(session: *Session) OpenError!void {
     if (try session.flushOutput()) session.output.flush() catch return session.transportFailed(error.WriteFailed);
 }
 
+/// What the read half owes the peer, written by the reading task when the write lock is free;
+/// when the writing task holds it, that task writes it (`releaseWrite`).
+fn pushOwed(session: *Session) OpenError!void {
+    @setRuntimeSafety(true);
+    if (!session.write_lock.tryLock()) return;
+    defer session.releaseWrite();
+    try session.pushOutput();
+}
+
+/// Lets the write lock go, then takes it back for what the read half came to owe while it was
+/// held: the reader found it held and left it.
+fn releaseWrite(session: *Session) void {
+    session.write_lock.unlock(session.io);
+    while (session.conn.owes()) {
+        if (!session.write_lock.tryLock()) return;
+        const pushed = session.pushOutput();
+        session.write_lock.unlock(session.io);
+        pushed catch |err| return session.noteFailure(err);
+    }
+}
+
 // ---------------------------------------------------------------- reading
 
 const reader_vtable: std.Io.Reader.VTable = .{ .stream = readerStream };
@@ -481,6 +533,11 @@ fn fromReader(r: *std.Io.Reader) *Session {
 
 fn readerStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
     const session = fromReader(r);
+    session.read_lock.lock(session.io) catch |err| {
+        session.noteFailure(err);
+        return error.ReadFailed;
+    };
+    defer session.read_lock.unlock(session.io);
     const view = session.plaintext() catch |err| return switch (err) {
         error.EndOfStream => error.EndOfStream,
         else => error.ReadFailed,
@@ -498,7 +555,6 @@ fn plaintext(session: *Session) (ReadError || OpenError)![]const u8 {
         const view = session.conn.readable();
         if (view.len != 0) return view;
         if (session.conn.readClosed()) return error.EndOfStream;
-        session.pushOutput() catch |err| return session.remember(err);
         // About to wait: an idle session holds no record or message buffers.
         session.conn.trim();
         const data = session.input.peekGreedy(1) catch |err| switch (err) {
@@ -510,17 +566,19 @@ fn plaintext(session: *Session) (ReadError || OpenError)![]const u8 {
             error.ReadFailed => return session.remember(error.ReadFailed),
         };
         const n = session.conn.receive(data) catch |err| {
-            session.pushOutput() catch |push_err| return session.remember(push_err);
+            // The fatal alert the failure owes the peer.
+            session.pushOwed() catch |push_err| return session.remember(push_err);
             return session.remember(err);
         };
         session.input.toss(n);
         _ = session.serve() catch |err| return session.remember(err);
-        session.pushOutput() catch |err| return session.remember(err);
+        // A KeyUpdate or a warning the read owes the peer.
+        if (session.conn.owes()) session.pushOwed() catch |err| return session.remember(err);
     }
 }
 
 fn remember(session: *Session, err: anyerror) error{ReadFailed} {
-    session.failure = err;
+    session.noteFailure(err);
     return error.ReadFailed;
 }
 
@@ -534,6 +592,11 @@ fn fromWriter(w: *std.Io.Writer) *Session {
 
 fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
     const session = fromWriter(w);
+    session.write_lock.lock(session.io) catch |err| {
+        session.noteFailure(err);
+        return error.WriteFailed;
+    };
+    defer session.releaseWrite();
     session.sendAll(w.buffer[0..w.end]) catch return error.WriteFailed;
     w.end = 0;
     var consumed: usize = 0;
@@ -551,13 +614,25 @@ fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io
 
 fn writerFlush(w: *std.Io.Writer) std.Io.Writer.Error!void {
     const session = fromWriter(w);
+    session.write_lock.lock(session.io) catch |err| {
+        session.noteFailure(err);
+        return error.WriteFailed;
+    };
+    defer session.releaseWrite();
+    return session.flushLocked();
+}
+
+fn flushLocked(session: *Session) std.Io.Writer.Error!void {
+    const w = &session.writer_interface;
     session.sendAll(w.buffer[0..w.end]) catch return error.WriteFailed;
     w.end = 0;
     _ = session.flushOutput() catch |err| {
-        session.failure = err;
+        session.noteFailure(err);
         return error.WriteFailed;
     };
     session.output.flush() catch return error.WriteFailed;
+    // Idle until the next write: no output buffer held.
+    session.conn.trimOutput();
 }
 
 fn sendAll(session: *Session, bytes: []const u8) !void {
@@ -565,7 +640,7 @@ fn sendAll(session: *Session, bytes: []const u8) !void {
     var rest = bytes;
     while (rest.len != 0) {
         const n = session.conn.send(rest) catch |err| {
-            session.failure = err;
+            session.noteFailure(err);
             return err;
         };
         if (n == 0) {
@@ -578,11 +653,27 @@ fn sendAll(session: *Session, bytes: []const u8) !void {
     _ = try session.flushOutput();
 }
 
-pub const FinishError = std.Io.Writer.Error || Connection.FinishError || OpenError;
+pub const FinishError = std.Io.Writer.Error || Connection.FinishError || OpenError || std.Io.Cancelable;
 
-/// Sends close_notify and flushes. Reading may continue until the peer closes too.
+pub const KeyUpdateError = Connection.SendError || OpenError || std.Io.Writer.Error || std.Io.Cancelable;
+
+/// New write keys, as the writing task, after what was written so far; with `request_peer` the
+/// peer is asked for new keys of its own too. TLS 1.3 only (`NoKeyUpdate` in TLS 1.2).
+pub fn keyUpdate(session: *Session, request_peer: bool) KeyUpdateError!void {
+    try session.write_lock.lock(session.io);
+    defer session.releaseWrite();
+    try session.flushLocked();
+    try session.conn.keyUpdate(request_peer);
+    _ = try session.flushOutput();
+    try session.output.flush();
+}
+
+/// Sends close_notify and flushes, as the writing task. Reading may continue until the peer
+/// closes too.
 pub fn finish(session: *Session) FinishError!void {
-    try session.writer_interface.flush();
+    try session.write_lock.lock(session.io);
+    defer session.releaseWrite();
+    try session.flushLocked();
     try session.conn.finish();
     _ = try session.flushOutput();
     try session.output.flush();
@@ -590,4 +681,5 @@ pub fn finish(session: *Session) FinishError!void {
 
 test {
     _ = @import("Session_test.zig");
+    _ = @import("Duplex_test.zig");
 }

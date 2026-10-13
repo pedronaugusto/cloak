@@ -688,6 +688,7 @@ test "C2 connection memory: handshake peak and idle residue are measured and bou
         // allocation of the handshake core, its exporter and state.
         try pair.flush();
         pair.conn.trim();
+        pair.conn.trimOutput();
         const idle = count.live_bytes;
         std.debug.print("\nC2 memory group={s} handshake peak={d} bytes idle heap={d} bytes connection struct={d} bytes\n", .{ @tagName(group), peak, idle, @sizeOf(Connection) });
         try std.testing.expect(peak <= 48 * 1024);

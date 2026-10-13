@@ -12,6 +12,21 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Breaking
 
+- `tls.Session.failure` is a function, `failure()`, the first failure behind a `ReadFailed` or `WriteFailed`, which either task may read.
+- `tls.Connection.output` takes the connection mutably: it writes what the read half owes first. `trim` keeps the output buffer once the handshake completes; `trimOutput` returns it.
+
+### Added
+
+- A `tls.Session` may be read by one task while another writes (`reader` on one, `writer`, `keyUpdate` and `finish` on the other), with separate record states for the two halves; a KeyUpdate a peer asks for, a key update of the session's own, the refusal of renegotiation and a read failure's alert cross between them inside cloak. `tls.Connection` documents the same split for drivers of its own.
+- `tls.Session.keyUpdate` and `tls.Session.exportKeyingMaterial`.
+- The hardened tier: the parser properties under the fuzzer (`parser-fuzz`) and the concurrent tests under ThreadSanitizer (`concurrent`).
+
+### Fixed
+
+- `tls.Connection.keyUpdate` on a TLS 1.2 connection is refused with `NoKeyUpdate` instead of ending the connection.
+
+### Breaking
+
 - `tls.Suite` lists the suites of both versions by IANA number (the three of TLS 1.3 and six of TLS 1.2); `suites` options take both and default to all nine, and `min_version` and `max_version` (`tls.Version`) bound the versions. A version is offered only when one of its suites is listed, and a client whose versions leave only TLS 1.2 must list a TLS 1.2 suite. `Info` says the `version`.
 - `tls.Session.open` and `accept` take their options last, after the buffers. `tls.Session.Signer.sign` takes the whole `SignRequest`: the scheme as a `tls.SignatureScheme`, the content, and `prehashed` for a TLS 1.2 digest. `tls.Session.finish` returns `tls.Session.FinishError`.
 - Times are `std.Io.Timestamp` and spans `std.Io.Duration` across the public surface: `types.Request.time`, a receipt's `validation_time`, `expires` and `revocation_expires`, `Identity.expires`, `NativeVerification.take`'s `now`, the `time` a handshake asks for (`tls.Connection.Answer.time`), `tls.Session.Clock.fixed`, and `types.RevocationPolicy.clock_skew` and `max_age` (still at most a day and a year). Certificates and revocation evidence still count whole seconds inside, rounded down from the request's time once.

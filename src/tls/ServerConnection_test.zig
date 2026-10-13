@@ -377,6 +377,7 @@ test "C3 server memory: handshake peak and idle residue are bounded" {
     const peak = count.peak_bytes;
     try pair.flush();
     pair.conn.trim();
+    pair.conn.trimOutput();
     const idle = count.live_bytes;
     std.debug.print("\nC3 memory server handshake peak={d} bytes idle heap={d} bytes connection struct={d} bytes\n", .{ peak, idle, @sizeOf(Connection) });
     try std.testing.expect(peak <= 48 * 1024);

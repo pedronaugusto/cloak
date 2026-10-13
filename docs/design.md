@@ -300,16 +300,28 @@ Memory. A running handshake holds one scratch block (offered key shares, the
 transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
 record buffer sized to the record being read, a message buffer and the output
 buffer: about 37 KiB at the peak for the default offer. When the connection is
-established the scratch block and flight are freed; `trim` returns the record,
-message and output buffers when nothing is pending, and `Session` calls it before it
-waits to read. What remains for an idle connection is the struct (576 bytes) and one
+established the scratch block and flight are freed; `trim` returns the record and
+message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
+calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (576 bytes) and one
 heap block of 928 bytes, 1,504 bytes in total. These are heap figures from
 a counting allocator; stack use is not measured here.
 
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
 requests with the system's secure randomness and calendar clock (or a fixed time),
 the portable verifier over a trust snapshot (or a caller's verifier), and, for
-a key cloak does not hold, a caller's signer. It is used from one task at a time. A transport end without close_notify is
+a key cloak does not hold, a caller's signer. After the handshake one task may read
+while another writes, as Go's `tls.Conn` and a split rustls stream allow (HTTP/2 and
+WebSocket need it). The connection is then two halves with record states of their own:
+the read half (input reassembly, the read keys, post-handshake messages) and the write half
+(the write keys, the output). What crosses them is a handful of atomic bits: the KeyUpdate a
+peer's request owes, a key update the read half asks for before its epoch runs out, the
+warning that refuses renegotiation, and a read failure's fatal alert; status (the phase,
+the first failure, the alerts sent and received) is atomic too. The write half writes what
+is owed before its next record. The session holds a write lock over the write half and the
+transport's writer; the reading task takes it only if it is free and otherwise leaves what
+it owes to the writer, which takes the lock back for it as it lets go. A reader never
+waits for the writer: two ends each blocked writing to a peer that is not reading would
+otherwise each hold the lock the other's reader needs. A transport end without close_notify is
 a truncation unless the caller chose `.allow` for protocols whose framing detects it.
 Per-call deadlines are the transport's own; the session adds none. A `Session` drives
 readers and writers it does not own and cannot interrupt a blocking read, so a timeout
