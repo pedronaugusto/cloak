@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-13
+
 ### Breaking
 
 - On macOS cloak opens Security from the system the first time it evaluates native policy, where it linked Security and CoreFoundation. An Apple target links only libSystem, from what Zig ships, and builds on any host without an SDK. A system without Security, or without a symbol cloak calls, makes native evaluation return `error.SystemTrustUnavailable`, which `NativeVerification.TakeError` now holds.
