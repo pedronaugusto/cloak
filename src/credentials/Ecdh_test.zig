@@ -91,3 +91,50 @@ test "credential ecdh rejects out of range scalars and invalid peers" {
         try std.testing.expectError(error.InvalidPublicKey, group.agree(&one, &infinity, &secret));
     }
 }
+
+const Agreement = struct { tcId: usize, flags: []const []const u8, public: []const u8, private: []const u8, shared: []const u8, result: []const u8 };
+
+/// Wycheproof's raw-point ECDH vectors: every `valid` case agrees on the published
+/// secret and every `invalid` one (points off the curve, coordinates at or above p,
+/// invalid-curve and wrong-length encodings) is refused. `acceptable` cases are compressed
+/// points, which TLS never sends (RFC 8446 section 4.2.8.2, RFC 8422 section 5.1.2): refused.
+fn agreementCampaign(comptime Group: type, comptime file: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []const struct { tests: []const Agreement } }, a, @embedFile("../verify/fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    var checked: usize = 0;
+    for (parsed.testGroups) |group| for (group.tests) |vector| {
+        const public = try a.alloc(u8, vector.public.len / 2);
+        _ = try std.fmt.hexToBytes(public, vector.public);
+        const private_bytes = try a.alloc(u8, vector.private.len / 2);
+        _ = try std.fmt.hexToBytes(private_bytes, vector.private);
+        // A scalar is written with a leading zero byte when its top bit is set.
+        const significant = std.mem.trimStart(u8, private_bytes, "\x00");
+        try std.testing.expect(significant.len <= Group.scalar_length);
+        var scalar: [Group.scalar_length]u8 = @splat(0);
+        @memcpy(scalar[Group.scalar_length - significant.len ..], significant);
+        var shared: [Group.scalar_length]u8 = undefined;
+        const agreed = if (Group.agree(&scalar, public, &shared)) true else |_| false;
+        if (std.mem.eql(u8, vector.result, "valid")) {
+            if (!agreed) std.debug.print("WYCHEPROOF {s} tcId={d} refused a valid point\n", .{ file, vector.tcId });
+            try std.testing.expect(agreed);
+            var expected: [Group.scalar_length]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&expected, vector.shared);
+            try std.testing.expectEqualSlices(u8, &expected, &shared);
+        } else {
+            if (agreed) std.debug.print("WYCHEPROOF {s} tcId={d} accepted a {s} point {any}\n", .{ file, vector.tcId, vector.result, vector.flags });
+            try std.testing.expect(!agreed);
+        }
+        checked += 1;
+    };
+    try std.testing.expectEqual(parsed.numberOfTests, checked);
+}
+
+test "Wycheproof P-256 ECDH on raw points: valid secrets agree, invalid-curve and malformed points are refused" {
+    try agreementCampaign(Ecdh.P256, "ecdh_secp256r1_ecpoint_test.json");
+}
+
+test "Wycheproof P-384 ECDH on raw points: valid secrets agree, invalid-curve and malformed points are refused" {
+    try agreementCampaign(Ecdh.P384, "ecdh_secp384r1_ecpoint_test.json");
+}
