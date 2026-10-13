@@ -2,7 +2,8 @@
 //! squaring, addition and subtraction in inline assembly. The reduction uses the shape of p (its
 //! Montgomery factor is the low limb itself, and q * p needs only shifts); the final subtraction
 //! of p selects with `csel`, which does not branch. Each function equals its portable twin in
-//! `Montgomery.zig` for every input below p (tested).
+//! `Montgomery.zig` for every pair of 256-bit inputs, canonical or not (tested): a row of the
+//! product carries into a sixth limb as the portable one does.
 
 pub const Limbs = [4]u64;
 
@@ -12,6 +13,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
     var c2: u64 = undefined;
     var c3: u64 = undefined;
     var c4: u64 = undefined;
+    var c5: u64 = undefined;
     var l0: u64 = undefined;
     var l1: u64 = undefined;
     var l2: u64 = undefined;
@@ -60,7 +62,8 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adds  %[c1], %[c1], %[h0]
         \\ adcs  %[c2], %[c2], %[h1]
         \\ adcs  %[c3], %[c3], %[h2]
-        \\ adc   %[c4], %[c4], %[h3]
+        \\ adcs  %[c4], %[c4], %[h3]
+        \\ adc   %[c5], xzr, xzr
         \\ lsl   %[l0], %[c0], #32
         \\ lsr   %[l1], %[c0], #32
         \\ subs  %[l2], %[c0], %[l0]
@@ -69,7 +72,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adcs  %[c1], %[c2], %[l1]
         \\ adcs  %[c2], %[c3], %[l2]
         \\ adcs  %[c3], %[c4], %[l3]
-        \\ adc   %[c4], xzr, xzr
+        \\ adc   %[c4], %[c5], xzr
         // i = 2
         \\ mul   %[l0], %[a2], %[b0]
         \\ mul   %[l1], %[a2], %[b1]
@@ -87,7 +90,8 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adds  %[c1], %[c1], %[h0]
         \\ adcs  %[c2], %[c2], %[h1]
         \\ adcs  %[c3], %[c3], %[h2]
-        \\ adc   %[c4], %[c4], %[h3]
+        \\ adcs  %[c4], %[c4], %[h3]
+        \\ adc   %[c5], xzr, xzr
         \\ lsl   %[l0], %[c0], #32
         \\ lsr   %[l1], %[c0], #32
         \\ subs  %[l2], %[c0], %[l0]
@@ -96,7 +100,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adcs  %[c1], %[c2], %[l1]
         \\ adcs  %[c2], %[c3], %[l2]
         \\ adcs  %[c3], %[c4], %[l3]
-        \\ adc   %[c4], xzr, xzr
+        \\ adc   %[c4], %[c5], xzr
         // i = 3
         \\ mul   %[l0], %[a3], %[b0]
         \\ mul   %[l1], %[a3], %[b1]
@@ -114,7 +118,8 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adds  %[c1], %[c1], %[h0]
         \\ adcs  %[c2], %[c2], %[h1]
         \\ adcs  %[c3], %[c3], %[h2]
-        \\ adc   %[c4], %[c4], %[h3]
+        \\ adcs  %[c4], %[c4], %[h3]
+        \\ adc   %[c5], xzr, xzr
         \\ lsl   %[l0], %[c0], #32
         \\ lsr   %[l1], %[c0], #32
         \\ subs  %[l2], %[c0], %[l0]
@@ -123,7 +128,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
         \\ adcs  %[c1], %[c2], %[l1]
         \\ adcs  %[c2], %[c3], %[l2]
         \\ adcs  %[c3], %[c4], %[l3]
-        \\ adc   %[c4], xzr, xzr
+        \\ adc   %[c4], %[c5], xzr
         // final: subtract p if c >= p
         \\ mov   %[h1], #0xffffffff
         \\ mov   %[h3], #-4294967295
@@ -141,6 +146,7 @@ pub inline fn mul(a: Limbs, b: Limbs) Limbs { // glint-ignore: P003 -- one strai
           [c2] "=&r" (c2),
           [c3] "=&r" (c3),
           [c4] "=&r" (c4),
+          [c5] "=&r" (c5),
           [l0] "=&r" (l0),
           [l1] "=&r" (l1),
           [l2] "=&r" (l2),
