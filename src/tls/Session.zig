@@ -380,6 +380,9 @@ fn handshakeLoop(session: *Session) OpenError!void {
     }
     _ = try session.flushOutput();
     try session.output.flush();
+    // Release the handshake's scratch here, on one task, before two may share the session:
+    // `info` reads what it held.
+    session.conn.trim();
 }
 
 fn transportFailedWith(session: *Session, err: anyerror) error{ReadFailed} {

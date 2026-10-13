@@ -4,12 +4,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
-### Fixed
-
-- The test that a popped handshake output leaves no key bytes in its queue slot looks for the key's byte sequences, not for one byte value: a Debug build on the x86_64 backend fills the emptied slot with 0xaa, its pattern for undefined memory, which the test had used as its key.
-
-## [0.4.0] - 2026-10-13
-
 ### Breaking
 
 - `tls.Session.failure` is a function, `failure()`, the first failure behind a `ReadFailed` or `WriteFailed`, which either task may read.
@@ -24,6 +18,9 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Fixed
 
 - `tls.Connection.keyUpdate` on a TLS 1.2 connection is refused with `NoKeyUpdate` instead of ending the connection.
+- The test that a popped handshake output leaves no key bytes in its queue slot looks for the key's byte sequences, not for one byte value: a Debug build on the x86_64 backend fills the emptied slot with 0xaa, its pattern for undefined memory, which the test had used as its key.
+
+## [0.4.0] - 2026-10-13
 
 ### Breaking
 
