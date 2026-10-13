@@ -71,10 +71,15 @@ owners with volatile full-capacity byte wipes after last use on success and
 error. Live-owner tests inspect initialized bytes before lifetime ends;
 allocator tests inspect only before raw free and require erased owned buffers
 in every build mode. Never inspect freed storage or an undefined typed value. These checks
-and optimized caller inspection establish the named wipes, not universal
-secret-copy erasure: Zig provides no control over compiler-created registers,
-spills, by-value argument/result copies or callee-private temporaries. There
-is no claim that arbitrary registers or all stack copies are erased. Wasm
+and optimized caller inspection establish the named wipes. What no owner can
+name (compiler spills, saved registers, by-value arguments and results in the
+callees' frames) is erased by `aegis.secret.scrubbed`: key parsing, signing
+and ECDH each run in a frame of their own under data-independent timing
+(PSTATE.DIT where the target has FEAT_DIT), and the stack below the entry is
+zeroed when they return, to a depth a test measures for every key type,
+scheme and build mode. Keys are parsed into the owner that keeps them, so no
+copy of the material travels back through the parser's frames. Live registers,
+the entry function's own frame and a signal stack stay out of reach. Wasm
 inspection cannot establish a downstream JIT's spill behavior.
 
 ## Build and verification decisions

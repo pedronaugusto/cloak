@@ -1,7 +1,8 @@
 //! Signatures with a private key: ECDSA over P-256 and P-384, and Ed25519. The point
 //! multiplication by the secret nonce is the masked fixed-window walk of `Curve`, the
-//! modular arithmetic is std's constant-time scalar field, and every temporary that held
-//! a secret is erased before return. ECDSA nonces are hedged: the draft "Deterministic
+//! modular arithmetic is std's constant-time scalar field, and every named temporary that
+//! held a secret is erased before return; the stack the kernels spill to is the caller's to
+//! scrub (`PrivateKey.sign` does). ECDSA nonces are hedged: the draft "Deterministic
 //! ECDSA and EdDSA Signatures with Additional Randomness" derives them from the key, the
 //! message hash and fresh noise, so a weak or repeated draw alone cannot repeat a nonce
 //! and a fault in one signature does not leak the key. Ed25519 follows RFC 8032 and is
@@ -57,7 +58,9 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             if (d.isZero()) return error.SigningFailed;
             var k_inverse = k.invert();
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
-            var blend = reduce(secret_length, digest.*).add(r.mul(d));
+            var rd = r.mul(d);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
+            var blend = reduce(secret_length, digest.*).add(rd);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;
@@ -82,7 +85,10 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
             var k_inverse = k.powModulusMinusTwo();
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
-            var blend = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest)).add(r.mul(d));
+            // r * d with r public gives d: named, and erased.
+            var rd = r.mul(d);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
+            var blend = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest)).add(rd);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;

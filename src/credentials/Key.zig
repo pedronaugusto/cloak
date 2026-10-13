@@ -24,7 +24,9 @@ const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
 const oid_ed = "\x2b\x65\x70";
 const oid_p256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const oid_p384 = "\x2b\x81\x04\x00\x22";
-pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseError!Material {
+/// Parses one private key into `out`, which holds it on success and nothing on failure: key
+/// material is written where it will live, never returned by value through the frames between.
+pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     comptime {
         if (std.options.side_channels_mitigations == .none) @compileError("cloak private-key construction requires std side-channel mitigations");
@@ -37,8 +39,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
     const armored = std.mem.startsWith(u8, trimmed, "-----BEGIN ") or (trimmed.len != 0 and trimmed[0] != 0x30 and Pem.boundary(bytes, 0) != null);
     if (armored) {
         var pem = Pem.init(bytes);
-        var found: ?Material = null;
-        defer if (found != null) std.crypto.secureZero(u8, std.mem.asBytes(&found));
+        var found = false;
+        errdefer if (found) std.crypto.secureZero(u8, std.mem.asBytes(out));
         while (try pem.next(gpa, options.bytes)) |decoded| {
             var block = decoded;
             defer block.deinit(gpa);
@@ -46,7 +48,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
                 try validate(block.der, options);
                 continue;
             }
-            if (found != null) return error.InvalidKey;
+            if (found) return error.InvalidKey;
             const rsa_label = std.mem.eql(u8, block.label, "RSA PRIVATE KEY");
             const ec_label = std.mem.eql(u8, block.label, "EC PRIVATE KEY");
             const pkcs8_label = std.mem.eql(u8, block.label, "PRIVATE KEY");
@@ -57,20 +59,22 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
                 var plain = try legacy(gpa, block, options);
                 defer plain.deinit();
                 try labelShape(plain.expose(), rsa_label, ec_label);
-                found = try parseDer(plain.expose(), options);
+                try parseDer(plain.expose(), options, out);
             } else if (encrypted_label) {
-                found = try encrypted(gpa, block.der, options);
+                try encrypted(gpa, block.der, options, out);
             } else {
                 try labelShape(block.der, rsa_label, ec_label);
-                found = try parseDer(block.der, options);
+                try parseDer(block.der, options, out);
             }
+            found = true;
         }
-        return found orelse error.InvalidKey;
+        if (!found) return error.InvalidKey;
+        return;
     }
     try validate(bytes, options);
     var probe = (try Der.single(bytes, 0x30)).reader();
-    if (probe.peek() == 0x30) return encrypted(gpa, bytes, options);
-    return parseDer(bytes, options);
+    if (probe.peek() == 0x30) return encrypted(gpa, bytes, options, out);
+    return parseDer(bytes, options, out);
 }
 fn labelShape(bytes: []const u8, rsa: bool, ec: bool) ParseError!void {
     @setRuntimeSafety(true);
@@ -83,19 +87,28 @@ fn validate(bytes: []const u8, options: Options) ParseError!void {
     @setRuntimeSafety(true);
     try Der.validate(bytes, .{ .bytes = options.bytes, .elements = options.elements, .depth = options.depth });
 }
-fn parseDer(bytes: []const u8, options: Options) ParseError!Material {
+fn parseDer(bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     try validate(bytes, options);
     var r = (try Der.single(bytes, 0x30)).reader();
     const version = try Der.number((try r.expect(2)).value);
     return switch (r.peek() orelse return error.InvalidKey) {
-        0x30 => if (version == 0) pkcs8(&r, options) else error.InvalidKey,
-        2 => if (version == 0) .{ .rsa = try Rsa.parse(bytes, .{ .entropy = options.entropy }) } else error.InvalidKey,
-        4 => if (version == 1) sec1(bytes, null) else error.InvalidKey,
+        0x30 => if (version == 0) pkcs8(&r, options, out) else error.InvalidKey,
+        2 => if (version == 0) rsaKey(bytes, options, out) else error.InvalidKey,
+        4 => if (version == 1) sec1(bytes, null, out) else error.InvalidKey,
         else => error.InvalidKey,
     };
 }
-fn pkcs8(r: *Der.Reader, options: Options) ParseError!Material {
+/// An RSAPrivateKey, parsed straight into `out`'s RSA arm.
+fn rsaKey(bytes: []const u8, options: Options, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    out.* = .{ .rsa = undefined };
+    Rsa.parse(bytes, .{ .entropy = options.entropy }, &out.rsa) catch |err| {
+        std.crypto.secureZero(u8, std.mem.asBytes(out));
+        return err;
+    };
+}
+fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     var algorithm = (try r.expect(0x30)).reader();
     const id = (try algorithm.expect(6)).value;
@@ -110,12 +123,12 @@ fn pkcs8(r: *Der.Reader, options: Options) ParseError!Material {
     try validate(key, options);
     if (std.mem.eql(u8, id, oid_rsa)) {
         if (parameter) |p| if (p.tag != 5 or p.value.len != 0) return error.InvalidKey;
-        return .{ .rsa = try Rsa.parse(key, .{ .entropy = options.entropy }) };
+        return rsaKey(key, options, out);
     }
     if (std.mem.eql(u8, id, oid_ec)) {
         const p = parameter orelse return error.InvalidKey;
         if (p.tag != 6) return error.InvalidKey;
-        return sec1(key, p.value);
+        return sec1(key, p.value, out);
     }
     if (std.mem.eql(u8, id, oid_ed)) {
         if (parameter != null) return error.InvalidKey;
@@ -125,7 +138,8 @@ fn pkcs8(r: *Der.Reader, options: Options) ParseError!Material {
         defer std.crypto.secureZero(u8, &owned_seed);
         var pair = EdKey.create(&owned_seed) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-        return .{ .ed25519 = pair };
+        out.* = .{ .ed25519 = pair };
+        return;
     }
     return error.UnsupportedKey;
 }
@@ -145,7 +159,7 @@ fn attributes(bytes: []const u8) ParseError!void {
         attribute.finish() catch return error.InvalidKey;
     }
 }
-fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
+fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     var r = (try Der.single(bytes, 0x30)).reader();
     if (try Der.number((try r.expect(2)).value) != 1) return error.InvalidKey;
@@ -172,7 +186,8 @@ fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
         var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
         if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
-        return .{ .p256 = kp };
+        out.* = .{ .p256 = kp };
+        return;
     }
     if (std.mem.eql(u8, named, oid_p384)) {
         if (scalar.len != 48) return error.InvalidKey;
@@ -184,11 +199,12 @@ fn sec1(bytes: []const u8, outside: ?[]const u8) ParseError!Material {
         var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
         if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
-        return .{ .p384 = kp };
+        out.* = .{ .p384 = kp };
+        return;
     }
     return error.UnsupportedKey;
 }
-fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseError!Material {
+fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     try validate(bytes, options);
     const password = options.passphrase orelse return error.PasswordRequired;
@@ -246,7 +262,7 @@ fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
     plain_owner.resizeWithinCapacity(data.len) catch return error.InputLimit;
     const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, data, plain) else try Cbc.decrypt(key[0..key_len], iv[0..16].*, data, plain);
-    return parseDer(decoded, options) catch |err| switch (err) {
+    return parseDer(decoded, options, out) catch |err| switch (err) {
         error.OutOfMemory, error.EntropyRequired, error.EntropyUnavailable => err,
         else => error.BadPassword,
     };

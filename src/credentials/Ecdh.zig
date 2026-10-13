@@ -4,6 +4,11 @@
 const std = @import("std");
 const Curve = @import("Curve.zig");
 const p256 = @import("../crypto/p256.zig");
+const aegis = @import("aegis");
+
+/// Stack a derivation or an agreement reaches below its entry, erased when it returns; a test
+/// measures both curves against it in each build mode.
+const secret_stack: usize = if (@import("builtin").mode == .debug) 32 * 1024 else 24 * 1024;
 
 pub const P256 = struct {
     pub const scalar_length = p256.scalar_length;
@@ -17,6 +22,10 @@ pub const P256 = struct {
 
     /// Writes the SEC1 public key of a big-endian scalar: the comb walk of cloak's kernel.
     pub fn publicKey(scalar: *const [scalar_length]u8, out: *[public_length]u8) Error!void {
+        return aegis.secret.scrubbed(secret_stack, derive, .{ scalar, out });
+    }
+
+    fn derive(scalar: *const [scalar_length]u8, out: *[public_length]u8) Error!void {
         @setRuntimeSafety(true);
         try check(scalar);
         var point = p256.baseMul(scalar);
@@ -28,6 +37,10 @@ pub const P256 = struct {
     /// Writes the x coordinate of scalar * peer; the peer must be an uncompressed point on the
     /// curve.
     pub fn agree(scalar: *const [scalar_length]u8, peer: []const u8, out: *[scalar_length]u8) Error!void {
+        return aegis.secret.scrubbed(secret_stack, multiply, .{ scalar, peer, out });
+    }
+
+    fn multiply(scalar: *const [scalar_length]u8, peer: []const u8, out: *[scalar_length]u8) Error!void {
         @setRuntimeSafety(true);
         try check(scalar);
         if (peer.len != public_length or peer[0] != 4) return error.InvalidPublicKey;
@@ -35,7 +48,10 @@ pub const P256 = struct {
         var product = p256.mul(point, scalar);
         defer std.crypto.secureZero(u8, std.mem.asBytes(&product));
         if (product.z.isZero()) return error.IdentityElement;
-        out.* = product.affine().x.toBytes();
+        // The shared point is secret, both coordinates.
+        var shared = product.affine();
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&shared));
+        out.* = shared.x.toBytes();
     }
 };
 pub const P384 = Group(std.crypto.ecc.P384, std.crypto.sign.ecdsa.EcdsaP384Sha384);
@@ -59,6 +75,10 @@ fn Group(comptime Point: type, comptime Ecdsa: type) type {
 
         /// Writes the SEC1 public key of a big-endian scalar.
         pub fn publicKey(scalar: *const [scalar_length]u8, out: *[public_length]u8) Error!void {
+            return aegis.secret.scrubbed(secret_stack, derive, .{ scalar, out });
+        }
+
+        fn derive(scalar: *const [scalar_length]u8, out: *[public_length]u8) Error!void {
             @setRuntimeSafety(true);
             try check(scalar);
             var point = Curve.base(Point, .big, scalar) catch return error.IdentityElement;
@@ -69,6 +89,10 @@ fn Group(comptime Point: type, comptime Ecdsa: type) type {
         /// Writes the x coordinate of scalar * peer. The peer encoding must be a valid
         /// uncompressed point on the curve, never the identity.
         pub fn agree(scalar: *const [scalar_length]u8, peer: []const u8, out: *[scalar_length]u8) Error!void {
+            return aegis.secret.scrubbed(secret_stack, multiply, .{ scalar, peer, out });
+        }
+
+        fn multiply(scalar: *const [scalar_length]u8, peer: []const u8, out: *[scalar_length]u8) Error!void {
             @setRuntimeSafety(true);
             try check(scalar);
             if (peer.len != public_length or peer[0] != 4) return error.InvalidPublicKey;
@@ -82,4 +106,17 @@ fn Group(comptime Point: type, comptime Ecdsa: type) type {
 
 test {
     _ = @import("Ecdh_test.zig");
+}
+
+test "a derivation or an agreement reaches less stack than the depth that erases it" {
+    var deepest: usize = 0;
+    inline for (.{ P256, P384 }) |Kind| {
+        var scalar: [Kind.scalar_length]u8 = @splat(0x35);
+        var public: [Kind.public_length]u8 = undefined;
+        deepest = @max(deepest, aegis.secret.stackReach(4 * secret_stack, Kind.derive, .{ &scalar, &public }));
+        try Kind.publicKey(&scalar, &public);
+        var shared: [Kind.scalar_length]u8 = undefined;
+        deepest = @max(deepest, aegis.secret.stackReach(4 * secret_stack, Kind.multiply, .{ &scalar, &public, &shared }));
+    }
+    try std.testing.expect(deepest < secret_stack);
 }

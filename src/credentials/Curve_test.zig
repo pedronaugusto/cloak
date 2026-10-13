@@ -43,11 +43,9 @@ test "credential SEC1 rejects congruent out of range P256 and P384 scalars" {
         std.mem.writeInt(@Int(.unsigned, n * 8), der[7..][0..n], Point.scalar.field_order + 1, .big);
         der[7 + n ..][0..4].* = .{ 0xa0, oid.len + 2, 6, oid.len };
         @memcpy(der[11 + n ..], oid);
-        const rejected = if (Key.parse(std.testing.allocator, &der, .{})) |value| blk: {
-            var material = value;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
-            break :blk false;
-        } else |err| err == error.InvalidKey;
+        var material: Key.Material = undefined;
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
+        const rejected = if (Key.parse(std.testing.allocator, &der, .{}, &material)) false else |err| err == error.InvalidKey;
         try std.testing.expect(rejected);
     }
 }

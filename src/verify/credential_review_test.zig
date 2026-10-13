@@ -8,11 +8,9 @@ const Rsa = @import("../credentials/Rsa.zig");
 const Kdf = @import("../credentials/Kdf.zig");
 const EdKey = @import("../credentials/EdKey.zig");
 test "credential review composite factors cannot become prepared RSA material" {
-    const rejected = if (Rsa.parse(@embedFile("fixtures/rsa-composite.der"), .{})) |value| blk: {
-        var material = value;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
-        break :blk false;
-    } else |err| err == error.InvalidKey;
+    var material: Rsa.Key = undefined;
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
+    const rejected = if (Rsa.parse(@embedFile("fixtures/rsa-composite.der"), .{}, &material)) false else |err| err == error.InvalidKey;
     // A failed rejection prints only a boolean, never prepared private material.
     try std.testing.expect(rejected);
 }

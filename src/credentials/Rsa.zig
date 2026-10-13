@@ -20,7 +20,9 @@ pub const Key = struct {
 };
 const Uint = @import("Uint.zig");
 const limb_bits = @bitSizeOf(usize) - 1;
-pub fn parse(encoded: []const u8, options: Options) Error!Key {
+/// Parses and validates an RSAPrivateKey into `out`, which holds the key on success and only
+/// zeros on failure.
+pub fn parse(encoded: []const u8, options: Options, out: *Key) Error!void {
     @setRuntimeSafety(true);
     var r = (try Der.single(encoded, 0x30)).reader();
     if (try Der.number((try r.expect(2)).value) != 0) return error.InvalidKey;
@@ -81,13 +83,12 @@ pub fn parse(encoded: []const u8, options: Options) Error!Key {
     const entropy = options.entropy orelse return error.EntropyRequired;
     try Primality.check(integers[3], entropy);
     try Primality.check(integers[4], entropy);
-    var key: Key = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
-    @memcpy(key.n[0..n.len], n);
-    @memcpy(key.e[0..e.len], e);
+    out.* = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
+    errdefer std.crypto.secureZero(u8, std.mem.asBytes(out));
+    @memcpy(out.n[0..n.len], n);
+    @memcpy(out.e[0..e.len], e);
     // Validated above; the kernel refuses only shapes it cannot hold, such as unbalanced factors.
-    key.crt.init(n, e, integers[3], integers[4], integers[5], integers[6], integers[7]) catch return error.UnsupportedKey;
-    return key;
+    out.crt.init(n, e, integers[3], integers[4], integers[5], integers[6], integers[7]) catch return error.UnsupportedKey;
 }
 fn remainder(x: *const Uint, modulus: *const Uint) Uint {
     @setRuntimeSafety(true);

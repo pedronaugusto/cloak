@@ -127,7 +127,9 @@ const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("..
 const odd_keys = .{ @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("../crypto/testdata/rsa3070.der") };
 
 fn rsaKey(der: []const u8) !Rsa.Key {
-    return Rsa.parse(der, .{ .entropy = Entropy.fromIo(&std.testing.io) });
+    var key: Rsa.Key = undefined;
+    try Rsa.parse(der, .{ .entropy = Entropy.fromIo(&std.testing.io) }, &key);
+    return key;
 }
 
 fn rsaPublic(key: *const Rsa.Key) StdRsa.PublicKey {

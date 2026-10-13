@@ -465,7 +465,8 @@ pub fn signR(k: *const [32]u8) ?Scalar {
     return Scalar.reduce(x);
 }
 
-/// Checks an ECDSA signature (r, s) over a reduced digest scalar `e`, given in normal form.
+/// Checks an ECDSA signature (r, s) over a reduced digest scalar `e`, in Montgomery form as
+/// `Scalar.reduce` returns it.
 pub fn verify(q: Affine, e: Scalar, r_bytes: *const [32]u8, s_bytes: *const [32]u8) bool {
     const r = Scalar.fromBytes(r_bytes) catch return false;
     const s = Scalar.fromBytes(s_bytes) catch return false;

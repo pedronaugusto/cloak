@@ -1,10 +1,12 @@
 //! A retained immutable private key. Final release wipes all owned material.
 const std = @import("std");
+const builtin = @import("builtin");
 const Der = @import("wire/Der.zig");
 const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
 const Sign = @import("credentials/Sign.zig");
-const Secret = @import("aegis").Secret;
+const aegis = @import("aegis");
+const Secret = aegis.Secret;
 const PrivateKey = @This();
 /// Private: shares one immutable owner, never a caller's passphrase or DER.
 state: *State,
@@ -13,15 +15,26 @@ pub const ParseError = parser.ParseError;
 pub const ParseOptions = parser.Options;
 /// Caller-provided fresh CSPRNG witnesses for RSA material validation.
 pub const Entropy = @import("credentials/Entropy.zig");
+/// Stack a parse and a signature reach below their entry, erased when they return: the frames
+/// of the parser and the kernels, whose spills and copies of key material no owner can name.
+/// A test measures every key type and scheme against them in each build mode.
+const parse_stack: usize = if (builtin.mode == .debug) 96 * 1024 else 64 * 1024;
+const sign_stack: usize = if (builtin.mode == .debug) 48 * 1024 else 24 * 1024;
+
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
+    return aegis.secret.scrubbed(parse_stack, parseKey, .{ gpa, bytes, options });
+}
+
+fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    var material = Secret(parser.Material).init(try parser.parse(gpa, bytes, options));
-    errdefer material.deinit();
+    // The owner first: the parser writes the key where it lives.
     const state = try gpa.create(State);
     errdefer gpa.destroy(state);
     state.gpa = gpa;
     state.refs = .init(1);
-    material.moveInto(&state.material);
+    state.material = .init(undefined);
+    errdefer state.material.deinit();
+    try parser.parse(gpa, bytes, options, state.material.exposeMut());
     return .{ .state = state };
 }
 pub fn isEncrypted(bytes: []const u8) bool {
@@ -79,6 +92,10 @@ pub fn noiseLength(key: PrivateKey) usize {
 /// Returns the DER ECDSA-Sig-Value, the 64 Ed25519 bytes, or the modulus-sized RSA signature
 /// in `out`; an RSA signature is checked against the public key before it is returned.
 pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
+    return aegis.secret.scrubbed(sign_stack, signMessage, .{ key, algorithm, message, noise, out });
+}
+
+fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
     switch (key.state.material.expose().*) {
@@ -106,6 +123,10 @@ pub const SignDigestError = SignError || error{InvalidDigest};
 /// otherwise. ECDSA on the key's own curve hash, or RSA (PSS or PKCS#1 v1.5, with the same
 /// public check); Ed25519 signs the message itself and has no digest form.
 pub fn signDigest(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignDigestError![]const u8 {
+    return aegis.secret.scrubbed(sign_stack, signPrehashed, .{ key, algorithm, digest, noise, out });
+}
+
+fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignDigestError![]const u8 {
     @setRuntimeSafety(true);
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
     return switch (key.state.material.expose().*) {
@@ -175,4 +196,55 @@ pub fn deinit(key: PrivateKey) void {
 test {
     @setRuntimeSafety(true);
     _ = @import("credentials/Key_test.zig");
+}
+
+fn parseReleased(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!void {
+    const key = try parseKey(gpa, bytes, options);
+    key.deinit();
+}
+
+test "a parse and a signature reach less stack than the depths that erase it" {
+    const gpa = std.testing.allocator;
+    const entropy = Entropy.fromIo(&std.testing.io);
+    const keys = [_][]const u8{
+        @embedFile("crypto/testdata/rsa4096.der"),
+        @embedFile("crypto/testdata/rsa2049.der"),
+        @embedFile("credentials/testdata/p384.pkcs8.pem"),
+        @embedFile("credentials/testdata/p256.pkcs8.pem"),
+        @embedFile("credentials/testdata/ed25519.pkcs8.pem"),
+        @embedFile("credentials/testdata/rsa.enc-aes256-sha256.pem"),
+        @embedFile("credentials/testdata/p384.enc-des3.pem"),
+    };
+    var parsing: usize = 0;
+    var signing: usize = 0;
+    for (keys) |bytes| {
+        const options: ParseOptions = .{ .entropy = entropy, .passphrase = if (isEncrypted(bytes)) "correct-horse" else null };
+        parsing = @max(parsing, aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ gpa, bytes, options }));
+        const key = try parse(gpa, bytes, options);
+        defer key.deinit();
+        var noise: [max_noise]u8 = @splat(0x4e);
+        var out: [max_signature]u8 = undefined;
+        const algorithms: []const certificate.Algorithm.Signature = switch (key.state.material.expose().*) {
+            .rsa => &.{ .{ .pss = .{ .hash = .sha512, .mgf_hash = .sha512, .salt_length = 64 } }, .{ .rsa = .sha256 } },
+            .p256 => &.{.{ .ecdsa = .sha256 }},
+            .p384 => &.{.{ .ecdsa = .sha384 }},
+            .ed25519 => &.{.ed25519},
+        };
+        for (algorithms) |algorithm| {
+            signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signMessage, .{ key, algorithm, "message", noise[0..key.noiseLength()], &out }));
+            if (algorithm == .ed25519) continue;
+            const digest: [64]u8 = @splat(0x44);
+            const length: usize = switch (algorithm) {
+                .pss => 64,
+                .rsa => 32,
+                .ecdsa => |hash| if (hash == .sha256) 32 else 48,
+                else => unreachable,
+            };
+            signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signPrehashed, .{ key, algorithm, digest[0..length], noise[0..key.noiseLength()], &out }));
+        }
+    }
+    if (parsing >= parse_stack or signing >= sign_stack) {
+        std.debug.print("stack reached: parsing {d} of {d}, signing {d} of {d}\n", .{ parsing, parse_stack, signing, sign_stack });
+        return error.TestUnexpectedResult;
+    }
 }
