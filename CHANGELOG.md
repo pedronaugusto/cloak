@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Breaking
 
 - `tls.Suite` lists the suites of both versions by IANA number (the three of TLS 1.3 and six of TLS 1.2); `suites` options take both and default to all nine, and `min_version` and `max_version` (`tls.Version`) bound the versions. A version is offered only when one of its suites is listed, and a client whose versions leave only TLS 1.2 must list a TLS 1.2 suite. `Info` says the `version`.
@@ -25,6 +27,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 - P-256 key generation, agreement, ECDSA signing and verification, and a parsed key's public point, run cloak's own kernel: a precomputed base comb with complete additions, constant-time signed windows over the peer's multiples, a public double-base walk for verification, and the field in assembly on AArch64 (portable Zig elsewhere, tested equal on every pair of 256-bit operands).
 - Key parsing, signing and key agreement run in a frame of their own under data-independent timing (PSTATE.DIT on AArch64 with FEAT_DIT), and the stack below them is erased when they return: the compiler's spills and copies of key material no owner can name. Keys are parsed into the owner that keeps them; parsing an RSA key reaches about 40 KB of stack, where it reached about 180 KB.
+- Pins aegis 0.1.6.
 
 ### Fixed
 
