@@ -18,6 +18,8 @@ pub const ClientCertificate = @import("tls/handshake/Server.zig").Auth;
 pub const Connection = @import("tls/Connection.zig");
 /// The record-free handshake for QUIC.
 pub const quic = @import("tls/quic.zig");
+/// DTLS 1.3 and 1.2: the handshake over datagrams.
+pub const dtls = @import("tls/dtls.zig");
 /// A client's cache of session tickets for resumption.
 pub const SessionCache = @import("tls/resumption.zig").SessionCache;
 /// A server's session-ticket keys.
@@ -85,4 +87,5 @@ test {
     _ = Connection;
     _ = Session;
     _ = quic;
+    _ = dtls;
 }

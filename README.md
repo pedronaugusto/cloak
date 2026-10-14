@@ -1,6 +1,6 @@
 # cloak
 
-Work in progress: credentials, certificate verification and a TLS 1.3 and TLS 1.2 client and server for Zig. Both roles exist as a stream and a sans-I/O connection, and TLS 1.3 also as a QUIC handshake; sessions resume from tickets (TLS 1.2's only when asked); datagrams are not built yet.
+Work in progress: credentials, certificate verification and a TLS 1.3 and TLS 1.2 client and server for Zig. Both roles exist as a stream and a sans-I/O connection, TLS 1.3 also as a QUIC handshake, and DTLS 1.3 and 1.2 over datagrams; sessions resume from tickets (TLS 1.2's only when asked).
 
 ## Install
 
@@ -124,7 +124,7 @@ pub fn serve(
 ```
 <!-- END GENERATED zig build docs -- serve -->
 
-The same client without I/O is `cloak.tls.Connection`: feed it bytes, write what it holds, and answer its requests for entropy, time and peer verification, and for signing when a key is held elsewhere. `cloak.tls.quic.Handshake` is the record-free form for QUIC. Verification has no default: pass a trust snapshot, a verifier of your own, or `.none` and accept an unauthenticated connection.
+The same client without I/O is `cloak.tls.Connection`: feed it bytes, write what it holds, and answer its requests for entropy, time and peer verification, and for signing when a key is held elsewhere. `cloak.tls.quic.Handshake` is the record-free form for QUIC, and `cloak.tls.dtls.Datagram` the DTLS one: hand it each datagram, send what it writes, call it again at its timeout, and seal application datagrams with it. A DTLS server meets an unknown address with `cloak.tls.dtls.Cookies` first, which answers statelessly until the client proves it can receive. Verification has no default: pass a trust snapshot, a verifier of your own, or `.none` and accept an unauthenticated connection.
 
 ## Design
 
@@ -132,10 +132,10 @@ One owner per state. Runtime code uses [aegis](https://github.com/pedronaugusto/
 
 ## Scope
 
-Cloak implements credentials and certificate verification, and a TLS 1.3 and TLS 1.2 client and server: X25519MLKEM768 (TLS 1.3), X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305, ECDSA, Ed25519 and RSA certificates signed and verified, ALPN, SNI, client certificates, key updates (TLS 1.3), exporters, session resumption (TLS 1.3 PSK-DHE, and TLS 1.2 tickets when both ends ask, with a client ticket cache and server ticket keys the caller rotates) Encrypted Client Hello (with configs the caller supplies), certificate compression (with codecs the caller supplies) and provisioned PSKs (PSK-DHE), as a stream, a sans-I/O connection and (TLS 1.3) a QUIC handshake. TLS 1.2 is the modern subset only: ECDHE with AEAD suites and the extended master secret, no renegotiation. It accepts no early data, by design; it has no datagram transport yet, and has had no independent security review. No application protocol, dialer or resolver lives here.
+Cloak implements credentials and certificate verification, and a TLS 1.3 and TLS 1.2 client and server: X25519MLKEM768 (TLS 1.3), X25519, P-256 and P-384 key exchange, AES-GCM and ChaCha20-Poly1305 (AES-CCM when listed), ECDSA, Ed25519 and RSA certificates signed and verified, ALPN, SNI, client certificates, key updates (TLS 1.3), exporters, session resumption (TLS 1.3 PSK-DHE, and TLS 1.2 tickets when both ends ask, with a client ticket cache and server ticket keys the caller rotates) Encrypted Client Hello (with configs the caller supplies), certificate compression (with codecs the caller supplies) and provisioned PSKs (PSK-DHE), as a stream, a sans-I/O connection and (TLS 1.3) a QUIC handshake. DTLS 1.3 and 1.2 carry the same handshake over datagrams, with stateless cookies, retransmission, ACKs, fragmentation to the path's MTU, replay windows and key updates; connection IDs are not built yet. TLS 1.2 and DTLS 1.2 are the modern subset only: ECDHE with AEAD suites and the extended master secret, no renegotiation. It accepts no early data, by design, and has had no independent security review. No application protocol, dialer or resolver lives here.
 
 The build exposes one module, `cloak`, with `cloak.certificates` for certificates, keys and trust and
-`cloak.tls` for TLS as namespaces; the credential names are also at the root. TLS builds on the certificates, which reach the native trust store, so a separate module for either would build the same code and fetch the same packages. On macOS that store is Security, opened from the system on first use rather than linked, so an Apple target builds on any host without an SDK. Zig analyzes only what you use. DTLS will be another namespace when its datagram implementation is built.
+`cloak.tls` for TLS as namespaces; the credential names are also at the root. TLS builds on the certificates, which reach the native trust store, so a separate module for either would build the same code and fetch the same packages. On macOS that store is Security, opened from the system on first use rather than linked, so an Apple target builds on any host without an SDK. Zig analyzes only what you use. DTLS is `cloak.tls.dtls`, a namespace of the same module.
 
 ## Platforms
 

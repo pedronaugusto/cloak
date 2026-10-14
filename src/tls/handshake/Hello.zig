@@ -657,11 +657,13 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     return out[0..w.pos];
 }
 
-/// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4). With `ech`, it ends with an
-/// encrypted_client_hello of eight zero bytes, the last eight of the message, for the caller to
-/// replace with the confirmation (RFC 9849 section 7.2.1).
-pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, suite: Suite13, group: Group, ech: bool) Writer.WriteError![]u8 {
+/// A HelloRetryRequest (RFC 8446 section 4.1.4) asking for `group`'s share when there is one,
+/// carrying `cookie` when it is not empty (DTLS's stateless return-routability check). With
+/// `ech`, it ends with an encrypted_client_hello of eight zero bytes, the last eight of the
+/// message, for the caller to replace with the confirmation (RFC 9849 section 7.2.1).
+pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, suite: Suite13, group: ?Group, cookie: []const u8, ech: bool) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
+    if (cookie.len > 4096) return error.BufferTooSmall;
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0 });
     try w.int(u16, transport.legacy());
@@ -669,17 +671,28 @@ pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, s
     try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
     try w.put(&.{0});
-    try w.int(u16, if (ech) 24 else 12);
+    const ext_at = w.pos;
+    try w.int(u16, 0);
     try w.put(&.{ 0, 43, 0, 2 });
     try w.int(u16, transport.wire(.tls13));
-    try w.put(&.{ 0, 51, 0, 2 });
-    try w.int(u16, @backingInt(group));
+    if (group) |selected| {
+        try w.put(&.{ 0, 51, 0, 2 });
+        try w.int(u16, @backingInt(selected));
+    }
+    if (cookie.len != 0) {
+        try w.int(u16, 44);
+        // safe: bounded at 4096 above.
+        try w.int(u16, @intCast(cookie.len + 2));
+        try w.vector(u16, cookie);
+    }
     if (ech) {
         try w.int(u16, Ech.extension_id);
         try w.int(u16, 8);
         try w.put(&@as([8]u8, @splat(0)));
     }
-    // safe: the message is 56 bytes plus the session id.
+    // safe: four short extensions and a bounded cookie.
+    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
+    // safe: bounded by the cookie's limit.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }

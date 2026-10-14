@@ -39,6 +39,20 @@ pub fn Transcript(comptime Hash: type) type {
             self.bytes = count;
             self.messages += 1;
         }
+        /// Starts the transcript of a handshake whose first ClientHello was answered with a
+        /// retry request statelessly: the hello's hash as its synthetic message_hash, then the
+        /// retry request, as `retry` leaves them (RFC 8446 section 4.4.1).
+        pub fn restoreRetry(self: *Self, hello_hash: []const u8, hrr: []const u8) CommitError!void {
+            @setRuntimeSafety(true);
+            if (self.retried or self.messages != 0 or hello_hash.len != Hash.digest_length or hrr.len < 4 or hrr[0] != 2) return error.InvalidRetry;
+            if (std.mem.readInt(u24, hrr[1..4], .big) != hrr.len - 4) return error.InvalidLength;
+            self.hash.update(&.{ 254, 0, 0, Hash.digest_length });
+            self.hash.update(hello_hash);
+            self.bytes = 4 + Hash.digest_length;
+            self.messages = 1;
+            try self.commit(hrr);
+            self.retried = true;
+        }
         pub fn retry(self: *Self, hrr: []const u8) CommitError!void {
             @setRuntimeSafety(true);
             if (self.retried or self.messages != 1 or hrr.len < 4 or hrr[0] != 2) return error.InvalidRetry;

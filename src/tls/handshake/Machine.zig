@@ -238,6 +238,24 @@ pub fn firstSequence(self: Machine, sequence: u16) void {
     }
 }
 
+/// DTLS: a server that answered the first hello with a stateless retry request starts from it
+/// (`Server.resumeRetry`).
+pub fn resumeRetry(self: Machine, suite: @import("../crypto/Suite.zig").Suite13, group: @import("../crypto/Group.zig").Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8) Error!void {
+    return switch (self.state) {
+        .client => error.UnexpectedMessage,
+        .server => |m| m.resumeRetry(suite, group, hello_hash, fingerprint, retry),
+    };
+}
+
+/// TLS 1.2: whether the peer's ChangeCipherSpec is the next thing the table takes. A datagram
+/// carrier holds one that arrives early (it has no message sequence) until then.
+pub fn awaitingCcs(self: Machine) bool {
+    return switch (self.state) {
+        .client => |m| m.version == .tls12 and ((m.state.phase == .peer_ccs12 and !m.state.ticket12) or m.state.phase == .ticket_seen12),
+        .server => |m| m.version == .tls12 and m.state.phase == .c_ccs12,
+    };
+}
+
 /// The state table's phase, for the callers that must not act on a failed machine.
 pub fn failed(self: Machine) bool {
     return switch (self.state) {

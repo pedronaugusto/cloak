@@ -171,6 +171,18 @@ fn commitTo(state: anytype, message: []const u8, datagram: ?u16) CommitError!voi
     }
 }
 
+/// A transcript that starts at a retry request sent without state: the first hello's hash under
+/// `suite`'s hash, then the request (DTLS's stateless cookie exchange).
+pub fn restoreRetry(self: *Self, suite: Suite13, hello_hash: []const u8, hrr: []const u8) CommitError!void {
+    @setRuntimeSafety(true);
+    self.select(suite);
+    switch (self.state) {
+        .pending => unreachable, // selected above
+        .sha256 => |*t| try t.restoreRetry(hello_hash, hrr),
+        .sha384 => |*t| try t.restoreRetry(hello_hash, hrr),
+    }
+}
+
 /// Replaces the ClientHello by its synthetic message_hash and commits the retry request.
 pub fn retry(self: *Self, hrr: []const u8) CommitError!void {
     @setRuntimeSafety(true);

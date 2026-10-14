@@ -418,6 +418,13 @@ fn initialGroups(self: *const Client) struct { groups: [2]?Group, count: usize }
     var count: usize = 0;
     // A TLS 1.2-only client sends no key shares.
     if (!self.options.hello.allows13()) return .{ .groups = out, .count = 0 };
+    // A datagram hello stays within one datagram, so that a server can check its address
+    // without keeping state (RFC 9147 section 5.1): one X25519 share, and the hybrid group listed
+    // for a server that prefers it to ask for with the retry request that brings its cookie.
+    if (self.options.hello.transport == .datagram and !self.options.hello.require_hybrid and std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{.x25519})) {
+        out[0] = .x25519;
+        return .{ .groups = out, .count = 1 };
+    }
     for ([_]Group{ .x25519_mlkem768, .x25519 }) |group| {
         if (std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{group})) {
             out[count] = group;

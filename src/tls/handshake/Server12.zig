@@ -127,7 +127,7 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     var state: Ticket.State = undefined;
     Ticket.open(ring, hello.session_ticket.?, now, &state) catch return;
     defer state.deinit();
-    if (state.version != .tls12) return;
+    if (state.version != .tls12 or state.datagram != (self.options.transport == .datagram)) return;
     const suite = state.suite.tls12() orelse return;
     if (!hello.offersSuite(@backingInt(suite)) or !std.mem.containsAtLeast(suites.Suite, self.options.suites, 1, &.{state.suite})) return;
     if (now >= state.expires or state.issued > now +| 60) return;
@@ -243,6 +243,7 @@ fn sendTicket(self: anytype) Error!void {
         if (expires > now) {
             var state: Ticket.State = .{
                 .version = .tls12,
+                .datagram = self.options.transport == .datagram,
                 .suite = suites.Suite.from12(self.suite12.?),
                 .group = self.group.?,
                 .issued = now,

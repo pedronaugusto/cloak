@@ -25,7 +25,8 @@ fn AesCcm(comptime Aes: type) type {
         /// Seals `m` into `c` (the same length; `c` may be `m`) and writes the tag.
         pub fn encrypt(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) void {
             @setRuntimeSafety(true);
-            std.debug.assert(c.len == m.len and m.len <= max_message);
+            std.debug.assert(c.len == m.len);
+            std.debug.assert(m.len <= max_message);
             var ctx = Aes.initEnc(key);
             defer crypto.secureZero(u8, std.mem.asBytes(&ctx));
             var mac: [block_length]u8 = undefined;

@@ -2,8 +2,8 @@
 //! ring key that sealed it. The client holds it as an opaque bearer token.
 //!
 //! Wire: format (1) | key id (8) | salt (16) | ciphertext | tag (16). The format byte names the
-//! protocol version the session is for (1: a TLS 1.3 PSK, 2: a TLS 1.2 master secret), so a
-//! ticket of one version is never opened as the other. The sealing key is HKDF of the ring key
+//! protocol version and carrier the session is for (1: a TLS 1.3 PSK, 2: a TLS 1.2 master
+//! secret, 3 and 4 the same over DTLS), so a ticket of one is never opened as another. The sealing key is HKDF of the ring key
 //! over the salt, used for this one ticket with a zero nonce; the header is the associated data.
 //! The plaintext is the session's suite, its secret, the times that bound it, the age obfuscator
 //! (TLS 1.3), the ALPN protocol and server name it was made for, the client's authentication
@@ -14,12 +14,13 @@ const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const TicketKeys = @import("TicketKeys.zig");
 
-/// The format byte of each protocol version's tickets.
-pub fn format(version: suites.Version) u8 {
-    return switch (version) {
+/// The format byte of each protocol version's tickets, on a stream or QUIC and in datagrams.
+pub fn format(version: suites.Version, datagram: bool) u8 {
+    const base: u8 = switch (version) {
         .tls13 => 1,
         .tls12 => 2,
     };
+    return if (datagram) base + 2 else base;
 }
 pub const salt_length = 16;
 const header_length = 1 + 8 + salt_length;
@@ -30,6 +31,8 @@ const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 /// erased by `deinit`.
 pub const State = struct {
     version: suites.Version = .tls13,
+    /// A DTLS session: its keys came from "dtls13" labels, so it resumes only over DTLS.
+    datagram: bool = false,
     /// A suite of `version`.
     suite: suites.Suite,
     secret: aegis.Secret([48]u8) = .init(@splat(0)),
@@ -88,7 +91,7 @@ pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *co
     const plain = encode(state, &plain_buf);
     const total = header_length + plain.len + Aead.tag_length;
     if (out.len < total) return error.BufferTooSmall;
-    out[0] = format(state.version);
+    out[0] = format(state.version, state.datagram);
     out[1..9].* = key.id;
     out[9..][0..salt_length].* = salt.*;
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
@@ -106,8 +109,8 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
     @setRuntimeSafety(true);
     if (ticket.len < header_length + Aead.tag_length or ticket.len > max_length) return error.Undecryptable;
     const version: suites.Version = switch (ticket[0]) {
-        1 => .tls13,
-        2 => .tls12,
+        1, 3 => .tls13,
+        2, 4 => .tls12,
         else => return error.Undecryptable,
     };
     const key = ring.find(ticket[1..9], now) orelse return error.Undecryptable;
@@ -124,6 +127,7 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
         out.deinit();
         return error.Undecryptable;
     };
+    out.datagram = ticket[0] > 2;
 }
 
 fn derive(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.key_length]u8) void {

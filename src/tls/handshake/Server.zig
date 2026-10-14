@@ -153,6 +153,9 @@ first_sequence: u16 = 0,
 ech_accepted: bool = false,
 /// The handshake used a provisioned key.
 external: bool = false,
+/// DTLS: the first hello was answered statelessly (`resumeRetry`), so the second is also the
+/// first this server sees whole: what a first hello records is recorded from it.
+stateless_retry: bool = false,
 // TLS 1.2.
 version: suites.Version = .tls13,
 suite12: ?suites.Suite12 = null,
@@ -635,8 +638,11 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (hello.legacy_cookie.len != 0) return error.IllegalParameter;
     if (second) {
         if (!std.mem.eql(u8, &hello.fingerprint(), &scratch.first)) return error.IllegalParameter;
-        if (hello.cookie.len != 0) return error.UnexpectedCookie;
-    } else {
+        // A cookie comes back only to a retry request that carried one: the stateless one,
+        // which the cookie check already verified.
+        if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
+    }
+    if (!second or self.stateless_retry) {
         scratch.client_random = hello.random[0..32].*;
         @memcpy(scratch.session[0..hello.session.len], hello.session);
         // safe: parsing bounds the session id at 32 bytes.
@@ -647,7 +653,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
         // safe: parsing bounds a host name at 253 bytes.
         scratch.server_name_len = @intCast(hello.server_name.len);
     }
-    if (hello.cookie.len != 0) return error.UnexpectedCookie;
+    if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
     if (!hello.has_schemes) return error.MissingExtension;
     if (!hello.has_groups) return error.MissingExtension;
     if (hello.sharesOutsideGroups()) return error.IllegalParameter;
@@ -672,6 +678,25 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     // Tickets are opened and issued by the clock: the hello waits for it.
     if (self.options.tickets != null and self.now == null) return self.holdHello(msg);
     return self.answerHello(msg, &hello);
+}
+
+/// DTLS: starts from a retry request a stateless cookie check sent for the client's first hello
+/// (`dtls.Cookies`): the transcript holds that hello's hash and the request, the table stands
+/// after the retry, and the second hello must have the first's `fingerprint`, a share of
+/// `group`, `suite` among its offer and the cookie the request carried.
+pub fn resumeRetry(self: *Server, suite: Suite13, group: Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8) Client.Error!void {
+    @setRuntimeSafety(true);
+    if (self.options.transport != .datagram or self.state.phase != .start or self.scratch != null) return error.UnexpectedMessage;
+    errdefer self.state.fail();
+    const scratch = try self.startScratch();
+    try self.state.advance(.client_hello, .initial, .parsed, true);
+    try self.state.advance(.hello_retry, .initial, .parsed, true);
+    try scratch.transcripts.restoreRetry(suite, hello_hash, retry);
+    scratch.first = fingerprint;
+    scratch.retry_group = group;
+    self.retried = true;
+    self.stateless_retry = true;
+    self.suite = suite;
 }
 
 /// Keeps the ClientHello and asks for the time; `provideTime` answers it.
@@ -712,7 +737,7 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
 fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    if (state.version != .tls13) return false;
+    if (state.version != .tls13 or state.datagram != (self.options.transport == .datagram)) return false;
     const suite = state.suite.tls13() orelse return false;
     if (suites.digestLength(suite) != suites.digestLength(self.suite.?)) return false;
     // Issued no later than a minute ahead of this clock, and not yet expired.
@@ -848,9 +873,12 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     if (second and !self.hasRetryGroup(hello)) return error.IllegalParameter;
+    // A stateless retry request named its suite; this hello's choice must be the same.
+    const retried_suite = if (self.stateless_retry) self.suite else null;
     self.suite = for (self.options.suites) |suite| {
         if (suite.tls13()) |candidate| if (hello.offersSuite(@backingInt(candidate))) break candidate;
     } else return error.NoSharedSuite;
+    if (retried_suite) |want| if (want != self.suite.?) return error.IllegalParameter;
     if (second) {
         self.group = scratch.retry_group;
     } else {
@@ -862,7 +890,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
         } else return error.NoSharedGroup;
     }
     if (self.options.require_hybrid and !self.group.?.hybrid()) return error.HybridRequired;
-    if (!second) {
+    if (!second or self.stateless_retry) {
         self.credential = self.credentialFor(hello.server_name) orelse switch (self.options.unknown_name) {
             .first => 0,
             .reject => return error.UnrecognizedName,
@@ -901,7 +929,7 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
     try self.state.advance(.hello_retry, .initial, .parsed, true);
     var buffer: [128]u8 = undefined;
     const accepted = scratch.ech.status == .accepted;
-    const hrr = try Hello.buildRetry(&buffer, self.options.transport, self.echoedSession(), self.suite.?, group, accepted);
+    const hrr = try Hello.buildRetry(&buffer, self.options.transport, self.echoedSession(), self.suite.?, group, "", accepted);
     scratch.transcripts.select(self.suite.?);
     if (accepted) {
         // The confirmation covers the inner hello and this retry request with its eight
@@ -1278,6 +1306,7 @@ fn issueTickets(self: *Server) Client.Error!void {
         const drawn = scratch.ticket_entropy[i * ticket_entropy ..][0..ticket_entropy];
         var state: Ticket.State = .{
             .suite = Suite.from13(self.suite.?),
+            .datagram = self.options.transport == .datagram,
             .issued = now_s,
             .expires = expires,
             .age_add = std.mem.readInt(u32, drawn[Ticket.salt_length..][0..4], .big),
