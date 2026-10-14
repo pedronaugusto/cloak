@@ -181,8 +181,10 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     const cert = certificates.certificate.parse(auth.chain()[0], .{}) catch return null;
     const wanted: u8 = switch (cert.public_key) {
         .rsa => rsa_sign,
+        // ecdsa_sign stands for EdDSA keys too (RFC 8422 section 5.5); an Ed25519 signature
+        // needs the messages the transcript kept from the start.
         .ec => ecdsa_sign,
-        .ed25519 => return null,
+        .ed25519 => if (scratch.transcripts.keeper != null) ecdsa_sign else return null,
     };
     if (scratch.cr_types & wanted == 0) return null;
     const request: Messages12.CertificateRequest = .{ .types = "", .schemes = scratch.cr_schemes[0..scratch.cr_len] };
@@ -222,6 +224,18 @@ fn sendFlight(self: anytype) Error!void {
     self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
     if (scheme) |chosen| {
         self.sign_scheme = chosen;
+        if (chosen == .ed25519) {
+            // Ed25519 signs the handshake messages so far, kept whole (RFC 8422 section 5.10).
+            const identity = self.options.auth.?.identity;
+            const messages = scratch.transcripts.keptBytes();
+            if (identity.noiseLength()) |noise_length| {
+                var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+                const signature = Possession.sign12(identity, chosen, messages, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+                return sendCertificateVerify(self, signature);
+            }
+            self.need_now = .sign;
+            return;
+        }
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         const digest = scratch.transcripts.digestOf(&digest_buf, Possession.transcriptHash12(chosen).?);
         @memcpy(scratch.sign_content[0..digest.len], digest);
@@ -244,8 +258,12 @@ fn sendFlight(self: anytype) Error!void {
 pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const digest = scratch.sign_content[0..scratch.sign_content_len];
-    Possession.verifyDigest12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, self.options.auth.?.chain()[0], digest, signature) catch return error.BadSignature;
+    if (self.sign_scheme == .ed25519) {
+        Possession.verifyMessage12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, self.options.auth.?.chain()[0], scratch.transcripts.keptBytes(), signature) catch return error.BadSignature;
+    } else {
+        const digest = scratch.sign_content[0..scratch.sign_content_len];
+        Possession.verifyDigest12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, self.options.auth.?.chain()[0], digest, signature) catch return error.BadSignature;
+    }
     self.need_now = .none;
     try sendCertificateVerify(self, signature);
 }

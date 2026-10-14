@@ -2,6 +2,7 @@
 const std = @import("std");
 const Duo = @import("../testing/Duo.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
+const Version = @import("crypto/Suite.zig").Version;
 
 const ecdsa_suites = [_]Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256 };
 
@@ -72,6 +73,30 @@ test "C4 TLS 1.2 client certificates: required, optional and missing" {
         try std.testing.expectError(error.NoClientCertificate, duo.handshake());
         try std.testing.expectEqual(.handshake_failure, duo.server.diagnostics().alert_sent.?);
     }
+}
+
+test "C4 a TLS 1.2 client certificate with an Ed25519 key signs the handshake messages themselves" {
+    // RFC 8422 section 5.10: Ed25519 signs the messages, not a digest. Found at relic's re-pin:
+    // the client answered with an empty Certificate and a server requiring one refused it.
+    for ([_]@import("handshake/State.zig").Auth{ .optional, .required }) |auth| {
+        for ([_]Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384 }) |suite| {
+            const duo = try connect(.{ .client_max = .tls12, .client_suites = &.{suite}, .client_auth = auth, .client_cert = true, .client_ed25519 = true });
+            defer duo.deinit();
+            try std.testing.expect(duo.server.info().?.peer_authenticated);
+            try std.testing.expectEqual(Version.tls12, duo.client.info().?.version);
+        }
+    }
+    // A key held elsewhere is asked to sign the messages themselves, and checked before use.
+    {
+        const duo = try connect(.{ .client_max = .tls12, .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .client_auth = .required, .client_cert = true, .client_ed25519 = true, .client_external = true });
+        defer duo.deinit();
+        try std.testing.expect(duo.server.info().?.peer_authenticated);
+    }
+    // Under TLS 1.3 the same key signs as before, and nothing is kept.
+    const duo = try connect(.{ .client_auth = .required, .client_cert = true, .client_ed25519 = true });
+    defer duo.deinit();
+    try std.testing.expect(duo.server.info().?.peer_authenticated);
+    try std.testing.expectEqual(Version.tls13, duo.client.info().?.version);
 }
 
 test "C4 a client of both versions takes TLS 1.2 from a TLS 1.2 server, and TLS 1.3 otherwise" {

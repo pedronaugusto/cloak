@@ -68,9 +68,10 @@ pub const SignatureScheme = enum(u16) {
 pub const schemes = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
 /// Schemes a TLS 1.2 ServerKeyExchange may use: the 1.3 set plus PKCS#1 v1.5 RSA.
 pub const schemes12 = schemes ++ [_]SignatureScheme{ .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 };
-/// Schemes a TLS 1.2 CertificateVerify may use. It signs the whole transcript with the scheme's
-/// own hash, which cloak keeps for SHA-256 and SHA-384 only; Ed25519 would need every message.
-pub const schemes12_verify = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 };
+/// Schemes a TLS 1.2 CertificateVerify may use. It signs the transcript hash of the scheme's own
+/// hash, which cloak keeps for SHA-256 and SHA-384 only; Ed25519 signs the handshake messages
+/// themselves, which the transcript keeps whole when an Ed25519 signature may be needed.
+pub const schemes12_verify = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .ed25519 };
 pub const ValidateError = error{InvalidOptions};
 pub fn validate(options: Options) ValidateError!void {
     @setRuntimeSafety(true);

@@ -31,6 +31,10 @@ pub const Options = struct {
     client_auth: Server.Auth = .none,
     /// The client offers its certificate when asked.
     client_cert: bool = false,
+    /// That certificate's key is Ed25519 (P-256 otherwise).
+    client_ed25519: bool = false,
+    /// The client's key is held elsewhere: the harness signs (Ed25519 only).
+    client_external: bool = false,
     /// Bytes moved per receive call, to cut records and messages at every boundary.
     chunk: usize = 1 << 20,
     /// Resumption: the client's ticket cache and the server's ticket keys.
@@ -95,9 +99,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer self.identity.deinit();
     self.auth = null;
     if (options.client_cert) {
-        const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
+        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
-        self.auth = try certificates.ClientAuth.init(gpa, &.{ pki.client, pki.ca }, client_key, .{});
+        const chain = &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
+        self.auth = if (options.client_external) try certificates.ClientAuth.initExternal(gpa, chain, .{}) else try certificates.ClientAuth.init(gpa, chain, client_key, .{});
     }
     errdefer if (self.auth) |auth| auth.deinit();
     self.client = try Connection.client(gpa, .{
@@ -159,7 +164,12 @@ fn serve(self: *Duo, conn: *Connection) !void {
                 try conn.provide(request.token, .{ .verified = &owned });
             } else |_| try conn.provide(request.token, .{ .verification_failed = .untrusted });
         },
-        .sign => return error.UnexpectedSignRequest,
+        .sign => |request_| {
+            if (!self.options.client_external or request_.scheme != .ed25519 or request_.prehashed) return error.UnexpectedSignRequest;
+            const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(pki.client_ed25519_secret[0..32].*);
+            const sig = (try kp.sign(request_.content, null)).toBytes();
+            try conn.provide(request.token, .{ .signature = &sig });
+        },
     };
 }
 

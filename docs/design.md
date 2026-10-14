@@ -550,9 +550,12 @@ ServerKeyExchange signature covers both randoms and the parameters; TLS 1.2 bind
 scheme to its hash rather than to the key's curve, and PKCS#1 v1.5 RSA signatures are
 accepted and made only in TLS 1.2. A CertificateVerify signs the transcript hash of its
 scheme: both SHA-256 and SHA-384 transcripts run through a TLS 1.2 handshake, so the
-signature goes through `signDigest`/`verifyDigest`; Ed25519, which signs messages rather
-than digests, is not offered for client authentication in TLS 1.2. A key held elsewhere
-receives the digest with `prehashed` set. There is no key update: a TLS 1.2 connection
+signature goes through `signDigest`/`verifyDigest`. Ed25519 signs the handshake messages
+themselves rather than a digest (RFC 8422 section 5.10), so the transcript also keeps the messages whole when an Ed25519 signature may be needed: in
+a client whose certificate key is Ed25519, from its hello, and in a server that asks for a
+certificate, from the client's hello; the copy is bounded by the handshake limit, erased with the
+scratch, and dropped as soon as TLS 1.3 is chosen. A key held elsewhere receives the digest with
+`prehashed` set, or for Ed25519 the messages. There is no key update: a TLS 1.2 connection
 closes before the record and byte caps instead. The exporter is RFC 5705's over the
 extended master secret, always with the caller's context.
 

@@ -166,7 +166,7 @@ pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
         .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
-        .ed25519 => &.{},
+        .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
     };
     for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;

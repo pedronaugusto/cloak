@@ -108,6 +108,8 @@ pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!v
         }
     }
     self.state.ticket12 = issue;
+    // A client may answer the CertificateRequest with Ed25519, which signs the messages themselves.
+    if (self.options.client_auth != .none and !self.resumed) scratch.transcripts.keep(self.gpa);
     try scratch.transcripts.commit(msg);
     self.answered = true;
     const exchange = if (self.resumed) 0 else Exchange.entropyLength(self.group.?) + self.signNoiseLength();
@@ -373,10 +375,16 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     const scratch = self.scratch.?;
     const parsed = try Messages.certificateVerify(msg);
     const scheme = std.enums.fromInt(Hello.SignatureScheme, parsed.scheme) orelse return error.UnofferedScheme;
-    const length = Possession.transcriptHash12(scheme) orelse return error.UnofferedScheme;
-    var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const digest = scratch.transcripts.digestOf(&digest_buf, length);
-    try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, scratch.chain[0], digest, parsed.signature);
+    if (scheme == .ed25519) {
+        // Ed25519 signs the handshake messages, which the transcript kept whole.
+        if (scratch.transcripts.keeper == null) return error.UnofferedScheme;
+        try Possession.verifyMessage12(parsed.scheme, &Hello.schemes12_verify, scratch.chain[0], scratch.transcripts.keptBytes(), parsed.signature);
+    } else {
+        const length = Possession.transcriptHash12(scheme) orelse return error.UnofferedScheme;
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        const digest = scratch.transcripts.digestOf(&digest_buf, length);
+        try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, scratch.chain[0], digest, parsed.signature);
+    }
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;

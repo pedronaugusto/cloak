@@ -279,6 +279,7 @@ fn releaseScratch(self: *Server) void {
     if (scratch.share12) |*share| share.deinit();
     scratch.share12 = null;
     scratch.flight.deinit(self.gpa);
+    scratch.transcripts.release();
     scratch.psk.deinit();
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);

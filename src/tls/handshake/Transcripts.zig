@@ -9,25 +9,51 @@ const Sha256 = Transcript(std.crypto.hash.sha2.Sha256);
 const Sha384 = Transcript(std.crypto.hash.sha2.Sha384);
 
 pub const max_digest = std.crypto.hash.sha2.Sha384.digest_length;
-pub const CommitError = @import("Transcript.zig").CommitError;
+pub const CommitError = @import("Transcript.zig").CommitError || std.mem.Allocator.Error;
+
+/// Keeps every message committed from now on, as well as hashing it.
+pub fn keep(self: *Self, gpa: std.mem.Allocator) void {
+    self.keeper = gpa;
+}
+
+/// Every message kept so far, in order.
+pub fn keptBytes(self: *const Self) []const u8 {
+    return self.kept.items;
+}
+
+/// Erases and frees the kept messages and stops keeping.
+pub fn release(self: *Self) void {
+    @setRuntimeSafety(true);
+    const gpa = self.keeper orelse return;
+    std.crypto.secureZero(u8, self.kept.allocatedSlice());
+    self.kept.deinit(gpa);
+    self.kept = .empty;
+    self.keeper = null;
+}
 
 state: union(enum) {
     pending: struct { sha256: Sha256 = .{}, sha384: Sha384 = .{} },
     sha256: Sha256,
     sha384: Sha384,
 } = .{ .pending = .{} },
+/// The messages themselves, kept while `keeper` is set: a TLS 1.2 CertificateVerify by Ed25519
+/// signs the handshake messages, not a digest of them (RFC 8422 section 5.10).
+kept: std.ArrayList(u8) = .empty,
+keeper: ?std.mem.Allocator = null,
 
 const Self = @This();
 
-/// Fixes the hash once; a later call must name the same hash family.
+/// Fixes the hash once; a later call must name the same hash family. TLS 1.3 needs no messages
+/// kept.
 pub fn select(self: *Self, suite: Suite13) void {
     @setRuntimeSafety(true);
+    self.release();
     switch (self.state) {
         .pending => |*both| {
             const hash384 = suites.digestLength(suite) == 48;
-            const keep = both.*;
+            const hashes = both.*;
             std.crypto.secureZero(u8, std.mem.asBytes(&self.state));
-            self.state = if (hash384) .{ .sha384 = keep.sha384 } else .{ .sha256 = keep.sha256 };
+            self.state = if (hash384) .{ .sha384 = hashes.sha384 } else .{ .sha256 = hashes.sha256 };
         },
         .sha256 => std.debug.assert(suites.digestLength(suite) == 32),
         .sha384 => std.debug.assert(suites.digestLength(suite) == 48),
@@ -44,6 +70,8 @@ pub fn commit(self: *Self, message: []const u8) CommitError!void {
         .sha256 => |*t| try t.commit(message),
         .sha384 => |*t| try t.commit(message),
     }
+    // The transcript's own bounds, checked above, hold the kept bytes to the handshake limit.
+    if (self.keeper) |gpa| try self.kept.appendSlice(gpa, message);
 }
 
 /// Replaces the ClientHello by its synthetic message_hash and commits the retry request.

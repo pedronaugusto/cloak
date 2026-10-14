@@ -264,7 +264,13 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         if (options.hello.allows13() or (resumption.tls12 and options.hello.allows12())) self.need_now = .time;
         self.cache_key = cacheKey(options, resumption.namespace);
     }
-    if (options.auth) |auth| self.options.auth = auth.retain();
+    if (options.auth) |auth| {
+        self.options.auth = auth.retain();
+        // A TLS 1.2 CertificateVerify by Ed25519 signs the handshake messages themselves.
+        if (options.hello.allows12()) if (certificates.certificate.parse(auth.chain()[0], .{})) |leaf| {
+            if (leaf.public_key == .ed25519) scratch.transcripts.keep(gpa);
+        } else |_| {};
+    }
     return self;
 }
 
@@ -416,6 +422,7 @@ fn releaseScratch(self: *Client) void {
     const scratch = self.scratch orelse return;
     self.eraseShares();
     scratch.flight.deinit(self.gpa);
+    scratch.transcripts.release();
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -572,6 +579,8 @@ pub fn rejectVerification(self: *Client) void {
 
 pub fn signRequest(self: *const Client) SignRequest {
     @setRuntimeSafety(true);
+    // Ed25519 in TLS 1.2 signs the handshake messages, not their digest.
+    if (self.version == .tls12 and self.sign_scheme == .ed25519) return .{ .scheme = .ed25519, .content = self.scratch.?.transcripts.keptBytes() };
     return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12 };
 }
 
