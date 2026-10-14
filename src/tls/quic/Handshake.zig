@@ -16,6 +16,7 @@ const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
 const Ech = @import("../handshake/Ech.zig");
 const Compression = @import("../handshake/Compression.zig");
+const Psk = @import("../handshake/Psk.zig");
 
 pub const Level = enum { initial, handshake, application };
 pub const Direction = Client.Direction;
@@ -46,6 +47,8 @@ pub const Options = struct {
     ech: Ech.Mode = .off,
     /// Certificate decoders to offer (RFC 8879); borrowed.
     certificate_compression: []const Compression.Codec = &.{},
+    /// A provisioned key to offer (PSK-DHE); borrowed.
+    external_psk: ?Psk.External = null,
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -71,6 +74,8 @@ pub const ServerOptions = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
+    /// Provisioned keys, looked up by the offered identity (PSK-DHE).
+    external_psk: ?Psk.Lookup = null,
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -155,6 +160,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
         },
         .resumption = options.resumption,
         .ech = options.ech,
+        .external_psk = options.external_psk,
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -185,6 +191,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .tickets = options.tickets,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
+        .external_psk = options.external_psk,
         .limits = options.limits,
         .key_log = options.key_log,
         .generation = options.generation,

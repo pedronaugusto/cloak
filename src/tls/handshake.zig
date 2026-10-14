@@ -60,3 +60,4 @@ pub const Compression = @import("handshake/Compression.zig");
 test {
     _ = Compression;
 }
+pub const Psk = @import("handshake/Psk.zig");

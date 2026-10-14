@@ -13,6 +13,7 @@ const SessionCache = @import("../tls/resumption/SessionCache.zig");
 const TicketKeys = @import("../tls/resumption/TicketKeys.zig");
 const Ech = @import("../tls/handshake/Ech.zig");
 const Compression = @import("../tls/handshake/Compression.zig");
+const Psk = @import("../tls/handshake/Psk.zig");
 pub const pki = @import("Peer.zig").pki;
 
 pub const Cert = enum { p256, p384, ed25519, rsa };
@@ -66,6 +67,9 @@ pub const Options = struct {
     /// Certificate codecs: the client's decoders and the server's encoders.
     client_codecs: []const Compression.Codec = &.{},
     server_codecs: []const Compression.Codec = &.{},
+    /// Provisioned keys: the client's and the server's lookup.
+    client_psk: ?Psk.External = null,
+    server_psk: ?Psk.Lookup = null,
 };
 
 const Duo = @This();
@@ -120,6 +124,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .verify = if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
+        .external_psk = options.client_psk,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
@@ -142,6 +147,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .tls12_tickets = options.server_tls12_tickets,
         .ech_keys = options.server_ech,
         .certificate_compression = options.server_codecs,
+        .external_psk = options.server_psk,
     });
     return self;
 }

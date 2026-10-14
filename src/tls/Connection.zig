@@ -30,6 +30,7 @@ const Outbox = @import("connection/Outbox.zig");
 const Flight = @import("handshake/Flight.zig");
 const Ech = @import("handshake/Ech.zig");
 const Compression = @import("handshake/Compression.zig");
+const Psk = @import("handshake/Psk.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -84,6 +85,8 @@ pub const ClientOptions = struct {
     ech: Ech.Mode = .off,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
+    /// A provisioned key to offer (PSK-DHE, TLS 1.3); borrowed.
+    external_psk: ?Psk.External = null,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -216,6 +219,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         },
         .resumption = options.resumption,
         .ech = options.ech,
+        .external_psk = options.external_psk,
         .identity = identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -254,6 +258,8 @@ pub const ServerOptions = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
+    /// Provisioned keys, looked up by the offered identity (PSK-DHE, TLS 1.3).
+    external_psk: ?Psk.Lookup = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -278,6 +284,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .tls12_tickets = options.tls12_tickets,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
+        .external_psk = options.external_psk,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,

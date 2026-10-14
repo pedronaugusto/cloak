@@ -56,6 +56,15 @@ pub const certificate_compression = struct {
     pub const Error = Compression.Error;
     pub const max_codecs = Compression.max_codecs;
 };
+/// Provisioned (external) PSKs, PSK-DHE only: a client's key and a server's lookup.
+pub const psk = struct {
+    const Psk = @import("tls/handshake/Psk.zig");
+    pub const External = Psk.External;
+    pub const Lookup = Psk.Lookup;
+    pub const Query = Psk.Query;
+    pub const Hash = Psk.Hash;
+    pub const max_identity = Psk.max_identity;
+};
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
@@ -69,6 +78,7 @@ test {
     _ = @import("tls/Ech_test.zig");
     _ = @import("tls/CertificateCompression_test.zig");
     _ = @import("tls/Pq_test.zig");
+    _ = @import("tls/Psk_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

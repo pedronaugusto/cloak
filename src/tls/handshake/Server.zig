@@ -29,6 +29,7 @@ const Server12 = @import("Server12.zig");
 const Ticket = @import("../resumption/Ticket.zig");
 const Ech = @import("Ech.zig");
 const Compression = @import("Compression.zig");
+const Psk = @import("Psk.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 
 pub const Epoch = Flight.Epoch;
@@ -88,6 +89,10 @@ pub const Options = struct {
     /// Certificate encoders (RFC 8879), in the server's order of preference: the first whose
     /// algorithm the client lists compresses the Certificate, when that makes it smaller.
     certificate_compression: []const Compression.Codec = &.{},
+    /// Provisioned keys (PSK-DHE, TLS 1.3), looked up by the identity a client offers; a client
+    /// that proves one is authenticated by it, with no certificate either way, and is issued no
+    /// tickets. Tried before tickets.
+    external_psk: ?Psk.Lookup = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -146,6 +151,8 @@ resumed: bool = false,
 /// messages in its transcript (RFC 6347 section 4.2.2). The carrier sets it.
 first_sequence: u16 = 0,
 ech_accepted: bool = false,
+/// The handshake used a provisioned key.
+external: bool = false,
 // TLS 1.2.
 version: suites.Version = .tls13,
 suite12: ?suites.Suite12 = null,
@@ -366,7 +373,7 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
     };
     defer response.deinit();
     self.need_now = .none;
-    const noise_end = exchange_end + if (self.resumed) 0 else self.signNoiseLength();
+    const noise_end = exchange_end + if (self.pskMode()) 0 else self.signNoiseLength();
     @memcpy(scratch.sign_noise[0 .. noise_end - exchange_end], entropy[exchange_end..noise_end]);
     @memcpy(scratch.ticket_entropy[0 .. entropy.len - noise_end], entropy[noise_end..]);
     try self.sendServerFlight(entropy[0..32], &response);
@@ -690,7 +697,7 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
     scratch.share_len = share.len;
     self.answered = true;
     const tickets: usize = if (self.options.tickets != null and self.scratch.?.takes_tickets) tickets_per_handshake * ticket_entropy else 0;
-    const noise = if (self.resumed) 0 else self.signNoiseLength();
+    const noise = if (self.pskMode()) 0 else self.signNoiseLength();
     const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) + noise + tickets } };
     // QUIC: the client's transport parameters are provisional, and the server says nothing
     // that depends on them until the caller accepts them.
@@ -721,8 +728,47 @@ fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
 
 /// The first offered ticket this server opens and may resume, checked by its binder. A ticket it
 /// cannot open or resume is passed over for a full handshake; a binder that fails is fatal.
+/// A PSK handshake: a resumed session or a provisioned key, no certificate either way.
+fn pskMode(self: *const Server) bool {
+    return self.resumed or self.external;
+}
+
+/// The first offered identity the caller's lookup knows, for a suite of its key's hash and
+/// checked by its binder ("ext binder"); a binder that fails is fatal. Identities are compared as
+/// exact bytes. None found: tickets may still resume, or a full handshake follows.
+fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!bool {
+    @setRuntimeSafety(true);
+    const lookup = self.options.external_psk orelse return false;
+    const scratch = self.scratch.?;
+    var index: u16 = 0;
+    while (index < 8) : (index += 1) {
+        const offer = hello.pskIdentity(index) orelse return false;
+        if (offer.identity.len > Psk.max_identity) continue;
+        const found = lookup.find(lookup.context, .{ .identity = offer.identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport }) orelse continue;
+        if (!std.mem.eql(u8, found.identity, offer.identity)) continue;
+        Psk.validate(found) catch continue;
+        if (found.hash.length() != suites.digestLength(self.suite.?)) continue;
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        switch (self.suite.?) {
+            inline else => |tag| {
+                const K = Schedule.Schedule(tag);
+                const truncated = scratch.transcripts.digestWith(&digest_buf, K.length, hello.truncated(msg));
+                try K.checkBinderOf(self.options.transport.prefix(), .external, found.secret[0..K.length], truncated[0..K.length], hello.pskBinder(index));
+            },
+        }
+        try self.state.markResumed();
+        @memcpy(scratch.psk.exposeMut()[0..found.secret.len], found.secret);
+        self.external = true;
+        self.authenticated = true;
+        scratch.psk_index = index;
+        return true;
+    }
+    return false;
+}
+
 fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!void {
     @setRuntimeSafety(true);
+    if (try self.chooseExternal(msg, hello)) return;
     const ring_owner = self.options.tickets orelse return;
     var snapshot = ring_owner.acquire() orelse return;
     defer snapshot.release();
@@ -904,7 +950,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     const suite = self.suite.?;
     // A ServerHello: its fixed fields, a session id and the largest key share.
     var hello_buffer: [256 + Exchange.max_share]u8 = undefined;
-    const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
+    const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.pskMode()) self.scratch.?.psk_index else null);
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);
     if (scratch.ech.status == .accepted) {
@@ -934,7 +980,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             const K = Schedule.Schedule(tag);
             var traffic: K.Traffic = .{};
             errdefer traffic.deinit();
-            const psk: ?*const [K.length]u8 = if (self.resumed) scratch.psk.expose()[0..K.length] else null;
+            const psk: ?*const [K.length]u8 = if (self.pskMode()) scratch.psk.expose()[0..K.length] else null;
             var schedule = try K.init(self.options.transport.prefix(), psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
             errdefer schedule.deinit();
             self.keys = @unionInit(Keys, @tagName(tag), .{ .schedule = schedule, .handshake = traffic });
@@ -950,7 +996,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     scratch.psk.deinit();
     try self.sendEncrypted();
     // A resumed handshake is authenticated by the PSK: no certificate either way.
-    if (self.resumed) return self.finishFlight();
+    if (self.pskMode()) return self.finishFlight();
     if (self.options.client_auth != .none) try self.sendRequest();
     try self.sendCertificate();
 }
@@ -1204,7 +1250,8 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
     self.app_read.?.secret.deinit();
     self.app_read = null;
     self.established = true;
-    self.authenticated = self.authenticated and self.options.client_verify == .full;
+    // A provisioned key authenticates the client; otherwise only a fully verified certificate does.
+    self.authenticated = self.external or (self.authenticated and self.options.client_verify == .full);
     try self.issueTickets();
     try self.push(.complete);
 }
@@ -1216,7 +1263,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
 fn issueTickets(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
     const ring_owner = self.options.tickets orelse return;
-    if (!self.scratch.?.takes_tickets) return;
+    if (!self.scratch.?.takes_tickets or self.external) return;
     const now = self.now orelse return;
     var snapshot = ring_owner.acquire() orelse return;
     defer snapshot.release();
@@ -1300,6 +1347,7 @@ pub fn info(self: *const Server) ?Info {
         .peer_parameters = self.peer_parameters,
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
+        .external_psk = self.external,
     };
 }
 

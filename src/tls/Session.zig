@@ -126,6 +126,9 @@ pub const Options = struct {
     ech_retry: ?*[]u8 = null,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
+    /// A provisioned key to offer (PSK-DHE, TLS 1.3); borrowed. A server that selects it is
+    /// authenticated by it, with no certificate.
+    external_psk: ?@import("handshake/Psk.zig").External = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -199,6 +202,7 @@ pub fn open(
         .resumption = resumptionFor(options),
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
+        .external_psk = options.external_psk,
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -272,6 +276,8 @@ pub const ServerOptions = struct {
     ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
     certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
+    /// Provisioned keys, looked up by the offered identity (PSK-DHE, TLS 1.3).
+    external_psk: ?@import("handshake/Psk.zig").Lookup = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -316,6 +322,7 @@ pub fn accept(
         .tls12_tickets = options.tls12_tickets,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
+        .external_psk = options.external_psk,
         .limits = options.limits,
         .key_log = options.key_log,
     });

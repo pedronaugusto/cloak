@@ -7,6 +7,9 @@ const Labels = @import("../crypto/Labels.zig");
 pub const InitError = error{InvalidSharedSecret};
 pub const AdvanceError = error{WrongPhase};
 pub const ExportError = AdvanceError || Labels.ExpandError;
+/// Which binder key: a ticket's ("res binder") or a provisioned key's ("ext binder"), so a key of
+/// one kind never passes for the other (RFC 8446 section 7.1).
+pub const BinderKind = enum { resumption, external };
 pub fn Schedule(comptime suite: suites.Suite13) type {
     const Hash = suites.Hash(suite);
     const Secret = aegis.Secret([Hash.digest_length]u8);
@@ -79,6 +82,9 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
         /// The PSK binder over `truncated_hash`, the transcript through the ClientHello up to its
         /// binders (RFC 8446 section 4.2.11.2), for a resumption PSK.
         pub fn binder(prefix: Labels.Prefix, psk: *const [length]u8, truncated_hash: *const [length]u8, out: *[length]u8) void {
+            binderOf(prefix, .resumption, psk, truncated_hash, out);
+        }
+        pub fn binderOf(prefix: Labels.Prefix, kind: BinderKind, psk: *const [length]u8, truncated_hash: *const [length]u8, out: *[length]u8) void {
             @setRuntimeSafety(true);
             var early = Secret.init(undefined);
             defer early.deinit();
@@ -86,17 +92,20 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             defer key.deinit();
             const zero: [length]u8 = @splat(0);
             Labels.extract(Hash, early.exposeMut(), &zero, psk);
-            expand(prefix, key.exposeMut(), early.expose(), "res binder", &emptyHash());
+            expand(prefix, key.exposeMut(), early.expose(), if (kind == .external) "ext binder" else "res binder", &emptyHash());
             Labels.finished(Hash, prefix, out, key.expose(), truncated_hash);
         }
         pub const BinderError = error{BadBinder};
         /// Checks a received binder in constant time; only the verdict is released.
         pub fn checkBinder(prefix: Labels.Prefix, psk: *const [length]u8, truncated_hash: *const [length]u8, received: []const u8) BinderError!void {
+            return checkBinderOf(prefix, .resumption, psk, truncated_hash, received);
+        }
+        pub fn checkBinderOf(prefix: Labels.Prefix, kind: BinderKind, psk: *const [length]u8, truncated_hash: *const [length]u8, received: []const u8) BinderError!void {
             @setRuntimeSafety(true);
             if (received.len != length) return error.BadBinder;
             var expected = Secret.init(undefined);
             defer expected.deinit();
-            binder(prefix, psk, truncated_hash, expected.exposeMut());
+            binderOf(prefix, kind, psk, truncated_hash, expected.exposeMut());
             if (!std.crypto.timing_safe.eql([length]u8, expected.expose().*, received[0..length].*)) return error.BadBinder;
         }
         pub fn exportBytes(self: *const Self, out: []u8, label: []const u8, context: []const u8) ExportError!void {

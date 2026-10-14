@@ -304,11 +304,11 @@ epoch and direction; tests lower them.
 Memory. A running handshake holds one scratch block (offered key shares, the
 transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
 record buffer sized to the record being read, a message buffer and the output
-buffer: about 49 KiB at the peak for the default offer. When the connection is
+buffer: about 50 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
 calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (664 bytes) and one
-heap block of 1,280 bytes (the key schedule's exporter and resumption secrets among it), 1,944
+heap block of 1,328 bytes (the key schedule's exporter and resumption secrets among it), 1,992
 bytes in total, in a Debug build. These are heap figures from a counting allocator; stack use
 is not measured here.
 
@@ -403,7 +403,7 @@ signer that fails ends the connection with internal_error.
 
 A server connection holds no handshake scratch until a peer sends a ClientHello that
 the state table accepts: a connection created and never spoken to, or one fed a few
-bytes, costs its state and credential table (1,096 bytes), not the scratch (3.7 KB
+bytes, costs its state and credential table (1,112 bytes), not the scratch (3.7 KB
 before the first flight grows it). Established connections release it as before.
 
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
@@ -431,7 +431,7 @@ a ServerHello, until the caller accepts them. ALPN is required.
 
 The server flight, the application keys and the handshake scratch are built under
 the same bounds and released at the same moments as the client's. Measured here:
-about 25 KiB at the handshake peak and 1,107 bytes of heap beside the 664-byte struct
+about 25 KiB at the handshake peak and 1,123 bytes of heap beside the 664-byte struct
 once established (counting allocator, Debug test), and key updates behave as in the client. The server's CPU rows are in
 `bench/handshake.zig`; they include harness signing with std's ECDSA.
 
@@ -598,6 +598,23 @@ the compressed message. A tiny stream that would expand past the limit never run
 costs in time within those sizes is the caller's codec's to bound. Client certificates are never
 compressed: a cloak server does not offer it in its CertificateRequest. Tests use std's zlib as
 the codec.
+
+## Provisioned PSKs
+
+A key both ends hold beforehand (RFC 8446 section 4.2.11, RFC 9257's guidance), PSK-DHE only:
+the exchange is always a fresh (EC)DHE one. A client's `external_psk` is an identity (1 to 1,024
+opaque bytes), the key and its hash; it is offered instead of a ticket, with an obfuscated age of
+zero and a binder under "ext binder", and needs a TLS 1.3 suite of its hash. A server's
+`external_psk` is a lookup: it sees the offered identity, the server name, the protocol the server
+chose and the transport, so the caller decides what each key is bound to (endpoint, application,
+transport); its answer must name the queried identity byte for byte and be a valid key, or it is
+passed over, and a binder that fails is fatal (decrypt_error). Keys are tried before tickets. A
+handshake on a key sends no certificate either way and authenticates both ends by the key alone,
+whatever the certificate policy; `Info.external_psk` says so, and no X.509 identity is implied.
+Such a session issues no tickets and the client keeps none: it resumes by offering the key again.
+Reflection (an endpoint that is both client and server answering its own hello) needs the same
+key provisioned for both roles, which is the caller's to avoid (RFC 9257 section 4.1). Live peer:
+OpenSSL's `-psk` both roles; Go has no provisioned PSKs.
 
 ## TLS 1.2
 
