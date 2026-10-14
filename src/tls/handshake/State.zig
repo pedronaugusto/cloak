@@ -77,7 +77,8 @@ pub const Action = enum {
     ccs,
 };
 pub const Proof = enum { parsed, chain, possession, finished };
-const Edge = struct { version: Version = .tls13, role: Role, from: Phase, action: Action, epoch: Epoch, proof: Proof = .parsed, to: Phase, boundary: bool = false };
+/// `resumed` limits an edge to a full (false) or PSK-resumed (true) handshake; null is either.
+const Edge = struct { version: Version = .tls13, role: Role, from: Phase, action: Action, epoch: Epoch, proof: Proof = .parsed, to: Phase, boundary: bool = false, resumed: ?bool = null };
 /// Transcript commitment follows successful parsing/proof, once per wire message.
 /// verify_chain is a service completion and contributes no transcript bytes.
 const edges = [_]Edge{
@@ -85,7 +86,9 @@ const edges = [_]Edge{
     .{ .role = .client, .from = .hello, .action = .hello_retry, .epoch = .initial, .to = .retry, .boundary = true },
     .{ .role = .client, .from = .retry, .action = .client_hello, .epoch = .initial, .to = .hello },
     .{ .role = .client, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .extensions, .boundary = true },
-    .{ .role = .client, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .certificate_request },
+    .{ .role = .client, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .certificate_request, .resumed = false },
+    // A resumed handshake is authenticated by the PSK: no certificate flight in either direction.
+    .{ .role = .client, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .finished, .resumed = true },
     .{ .role = .client, .from = .certificate_request, .action = .certificate_request, .epoch = .handshake, .to = .certificate },
     .{ .role = .client, .from = .certificate_request, .action = .certificate, .epoch = .handshake, .to = .chain },
     .{ .role = .client, .from = .certificate, .action = .certificate, .epoch = .handshake, .to = .chain },
@@ -101,7 +104,8 @@ const edges = [_]Edge{
     .{ .role = .server, .from = .hello, .action = .hello_retry, .epoch = .initial, .to = .retry, .boundary = true },
     .{ .role = .server, .from = .retry, .action = .client_hello, .epoch = .initial, .to = .hello },
     .{ .role = .server, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .extensions, .boundary = true },
-    .{ .role = .server, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .certificate_request },
+    .{ .role = .server, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .certificate_request, .resumed = false },
+    .{ .role = .server, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .finished, .resumed = true },
     .{ .role = .server, .from = .certificate_request, .action = .certificate_request, .epoch = .handshake, .to = .certificate },
     .{ .role = .server, .from = .certificate_request, .action = .certificate, .epoch = .handshake, .to = .possession },
     .{ .role = .server, .from = .certificate, .action = .certificate, .epoch = .handshake, .to = .possession },
@@ -160,6 +164,21 @@ pub const State = struct {
     /// TLS 1.2: a certificate was sent (client) or verified (server), so its CertificateVerify
     /// must follow the key exchange.
     certificate_proof: bool = false,
+    /// TLS 1.3: the ServerHello accepted a PSK; set once, by `markResumed`, as the ServerHello is
+    /// sent or received.
+    resumed: bool = false,
+    /// Marks the handshake resumed: only before EncryptedExtensions, and only in TLS 1.3.
+    pub fn markResumed(self: *State) AdvanceError!void {
+        const ready = switch (self.role) {
+            .client => self.phase == .extensions,
+            .server => self.phase == .hello,
+        };
+        if (!ready or self.version != .tls13) {
+            self.phase = .failed;
+            return error.UnexpectedMessage;
+        }
+        self.resumed = true;
+    }
     pub fn advance(self: *State, action: Action, epoch: Epoch, proof: Proof, boundary: bool) AdvanceError!void {
         @setRuntimeSafety(true);
         if (self.phase == .failed) return error.Closed;
@@ -178,6 +197,7 @@ pub const State = struct {
         }
         for (edges) |edge| {
             if (edge.version != self.version or edge.role != self.role or edge.from != self.phase or edge.action != action) continue;
+            if (edge.resumed) |resumed| if (resumed != self.resumed) continue;
             if (edge.epoch != epoch) return error.WrongEpoch;
             if (edge.proof != proof) return error.MissingProof;
             if (edge.boundary and !boundary) return error.RecordAlignment;

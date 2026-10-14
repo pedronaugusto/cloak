@@ -36,6 +36,13 @@ parameters: ?[]const u8,
 cookie: []const u8,
 early_data: bool,
 has_psk: bool,
+/// pre_shared_key: the identities list body (identity, then the obfuscated ticket age) and the
+/// binders list body, and the wire length of the binders list, which ends the hello.
+psk_identities: []const u8,
+psk_binders: []const u8,
+psk_binders_wire: usize,
+/// psk_key_exchange_modes lists psk_dhe_ke, the only mode cloak uses.
+psk_dhe: bool,
 has_groups: bool,
 has_shares: bool,
 has_schemes: bool,
@@ -85,6 +92,10 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     self.cookie = "";
     self.early_data = false;
     self.has_psk = false;
+    self.psk_identities = "";
+    self.psk_binders = "";
+    self.psk_binders_wire = 0;
+    self.psk_dhe = false;
     self.has_groups = false;
     self.has_shares = false;
     self.has_schemes = false;
@@ -147,10 +158,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             }
             self.alpn = list;
         },
-        41 => {
-            if (bytes.len == 0) return error.DecodeError;
-            self.has_psk = true;
-        },
+        41 => try self.offeredPsks(&value),
         42 => {
             if (bytes.len != 0) return error.DecodeError;
             self.early_data = true;
@@ -166,9 +174,11 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             if (self.cookie.len == 0) return error.DecodeError;
         },
         45 => {
-            if ((try value.vector(u8)).bytes.len == 0) return error.DecodeError;
+            const list = (try value.vector(u8)).bytes;
+            if (list.len == 0) return error.DecodeError;
             try value.finish();
             modes.* = true;
+            self.psk_dhe = std.mem.findScalar(u8, list, 1) != null;
         },
         51 => {
             self.shares = (try value.vector(u16)).bytes;
@@ -209,6 +219,33 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
     }
 }
 
+/// OfferedPsks (RFC 8446 section 4.2.11): identities, then one binder of 32 bytes or more for each.
+fn offeredPsks(self: *ClientHello, value: *Reader) ParseError!void {
+    @setRuntimeSafety(true);
+    const identities = try value.vector(u16);
+    const binders = try value.vector(u16);
+    try value.finish();
+    if (identities.bytes.len == 0 or binders.bytes.len == 0) return error.DecodeError;
+    var count: usize = 0;
+    var list: Reader = .{ .bytes = identities.bytes };
+    while (list.pos != list.bytes.len) {
+        if ((try list.vector(u16)).bytes.len == 0) return error.DecodeError;
+        _ = try list.int(u32);
+        count += 1;
+    }
+    var entries: Reader = .{ .bytes = binders.bytes };
+    var binder_count: usize = 0;
+    while (entries.pos != entries.bytes.len) {
+        if ((try entries.vector(u8)).bytes.len < 32) return error.DecodeError;
+        binder_count += 1;
+    }
+    if (binder_count != count) return error.IllegalParameter;
+    self.psk_identities = identities.bytes;
+    self.psk_binders = binders.bytes;
+    self.psk_binders_wire = 2 + binders.bytes.len;
+    self.has_psk = true;
+}
+
 /// Letters, digits, hyphen and underscore in labels of at most 63 bytes, 253 in all.
 fn hostName(name: []const u8) bool {
     @setRuntimeSafety(true);
@@ -225,6 +262,40 @@ fn hostName(name: []const u8) bool {
         }
     }
     return label != 0;
+}
+
+pub const PskIdentity = struct { identity: []const u8, age: u32 };
+
+/// The `index`th offered PSK identity, if there is one.
+pub fn pskIdentity(self: *const ClientHello, index: usize) ?PskIdentity {
+    @setRuntimeSafety(true);
+    var list: Reader = .{ .bytes = self.psk_identities };
+    var i: usize = 0;
+    // The list was validated while parsing.
+    while (list.pos != list.bytes.len) : (i += 1) {
+        const identity = (list.vector(u16) catch return null).bytes;
+        const age = list.int(u32) catch return null;
+        if (i == index) return .{ .identity = identity, .age = age };
+    }
+    return null;
+}
+
+/// The binder for the `index`th identity; parsing matched their counts.
+pub fn pskBinder(self: *const ClientHello, index: usize) []const u8 {
+    @setRuntimeSafety(true);
+    var list: Reader = .{ .bytes = self.psk_binders };
+    var i: usize = 0;
+    while (list.pos != list.bytes.len) : (i += 1) {
+        const binder = (list.vector(u8) catch return "").bytes;
+        if (i == index) return binder;
+    }
+    return "";
+}
+
+/// The hello up to its binders: what the binders cover (RFC 8446 section 4.2.11.2). `message`
+/// is the one this view was parsed from, whose last extension is the pre_shared_key.
+pub fn truncated(self: *const ClientHello, message: []const u8) []const u8 {
+    return message[0 .. message.len - self.psk_binders_wire];
 }
 
 pub fn offersVersion(self: *const ClientHello, version: u16) bool {

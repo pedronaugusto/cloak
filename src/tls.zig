@@ -18,13 +18,19 @@ pub const ClientCertificate = @import("tls/handshake/Server.zig").Auth;
 pub const Connection = @import("tls/Connection.zig");
 /// The record-free handshake for QUIC.
 pub const quic = @import("tls/quic.zig");
+/// A client's cache of session tickets for resumption.
+pub const SessionCache = @import("tls/resumption.zig").SessionCache;
+/// A server's session-ticket keys.
+pub const TicketKeys = @import("tls/resumption.zig").TicketKeys;
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
     _ = @import("tls/record.zig");
+    _ = @import("tls/resumption.zig");
     _ = @import("tls/catalogue_test.zig");
     _ = @import("tls/Tls12_test.zig");
     _ = @import("tls/catalogue12_test.zig");
+    _ = @import("tls/Resumption_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

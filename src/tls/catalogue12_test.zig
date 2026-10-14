@@ -30,7 +30,7 @@ const client12: Hello.Options = .{ .max_version = .tls12, .suites = &.{.ecdhe_ec
 const client_both: Hello.Options = .{};
 
 fn answer(message: []const u8, options: Hello.Options) Hello.ParseError!Hello.Answer {
-    return Hello.server(message, "", &.{}, options);
+    return Hello.server(message, "", &.{}, options, false);
 }
 
 /// A TLS 1.2 ClientHello with chosen suites, compression list and extension block.

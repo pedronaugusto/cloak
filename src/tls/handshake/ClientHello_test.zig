@@ -7,7 +7,7 @@ const Hello = @import("Hello.zig");
 fn encode(out: []u8, options: Hello.Options, session: []const u8, cookie: []const u8) ![]u8 {
     const x: [32]u8 = @splat(7);
     const shares = [_]Hello.Share{.{ .group = .x25519, .bytes = &x }};
-    return Hello.client(out, &@as([32]u8, @splat(9)), session, &shares, cookie, options);
+    return Hello.client(out, &@as([32]u8, @splat(9)), session, &shares, cookie, options, .{});
 }
 
 test "C3 client hello parser reads what the client encoder writes" {
@@ -51,14 +51,23 @@ test "C3 client hello parser enforces extension rules" {
     // body: version, random, empty session, one suite, null compression, then extensions.
     const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";
     const versions = "\x00\x2b\x00\x03\x02\x03\x04";
+    const zeros32: [32]u8 = @splat(0);
+    // One identity "x" aged zero, and its 32-byte binder.
+    const psk = "\x00\x29\x00\x2c\x00\x07\x00\x01x\x00\x00\x00\x00\x00\x21\x20" ++ zeros32;
+    const modes = "\x00\x2d\x00\x02\x01\x01";
     const cases = [_]struct { extensions: []const u8, err: ?anyerror }{
         .{ .extensions = versions, .err = null },
         .{ .extensions = "", .err = null },
         .{ .extensions = versions ++ versions, .err = error.DuplicateExtension },
         .{ .extensions = versions ++ "\x00\x2a\x00\x01x", .err = error.DecodeError },
-        .{ .extensions = versions ++ "\x00\x29\x00\x01x\x00\x2d\x00\x02\x01\x01", .err = error.IllegalParameter },
-        .{ .extensions = versions ++ "\x00\x2d\x00\x02\x01\x01\x00\x29\x00\x01x", .err = null },
-        .{ .extensions = versions ++ "\x00\x29\x00\x01x", .err = error.MissingExtension },
+        .{ .extensions = versions ++ psk ++ modes, .err = error.IllegalParameter },
+        .{ .extensions = versions ++ modes ++ psk, .err = null },
+        .{ .extensions = versions ++ psk, .err = error.MissingExtension },
+        // F68: an offer that is not two lists, an empty identity, a short binder, counts that differ.
+        .{ .extensions = versions ++ modes ++ "\x00\x29\x00\x01x", .err = error.InvalidLength },
+        .{ .extensions = versions ++ modes ++ "\x00\x29\x00\x2b\x00\x06\x00\x00\x00\x00\x00\x00\x00\x21\x20" ++ zeros32, .err = error.DecodeError },
+        .{ .extensions = versions ++ modes ++ "\x00\x29\x00\x2b\x00\x07\x00\x01x\x00\x00\x00\x00\x00\x20\x1f" ++ zeros32[0..31], .err = error.DecodeError },
+        .{ .extensions = versions ++ modes ++ "\x00\x29\x00\x33\x00\x0e\x00\x01x\x00\x00\x00\x00\x00\x01y\x00\x00\x00\x00\x00\x21\x20" ++ zeros32, .err = error.IllegalParameter },
         .{ .extensions = versions ++ "\x00\x00\x00\x0c\x00\x0a\x00\x00\x07a b c.d", .err = error.IllegalParameter },
         .{ .extensions = versions ++ "\x00\x0a\x00\x03\x00\x01\x00", .err = error.DecodeError },
         .{ .extensions = versions ++ "\x00\x33\x00\x0e\x00\x0c\x00\x1d\x00\x02xx\x00\x1d\x00\x02xx", .err = error.IllegalParameter },
@@ -85,14 +94,14 @@ test "C3 client hello fingerprint ignores the extensions a retry may change" {
     const x: [32]u8 = @splat(7);
     const p256: [65]u8 = @splat(4);
     const random: [32]u8 = @splat(1);
-    const first = try ClientHello.parse(try Hello.client(&first_buf, &random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }));
-    const second = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "cookie", .{ .sni = "example.com" }));
+    const first = try ClientHello.parse(try Hello.client(&first_buf, &random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}));
+    const second = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "cookie", .{ .sni = "example.com" }, .{}));
     try std.testing.expectEqual(first.fingerprint(), second.fingerprint());
     // A changed name, ALPN list or random is a different hello.
-    const renamed = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "", .{ .sni = "example.net" }));
+    const renamed = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "", .{ .sni = "example.net" }, .{}));
     try std.testing.expect(!std.mem.eql(u8, &first.fingerprint(), &renamed.fingerprint()));
     const other_random: [32]u8 = @splat(2);
-    const reseeded = try ClientHello.parse(try Hello.client(&second_buf, &other_random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }));
+    const reseeded = try ClientHello.parse(try Hello.client(&second_buf, &other_random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}));
     try std.testing.expect(!std.mem.eql(u8, &first.fingerprint(), &reseeded.fingerprint()));
 }
 

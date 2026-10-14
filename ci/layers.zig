@@ -9,6 +9,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "certificates module", .patterns = &.{"src/certificates.zig"} },
     .{ .name = "TLS wire and crypto", .patterns = &.{ "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },
     .{ .name = "TLS record", .patterns = &.{ "src/tls/record.zig", "src/tls/record/**" } },
+    .{ .name = "TLS resumption", .patterns = &.{ "src/tls/resumption.zig", "src/tls/resumption/**" } },
     .{ .name = "TLS handshake", .patterns = &.{ "src/tls/handshake.zig", "src/tls/handshake/**" } },
     .{ .name = "TLS connection", .patterns = &.{ "src/tls/Connection.zig", "src/tls/connection/**", "src/tls/quic.zig", "src/tls/quic/**" } },
     .{ .name = "TLS stream", .patterns = &.{ "src/tls/Session.zig", "src/tls/session/**" } },

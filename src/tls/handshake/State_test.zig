@@ -153,3 +153,37 @@ test "C2 independent full server traces optional required and no client auth" {
         try std.testing.expectError(error.UnexpectedMessage, state.advance(.ticket, .application, .parsed, true));
     };
 }
+test "C5 resumed handshakes: no certificate flight either way, and resumption marked only at the hello" {
+    // Client: after the ServerHello accepted a PSK, EncryptedExtensions leads straight to Finished.
+    var client: S.State = .{ .role = .client, .mode = .stream };
+    try client.advance(.client_hello, .initial, .parsed, true);
+    try client.advance(.server_hello, .initial, .parsed, true);
+    try client.markResumed();
+    try client.advance(.encrypted_extensions, .handshake, .parsed, true);
+    for ([_]S.Action{ .certificate_request, .certificate, .verify_chain, .certificate_verify }) |action| {
+        var copy = client;
+        try std.testing.expectError(error.UnexpectedMessage, copy.advance(action, .handshake, .parsed, true));
+    }
+    try client.advance(.finished, .handshake, .finished, true);
+    try client.advance(.local_finished, .handshake, .finished, true);
+    try std.testing.expectEqual(.connected, client.phase);
+    // Server: no CertificateRequest or Certificate, its Finished after EncryptedExtensions, then
+    // the client's Finished alone.
+    var server: S.State = .{ .role = .server, .mode = .stream, .auth = .required };
+    try server.advance(.client_hello, .initial, .parsed, true);
+    try server.markResumed();
+    try server.advance(.server_hello, .initial, .parsed, true);
+    try server.advance(.encrypted_extensions, .handshake, .parsed, true);
+    var request = server;
+    try std.testing.expectError(error.UnexpectedMessage, request.advance(.certificate_request, .handshake, .parsed, true));
+    try server.advance(.local_finished, .handshake, .finished, true);
+    try std.testing.expectEqual(.client_finished, server.phase);
+    try server.advance(.finished, .handshake, .finished, true);
+    try std.testing.expectEqual(.connected, server.phase);
+    // Marking a resumption anywhere else fails the state.
+    var late: S.State = .{ .role = .client, .mode = .stream, .phase = .certificate_request };
+    try std.testing.expectError(error.UnexpectedMessage, late.markResumed());
+    try std.testing.expectEqual(.failed, late.phase);
+    var tls12: S.State = .{ .role = .server, .mode = .stream, .phase = .hello, .version = .tls12 };
+    try std.testing.expectError(error.UnexpectedMessage, tls12.markResumed());
+}

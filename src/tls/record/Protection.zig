@@ -12,6 +12,7 @@ pub const Plaintext = Epoch.Plaintext;
 pub const InitError = Epoch.InitError;
 pub const SealError = Epoch.SealError;
 pub const OpenError = Epoch.OpenError;
+pub const TrialError = Epoch.TrialError;
 pub const UpdateError = Epoch.Epoch(.aes_128_gcm_sha256).UpdateError || error{NoKeyUpdate};
 
 /// The most bytes protection adds around a plaintext fragment in either version.
@@ -80,6 +81,14 @@ pub fn open(self: *Protection, wire: []const u8, out: []u8) OpenError!Plaintext 
     @setRuntimeSafety(true);
     return switch (self.state) {
         inline else => |*e| e.open(wire, out),
+    };
+}
+
+/// A trial open of a TLS 1.3 record (see `Epoch.trialOpen`); TLS 1.2 has no early data.
+pub fn trialOpen(self: *Protection, wire: []const u8, out: []u8) TrialError!Plaintext {
+    @setRuntimeSafety(true);
+    return switch (self.state) {
+        inline else => |*e, tag| if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) e.open(wire, out) else e.trialOpen(wire, out),
     };
 }
 

@@ -26,6 +26,7 @@ const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
 const Messages12 = @import("Messages12.zig");
 const Server12 = @import("Server12.zig");
+const Ticket = @import("../resumption/Ticket.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Emit = Flight.Emit;
@@ -36,6 +37,7 @@ pub const Verify = Client.Verify;
 pub const Limits = Client.Limits;
 pub const KeyLog = Client.KeyLog;
 pub const Auth = State.Auth;
+pub const TicketKeys = @import("../resumption/TicketKeys.zig");
 
 /// A certificate chain the server can present, and the names it answers for.
 pub const Credential = struct {
@@ -69,12 +71,20 @@ pub const Options = struct {
     client_auth: Auth = .none,
     /// How a presented client chain is checked; `none` accepts any chain unauthenticated.
     client_verify: Verify = .none,
+    /// Session tickets: issued after each TLS 1.3 handshake and resumed from (PSK-DHE). The
+    /// ring is shared, and must outlive the connections using it.
+    tickets: ?*TicketKeys = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
 pub const Info = Client.Info;
+
+/// Tickets sent after each handshake (design: at most two).
+pub const tickets_per_handshake = 2;
+/// Entropy each ticket draws: its sealing salt and its age obfuscator.
+const ticket_entropy = Ticket.salt_length + 4;
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
 pub const Error = Client.Error || Flight.Error || ClientHello.ParseError || error{
@@ -116,6 +126,8 @@ answered: bool = false,
 ccs_sent: bool = false,
 app_read: ?Traffic = null,
 server_name_copy: []const u8 = &.{},
+/// The handshake resumed a session from a ticket.
+resumed: bool = false,
 // TLS 1.2.
 version: suites.Version = .tls13,
 suite12: ?suites.Suite12 = null,
@@ -144,6 +156,21 @@ const Scratch = struct {
     sign_content_len: u8 = 0,
     /// Fresh noise for the hedged signature, when the credential's key signs here.
     sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
+    /// The resumed session's PSK, and each ticket's salt and age obfuscator.
+    psk: aegis.Secret([48]u8) = .init(@splat(0)),
+    ticket_entropy: [tickets_per_handshake * ticket_entropy]u8 = @splat(0),
+    /// The offered identity the ServerHello selects.
+    psk_index: u16 = 0,
+    /// The ClientHello is held until the clock answers: tickets are opened and issued by it.
+    hello_held: bool = false,
+    /// The client sent psk_key_exchange_modes with PSK-DHE: tickets may be issued.
+    takes_tickets: bool = false,
+    /// The client offered early data, which this server never accepts: its records are skipped.
+    early_offered: bool = false,
+    /// Seconds: when the session's tickets expire (from its full handshake), and when the
+    /// client's authentication expires.
+    session_expires: i64 = std.math.maxInt(i64),
+    client_auth_expires: i64 = std.math.maxInt(i64),
     /// Client signature_algorithms, kept to pick the CertificateVerify scheme.
     schemes: [256]u8 = undefined,
     schemes_len: u16 = 0,
@@ -249,6 +276,7 @@ fn releaseScratch(self: *Server) void {
     if (scratch.share12) |*share| share.deinit();
     scratch.share12 = null;
     scratch.flight.deinit(self.gpa);
+    scratch.psk.deinit();
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -294,13 +322,24 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
     };
     defer response.deinit();
     self.need_now = .none;
-    @memcpy(scratch.sign_noise[0 .. entropy.len - exchange_end], entropy[exchange_end..]);
+    const noise_end = exchange_end + if (self.resumed) 0 else self.signNoiseLength();
+    @memcpy(scratch.sign_noise[0 .. noise_end - exchange_end], entropy[exchange_end..noise_end]);
+    @memcpy(scratch.ticket_entropy[0 .. entropy.len - noise_end], entropy[noise_end..]);
     try self.sendServerFlight(entropy[0..32], &response);
 }
 
 pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
+    @setRuntimeSafety(true);
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;
+    self.need_now = .none;
+    if (self.scratch.?.hello_held) {
+        // The ClientHello waited for the clock; it was parsed and checked once already.
+        errdefer self.state.fail();
+        self.scratch.?.hello_held = false;
+        const hello = ClientHello.parse(self.held) catch unreachable; // unreachable: these bytes parsed before
+        return self.answerHello(self.held, &hello);
+    }
     self.need_now = .verify;
 }
 
@@ -332,6 +371,8 @@ pub fn provideVerification(self: *Server, token: types.Token, receipt: *const ty
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
     try self.state.advance(.verify_chain, if (self.version == .tls12) .initial else .handshake, .chain, true);
     self.authenticated = true;
+    self.scratch.?.client_auth_expires = types.seconds(receipt.expires);
+    if (receipt.revocation_expires) |until| self.scratch.?.client_auth_expires = @min(self.scratch.?.client_auth_expires, types.seconds(until));
     self.need_now = .none;
 }
 
@@ -549,26 +590,134 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     if (!hello.has_schemes) return error.MissingExtension;
     if (!hello.has_groups) return error.MissingExtension;
     if (hello.sharesOutsideGroups()) return error.IllegalParameter;
+    // A second hello may not offer early data (RFC 8446 section 4.2.10).
+    if (second and hello.early_data) return error.IllegalParameter;
+    if (!second) self.scratch.?.early_offered = hello.early_data;
+    self.scratch.?.takes_tickets = hello.psk_dhe;
     try self.negotiate(&hello, second);
-    try self.scratch.?.transcripts.commit(msg);
     const group = self.group.?;
-    if (hello.shareFor(group)) |share| {
-        if (share.len != group.clientShareLength()) return error.IllegalParameter;
-        @memcpy(scratch.share[0..share.len], share);
-        scratch.share_len = share.len;
-        self.answered = true;
-        const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) + self.signNoiseLength() } };
-        // QUIC: the client's transport parameters are provisional, and the server says nothing
-        // that depends on them until the caller accepts them.
-        if (self.options.quic and !self.parameters_accepted) {
-            self.deferred = entropy;
-            self.need_now = .parameters;
-        } else self.need_now = entropy;
+    const share = hello.shareFor(group) orelse {
+        // No usable share: ask once for the group the server chose.
+        if (second) return error.IllegalParameter;
+        try self.scratch.?.transcripts.commit(msg);
+        return self.sendRetry(group);
+    };
+    if (share.len != group.clientShareLength()) return error.IllegalParameter;
+    // Tickets are opened and issued by the clock: the hello waits for it.
+    if (self.options.tickets != null and self.now == null) {
+        if (self.held.len != 0) self.gpa.free(self.held);
+        self.held = &.{};
+        self.held = try self.gpa.dupe(u8, msg);
+        self.scratch.?.hello_held = true;
+        self.need_now = .time;
         return;
     }
-    // No usable share: ask once for the group the server chose.
-    if (second) return error.IllegalParameter;
-    try self.sendRetry(group);
+    return self.answerHello(msg, &hello);
+}
+
+/// The ClientHello that a ServerHello answers: a PSK is chosen if one resumes, the hello joins
+/// the transcript, and the key exchange's entropy is asked for.
+fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    if (hello.has_psk and hello.psk_dhe) try self.choosePsk(msg, hello);
+    try scratch.transcripts.commit(msg);
+    const group = self.group.?;
+    const share = hello.shareFor(group).?;
+    @memcpy(scratch.share[0..share.len], share);
+    scratch.share_len = share.len;
+    self.answered = true;
+    const tickets: usize = if (self.options.tickets != null and self.scratch.?.takes_tickets) tickets_per_handshake * ticket_entropy else 0;
+    const noise = if (self.resumed) 0 else self.signNoiseLength();
+    const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) + noise + tickets } };
+    // QUIC: the client's transport parameters are provisional, and the server says nothing
+    // that depends on them until the caller accepts them.
+    if (self.options.quic and !self.parameters_accepted) {
+        self.deferred = entropy;
+        self.need_now = .parameters;
+    } else self.need_now = entropy;
+}
+
+/// What a ticket must agree with to resume: this policy, this name and protocol, a suite of its
+/// hash, its own and the client authentication's lifetimes.
+fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    if (suites.digestLength(state.suite) != suites.digestLength(self.suite.?)) return false;
+    // Issued no later than a minute ahead of this clock, and not yet expired.
+    if (now >= state.expires or state.issued > now +| 60) return false;
+    if (!std.ascii.eqlIgnoreCase(state.serverName(), scratch.server_name[0..scratch.server_name_len])) return false;
+    if (!std.mem.eql(u8, state.alpnBytes(), self.alpn)) return false;
+    if (!std.mem.eql(u8, &state.policy, &self.policyDigest())) return false;
+    if (state.client_authenticated) {
+        if (now >= state.auth_expires) return false;
+    } else if (self.options.client_auth == .required) return false;
+    return true;
+}
+
+/// The first offered ticket this server opens and may resume, checked by its binder. A ticket it
+/// cannot open or resume is passed over for a full handshake; a binder that fails is fatal.
+fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!void {
+    @setRuntimeSafety(true);
+    const ring_owner = self.options.tickets orelse return;
+    var snapshot = ring_owner.acquire() orelse return;
+    defer snapshot.release();
+    const now = types.seconds(self.now.?);
+    // A bounded look: a client offers one ticket or a few.
+    var index: u16 = 0;
+    while (index < 8) : (index += 1) {
+        const offer = hello.pskIdentity(index) orelse return;
+        var state: Ticket.State = undefined;
+        Ticket.open(snapshot.ring(), offer.identity, now, &state) catch continue;
+        defer state.deinit();
+        if (!self.resumable(&state, now)) continue;
+        const scratch = self.scratch.?;
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        switch (self.suite.?) {
+            inline else => |tag| {
+                const K = Schedule.Schedule(tag);
+                const truncated = scratch.transcripts.digestWith(&digest_buf, K.length, hello.truncated(msg));
+                try K.checkBinder(state.pskBytes()[0..K.length], truncated[0..K.length], hello.pskBinder(index));
+            },
+        }
+        try self.state.markResumed();
+        @memcpy(scratch.psk.exposeMut()[0..state.pskBytes().len], state.pskBytes());
+        self.resumed = true;
+        self.scratch.?.psk_index = index;
+        self.scratch.?.session_expires = state.expires;
+        self.authenticated = state.client_authenticated;
+        self.scratch.?.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
+        return;
+    }
+}
+
+/// What a ticket's resumption depends on beyond its session: how this server treats client
+/// certificates, by mode and by the whole verification policy.
+fn policyDigest(self: *const Server) [32]u8 {
+    @setRuntimeSafety(true);
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update("cloak ticket policy v1");
+    h.update(&.{ @backingInt(self.options.client_auth), @intFromBool(self.options.client_verify == .full) });
+    switch (self.options.client_verify) {
+        .none => {},
+        .full => |full| {
+            const request: types.Request = .{
+                .chain = &.{},
+                .purpose = .client,
+                .time = .fromNanoseconds(0),
+                .trust_generation = full.trust_generation,
+                .policy_generation = full.policy_generation,
+                .mode = .full,
+                .policy = full.policy,
+                .pins = full.pins,
+                .evidence = full.evidence,
+                .limits = full.limits,
+                .anchor_policies = full.anchor_policies,
+            };
+            h.update(&request.digest());
+        },
+    }
+    return h.finalResult();
 }
 
 /// Whether this server speaks TLS 1.3.
@@ -666,7 +815,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     const scratch = self.scratch.?;
     const suite = self.suite.?;
     var hello_buffer: [1400]u8 = undefined;
-    const hello = try Hello.buildServer(&hello_buffer, random[0..32], scratch.session[0..scratch.session_len], suite, self.group.?, response.wire());
+    const hello = try Hello.buildServer(&hello_buffer, random[0..32], scratch.session[0..scratch.session_len], suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);
     try scratch.transcripts.commit(hello);
@@ -682,7 +831,8 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             const K = Schedule.Schedule(tag);
             var traffic: K.Traffic = .{};
             errdefer traffic.deinit();
-            var schedule = try K.init(response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
+            const psk: ?*const [K.length]u8 = if (self.resumed) scratch.psk.expose()[0..K.length] else null;
+            var schedule = try K.init(psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
             errdefer schedule.deinit();
             self.keys = @unionInit(Keys, @tagName(tag), .{ .schedule = schedule, .handshake = traffic });
         },
@@ -694,7 +844,10 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             try self.install(.read, .handshake, tag, len, k.handshake.client.expose(), "CLIENT_HANDSHAKE_TRAFFIC_SECRET");
         },
     }
+    scratch.psk.deinit();
     try self.sendEncrypted();
+    // A resumed handshake is authenticated by the PSK: no certificate either way.
+    if (self.resumed) return self.finishFlight();
     if (self.options.client_auth != .none) try self.sendRequest();
     try self.sendCertificate();
 }
@@ -830,7 +983,8 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             try Labels.checkFinished(Hash, k.handshake.client.expose(), before[0..Hash.digest_length], received);
             try self.state.advance(.finished, epoch, .finished, boundary);
             try scratch.transcripts.commit(msg);
-            try k.schedule.complete();
+            var finished_buf: [Transcripts.max_digest]u8 = undefined;
+            try k.schedule.complete(scratch.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
         },
     }
@@ -839,7 +993,64 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
     self.app_read = null;
     self.established = true;
     self.authenticated = self.authenticated and self.options.client_verify == .full;
+    try self.issueTickets();
     try self.push(.complete);
+}
+
+/// NewSessionTickets, sent under the application keys before the connection is complete. A
+/// ticket's session expires a lifetime after its full handshake, and no later than the client's
+/// authentication; a resumed session's tickets keep the expiry the first ticket had. Nothing is
+/// issued without a key that issues now, or to a client that cannot use PSK-DHE.
+fn issueTickets(self: *Server) Client.Error!void {
+    @setRuntimeSafety(true);
+    const ring_owner = self.options.tickets orelse return;
+    if (!self.scratch.?.takes_tickets) return;
+    const now = self.now orelse return;
+    var snapshot = ring_owner.acquire() orelse return;
+    defer snapshot.release();
+    const now_s = types.seconds(now);
+    const key = snapshot.ring().issuing(now_s) orelse return;
+    var expires = if (self.resumed) self.scratch.?.session_expires else now_s +| snapshot.ring().lifetime;
+    if (self.authenticated) expires = @min(expires, self.scratch.?.client_auth_expires);
+    if (expires <= now_s) return;
+    const scratch = self.scratch.?;
+    const keys = &self.keys.?;
+    for (0..tickets_per_handshake) |i| {
+        const drawn = scratch.ticket_entropy[i * ticket_entropy ..][0..ticket_entropy];
+        var state: Ticket.State = .{
+            .suite = self.suite.?,
+            .issued = now_s,
+            .expires = expires,
+            .age_add = std.mem.readInt(u32, drawn[Ticket.salt_length..][0..4], .big),
+            .client_authenticated = self.authenticated,
+            .auth_expires = if (self.authenticated) self.scratch.?.client_auth_expires else 0,
+            .policy = self.policyDigest(),
+        };
+        defer state.deinit();
+        @memcpy(state.alpn[0..self.alpn.len], self.alpn);
+        state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
+        @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
+        state.server_name_len = scratch.server_name_len;
+        // Each ticket of the connection has its own nonce, so its own PSK (RFC 8446 section 4.6.1).
+        const nonce = [1]u8{@intCast(i)}; // safe: two tickets
+        switch (keys.*) {
+            inline else => |*k, tag| {
+                const K = Schedule.Schedule(tag);
+                k.schedule.ticketSecret(&nonce, state.psk.exposeMut()[0..K.length]) catch |err| switch (err) {
+                    error.InvalidLabel => unreachable, // unreachable: a fixed label and a one-byte nonce
+                    error.WrongPhase => return error.WrongPhase,
+                };
+            },
+        }
+        var sealed_buf: [Ticket.max_length]u8 = undefined;
+        defer std.crypto.secureZero(u8, &sealed_buf);
+        const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
+        const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
+        const dst = try self.reserve(4 + 4 + 4 + 2 + 2 + sealed.len + 2);
+        const message = try Messages.buildNewSessionTicket(dst, lifetime, state.age_add, &nonce, sealed);
+        // Post-handshake: sent, never part of the transcript.
+        try scratch.flight.queueMessage(.application, message.len);
+    }
 }
 
 fn onKeyUpdate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
@@ -875,6 +1086,7 @@ pub fn info(self: *const Server) ?Info {
         .server_name = if (self.scratch) |scratch| scratch.server_name[0..scratch.server_name_len] else self.server_name_copy,
         .peer_authenticated = self.authenticated,
         .peer_parameters = self.peer_parameters,
+        .resumed = self.resumed,
     };
 }
 

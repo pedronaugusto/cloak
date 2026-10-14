@@ -14,6 +14,7 @@ pub const InitError = error{InvalidLimits};
 pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength, PartialOverlap };
 pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap, RecordOverflow };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
+pub const TrialError = OpenError || error{Undecryptable};
 
 pub fn Epoch(comptime suite: suites.Suite13) type {
     const A = suites.Aead(suite);
@@ -127,6 +128,18 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         }
         /// Tag verification precedes release. Any peer failure erases this epoch.
         pub fn open(self: *Self, wire: []const u8, out: []u8) OpenError!Plaintext {
+            return self.openChecked(wire, out, false) catch |err| switch (err) {
+                error.Undecryptable => unreachable, // unreachable: only a trial reports it
+                else => |e| return e,
+            };
+        }
+        /// `open` for a record that may belong to an epoch this one never sees: early data a server
+        /// declined, under keys it does not have. A record whose tag fails is `Undecryptable` and
+        /// leaves the epoch as it was, with nothing released; every other failure is `open`'s.
+        pub fn trialOpen(self: *Self, wire: []const u8, out: []u8) TrialError!Plaintext {
+            return self.openChecked(wire, out, true);
+        }
+        fn openChecked(self: *Self, wire: []const u8, out: []u8, trial: bool) TrialError!Plaintext {
             @setRuntimeSafety(true);
             if (self.closed) return error.Closed;
             if (wire.len < 5 + 17 or wire.len > 5 + max_ciphertext) return self.bad();
@@ -140,6 +153,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             try self.admit(len);
             A.decrypt(plain, cipher, wire[wire.len - 16 ..][0..16].*, wire[0..5], self.nonce(), self.key.expose().*) catch {
                 std.crypto.secureZero(u8, plain);
+                if (trial) return error.Undecryptable;
                 return self.bad();
             };
             var end = len;

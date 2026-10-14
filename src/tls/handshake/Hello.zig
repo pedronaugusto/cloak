@@ -110,7 +110,16 @@ pub fn validate(options: Options) ValidateError!void {
     }
 }
 pub const EncodeError = ValidateError || Writer.WriteError;
-pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []const Share, cookie: []const u8, options: Options) EncodeError![]u8 {
+/// What a client says of resumption: that it takes tickets (psk_key_exchange_modes, PSK-DHE
+/// only), and the ticket it offers, if any, with its obfuscated age. The offer's one binder is
+/// written as zeros, `binder_len` bytes ending the hello, for the caller to fill.
+pub const Resume = struct {
+    modes: bool = false,
+    ticket: []const u8 = "",
+    age: u32 = 0,
+    binder_len: usize = 0,
+};
+pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume) EncodeError![]u8 {
     @setRuntimeSafety(true);
     try validate(options);
     // Key shares are TLS 1.3: present exactly when it is offered.
@@ -195,6 +204,22 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
         std.mem.writeInt(u16, out[share_at + 4 ..][0..2], @intCast(w.pos - share_at - 6), .big);
     }
     if (options.quic) try extension(&w, 57, options.parameters);
+    if (tls13 and (resumption.modes or resumption.ticket.len != 0)) try extension(&w, 45, &.{ 1, 1 });
+    if (tls13 and resumption.ticket.len != 0) {
+        // pre_shared_key is the last extension (RFC 8446 section 4.2.11).
+        if (resumption.ticket.len > 65535 - 6 or resumption.binder_len < 32 or resumption.binder_len > 255) return error.InvalidOptions;
+        try w.int(u16, 41);
+        // safe: the ticket was bounded just above; the binder at 255 bytes.
+        try w.int(u16, @intCast(2 + 2 + resumption.ticket.len + 4 + 2 + 1 + resumption.binder_len));
+        try w.int(u16, @intCast(2 + resumption.ticket.len + 4));
+        try w.vector(u16, resumption.ticket);
+        try w.int(u32, resumption.age);
+        try w.int(u16, @intCast(1 + resumption.binder_len));
+        try w.int(u8, @intCast(resumption.binder_len));
+        if (out.len - w.pos < resumption.binder_len) return error.BufferTooSmall;
+        @memset(out[w.pos..][0..resumption.binder_len], 0);
+        w.pos += resumption.binder_len;
+    }
     if (w.pos - ext_at - 2 > 65535 or w.pos - 4 > 128 * 1024) return error.InvalidOptions;
     // safe: total extension and handshake lengths have just been bounded.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
@@ -206,13 +231,14 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
 }
-pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u8, retry: bool, cookie: []const u8 };
+pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u8, retry: bool, cookie: []const u8, psk: bool = false };
 /// A TLS 1.2 ServerHello: always a full handshake with extended master secret and secure
 /// renegotiation indicated.
 pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8 };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
-pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options) ParseError!Answer {
+/// `psk_offered` says the client offered one PSK identity, which a ServerHello may then select.
+pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options, psk_offered: bool) ParseError!Answer {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
     var r: Reader = .{ .bytes = message[4..] };
@@ -233,6 +259,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var alpn: []const u8 = "";
     var ems = false;
     var renegotiation = false;
+    var psk = false;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
@@ -243,6 +270,12 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             51 => {
                 group = std.enums.fromInt(Group, try value.int(u16)) orelse return error.UnofferedSelection;
                 if (!retry) share = (try value.vector(u16)).bytes;
+            },
+            41 => {
+                // The client offered one identity; a retry request selects none.
+                if (!psk_offered) return error.UnsolicitedExtension;
+                if (retry or try value.int(u16) != 0) return error.InvalidHello;
+                psk = true;
             },
             44 => {
                 if (!retry) return error.InvalidHello;
@@ -288,6 +321,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         try value.finish();
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
+    if (!version13 and psk) return error.InvalidHello;
     if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation }, options);
     if (only12) return error.InvalidHello;
     if (legacy_version != 0x0303 or !std.mem.eql(u8, echoed, session)) return error.InvalidHello;
@@ -306,7 +340,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     } else {
         if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
-    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie } };
+    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk } };
 }
 const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool };
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {
@@ -370,8 +404,9 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
     return .{ .alpn = alpn, .parameters = parameters };
 }
 
-/// A ServerHello selecting `suite` and answering the client's share for `group`.
-pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8) Writer.WriteError![]u8 {
+/// A ServerHello selecting `suite`, answering the client's share for `group`, and, when `psk`,
+/// selecting the PSK identity at index `psk`.
+pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8, psk: ?u16) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0, 3, 3 });
@@ -387,7 +422,11 @@ pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite:
     try w.int(u16, @intCast(4 + share.len));
     try w.int(u16, @backingInt(group));
     try w.vector(u16, share);
-    // safe: the extension block holds two short extensions.
+    if (psk) |index| {
+        try w.put(&.{ 0, 41, 0, 2 });
+        try w.int(u16, index);
+    }
+    // safe: the extension block holds three short extensions.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
     // safe: the whole message is bounded by the caller's buffer, far below 2^24.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);

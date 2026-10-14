@@ -21,6 +21,7 @@ const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
 const Client12 = @import("Client12.zig");
+const SessionCache = @import("../resumption/SessionCache.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Direction = Flight.Direction;
@@ -57,8 +58,20 @@ pub const KeyLog = struct {
     write: *const fn (context: ?*anyopaque, line: []const u8) void,
 };
 
+/// Resumption from a cache of tickets: TLS 1.3 PSK-DHE, a fresh key exchange every time.
+pub const Resumption = struct {
+    cache: *SessionCache,
+    /// Separates callers sharing a cache whose tickets must never cross: tenants, or a proxy and
+    /// the origins behind it. The server name, identity, ALPN, transport, verification policy,
+    /// trust generation and client certificate are in the cache key already.
+    namespace: []const u8 = "",
+    /// The longest a session is resumed after the full handshake that authenticated it.
+    max_age: std.Io.Duration = .fromSeconds(7 * 24 * 60 * 60),
+};
+
 pub const Options = struct {
     hello: Hello.Options = .{},
+    resumption: ?Resumption = null,
     /// The identity the server certificate must carry.
     identity: types.Identity = .none,
     verify: Verify,
@@ -94,12 +107,15 @@ pub const SignRequest = struct { scheme: Hello.SignatureScheme, content: []const
 
 pub const Info = struct {
     version: suites.Version,
+    /// The handshake resumed a session from a ticket: the peer's authentication is the original
+    /// handshake's.
     suite: suites.Suite,
     group: Group,
     alpn: []const u8,
     server_name: []const u8,
     peer_authenticated: bool,
     peer_parameters: []const u8,
+    resumed: bool = false,
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
@@ -125,7 +141,7 @@ pub fn alertFor(err: anyerror) Alert {
         error.Downgrade => .illegal_parameter,
         error.NoApplicationProtocol => .no_application_protocol,
         error.UnofferedScheme, error.SchemeKeyMismatch => .illegal_parameter,
-        error.BadSignature, error.BadFinished => .decrypt_error,
+        error.BadSignature, error.BadFinished, error.BadBinder => .decrypt_error,
         error.HandshakeLimit => .internal_error,
         error.VerificationRejected, error.UnsupportedKey, error.InvalidCertificate, error.InvalidDer => .bad_certificate,
         else => .internal_error,
@@ -169,6 +185,16 @@ suite12: ?suites.Suite12 = null,
 /// TLS 1.2 secrets that outlive the handshake (the exporter needs them), allocated only for a
 /// TLS 1.2 connection.
 tls12: ?*Flight.Secrets12 = null,
+// Resumption.
+/// The cache key: everything the authority of a stored session depended on.
+cache_key: [32]u8 = @splat(0),
+/// The ticket offered in the hello, until the ServerHello answers it.
+offered: ?SessionCache.Taken = null,
+resumed: bool = false,
+/// Seconds: the full handshake this session began with, and when its server authentication
+/// expires. Tickets of the session never outlive either.
+origin: i64 = 0,
+auth_expires: i64 = std.math.maxInt(i64),
 
 const Scratch = struct {
     flight: Flight = .{},
@@ -217,6 +243,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     }
     if (options.hello.quic and options.compat) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
+    if (options.resumption) |resumption| if (resumption.namespace.len > 1024 or resumption.max_age.nanoseconds <= 0) return error.InvalidOptions;
     const self = try gpa.create(Client);
     errdefer gpa.destroy(self);
     const scratch = try gpa.create(Scratch);
@@ -224,6 +251,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     scratch.* = .{};
     self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = if (options.hello.quic) .quic else .stream }, .scratch = scratch };
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
+    if (options.resumption) |resumption| {
+        // A ticket is chosen and aged by the clock, before the hello.
+        if (options.hello.allows13()) self.need_now = .time;
+        self.cache_key = cacheKey(options, resumption.namespace);
+    }
     if (options.auth) |auth| self.options.auth = auth.retain();
     return self;
 }
@@ -240,6 +272,7 @@ pub fn deinit(self: *Client) void {
 /// Erases secrets and releases buffers; callable once the connection is established.
 pub fn wipe(self: *Client) void {
     @setRuntimeSafety(true);
+    self.releaseOffer();
     self.releaseScratch();
     if (self.post) |*emit| Flight.eraseEmit(emit);
     self.post = null;
@@ -378,7 +411,76 @@ pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;
+    if (self.state.phase == .start) {
+        // Resumption's clock, before the hello: the session this one may resume, then the draw.
+        self.origin = types.seconds(now);
+        self.takeTicket();
+        self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
+        return;
+    }
     self.need_now = .verify;
+}
+
+/// The cache key: SHA-256 over every input a session's authority depended on, each length-prefixed.
+fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
+    @setRuntimeSafety(true);
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    const part = struct {
+        fn bytes(hash: *std.crypto.hash.sha2.Sha256, value: []const u8) void {
+            var length: [8]u8 = undefined;
+            std.mem.writeInt(u64, &length, value.len, .big);
+            hash.update(&length);
+            hash.update(value);
+        }
+    }.bytes;
+    part(&h, "cloak session cache v1");
+    part(&h, namespace);
+    part(&h, options.hello.sni);
+    part(&h, &.{ @intFromBool(options.hello.quic), @intFromBool(options.hello.require_hybrid), @intFromBool(options.hello.require_alpn) });
+    part(&h, std.mem.asBytes(&options.hello.alpn.len));
+    for (options.hello.alpn) |protocol| part(&h, protocol);
+    // The reference identity and the whole verification policy, through the request digest of
+    // a request with no chain, time or token.
+    switch (options.verify) {
+        .none => part(&h, "verify none"),
+        .full => |full| {
+            const request: types.Request = .{
+                .chain = &.{},
+                .identity = options.identity,
+                .purpose = .server,
+                .time = .fromNanoseconds(0),
+                .trust_generation = full.trust_generation,
+                .policy_generation = full.policy_generation,
+                .mode = .full,
+                .policy = full.policy,
+                .pins = full.pins,
+                .evidence = full.evidence,
+                .limits = full.limits,
+                .anchor_policies = full.anchor_policies,
+            };
+            part(&h, &request.digest());
+        },
+    }
+    // The client certificate a server may have authenticated, by its whole chain.
+    if (options.auth) |auth| {
+        part(&h, "client certificate");
+        for (auth.chain()) |der| part(&h, der);
+    } else part(&h, "no client certificate");
+    return h.finalResult();
+}
+
+/// Takes the newest usable ticket for this connection's key: one the offered suites can resume.
+fn takeTicket(self: *Client) void {
+    @setRuntimeSafety(true);
+    const resumption = self.options.resumption orelse return;
+    var taken = resumption.cache.take(&self.cache_key, self.origin) orelse return;
+    if (!self.options.hello.offers13(taken.entry.suite)) return taken.release();
+    self.offered = taken;
+}
+
+fn releaseOffer(self: *Client) void {
+    if (self.offered) |*taken| taken.release();
+    self.offered = null;
 }
 
 /// The verification request for the pending peer chain; valid while `need` is `.verify`.
@@ -409,6 +511,9 @@ pub fn provideVerification(self: *Client, token: types.Token, receipt: *const ty
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
     try self.state.advance(.verify_chain, self.verifyEpoch(), .chain, true);
     self.authenticated = true;
+    // A session resumed from this one is authenticated no longer than this verdict holds.
+    self.auth_expires = types.seconds(receipt.expires);
+    if (receipt.revocation_expires) |until| self.auth_expires = @min(self.auth_expires, types.seconds(until));
     self.need_now = .none;
 }
 
@@ -519,6 +624,7 @@ fn sendCompatCcs(self: *Client) Error!void {
 fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
     @setRuntimeSafety(true);
     var n: usize = 256 + self.options.hello.sni.len + self.options.hello.parameters.len + self.scratch.?.cookie_len;
+    if (self.offered) |taken| n += 64 + taken.entry.ticket.len;
     for (self.options.hello.alpn) |protocol| n += 1 + protocol.len;
     for (shares) |share| n += 4 + share.bytes.len;
     return n;
@@ -529,7 +635,29 @@ fn sendHello(self: *Client) Error!void {
     var offered: [2]Hello.Share = undefined;
     const shares = self.offeredShares(&offered);
     const dst = try self.reserve(self.helloCapacity(shares));
-    const hello = try Hello.client(dst, &self.scratch.?.random, self.scratch.?.session[0..self.scratch.?.session_len], shares, self.scratch.?.cookie[0..self.scratch.?.cookie_len], self.options.hello);
+    var resumption: Hello.Resume = .{ .modes = self.options.resumption != null };
+    if (self.offered) |taken| {
+        const entry = taken.entry;
+        // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
+        const now_ms = @divFloor(self.now.?.nanoseconds, std.time.ns_per_ms);
+        const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
+        resumption.ticket = entry.ticket;
+        resumption.age = @truncate(age +% entry.age_add);
+        resumption.binder_len = suites.digestLength(entry.suite);
+    }
+    const hello = try Hello.client(dst, &self.scratch.?.random, self.scratch.?.session[0..self.scratch.?.session_len], shares, self.scratch.?.cookie[0..self.scratch.?.cookie_len], self.options.hello, resumption);
+    if (self.offered) |taken| {
+        // The binder covers the transcript so far and this hello up to its binders.
+        const n = resumption.binder_len;
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        const truncated = self.scratch.?.transcripts.digestWith(&digest_buf, n, hello[0 .. hello.len - (2 + 1 + n)]);
+        switch (taken.entry.suite) {
+            inline else => |tag| {
+                const K = Schedule.Schedule(tag);
+                K.binder(taken.entry.pskBytes()[0..K.length], truncated[0..K.length], hello[hello.len - K.length ..][0..K.length]);
+            },
+        }
+    }
     try self.state.advance(.client_hello, .initial, .parsed, true);
     try self.queueMessage(.initial, hello);
 }
@@ -577,18 +705,33 @@ fn offeredShares(self: *const Client, out: *[2]Hello.Share) []const Hello.Share 
 fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     var offered: [2]Hello.Share = undefined;
-    const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello);
+    const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, self.offered != null);
     const parsed = switch (answer) {
         .tls13 => |hello| hello,
         .tls12 => |hello| {
             // TLS 1.2 after a retry request is a version change mid-handshake.
             if (self.retry_suite != null) return error.IllegalParameter;
+            self.releaseOffer();
             return Client12.onServerHello(self, msg, hello, epoch, boundary);
         },
     };
     if (parsed.retry) return self.onRetry(msg, parsed, epoch, boundary);
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     if (self.retry_suite) |suite| if (suite != parsed.suite) return error.IllegalParameter;
+    // A ticket not taken is spent all the same: it is never offered again.
+    defer self.releaseOffer();
+    var psk: ?*const SessionCache.Entry = null;
+    if (parsed.psk) {
+        const entry = self.offered.?.entry;
+        // The PSK's hash must be the suite's (RFC 8446 section 4.2.11).
+        if (suites.digestLength(entry.suite) != suites.digestLength(parsed.suite)) return error.IllegalParameter;
+        try self.state.markResumed();
+        psk = entry;
+        self.resumed = true;
+        self.authenticated = entry.authenticated;
+        self.origin = entry.origin;
+        self.auth_expires = entry.auth_expires;
+    }
     const group = parsed.group.?;
     const share = for (&self.scratch.?.shares) |*slot| {
         if (slot.*) |*candidate| if (candidate.group == group) break candidate;
@@ -607,7 +750,8 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
             const K = Schedule.Schedule(suite);
             var traffic: K.Traffic = .{};
             errdefer traffic.deinit();
-            var schedule = try K.init(agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
+            const key: ?*const [K.length]u8 = if (psk) |entry| entry.pskBytes()[0..K.length] else null;
+            var schedule = try K.init(key, agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
             errdefer schedule.deinit();
             self.keys = @unionInit(Keys, @tagName(suite), .{ .schedule = schedule, .handshake = traffic });
         },
@@ -676,6 +820,8 @@ fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epo
     self.scratch.?.transcripts.select(parsed.suite);
     try self.scratch.?.transcripts.retry(msg);
     self.retry_suite = parsed.suite;
+    // A ticket of another hash cannot follow the server's suite into the second hello.
+    if (self.offered) |taken| if (suites.digestLength(taken.entry.suite) != suites.digestLength(parsed.suite)) self.releaseOffer();
     @memcpy(self.scratch.?.cookie[0..parsed.cookie.len], parsed.cookie);
     // safe: Hello.server bounds the cookie at 4096 bytes.
     self.scratch.?.cookie_len = @intCast(parsed.cookie.len);
@@ -826,7 +972,8 @@ fn finishFlight(self: *Client) Error!void {
             try self.push(.{ .secret = .{ .direction = .write, .epoch = .application, .traffic = self.app_write.? } });
             self.app_write.?.secret.deinit();
             self.app_write = null;
-            try k.schedule.complete();
+            var finished_buf: [Transcripts.max_digest]u8 = undefined;
+            try k.schedule.complete(self.scratch.?.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
         },
     }
@@ -838,8 +985,45 @@ fn finishFlight(self: *Client) Error!void {
 fn onTicket(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.ticket, epoch, .parsed, boundary);
-    _ = try Messages.newSessionTicket(msg);
+    const ticket = try Messages.newSessionTicket(msg);
+    self.storeTicket(&ticket);
     try self.push(.ticket);
+}
+
+/// Keeps a ticket for a later connection. It expires with the ticket's lifetime, the session's
+/// maximum age from its full handshake, or the server authentication's expiry, whichever is
+/// first; it is received, for its age, at the handshake's time. A ticket that cannot be kept
+/// is dropped: it never fails the connection.
+fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
+    @setRuntimeSafety(true);
+    const resumption = self.options.resumption orelse return;
+    const now = self.now orelse return;
+    if (self.version != .tls13 or ticket.lifetime == 0) return;
+    const keys = if (self.keys) |*keys| keys else return;
+    const now_s = types.seconds(now);
+    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
+    const expires = @min(now_s +| @as(i64, ticket.lifetime), @min(by_age, self.auth_expires));
+    if (expires <= now_s) return;
+    switch (keys.*) {
+        inline else => |*k, tag| {
+            var psk = aegis.Secret([Schedule.Schedule(tag).length]u8).init(undefined);
+            defer psk.deinit();
+            k.schedule.ticketSecret(ticket.nonce, psk.exposeMut()) catch return;
+            resumption.cache.store(.{
+                .key = &self.cache_key,
+                .ticket = ticket.ticket,
+                .suite = tag,
+                .psk = psk.expose(),
+                .age_add = ticket.age_add,
+                .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+                .expires = expires,
+                .origin = self.origin,
+                .auth_expires = self.auth_expires,
+                .authenticated = self.authenticated,
+            }) catch return;
+        },
+    }
 }
 
 fn onKeyUpdate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -873,6 +1057,7 @@ pub fn info(self: *const Client) ?Info {
         .server_name = self.options.hello.sni,
         .peer_authenticated = self.authenticated,
         .peer_parameters = self.peer_parameters,
+        .resumed = self.resumed,
     };
 }
 

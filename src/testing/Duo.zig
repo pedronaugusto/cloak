@@ -9,6 +9,8 @@ const Server = @import("../tls/handshake/Server.zig");
 const Suite = @import("../tls/crypto/Suite.zig").Suite;
 const Version = @import("../tls/crypto/Suite.zig").Version;
 const Group = @import("../tls/crypto/Group.zig").Group;
+const SessionCache = @import("../tls/resumption/SessionCache.zig");
+const TicketKeys = @import("../tls/resumption/TicketKeys.zig");
 pub const pki = @import("Peer.zig").pki;
 
 pub const Cert = enum { p256, p384, ed25519, rsa };
@@ -31,6 +33,22 @@ pub const Options = struct {
     client_cert: bool = false,
     /// Bytes moved per receive call, to cut records and messages at every boundary.
     chunk: usize = 1 << 20,
+    /// Resumption: the client's ticket cache and the server's ticket keys.
+    cache: ?*SessionCache = null,
+    namespace: []const u8 = "",
+    max_age: std.Io.Duration = .fromSeconds(7 * 24 * 60 * 60),
+    tickets: ?*TicketKeys = null,
+    /// The calendar time both ends are told, in seconds.
+    time: i64 = pki.time,
+    /// The verification policy generations of the client and of the server's client checks.
+    client_policy_generation: u64 = 1,
+    server_policy_generation: u64 = 1,
+    pins: []const [32]u8 = &.{},
+    identity: []const u8 = "example.com",
+    /// Overrides when the server's verdict on the client's certificate expires, in seconds.
+    receipt_expires: ?i64 = null,
+    /// Overrides when the client's verdict on the server's certificate expires, in seconds.
+    server_receipt_expires: ?i64 = null,
 };
 
 const Duo = @This();
@@ -80,8 +98,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     }
     errdefer if (self.auth) |auth| auth.deinit();
     self.client = try Connection.client(gpa, .{
-        .identity = .{ .dns = "example.com" },
-        .verify = .{ .full = .{ .trust_generation = self.snapshot.generation() } },
+        .identity = .{ .dns = options.identity },
+        .verify = .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
+        .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
         .max_version = options.client_max,
@@ -98,7 +117,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .groups = options.server_groups,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
-        .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
+        .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
+        .tickets = options.tickets,
     });
     return self;
 }
@@ -125,11 +145,13 @@ fn serve(self: *Duo, conn: *Connection) !void {
                 else => return err,
             };
         },
-        .time => try conn.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }),
+        .time => try conn.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, self.options.time) * std.time.ns_per_s) }),
         .verify => |verify_request| {
             if (certificates.verify.indexed(self.gpa, verify_request, self.snapshot.issuers())) |receipt| {
                 var owned = receipt;
                 defer owned.deinit();
+                const override = if (conn == &self.server) self.options.receipt_expires else self.options.server_receipt_expires;
+                if (override) |expires| owned.expires = certificates.types.instant(expires);
                 try conn.provide(request.token, .{ .verified = &owned });
             } else |_| try conn.provide(request.token, .{ .verification_failed = .untrusted });
         },
@@ -191,6 +213,26 @@ pub fn handshakeUntilServerFlight(self: *Duo) !void {
     _ = try self.move(&self.client, &self.server);
     try self.serve(&self.server);
     if (self.server.output().len == 0) return error.Stalled;
+}
+
+/// Moves the client's pending output to the server, after `edit` changes it in place.
+pub fn deliverEdited(self: *Duo, edit: *const fn (bytes: []u8) void) !void {
+    try self.serve(&self.client);
+    const bytes = self.client.output();
+    const copy = try self.gpa.dupe(u8, bytes);
+    defer self.gpa.free(copy);
+    self.client.acknowledge(bytes.len);
+    edit(copy);
+    var at: usize = 0;
+    while (at < copy.len) {
+        const n = try self.server.receive(copy[at..]);
+        at += n;
+        if (n == 0) {
+            if (self.server.request() == null) return error.Stalled;
+            try self.serve(&self.server);
+        }
+    }
+    try self.serve(&self.server);
 }
 
 /// Answers whatever the client asks for now.

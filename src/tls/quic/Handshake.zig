@@ -38,6 +38,8 @@ pub const Options = struct {
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// TLS 1.3 session resumption from a ticket cache (no early data: QUIC 0-RTT is not offered).
+    resumption: ?Client.Resumption = null,
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -57,6 +59,8 @@ pub const ServerOptions = struct {
     require_hybrid: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
+    /// Session tickets to issue and resume from; tickets never permit 0-RTT.
+    tickets: ?*Server.TicketKeys = null,
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -138,6 +142,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
             .quic = true,
             .parameters = options.parameters,
         },
+        .resumption = options.resumption,
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -165,6 +170,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .tickets = options.tickets,
         .limits = options.limits,
         .key_log = options.key_log,
         .generation = options.generation,

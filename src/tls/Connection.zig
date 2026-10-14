@@ -31,6 +31,9 @@ const Flight = @import("handshake/Flight.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
+pub const Resumption = Client.Resumption;
+pub const SessionCache = @import("resumption/SessionCache.zig");
+pub const TicketKeys = Server.TicketKeys;
 pub const KeyLog = Client.KeyLog;
 pub const Info = Client.Info;
 pub const SignRequest = Client.SignRequest;
@@ -72,6 +75,8 @@ pub const ClientOptions = struct {
     require_alpn: bool = false,
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// TLS 1.3 session resumption from a ticket cache.
+    resumption: ?Resumption = null,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -104,6 +109,7 @@ pub const Error = Client.Error || Protection.InitError || Protection.SealError |
     ControlFlood,
     Truncated,
     Closed,
+    EarlyDataLimit,
 };
 pub const ProvideError = Error || error{ StaleToken, NoRequest };
 pub const ReceiveError = Error;
@@ -111,6 +117,8 @@ pub const SendError = Error || error{ NotConnected, WriteClosed };
 pub const FinishError = SendError;
 
 const max_content = 1 << 14;
+/// Early data a server skips, in record bytes, before the client's real flight (design 5.5).
+pub const max_early_skip = 64 * 1024;
 const max_record = 5 + max_content + 256;
 /// The most a record adds around a plaintext fragment: header, TLS 1.3 inner content type or
 /// TLS 1.2 explicit nonce, and AEAD tag.
@@ -147,6 +155,9 @@ seen_ccs: bool = false,
 sent_hello: bool = false,
 control_run: usize = 0,
 alerts_ignored: u8 = 0,
+/// Early data skipped so far, and whether the client's handshake records have begun.
+early_skipped: usize = 0,
+early_done: bool = false,
 // Outbound.
 outbox: Outbox = .{},
 read_done: std.atomic.Value(bool) = .init(false),
@@ -195,6 +206,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
         },
+        .resumption = options.resumption,
         .identity = identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -224,6 +236,8 @@ pub const ServerOptions = struct {
     client_auth: Server.Auth = .none,
     /// How a presented client chain is checked; required for authenticated client identities.
     client_verify: Verify = .none,
+    /// Session tickets to issue and resume from; shared, and outliving the connection.
+    tickets: ?*Server.TicketKeys = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -244,6 +258,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .tickets = options.tickets,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,
@@ -372,7 +387,7 @@ fn alertFor(self: *const Connection, err: Error) Alert {
     return switch (err) {
         error.BadRecord => .bad_record_mac,
         error.RecordOverflow => .record_overflow,
-        error.UnexpectedRecord, error.ControlFlood => .unexpected_message,
+        error.UnexpectedRecord, error.ControlFlood, error.EarlyDataLimit => .unexpected_message,
         else => self.services.alertFor(err),
     };
 }
@@ -854,8 +869,23 @@ fn openRecord(self: *Connection) Error!void {
             self.plain_end = wire.len;
         },
         else => {
-            const protection = &(self.rx orelse return error.UnexpectedRecord);
-            const plain = try protection.open(wire, self.record[5..]);
+            const skip = if (self.early_done) .none else self.hs.earlySkip();
+            const protection = &(self.rx orelse {
+                // Early data before the server's handshake keys: after a retry request, every
+                // protected record before the second hello is the client's declined early data.
+                if (skip != .none) return self.skipEarly(wire.len);
+                return error.UnexpectedRecord;
+            });
+            const plain = if (skip == .trial and self.rx_epoch == .handshake) trial: {
+                // Declined early data fails under the handshake keys and is skipped; the first
+                // record that opens begins the client's flight, and skipping ends.
+                const opened = protection.trialOpen(wire, self.record[5..]) catch |err| switch (err) {
+                    error.Undecryptable => return self.skipEarly(wire.len),
+                    else => |e| return e,
+                };
+                self.early_done = true;
+                break :trial opened;
+            } else try protection.open(wire, self.record[5..]);
             if (plain.content == .application) {
                 if (self.phase() != .connected) return error.UnexpectedRecord;
                 self.control_run = 0;
@@ -867,6 +897,13 @@ fn openRecord(self: *Connection) Error!void {
             try self.askForUpdate();
         },
     }
+}
+
+/// Passes over one record of declined early data, within the bound.
+fn skipEarly(self: *Connection, len: usize) Error!void {
+    self.early_skipped += len;
+    if (self.early_skipped > max_early_skip) return error.EarlyDataLimit;
+    self.record_have = 0;
 }
 
 /// Requests the peer's next write keys before this read epoch runs out.

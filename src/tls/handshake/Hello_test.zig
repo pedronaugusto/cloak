@@ -8,12 +8,12 @@ const x: [32]u8 = @splat(1);
 const shares = [_]H.Share{.{ .group = .x25519, .bytes = &x }};
 const fixture = @embedFile("testdata/server-hello.bin");
 test "C2 hello codec RFC server selection and bounded client offer" {
-    const parsed = (try H.server(fixture, "", &shares, .{})).tls13;
+    const parsed = (try H.server(fixture, "", &shares, .{}, false)).tls13;
     try std.testing.expectEqual(.aes_128_gcm_sha256, parsed.suite);
     try std.testing.expectEqual(.x25519, parsed.group);
     try std.testing.expectEqual(@as(usize, 32), parsed.share.len);
     var out: [4096]u8 = undefined;
-    const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .min_version = .tls13 });
+    const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .min_version = .tls13 }, .{});
     try std.testing.expectEqual(@as(usize, std.mem.readInt(u24, ch[1..4], .big)), ch.len - 4);
     var r: Reader = .{ .bytes = ch[4..] };
     try std.testing.expectEqual(@as(u16, 0x0303), try r.int(u16));
@@ -31,7 +31,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
     }
     try std.testing.expectEqualSlices(u16, &.{ 0, 10, 13, 43, 16, 51 }, ids[0..count]);
     // With TLS 1.2 offered too: point formats, extended master secret and renegotiation_info.
-    const both = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" } });
+    const both = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" } }, .{});
     var rb: Reader = .{ .bytes = both[4..] };
     _ = try rb.take(34);
     _ = try rb.vector(u8);
@@ -44,7 +44,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
         count += 1;
     }
     try std.testing.expectEqualSlices(u16, &.{ 0, 10, 11, 13, 23, 0xff01, 43, 16, 51 }, ids[0..count]);
-    try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", &shares, "", .{}));
+    try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", &shares, "", .{}, .{}));
 }
 test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
     var hrr = fixture.*;
@@ -58,18 +58,18 @@ test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
     // Exact ServerHello prefix is 44 bytes; body here is twelve extension bytes.
     const message = valid[0..56];
     std.mem.writeInt(u24, valid[1..4], 52, .big);
-    const retry = (try H.server(message, "", &shares, .{})).tls13;
+    const retry = (try H.server(message, "", &shares, .{}, false)).tls13;
     try std.testing.expect(retry.retry and retry.group == .p256);
     valid[48..50].* = .{ 0, 29 };
-    try std.testing.expectError(error.InvalidHello, H.server(message, "", &shares, .{}));
+    try std.testing.expectError(error.InvalidHello, H.server(message, "", &shares, .{}, false));
     valid[48..50].* = .{ 0, 24 };
-    try std.testing.expectError(error.UnofferedSelection, H.server(message, "", &shares, .{ .groups = &.{ .x25519, .p256 } }));
+    try std.testing.expectError(error.UnofferedSelection, H.server(message, "", &shares, .{ .groups = &.{ .x25519, .p256 } }, false));
     var duplicate: [62]u8 = undefined;
     @memcpy(duplicate[0..56], message);
     std.mem.writeInt(u24, duplicate[1..4], 58, .big);
     std.mem.writeInt(u16, duplicate[42..44], 18, .big);
     duplicate[56..].* = .{ 0, 43, 0, 2, 3, 4 };
-    try std.testing.expectError(error.DuplicateExtension, H.server(&duplicate, "", &shares, .{}));
+    try std.testing.expectError(error.DuplicateExtension, H.server(&duplicate, "", &shares, .{}, false));
 }
 test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     const ee = "\x08\x00\x00\x0b\x00\x09\x00\x10\x00\x05\x00\x03\x02h2";
@@ -79,11 +79,11 @@ test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     try std.testing.expectError(error.NoApplicationProtocol, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .sni = "*.example.com" }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .alpn = &.{""} }));
-    try std.testing.expectError(error.HybridRequired, H.server(fixture, "", &shares, .{ .require_hybrid = true }));
+    try std.testing.expectError(error.HybridRequired, H.server(fixture, "", &shares, .{ .require_hybrid = true }, false));
 }
 test "C2 hello parser truncation at every RFC byte" {
     for (0..fixture.len) |len| {
-        try std.testing.expectError(error.InvalidLength, H.server(fixture[0..len], "", &shares, .{}));
+        try std.testing.expectError(error.InvalidLength, H.server(fixture[0..len], "", &shares, .{}, false));
     }
 }
 test "C2 fuzz TLS hello selections and extension placement" {
@@ -98,7 +98,7 @@ test "C2 TLS hello selections take the fixture and an empty encrypted extensions
     try parseAny("\x08\x00\x00\x02\x00\x00");
 }
 fn parseAny(input: []const u8) !void {
-    if (H.server(input, "", &shares, .{})) |answer| switch (answer) {
+    if (H.server(input, "", &shares, .{}, false)) |answer| switch (answer) {
         .tls13 => |parsed| try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength()),
         .tls12 => |parsed| try std.testing.expect(parsed.random.len == 32),
     } else |_| {}
@@ -114,7 +114,7 @@ test "C2 cookie-only HRR and empty QUIC parameter presence" {
     std.mem.writeInt(u24, cookie_hrr[1..4], 54, .big);
     std.mem.writeInt(u16, cookie_hrr[42..44], 14, .big);
     cookie_hrr[44..].* = .{ 0, 43, 0, 2, 3, 4, 0, 44, 0, 4, 0, 2, 'o', 'k' };
-    const retry = (try H.server(&cookie_hrr, "", &shares, .{})).tls13;
+    const retry = (try H.server(&cookie_hrr, "", &shares, .{}, false)).tls13;
     try std.testing.expect(retry.retry and retry.group == null);
     try std.testing.expectEqualSlices(u8, "ok", retry.cookie);
     const ee = "\x08\x00\x00\x0f\x00\x0d\x00\x10\x00\x05\x00\x03\x02h2\x00\x39\x00\x00";
@@ -122,4 +122,16 @@ test "C2 cookie-only HRR and empty QUIC parameter presence" {
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
     try std.testing.expectEqual(@as(usize, 0), parsed.parameters.len);
     // Acceptance belongs to the QUIC parameter service, not this opaque parser.
+}
+test "F68 a ServerHello selects only the one identity the client offered" {
+    var message: [fixture.len + 6]u8 = undefined;
+    @memcpy(message[0..fixture.len], fixture);
+    std.mem.writeInt(u24, message[1..4], fixture.len + 6 - 4, .big);
+    std.mem.writeInt(u16, message[42..44], std.mem.readInt(u16, fixture[42..44], .big) + 6, .big);
+    message[fixture.len..].* = .{ 0, 41, 0, 2, 0, 0 };
+    try std.testing.expect((try H.server(&message, "", &shares, .{}, true)).tls13.psk);
+    try std.testing.expectError(error.UnsolicitedExtension, H.server(&message, "", &shares, .{}, false));
+    message[fixture.len + 5] = 1;
+    try std.testing.expectError(error.InvalidHello, H.server(&message, "", &shares, .{}, true));
+    try std.testing.expect(!(try H.server(fixture, "", &shares, .{}, true)).tls13.psk);
 }

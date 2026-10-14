@@ -178,8 +178,9 @@ TLS HKDF owns and wipes HMAC state, label blocks and Finished keys. Traffic keys
 and IVs use published aegis Secret. Checked transcript counts use aegis checked
 integers. Published aegis has no typestate API, so full TLS 1.3 transitions are
 an explicit always-checked table with proof and epoch requirements, version as one
-of its keys (TLS 1.2 edges sit beside the TLS 1.3 ones). Resumed, ECH and DTLS
-branches are absent until their phases. The table alone is
+of its keys (TLS 1.2 edges sit beside the TLS 1.3 ones). A resumed TLS 1.3 handshake
+has edges of its own, chosen by a flag set once, as the ServerHello accepts a PSK: no
+certificate flight in either direction. ECH and DTLS branches are absent until their phases. The table alone is
 not a certificate/signature verifier: its internal proof arguments must be
 issued by the crypto/verification driver. Named tests cover individual catalogue
 components; the complete F27–F45 rows remain open until integration and campaigns.
@@ -302,9 +303,10 @@ record buffer sized to the record being read, a message buffer and the output
 buffer: about 37 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
-calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (576 bytes) and one
-heap block of 928 bytes, 1,504 bytes in total. These are heap figures from
-a counting allocator; stack use is not measured here.
+calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (656 bytes) and one
+heap block of 1,184 bytes (the key schedule's exporter and resumption secrets among it), 1,840
+bytes in total, in a Debug build. These are heap figures from a counting allocator; stack use
+is not measured here.
 
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
 requests with the system's secure randomness and calendar clock (or a fixed time),
@@ -397,7 +399,7 @@ signer that fails ends the connection with internal_error.
 
 A server connection holds no handshake scratch until a peer sends a ClientHello that
 the state table accepts: a connection created and never spoken to, or one fed a few
-bytes, costs its state and credential table (896 bytes), not the scratch (3.7 KB
+bytes, costs its state and credential table (1,064 bytes), not the scratch (3.7 KB
 before the first flight grows it). Established connections release it as before.
 
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
@@ -410,9 +412,8 @@ its group (a group with a share beats one that needs a retry), its ALPN. A clien
 with no usable share gets one HelloRetryRequest; the second hello must equal the
 first except for the key share, cookie, early data and PSK, which a SHA-256 over
 the random, session id, suites and sorted remaining extensions decides, so a client
-cannot change its offer between the hellos. The server never accepts a PSK or early
-data: it answers every hello with a full handshake, and it does not skip early-data records
-a client sends anyway.
+cannot change its offer between the hellos, and the second may not offer early data. A
+PSK resumes a session when the server has ticket keys (below); early data is never accepted.
 
 Client authentication is `none`, `optional` or `required`. A presented chain goes out
 as a `verify` request, the receipt is bound to the request digest as on the client,
@@ -426,9 +427,8 @@ a ServerHello, until the caller accepts them. ALPN is required.
 
 The server flight, the application keys and the handshake scratch are built under
 the same bounds and released at the same moments as the client's. Measured here:
-about 15 KiB at the handshake peak and 891 bytes of heap beside the 584-byte struct
-once established (counting allocator, ReleaseSafe test), no tickets are sent, and key
-updates behave as in the client. The server's CPU rows are in
+about 25 KiB at the handshake peak and 1,075 bytes of heap beside the 656-byte struct
+once established (counting allocator, Debug test), and key updates behave as in the client. The server's CPU rows are in
 `bench/handshake.zig`; they include harness signing with std's ECDSA.
 
 Test support lives in `src/testing`: a scripted server peer that speaks real records
@@ -438,6 +438,72 @@ client or a server against them in memory, or the two QUIC roles against each ot
 protection, which the RFC 8448 vectors pin; its parsing, message assembly and
 signatures are its own. The test PKI is disposable material generated once with
 OpenSSL, recorded in `src/testing/pki/provenance.md`.
+
+## TLS 1.3 resumption
+
+Resumption is PSK-DHE only (RFC 8446 section 2.2): a ticket replaces the certificate flight
+and its signature, never the key exchange, so a resumed connection keeps forward secrecy. The
+PSK enters the early secret; the (EC)DHE secret follows as in a full handshake. A resumed
+handshake has no certificate in either direction, and the state table refuses one.
+
+A client resumes from a `SessionCache`, given as `Resumption` with a namespace and a maximum
+age (seven days by default; `Session` makes it an hour when the system verifies, whose trust can
+change without a generation to say so). The cache key is a SHA-256 over everything the session's
+authority depended on: the namespace, the server name and reference identity, ALPN, QUIC or not,
+`require_hybrid`, the whole verification policy (through the digest of a verification request
+with no chain, time or token: trust and policy generations, pins, evidence, limits, anchors) and
+the client certificate chain. A change in any of them finds no ticket. The client asks for the
+time before its hello, takes the newest live ticket for its key, removing it, so a ticket is
+offered once (it is a bearer token that links the connections that use it), and offers it if one
+of its suites has the ticket's hash: one identity with its obfuscated age and a binder over the
+transcript up to the binders. With a cache it always sends psk_key_exchange_modes with PSK-DHE
+alone, which is what asks a server for tickets. After a retry request
+the binder is made again over the new transcript, or the ticket is dropped when the server's
+suite has another hash. A ServerHello that selects anything but that one identity, or selects
+one in a retry request or a TLS 1.2 answer, is refused. A ticket the server declines is spent
+all the same. A resumed connection reports `resumed` and the original handshake's
+authentication. Tickets that arrive later are kept with the PSK of their nonce; each expires at
+the first of its lifetime, the maximum age counted from the full handshake that began the
+session, and the expiry of the server's authentication in that handshake (its receipt and
+revocation evidence), so a chain of resumptions never extends authority. A ticket arrives, for
+its age, at the time the handshake was told; one the cache cannot keep is dropped and never
+fails the connection. The cache is bounded by entries, bytes and four tickets per key, behind
+one lock whose sections are bounded; allocation and erasure happen outside it.
+
+A server issues and resumes with `TicketKeys`, a ring the caller rotates with 32 bytes of key
+material of its own drawing (all zeros, a missing key's usual stand-in, and material already
+held are refused). A key issues tickets for its rotation period (six hours by default) from
+its installation, or until the next rotation, and opens them until the last can have expired,
+a lifetime (a day by default, at most seven) later; a ring whose newest key has stopped issuing
+issues nothing, so a forgotten rotation costs full handshakes, not a stale key. Each rotation
+publishes an immutable snapshot that a handshake retains for one call. There is no nonce state:
+a ticket is sealed with AES-256-GCM under a key HKDF derives from the ring key and a fresh
+128-bit salt drawn with the handshake's entropy, used for that one ticket, so no (key, nonce)
+pair repeats however many processes or restarts share a ring key. The ticket is a version, the
+ring key's identifier (from its material), the salt and the ciphertext of the session's suite,
+PSK, issue time, the session's expiry, the age obfuscator, the ALPN protocol and server name,
+the client's authentication and its expiry, and a digest of the server's client-certificate
+policy. A server with tickets holds a ClientHello until the clock answers. It looks at the
+first eight identities offered and takes the first that its ring opens and that matches: a suite
+of the same hash, not expired, the same server name (ignoring case) and ALPN protocol, the same
+policy digest, a client certificate still valid if there was one, and one there if the server
+requires it. That identity's binder is checked in constant time and a wrong one is fatal
+(decrypt_error); a ticket that does not open or match is passed over for a full handshake.
+The obfuscated ticket age is not checked: it bounds 0-RTT replay, and nothing rides on it here.
+After each TLS 1.3 handshake whose client asked for PSK-DHE, the server sends two tickets under
+the application keys before the connection completes, outside the transcript, each with its own
+nonce, PSK, salt and age obfuscator; a resumed session's tickets keep the expiry its first
+had, and none outlives the client's authentication.
+
+No ticket permits early data and no connection accepts it. A server whose client offered early
+data skips the client's early records: when it answered with a retry request, every protected
+record before the second hello (and nothing after it); otherwise each record that fails to open
+under the handshake keys, until one opens; at most 64 KiB in all, past which the connection ends with unexpected_message. An
+EndOfEarlyData is an unexpected message. QUIC resumes through the same engine (tickets travel at
+the application level) and offers no 0-RTT; its early packets are the QUIC stack's to drop.
+
+TLS 1.2 sessions and tickets are not yet built: a TLS 1.2 connection neither takes nor issues
+them.
 
 ## TLS 1.2
 

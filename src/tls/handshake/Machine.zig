@@ -205,6 +205,22 @@ pub fn negotiated(self: Machine) bool {
     };
 }
 
+/// How a server skips the early data its client offered and it never accepts (RFC 8446 section
+/// 4.2.10): after a retry request, every protected record before the second hello (`keyless`);
+/// otherwise each record that fails to open under the handshake keys, until one opens (`trial`).
+pub const EarlySkip = enum { none, keyless, trial };
+
+pub fn earlySkip(self: Machine) EarlySkip {
+    return switch (self.state) {
+        .client => .none,
+        .server => |m| skip: {
+            const scratch = m.scratch orelse break :skip .none;
+            if (m.version != .tls13 or !scratch.early_offered) break :skip .none;
+            break :skip if (m.retried) .keyless else .trial;
+        },
+    };
+}
+
 /// The state table's phase, for the callers that must not act on a failed machine.
 pub fn failed(self: Machine) bool {
     return switch (self.state) {

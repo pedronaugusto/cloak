@@ -60,6 +60,11 @@ pub const Signer = struct {
 /// What a signer is asked to sign.
 pub const SignRequest = Connection.SignRequest;
 
+/// A client's cache of session tickets; see `Options.resumption`.
+pub const SessionCache = Connection.SessionCache;
+/// A server's session-ticket keys; see `ServerOptions.tickets`.
+pub const TicketKeys = Connection.TicketKeys;
+
 /// What a connection saw, for a caller that maps it to errors of its own.
 pub const Diagnostics = struct {
     /// What ended the connection, when it ended.
@@ -107,6 +112,10 @@ pub const Options = struct {
     auth: ?certificates.ClientAuth = null,
     /// Required when `auth` is an identity cloak holds no signing key for.
     signer: ?Signer = null,
+    /// TLS 1.3 resumption from a ticket cache. Under the system's verifier (macOS, Windows) a
+    /// session is resumed for at most an hour after the full handshake that verified it: the
+    /// system's trust can change without a generation to show it.
+    resumption: ?Connection.Resumption = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -177,6 +186,7 @@ pub fn open(
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
         .auth = options.auth,
+        .resumption = resumptionFor(options),
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -201,6 +211,19 @@ pub fn open(
     try session.handshake();
 }
 
+/// The native verifier's verdict is reused for an hour at most (design 5.5).
+pub const native_max_age: std.Io.Duration = .fromSeconds(60 * 60);
+
+fn resumptionFor(options: Options) ?Connection.Resumption {
+    var resumption = options.resumption orelse return null;
+    const native = switch (options.trust) {
+        .snapshot => |snapshot| snapshot.systemPolicy() != .portable,
+        else => false,
+    };
+    if (native and resumption.max_age.nanoseconds > native_max_age.nanoseconds) resumption.max_age = native_max_age;
+    return resumption;
+}
+
 /// What a server session needs: the chains it presents and how it treats a client's certificate.
 /// Cloak signs with the keys of its credentials; a `signer` covers the ones it does not hold.
 pub const ServerOptions = struct {
@@ -222,6 +245,9 @@ pub const ServerOptions = struct {
     /// How a presented client chain is checked.
     client_trust: Trust = .none,
     client_policy: certificates.types.Policy = .{},
+    /// Session tickets to issue and resume from (TLS 1.3, PSK-DHE, never early data). The ring
+    /// is shared between sessions and must outlive them; rotate it on the caller's schedule.
+    tickets: ?*Connection.TicketKeys = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -262,6 +288,7 @@ pub fn accept(
         .require_hybrid = options.require_hybrid,
         .client_auth = options.client_auth,
         .client_verify = policy,
+        .tickets = options.tickets,
         .limits = options.limits,
         .key_log = options.key_log,
     });

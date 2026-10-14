@@ -52,6 +52,12 @@ pub const Tamper = enum {
     certificate_context,
     /// A large client record before the handshake.
     oversize_record,
+    /// An EndOfEarlyData before Finished, though no early data was accepted.
+    end_of_early_data,
+    /// early_data again in the hello that answers a retry request.
+    early_data_in_second,
+    /// A record no key opens, sent with the client's second flight.
+    bad_record_after_second,
 };
 
 pub const Config = struct {
@@ -70,6 +76,9 @@ pub const Config = struct {
     tamper: Tamper = .none,
     fragment: usize = 0,
     early_data: bool = false,
+    /// Records of (undecryptable) early data sent right after the first hello, and their size.
+    early_records: usize = 0,
+    early_record_size: usize = 600,
     /// The record version of the first record.
     first_record_version: u16 = 0x0301,
 };
@@ -263,7 +272,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             }
             if (t == .cookie_in_first and !second) try Ext.put(&ext, gpa, 44, &.{ 0, 1, 'x' });
             if (t == .duplicate_extension) try Ext.put(&ext, gpa, 43, &.{ 2, 3, 4 });
-            if (self.config.early_data) try Ext.put(&ext, gpa, 42, &.{});
+            if (self.config.early_data and (!second or t == .early_data_in_second)) try Ext.put(&ext, gpa, 42, &.{});
             // Key shares: the first hello sends the configured groups, the second only the requested one.
             var share_body: std.ArrayList(u8) = .empty;
             defer share_body.deinit(gpa);
@@ -280,7 +289,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             if (!(t == .second_without_share and second)) try Ext.put(&ext, gpa, 51, share_body.items);
             if (t == .changed_second_hello and second) try Ext.put(&ext, gpa, 16, &.{ 0, 3, 2, 'z', 'z' });
             if (t == .psk_not_last) {
-                try Ext.put(&ext, gpa, 41, &.{ 0, 1, 'x' });
+                try Ext.put(&ext, gpa, 41, &([_]u8{ 0, 7, 0, 1, 'x', 0, 0, 0, 0, 0, 33, 32 } ++ @as([32]u8, @splat(0))));
                 try Ext.put(&ext, gpa, 45, &.{ 1, 1 });
             }
             var tmp: [2]u8 = undefined;
@@ -306,6 +315,13 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 self.shares[i] = try Exchange.Share.init(group, entropy[0..Exchange.entropyLength(group)]);
             }
             try self.sendHello(false);
+            // 0-RTT data under keys the server never derives: a declined offer's records.
+            for (0..self.config.early_records) |_| {
+                var body: [1 << 14]u8 = undefined;
+                const len = @min(self.config.early_record_size, body.len);
+                self.rng.random().bytes(body[0..len]);
+                try self.plainRecord(23, 0x0303, body[0..len]);
+            }
         }
 
         fn sendHello(self: *Self, second: bool) !void {
@@ -467,7 +483,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(secret.bytes(), &hello_hash, &traffic);
+            self.schedule = try K.init(null, secret.bytes(), &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
             self.rx = try epochFrom(&self.server_hs);
@@ -580,6 +596,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const t = self.config.tamper;
             if (self.config.compat and self.session_len != 0) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
             if (t == .double_ccs) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
+            if (t == .bad_record_after_second) try self.plainRecord(23, 0x0303, &@as([64]u8, @splat(0x5c)));
             if (self.tx == null) self.tx = try epochFrom(&self.client_hs);
             var flight: std.ArrayList(u8) = .empty;
             defer flight.deinit(self.gpa);
@@ -622,6 +639,11 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                     try self.appendMessage(&flight, 11, &.{ 0, 0, 0, 0 });
                     try self.transcript.commit(flight.items[empty_start..]);
                 }
+            }
+            if (t == .end_of_early_data) {
+                const at = flight.items.len;
+                try self.appendMessage(&flight, 5, "");
+                try self.transcript.commit(flight.items[at..]);
             }
             const digest = self.transcript.digest();
             var verify_data: Secret = undefined;

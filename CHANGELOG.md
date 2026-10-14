@@ -4,6 +4,16 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- TLS 1.3 session resumption, PSK-DHE only, in `tls.Connection`, `tls.Session` and `tls.quic.Handshake`. A client resumes from a `tls.SessionCache` (`resumption` option: the cache, a namespace and a maximum age), keyed by everything the session's authority depended on (server name, reference identity, ALPN, transport, the whole verification policy and trust generation, the client certificate), each ticket offered once and kept no longer than its lifetime, the maximum age from the session's full handshake and the server authentication's expiry. A server issues two tickets after each handshake and resumes from them with `tls.TicketKeys` (`tickets` option), a ring the caller rotates with its own key material: each ticket is sealed under a key derived from a fresh salt, so no nonce state is shared, and a ticket resumes only with a suite of its hash, the same server name, ALPN protocol and client-certificate policy, before its expiry and the client authentication's. `Info.resumed` says whether a handshake resumed. A resumed handshake keeps the original authentication and sends no certificate either way. Under the system's verifier a `tls.Session` resumes for at most an hour after the full handshake.
+- Early data is never accepted, and a server now skips a client's declined early data (up to 64 KiB, `error.EarlyDataLimit` past it) instead of failing on it; a second ClientHello that offers early data is refused.
+- Failure catalogue rows F65-F74 (resumption) and the RFC 8448 section 3 and 4 resumption vectors.
+
+### Changed
+
+- An idle client connection holds 192 bytes more heap and a server connection 80 more (the resumption master secret, the ticket options and the cache key).
+
 ## [0.6.0] - 2026-10-14
 
 ### Breaking

@@ -628,7 +628,7 @@ pub fn Peer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(kex.secret[0..kex.secret_len], &hello_hash, &traffic);
+            self.schedule = try K.init(null, kex.secret[0..kex.secret_len], &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
             if (!self.config.quic) {

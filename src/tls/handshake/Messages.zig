@@ -168,6 +168,19 @@ pub fn keyUpdate(message: []const u8) ParseError!bool {
 
 pub const BuildError = Writer.WriteError;
 
+/// A NewSessionTicket without extensions: this server never permits early data.
+pub fn buildNewSessionTicket(out: []u8, lifetime: u32, age_add: u32, nonce: []const u8, ticket: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try header(&w, .new_session_ticket);
+    try w.int(u32, lifetime);
+    try w.int(u32, age_add);
+    try w.vector(u8, nonce);
+    try w.vector(u16, ticket);
+    try w.int(u16, 0);
+    return seal(&w);
+}
+
 pub fn header(w: *Writer, kind: Type) BuildError!void {
     try w.int(u8, @backingInt(kind));
     try w.int(u24, 0);

@@ -11,6 +11,8 @@ const Server = @import("../tls/handshake/Server.zig");
 const Suite13 = @import("../tls/crypto/Suite.zig").Suite13;
 const Group = @import("../tls/crypto/Group.zig").Group;
 const Alert = @import("../tls/wire/Alert.zig").Alert;
+const SessionCache = @import("../tls/resumption/SessionCache.zig");
+const TicketKeys = @import("../tls/resumption/TicketKeys.zig");
 
 pub const pki = peer_module.pki;
 
@@ -35,6 +37,9 @@ pub const Options = struct {
     chunk: usize = 1 << 20,
     /// The identities carry no key: every signature comes from the harness, as for a key held elsewhere.
     external: bool = false,
+    /// Resumption: the client's ticket cache and the server's ticket keys.
+    cache: ?*SessionCache = null,
+    tickets: ?*TicketKeys = null,
 };
 
 pub const Secret = struct { level: Handshake.Level, direction: Handshake.Direction, bytes: [48]u8, len: usize };
@@ -111,6 +116,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.client_groups,
                 .auth = self.client_auth,
+                .resumption = if (options.cache) |cache| .{ .cache = cache } else null,
                 .generation = .fromRaw(9),
             }) };
             errdefer self.client.deinit(gpa);
@@ -122,6 +128,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .groups = options.server_groups,
                 .client_auth = if (options.mutual or options.mutual_without_identity) .required else .none,
                 .client_verify = if (options.mutual or options.mutual_without_identity) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
+                .tickets = options.tickets,
                 .generation = .fromRaw(11),
             }) };
             return self;

@@ -78,6 +78,31 @@ pub fn digestOf(self: *const Self, out: *[max_digest]u8, len: usize) []const u8 
     }
 }
 
+/// Digest under the hash of `len` bytes of everything committed so far followed by `extra`, which
+/// is not committed: a ClientHello up to its PSK binders, which the binders themselves cover.
+pub fn digestWith(self: *const Self, out: *[max_digest]u8, len: usize, extra: []const u8) []const u8 {
+    @setRuntimeSafety(true);
+    switch (self.state) {
+        .pending => |*both| return if (len == 48) finishWith(Sha384, &both.sha384, out, extra) else finishWith(Sha256, &both.sha256, out, extra),
+        .sha256 => |*t| {
+            std.debug.assert(len == 32);
+            return finishWith(Sha256, t, out, extra);
+        },
+        .sha384 => |*t| {
+            std.debug.assert(len == 48);
+            return finishWith(Sha384, t, out, extra);
+        },
+    }
+}
+
+fn finishWith(comptime T: type, transcript: *const T, out: *[max_digest]u8, extra: []const u8) []const u8 {
+    var hash = transcript.hash;
+    hash.update(extra);
+    const n = @TypeOf(hash).digest_length;
+    hash.final(out[0..n]);
+    return out[0..n];
+}
+
 /// Digest of everything committed so far; only meaningful once the hash is selected.
 pub fn digest(self: *const Self, out: *[max_digest]u8) []const u8 {
     @setRuntimeSafety(true);
