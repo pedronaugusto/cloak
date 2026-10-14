@@ -68,6 +68,8 @@ point_formats: bool,
 null_compression_only: bool,
 /// The whole extension block, for the comparison a retry requires.
 extensions: []const u8,
+/// The encrypted_client_hello body (RFC 9849), when sent.
+ech: ?[]const u8,
 
 pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
@@ -113,6 +115,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.renegotiation_info = false;
     self.uncompressed_points = true;
     self.point_formats = false;
+    self.ech = null;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -208,6 +211,9 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         57 => self.parameters = bytes,
         35 => self.session_ticket = bytes,
+        0xfe0d => self.ech = bytes,
+        // ech_outer_extensions lives only inside an encrypted inner hello (RFC 9849 section 5.1).
+        0xfd00 => return error.IllegalParameter,
         11 => {
             const formats = (try value.vector(u8)).bytes;
             try value.finish();
@@ -397,7 +403,8 @@ fn containsU16(list: []const u8, id: u16) bool {
 
 /// A digest of everything a retry's second ClientHello may not change: the random, session id,
 /// suites and every extension except the key share, cookie, early data, PSK and padding
-/// (RFC 8446 section 4.1.2). Extension order is not part of it.
+/// (RFC 8446 section 4.1.2), and encrypted_client_hello, whose second payload is a new
+/// encryption (RFC 9849 section 6.1.5). Extension order is not part of it.
 pub fn fingerprint(self: *const ClientHello) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -428,7 +435,7 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
 }
 
 fn exempt(id: u16) bool {
-    return id == 51 or id == 44 or id == 42 or id == 41 or id == 21;
+    return id == 51 or id == 44 or id == 42 or id == 41 or id == 21 or id == 0xfe0d;
 }
 
 test {

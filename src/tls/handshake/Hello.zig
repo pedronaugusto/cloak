@@ -3,6 +3,7 @@ const std = @import("std");
 const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
+const Ech = @import("Ech.zig");
 const suites = @import("../crypto/Suite.zig");
 const Suite = suites.Suite;
 const Suite13 = suites.Suite13;
@@ -127,8 +128,40 @@ pub const Resume = struct {
 /// empty, or a DTLS 1.2 HelloVerifyRequest's cookie; a stream hello has no such field. `cookie`
 /// is a HelloRetryRequest's cookie extension.
 pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cookie: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume) EncodeError![]u8 {
+    return clientForm(out, random, session, legacy_cookie, shares, cookie, options, resumption, .plain);
+}
+
+/// A PSK offer with nothing behind it, for a ClientHelloOuter whose inner hello resumes: an
+/// identity, age and binder of the inner offer's lengths, all random (RFC 9849 section 6.1.2).
+pub const GreasePsk = struct { identity: []const u8, age: u32, binder: []const u8 };
+
+/// Which hello `clientForm` writes. ECH needs three encodings of one hello (RFC 9849 section 5):
+/// the ClientHelloInner the transcript hashes, its encoded form inside the outer hello, and the
+/// ClientHelloOuter on the wire. Only TLS 1.3 is offered in any of them.
+pub const Form = union(enum) {
+    plain,
+    /// A plain hello with a GREASE encrypted_client_hello extension of this body.
+    grease: []const u8,
+    /// ClientHelloInner: the true name, the inner marker, the real PSK offer.
+    inner,
+    /// EncodedClientHelloInner (with its four-byte header, which the caller drops): an empty
+    /// session id, and `Ech.compressed` replaced by ech_outer_extensions. Unpadded.
+    encoded,
+    /// ClientHelloOuter: `name` in server_name, `ext` as encrypted_client_hello, and `psk` in
+    /// place of the real offer.
+    outer: struct { name: []const u8, ext: []const u8, psk: ?GreasePsk },
+};
+
+pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, legacy_cookie: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume, form: Form) EncodeError![]u8 {
     @setRuntimeSafety(true);
     try validate(options);
+    const ech = form == .inner or form == .encoded or form == .outer;
+    if (ech and (options.allows12() or options.transport == .datagram)) return error.InvalidOptions;
+    const session = if (form == .encoded) "" else session_in;
+    const sni = switch (form) {
+        .outer => |o| o.name,
+        else => options.sni,
+    };
     const datagram = options.transport == .datagram;
     // Key shares are TLS 1.3: present exactly when it is offered. QUIC and DTLS 1.3 have no
     // legacy session id; a datagram hello sends one only to resume a DTLS 1.2 ticket.
@@ -154,21 +187,16 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
     try w.put(&.{ 1, 0 });
     const ext_at = w.pos;
     try w.int(u16, 0);
-    if (options.sni.len != 0) {
-        var sni: [258]u8 = undefined;
-        var x: Writer = .{ .bytes = &sni };
-        // safe: DNS SNI length is at most 253, plus its three-byte entry header.
-        try x.int(u16, @intCast(options.sni.len + 3));
-        try x.int(u8, 0);
-        try x.vector(u16, options.sni);
-        try extension(&w, 0, sni[0..x.pos]);
-    }
+    if (sni.len != 0) try serverName(&w, sni);
+    // An encoded inner hello leaves its contiguous run of shared extensions to the outer one.
+    const compress = form == .encoded;
+    if (compress) try outerExtensions(&w, options, cookie);
     var group_bytes: [10]u8 = undefined;
     var g: Writer = .{ .bytes = &group_bytes };
     // safe: at most four group identifiers, each two bytes.
     try g.int(u16, @intCast(options.groups.len * 2));
     for (options.groups) |group| try g.int(u16, @backingInt(group));
-    try extension(&w, 10, group_bytes[0..g.pos]);
+    if (!compress) try extension(&w, 10, group_bytes[0..g.pos]);
     if (tls12) {
         // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
         try extension(&w, 11, &.{ 1, 0 });
@@ -179,7 +207,7 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
     // safe: at most twelve two-byte schemes.
     try s.int(u16, @intCast(offered.len * 2));
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
-    try extension(&w, 13, signature_bytes[0..s.pos]);
+    if (!compress) try extension(&w, 13, signature_bytes[0..s.pos]);
     if (tls12) {
         // extended_master_secret (RFC 7627) and an empty renegotiation_info (RFC 5746).
         try extension(&w, 23, "");
@@ -187,14 +215,14 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
         if (resumption.ticket12) |ticket| try extension(&w, 35, ticket);
     }
     // A TLS 1.2-only client sends no supported_versions, as TLS 1.2 clients do.
-    if (tls13) {
+    if (tls13 and !compress) {
         var versions: [5]u8 = undefined;
         versions[0] = if (tls12) 4 else 2;
         std.mem.writeInt(u16, versions[1..3], options.transport.wire(.tls13), .big);
         std.mem.writeInt(u16, versions[3..5], options.transport.wire(.tls12), .big);
         try extension(&w, 43, versions[0 .. 1 + @as(usize, versions[0])]);
     }
-    if (options.alpn.len != 0) {
+    if (options.alpn.len != 0 and !compress) {
         // Bounded client offer, not a record buffer retained by an idle connection.
         var alpn: [8194]u8 = undefined;
         var a: Writer = .{ .bytes = &alpn };
@@ -204,13 +232,13 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
         std.mem.writeInt(u16, alpn[0..2], @intCast(a.pos - 2), .big);
         try extension(&w, 16, alpn[0..a.pos]);
     }
-    if (cookie.len != 0) {
+    if (cookie.len != 0 and !compress) {
         try w.int(u16, 44);
         // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
         try w.int(u16, @intCast(cookie.len + 2));
         try w.vector(u16, cookie);
     }
-    if (tls13) {
+    if (tls13 and !compress) {
         const share_at = w.pos;
         try w.put(&.{ 0, 51, 0, 0, 0, 0 });
         for (shares) |share| {
@@ -223,22 +251,17 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
         std.mem.writeInt(u16, out[share_at + 4 ..][0..2], @intCast(w.pos - share_at - 6), .big);
     }
     if (options.transport == .quic) try extension(&w, 57, options.parameters);
-    if (tls13 and (resumption.modes or resumption.ticket.len != 0)) try extension(&w, 45, &.{ 1, 1 });
-    if (tls13 and resumption.ticket.len != 0) {
-        // pre_shared_key is the last extension (RFC 8446 section 4.2.11).
-        if (resumption.ticket.len > 65535 - 6 or resumption.binder_len < 32 or resumption.binder_len > 255) return error.InvalidOptions;
-        try w.int(u16, 41);
-        // safe: the ticket was bounded just above; the binder at 255 bytes.
-        try w.int(u16, @intCast(2 + 2 + resumption.ticket.len + 4 + 2 + 1 + resumption.binder_len));
-        try w.int(u16, @intCast(2 + resumption.ticket.len + 4));
-        try w.vector(u16, resumption.ticket);
-        try w.int(u32, resumption.age);
-        try w.int(u16, @intCast(1 + resumption.binder_len));
-        try w.int(u8, @intCast(resumption.binder_len));
-        if (out.len - w.pos < resumption.binder_len) return error.BufferTooSmall;
-        @memset(out[w.pos..][0..resumption.binder_len], 0);
-        w.pos += resumption.binder_len;
+    switch (form) {
+        .plain => {},
+        .grease => |body| try extension(&w, Ech.extension_id, body),
+        .inner, .encoded => try extension(&w, Ech.extension_id, &.{1}),
+        .outer => |o| try extension(&w, Ech.extension_id, o.ext),
     }
+    if (tls13 and (resumption.modes or resumption.ticket.len != 0)) try extension(&w, 45, &.{ 1, 1 });
+    if (form == .outer) {
+        // Random bytes in the shape of the inner offer: nothing a client-facing server can resume.
+        if (form.outer.psk) |psk| try greasePsk(&w, psk);
+    } else if (tls13 and resumption.ticket.len != 0) try offeredPsk(&w, resumption);
     if (w.pos - ext_at - 2 > 65535 or w.pos - 4 > 128 * 1024) return error.InvalidOptions;
     // safe: total extension and handshake lengths have just been bounded.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
@@ -246,22 +269,87 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+fn serverName(w: *Writer, sni: []const u8) EncodeError!void {
+    @setRuntimeSafety(true);
+    if (sni.len > 253) return error.InvalidOptions;
+    var sni_bytes: [258]u8 = undefined;
+    var x: Writer = .{ .bytes = &sni_bytes };
+    // safe: DNS SNI length is at most 253, plus its three-byte entry header.
+    try x.int(u16, @intCast(sni.len + 3));
+    try x.int(u8, 0);
+    try x.vector(u16, sni);
+    try extension(w, 0, sni_bytes[0..x.pos]);
+}
+
+/// ech_outer_extensions naming `Ech.compressed`, those of them the hello carries.
+fn outerExtensions(w: *Writer, options: Options, cookie: []const u8) EncodeError!void {
+    @setRuntimeSafety(true);
+    var list: [1 + 2 * Ech.compressed.len]u8 = undefined;
+    var l: Writer = .{ .bytes = &list };
+    try l.int(u8, 0);
+    for (Ech.compressed) |id| {
+        if ((id == 44 and cookie.len == 0) or (id == 16 and options.alpn.len == 0)) continue;
+        try l.int(u16, id);
+    }
+    list[0] = @intCast(l.pos - 1); // safe: at most twelve bytes
+    try extension(w, Ech.outer_extensions_id, list[0..l.pos]);
+}
+
+/// pre_shared_key, the last extension (RFC 8446 section 4.2.11): the ticket, its age and a binder
+/// of zeros for the caller to fill.
+fn offeredPsk(w: *Writer, resumption: Resume) EncodeError!void {
+    @setRuntimeSafety(true);
+    if (resumption.ticket.len > 65535 - 6 or resumption.binder_len < 32 or resumption.binder_len > 255) return error.InvalidOptions;
+    try w.int(u16, 41);
+    // safe: the ticket was bounded just above; the binder at 255 bytes.
+    try w.int(u16, @intCast(2 + 2 + resumption.ticket.len + 4 + 2 + 1 + resumption.binder_len));
+    try w.int(u16, @intCast(2 + resumption.ticket.len + 4)); // safe: bounded above
+    try w.vector(u16, resumption.ticket);
+    try w.int(u32, resumption.age);
+    try w.int(u16, @intCast(1 + resumption.binder_len)); // safe: at most 256
+    try w.int(u8, @intCast(resumption.binder_len)); // safe: at most 255
+    if (w.bytes.len - w.pos < resumption.binder_len) return error.BufferTooSmall;
+    @memset(w.bytes[w.pos..][0..resumption.binder_len], 0);
+    w.pos += resumption.binder_len;
+}
+
+fn greasePsk(w: *Writer, psk: GreasePsk) EncodeError!void {
+    @setRuntimeSafety(true);
+    if (psk.identity.len == 0 or psk.identity.len > 65535 - 6 or psk.binder.len < 32 or psk.binder.len > 255) return error.InvalidOptions;
+    try w.int(u16, 41);
+    try w.int(u16, @intCast(2 + 2 + psk.identity.len + 4 + 2 + 1 + psk.binder.len)); // safe: bounded just above
+    try w.int(u16, @intCast(2 + psk.identity.len + 4)); // safe: bounded above
+    try w.vector(u16, psk.identity);
+    try w.int(u32, psk.age);
+    try w.int(u16, @intCast(1 + psk.binder.len)); // safe: at most 256
+    try w.vector(u8, psk.binder);
+}
+
 fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
 }
-pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u8, retry: bool, cookie: []const u8, psk: bool = false };
+pub const ServerHello = struct {
+    suite: Suite13,
+    group: ?Group,
+    share: []const u8,
+    retry: bool,
+    cookie: []const u8,
+    psk: bool = false,
+    /// A retry request's encrypted_client_hello: the eight bytes that may confirm ECH.
+    ech: ?*const [8]u8 = null,
+};
 /// A TLS 1.2 ServerHello: always a full handshake with extended master secret and secure
 /// renegotiation indicated.
 /// `resumed`: the server echoed the session id sent with a ticket, resuming that session; `ticket`:
 /// a NewSessionTicket follows (RFC 5077 section 3.2).
 pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
-pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
+pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
 /// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
 /// select; a TLS 1.2 SessionTicket extension, which a ServerHello may answer, and a ticket in it,
 /// which it may resume by echoing the session id.
-pub const Offered = struct { psk: bool = false, ticket12: bool = false, session12: bool = false };
+pub const Offered = struct { psk: bool = false, ticket12: bool = false, session12: bool = false, ech: bool = false };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options, sent: Offered) ParseError!Answer {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
@@ -285,6 +373,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var renegotiation = false;
     var psk = false;
     var ticket = false;
+    var ech: ?*const [8]u8 = null;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
@@ -301,6 +390,14 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 if (!sent.psk) return error.UnsolicitedExtension;
                 if (retry or try value.int(u16) != 0) return error.InvalidHello;
                 psk = true;
+            },
+            Ech.extension_id => {
+                // Only a retry request carries it, and only to a hello that offered ECH; its
+                // payload is the confirmation, eight bytes (RFC 9849 section 6.1.4).
+                if (!sent.ech or !retry) return error.UnsolicitedExtension;
+                if (item.bytes.len != 8) return error.DecodeError;
+                ech = item.bytes[0..8];
+                value.pos = 8;
             },
             44 => {
                 if (!retry) return error.InvalidHello;
@@ -319,14 +416,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             },
             16 => {
                 only12 = true;
-                var protocols = try value.vector(u16);
-                alpn = (try protocols.vector(u8)).bytes;
-                try protocols.finish();
-                var matched = false;
-                for (options.alpn) |offered| if (std.mem.eql(u8, offered, alpn)) {
-                    matched = true;
-                };
-                if (!matched or alpn.len == 0) return error.UnofferedSelection;
+                alpn = try selectedAlpn(&value, options);
             },
             23 => {
                 only12 = true;
@@ -361,7 +451,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (legacy_version != options.transport.legacy() or !std.mem.eql(u8, echoed, echo)) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite13, suite_id) orelse return error.UnofferedSelection;
     if (!options.offers13(suite)) return error.UnofferedSelection;
-    if (retry and group == null and cookie.len != 0) return .{ .tls13 = .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie } };
+    if (retry and group == null and cookie.len != 0) return .{ .tls13 = .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie, .ech = ech } };
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
     if (options.require_hybrid and selected != .x25519_mlkem768) return error.HybridRequired;
@@ -374,8 +464,18 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     } else {
         if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
-    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk } };
+    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech } };
 }
+/// The one protocol an ALPN answer selects, which must be one this client offered.
+fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    var protocols = try value.vector(u16);
+    const alpn = (try protocols.vector(u8)).bytes;
+    try protocols.finish();
+    for (options.alpn) |offered| if (std.mem.eql(u8, offered, alpn) and alpn.len != 0) return alpn;
+    return error.UnofferedSelection;
+}
+
 const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool };
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {
     @setRuntimeSafety(true);
@@ -422,8 +522,10 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
     return out[0..w.pos];
 }
 
-pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8 };
-pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExtensions {
+/// `ech`: an ECHConfigList the server offered for a retry (RFC 9849 section 7.1).
+pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null };
+/// `ech_sent`: the hello carried encrypted_client_hello, real or GREASE, so the server may answer it.
+pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseError!EncryptedExtensions {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 8 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
     var r: Reader = .{ .bytes = message[4..] };
@@ -432,7 +534,13 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
     var alpn: []const u8 = "";
     var parameters: []const u8 = "";
     var has_parameters = false;
+    var ech: ?[]const u8 = null;
     while (try ext.next()) |item| switch (item.id) {
+        Ech.extension_id => {
+            if (!ech_sent) return error.UnsolicitedExtension;
+            Ech.checkList(item.bytes) catch return error.DecodeError;
+            ech = item.bytes;
+        },
         0 => {
             if (options.sni.len == 0 or item.bytes.len != 0) return error.InvalidHello;
         },
@@ -463,7 +571,7 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;
-    return .{ .alpn = alpn, .parameters = parameters };
+    return .{ .alpn = alpn, .parameters = parameters, .ech = ech };
 }
 
 /// A ServerHello selecting `suite`, answering the client's share for `group`, and, when `psk`,
@@ -534,8 +642,10 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     return out[0..w.pos];
 }
 
-/// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4).
-pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, suite: Suite13, group: Group) Writer.WriteError![]u8 {
+/// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4). With `ech`, it ends with an
+/// encrypted_client_hello of eight zero bytes, the last eight of the message, for the caller to
+/// replace with the confirmation (RFC 9849 section 7.2.1).
+pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, suite: Suite13, group: Group, ech: bool) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0 });
@@ -544,11 +654,16 @@ pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, s
     try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
     try w.put(&.{0});
-    try w.int(u16, 12);
+    try w.int(u16, if (ech) 24 else 12);
     try w.put(&.{ 0, 43, 0, 2 });
     try w.int(u16, transport.wire(.tls13));
     try w.put(&.{ 0, 51, 0, 2 });
     try w.int(u16, @backingInt(group));
+    if (ech) {
+        try w.int(u16, Ech.extension_id);
+        try w.int(u16, 8);
+        try w.put(&@as([8]u8, @splat(0)));
+    }
     // safe: the message is 56 bytes plus the session id.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
@@ -560,6 +675,9 @@ pub const EncryptedParts = struct {
     alpn: []const u8 = "",
     /// The server's quic_transport_parameters, when QUIC.
     parameters: ?[]const u8 = null,
+    /// The ECH keys whose configs a client retries with (those marked `retry`), when it offered
+    /// ECH that was not accepted; nothing is sent when none is marked.
+    ech_retry: []const Ech.Key = &.{},
 };
 
 pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
@@ -579,6 +697,19 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
     if (parts.parameters) |parameters| {
         try w.int(u16, 57);
         try w.vector(u16, parameters);
+    }
+    var retry_len: usize = 0;
+    for (parts.ech_retry) |key| if (key.retry) {
+        retry_len += key.config.len;
+    };
+    if (retry_len != 0) {
+        // An ECHConfigList of the retry configs (RFC 9849 section 7.1); `Ech.max_keys` configs of
+        // a few hundred bytes each stay far below the u16 bounds.
+        if (retry_len > 65533) return error.BufferTooSmall;
+        try w.int(u16, Ech.extension_id);
+        try w.int(u16, @intCast(retry_len + 2)); // safe: checked above
+        try w.int(u16, @intCast(retry_len)); // safe: checked above
+        for (parts.ech_retry) |key| if (key.retry) try w.put(key.config);
     }
     // safe: parameters are bounded at 64 KiB by the options.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);

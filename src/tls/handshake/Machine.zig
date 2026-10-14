@@ -119,6 +119,14 @@ pub fn info(self: Machine) ?Info {
     };
 }
 
+/// A client's authenticated ECH retry configurations after a rejection; see `Client.echRetryConfigs`.
+pub fn echRetryConfigs(self: Machine) ?[]const u8 {
+    return switch (self.state) {
+        .client => |m| m.echRetryConfigs(),
+        .server => null,
+    };
+}
+
 pub fn exportKeyingMaterial(self: Machine, out: []u8, label: []const u8, context: []const u8) ExportError!void {
     return switch (self.state) {
         inline else => |m| m.exportKeyingMaterial(out, label, context),

@@ -28,6 +28,7 @@ const Protection = @import("record/Protection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
 const Flight = @import("handshake/Flight.zig");
+const Ech = @import("handshake/Ech.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -77,6 +78,9 @@ pub const ClientOptions = struct {
     auth: ?certificates.ClientAuth = null,
     /// TLS 1.3 session resumption from a ticket cache.
     resumption: ?Resumption = null,
+    /// Encrypted Client Hello (RFC 9849). With a config list it is required: the connection is
+    /// TLS 1.3 only, and fails with `EchRejected` when the server does not accept it.
+    ech: Ech.Mode = .off,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -207,6 +211,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .require_hybrid = options.require_hybrid,
         },
         .resumption = options.resumption,
+        .ech = options.ech,
         .identity = identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -241,6 +246,8 @@ pub const ServerOptions = struct {
     /// TLS 1.2 session tickets too (RFC 5077): an abbreviated TLS 1.2 handshake reuses the
     /// session's master secret with no new key exchange, so they are off unless asked for.
     tls12_tickets: bool = false,
+    /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the connection.
+    ech_keys: []const Ech.Key = &.{},
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -263,6 +270,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .client_verify = options.client_verify,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .ech_keys = options.ech_keys,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,
@@ -326,6 +334,13 @@ pub fn certificateRequested(self: *const Connection) bool {
 pub fn info(self: *const Connection) ?Info {
     if (self.phase() == .failed) return null;
     return self.negotiated;
+}
+
+/// After a failure with `EchRejected`: the ECHConfigList the server offered for a retry on a new
+/// connection, authenticated by its public name, or empty when it offered none (ECH securely
+/// disabled for it). Null for every other outcome. Valid until `deinit`.
+pub fn echRetryConfigs(self: *const Connection) ?[]const u8 {
+    return self.hs.echRetryConfigs();
 }
 
 /// True once the peer sent close_notify: no more plaintext will arrive.

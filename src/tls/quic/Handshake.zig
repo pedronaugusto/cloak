@@ -14,6 +14,7 @@ const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
+const Ech = @import("../handshake/Ech.zig");
 
 pub const Level = enum { initial, handshake, application };
 pub const Direction = Client.Direction;
@@ -40,6 +41,8 @@ pub const Options = struct {
     auth: ?certificates.ClientAuth = null,
     /// TLS 1.3 session resumption from a ticket cache (no early data: QUIC 0-RTT is not offered).
     resumption: ?Client.Resumption = null,
+    /// Encrypted Client Hello (RFC 9849); a config list makes it required.
+    ech: Ech.Mode = .off,
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -61,6 +64,8 @@ pub const ServerOptions = struct {
     client_verify: Verify = .none,
     /// Session tickets to issue and resume from; tickets never permit 0-RTT.
     tickets: ?*Server.TicketKeys = null,
+    /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the handshake.
+    ech_keys: []const Ech.Key = &.{},
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -143,6 +148,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
             .parameters = options.parameters,
         },
         .resumption = options.resumption,
+        .ech = options.ech,
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -171,6 +177,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
         .tickets = options.tickets,
+        .ech_keys = options.ech_keys,
         .limits = options.limits,
         .key_log = options.key_log,
         .generation = options.generation,
@@ -197,6 +204,12 @@ pub fn info(self: *const Handshake) ?Info {
 
 pub fn failure(self: *const Handshake) ?Alert {
     return self.alert;
+}
+
+/// After an ech_required failure: the authenticated retry configurations; see
+/// `Connection.echRetryConfigs`.
+pub fn echRetryConfigs(self: *const Handshake) ?[]const u8 {
+    return self.hs.echRetryConfigs();
 }
 
 pub const ExportError = Client.ExportError;

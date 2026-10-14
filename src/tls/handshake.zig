@@ -52,3 +52,7 @@ test {
 test {
     _ = @import("handshake/Datagram_test.zig");
 }
+pub const Ech = @import("handshake/Ech.zig");
+test {
+    _ = Ech;
+}

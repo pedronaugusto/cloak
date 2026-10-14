@@ -73,10 +73,10 @@ test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
 }
 test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     const ee = "\x08\x00\x00\x0b\x00\x09\x00\x10\x00\x05\x00\x03\x02h2";
-    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .require_alpn = true });
+    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .require_alpn = true }, false);
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
-    try std.testing.expectError(error.UnofferedSelection, H.encrypted(ee, .{ .alpn = &.{"http/1.1"} }));
-    try std.testing.expectError(error.NoApplicationProtocol, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }));
+    try std.testing.expectError(error.UnofferedSelection, H.encrypted(ee, .{ .alpn = &.{"http/1.1"} }, false));
+    try std.testing.expectError(error.NoApplicationProtocol, H.encrypted("\x08\x00\x00\x02\x00\x00", .{ .alpn = &.{"h2"}, .require_alpn = true }, false));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .sni = "*.example.com" }));
     try std.testing.expectError(error.InvalidOptions, H.validate(.{ .alpn = &.{""} }));
     try std.testing.expectError(error.HybridRequired, H.server(fixture, "", &shares, .{ .require_hybrid = true }, .{}));
@@ -102,7 +102,7 @@ fn parseAny(input: []const u8) !void {
         .tls13 => |parsed| try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength()),
         .tls12 => |parsed| try std.testing.expect(parsed.random.len == 32),
     } else |_| {}
-    if (H.encrypted(input, .{})) |parsed| {
+    if (H.encrypted(input, .{}, false)) |parsed| {
         try std.testing.expectEqual(@as(usize, 0), parsed.alpn.len);
     } else |_| {}
 }
@@ -118,7 +118,7 @@ test "C2 cookie-only HRR and empty QUIC parameter presence" {
     try std.testing.expect(retry.retry and retry.group == null);
     try std.testing.expectEqualSlices(u8, "ok", retry.cookie);
     const ee = "\x08\x00\x00\x0f\x00\x0d\x00\x10\x00\x05\x00\x03\x02h2\x00\x39\x00\x00";
-    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .transport = .quic });
+    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .transport = .quic }, false);
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
     try std.testing.expectEqual(@as(usize, 0), parsed.parameters.len);
     // Acceptance belongs to the QUIC parameter service, not this opaque parser.

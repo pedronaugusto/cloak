@@ -22,6 +22,31 @@ pub const quic = @import("tls/quic.zig");
 pub const SessionCache = @import("tls/resumption.zig").SessionCache;
 /// A server's session-ticket keys.
 pub const TicketKeys = @import("tls/resumption.zig").TicketKeys;
+/// Encrypted Client Hello (RFC 9849): what a client is given and what a server holds. A client
+/// takes the server's ECHConfigList (from its HTTPS record; finding it is the caller's) as
+/// `Mode.config_list`, or sends GREASE. A server holds `Key`s: each an ECHConfig and the X25519
+/// secret of its public key, made with `keyPair` and `writeConfig`.
+pub const ech = struct {
+    const Ech = @import("tls/handshake/Ech.zig");
+    const Hpke = @import("tls/crypto/Hpke.zig");
+    pub const Mode = Ech.Mode;
+    pub const Key = Ech.Key;
+    pub const ConfigSpec = Ech.ConfigSpec;
+    pub const Suite = Hpke.Suite;
+    pub const Kdf = Hpke.Kdf;
+    pub const Aead = Hpke.Aead;
+    pub const KeyPair = Hpke.KeyPair;
+    pub const max_keys = Ech.max_keys;
+    pub const writeConfig = Ech.writeConfig;
+    pub const writeList = Ech.writeList;
+    pub const checkList = Ech.checkList;
+
+    /// An X25519 key pair for a config, derived from 32 or more bytes of fresh secret input
+    /// (RFC 9180 DeriveKeyPair).
+    pub fn keyPair(ikm: []const u8) KeyPair {
+        return Hpke.deriveKeyPair(ikm);
+    }
+};
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
@@ -32,6 +57,7 @@ test {
     _ = @import("tls/Ccm_test.zig");
     _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/Resumption_test.zig");
+    _ = @import("tls/Ech_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

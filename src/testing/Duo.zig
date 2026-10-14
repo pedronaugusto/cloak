@@ -11,6 +11,7 @@ const Version = @import("../tls/crypto/Suite.zig").Version;
 const Group = @import("../tls/crypto/Group.zig").Group;
 const SessionCache = @import("../tls/resumption/SessionCache.zig");
 const TicketKeys = @import("../tls/resumption/TicketKeys.zig");
+const Ech = @import("../tls/handshake/Ech.zig");
 pub const pki = @import("Peer.zig").pki;
 
 pub const Cert = enum { p256, p384, ed25519, rsa };
@@ -56,6 +57,11 @@ pub const Options = struct {
     receipt_expires: ?i64 = null,
     /// Overrides when the client's verdict on the server's certificate expires, in seconds.
     server_receipt_expires: ?i64 = null,
+    /// Encrypted Client Hello at the client and the server.
+    client_ech: Ech.Mode = .off,
+    server_ech: []const Ech.Key = &.{},
+    /// Verify nothing at the client.
+    client_verify_none: bool = false,
 };
 
 const Duo = @This();
@@ -107,7 +113,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.auth) |auth| auth.deinit();
     self.client = try Connection.client(gpa, .{
         .identity = .{ .dns = options.identity },
-        .verify = .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
+        .verify = if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
+        .ech = options.client_ech,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
@@ -128,6 +135,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
         .tls12_tickets = options.server_tls12_tickets,
+        .ech_keys = options.server_ech,
     });
     return self;
 }
@@ -247,6 +255,31 @@ pub fn deliverEdited(self: *Duo, edit: *const fn (bytes: []u8) void) !void {
         }
     }
     try self.serve(&self.server);
+}
+
+/// Moves the server's pending output to the client and answers what it then asks for.
+pub fn deliverServer(self: *Duo) !void {
+    _ = try self.move(&self.server, &self.client);
+    try self.serve(&self.client);
+}
+
+/// Moves the server's pending output to the client after `edit` changes it in place.
+pub fn deliverServerEdited(self: *Duo, edit: *const fn (bytes: []u8) void) !void {
+    const bytes = self.server.output();
+    const copy = try self.gpa.dupe(u8, bytes);
+    defer self.gpa.free(copy);
+    self.server.acknowledge(bytes.len);
+    edit(copy);
+    var at: usize = 0;
+    while (at < copy.len) {
+        const n = try self.client.receive(copy[at..]);
+        at += n;
+        if (n == 0) {
+            if (self.client.request() == null) return error.Stalled;
+            try self.serve(&self.client);
+        }
+    }
+    try self.serve(&self.client);
 }
 
 /// Answers whatever the client asks for now.

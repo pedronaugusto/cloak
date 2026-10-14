@@ -116,6 +116,14 @@ pub const Options = struct {
     /// session is resumed for at most an hour after the full handshake that verified it: the
     /// system's trust can change without a generation to show it.
     resumption: ?Connection.Resumption = null,
+    /// Encrypted Client Hello (RFC 9849): GREASE, or the server's ECHConfigList, which makes it
+    /// required (TLS 1.3 only; `EchRejected` when the server does not accept it).
+    ech: @import("handshake/Ech.zig").Mode = .off,
+    /// After `open` fails with `EchRejected` and the server authenticated as the config's public
+    /// name: the ECHConfigList it offered for a retry on a new connection, or empty when it
+    /// offered none (ECH securely disabled). Allocated with the session's allocator; the caller
+    /// frees it. Untouched for any other outcome.
+    ech_retry: ?*[]u8 = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -187,6 +195,7 @@ pub fn open(
         .require_hybrid = options.require_hybrid,
         .auth = options.auth,
         .resumption = resumptionFor(options),
+        .ech = options.ech,
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -206,6 +215,11 @@ pub fn open(
     };
     errdefer {
         if (options.diagnostics) |report| report.* = session.diagnostics();
+        if (options.ech_retry) |out| if (session.conn.echRetryConfigs()) |list| {
+            if (gpa.dupe(u8, list)) |copy| {
+                out.* = copy;
+            } else |_| {}
+        };
         session.conn.deinit();
     }
     try session.handshake();
@@ -251,6 +265,8 @@ pub const ServerOptions = struct {
     /// TLS 1.2 session tickets too (RFC 5077), from the same ring: an abbreviated TLS 1.2
     /// handshake reuses the session's master secret with no new key exchange. Off unless asked.
     tls12_tickets: bool = false,
+    /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the session.
+    ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -293,6 +309,7 @@ pub fn accept(
         .client_verify = policy,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .ech_keys = options.ech_keys,
         .limits = options.limits,
         .key_log = options.key_log,
     });

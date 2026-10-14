@@ -34,6 +34,10 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     InappropriateFallback,
     NoClientCertificate,
     BadBinder,
+    /// The server did not accept Encrypted Client Hello: the connection ends with ech_required.
+    EchRejected,
+    /// A second ClientHelloOuter's payload does not open under the first one's HPKE context.
+    EchDecryptFailed,
 } || ClientHello.ParseError;
 
 pub const ExportError = Schedule.ExportError || Prf.ExportError;

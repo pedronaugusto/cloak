@@ -27,6 +27,8 @@ const Transcripts = @import("Transcripts.zig");
 const Messages12 = @import("Messages12.zig");
 const Server12 = @import("Server12.zig");
 const Ticket = @import("../resumption/Ticket.zig");
+const Ech = @import("Ech.zig");
+const Hpke = @import("../crypto/Hpke.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Emit = Flight.Emit;
@@ -78,6 +80,10 @@ pub const Options = struct {
     /// TLS 1.2 session tickets too (RFC 5077), from the same ring. An abbreviated TLS 1.2
     /// handshake reuses the session's master secret with no new key exchange: off unless asked.
     tls12_tickets: bool = false,
+    /// Encrypted Client Hello (RFC 9849, shared mode): the configs this server decrypts with,
+    /// at most `Ech.max_keys`, borrowed for the life of the connection. A client whose ECH does
+    /// not decrypt is answered with the configs marked `retry`.
+    ech_keys: []const Ech.Key = &.{},
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -135,6 +141,7 @@ resumed: bool = false,
 /// DTLS: the message_seq of the client's hello, from which DTLS 1.2 numbers both sides'
 /// messages in its transcript (RFC 6347 section 4.2.2). The carrier sets it.
 first_sequence: u16 = 0,
+ech_accepted: bool = false,
 // TLS 1.2.
 version: suites.Version = .tls13,
 suite12: ?suites.Suite12 = null,
@@ -187,6 +194,17 @@ const Scratch = struct {
     share12: ?Exchange.Share = null,
     params12: [Messages12.max_signed]u8 = undefined,
     params12_len: u8 = 0,
+    ech: EchScratch = .{},
+};
+
+/// Encrypted Client Hello on the server: whether the first hello's ECH decrypted, the HPKE
+/// context a second hello opens under, and the ClientHelloInner in use.
+const EchScratch = struct {
+    status: enum { none, accepted, rejected } = .none,
+    suite: Hpke.Suite = undefined,
+    config_id: u8 = 0,
+    context: ?Hpke.Context = null,
+    inner: []u8 = &.{},
 };
 
 fn Keyed(comptime suite: Suite13) type {
@@ -212,12 +230,16 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     };
     if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
+    Ech.checkKeys(options.ech_keys) catch return error.InvalidOptions;
+    // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
+    if (options.ech_keys.len != 0 and (options.max_version != .tls13 or options.transport == .datagram)) return error.InvalidOptions;
     const self = try gpa.create(Server);
     errdefer gpa.destroy(self);
     // The credential table is copied; the names it points at and the identities (retained below)
     // are the caller's to keep alive.
     const credentials = try gpa.dupe(Credential, options.credentials);
     errdefer gpa.free(credentials);
+
     self.* = .{
         .gpa = gpa,
         .options = options,
@@ -283,6 +305,11 @@ fn releaseScratch(self: *Server) void {
     const scratch = self.scratch orelse return;
     if (scratch.share12) |*share| share.deinit();
     scratch.share12 = null;
+    if (scratch.ech.context) |*context| context.deinit();
+    if (scratch.ech.inner.len != 0) {
+        std.crypto.secureZero(u8, scratch.ech.inner);
+        self.gpa.free(scratch.ech.inner);
+    }
     scratch.flight.deinit(self.gpa);
     scratch.transcripts.release();
     scratch.psk.deinit();
@@ -566,14 +593,21 @@ pub fn nameMatches(pattern: []const u8, name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(pattern, name);
 }
 
-fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
+fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.client_hello, epoch, .parsed, boundary);
     // The scratch is the connection's one large allocation, made when a peer first sends a
     // ClientHello the state table accepts; a connection that never speaks holds none.
     const scratch = self.scratch orelse try self.startScratch();
-    const hello = try ClientHello.parse(msg, self.options.transport);
     const second = self.retried;
+    var msg = wire;
+    var hello = try ClientHello.parse(wire, self.options.transport);
+    // An ECH this server decrypts replaces the hello by the inner one from here on.
+    if (self.options.ech_keys.len != 0) if (try self.openEch(wire, &hello, second)) |inner| {
+        msg = inner;
+        hello = ClientHello.parse(inner, self.options.transport) catch return error.IllegalParameter;
+        try checkInner(&hello);
+    };
     if (!hello.offers13() or !self.allows13()) {
         // A client without TLS 1.3 (or a server without it): TLS 1.2 when both sides allow it,
         // never after a retry.
@@ -807,8 +841,24 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
     const scratch = self.scratch.?;
     try self.state.advance(.hello_retry, .initial, .parsed, true);
     var buffer: [128]u8 = undefined;
-    const hrr = try Hello.buildRetry(&buffer, self.options.transport, self.echoedSession(), self.suite.?, group);
+    const accepted = scratch.ech.status == .accepted;
+    const hrr = try Hello.buildRetry(&buffer, self.options.transport, self.echoedSession(), self.suite.?, group, accepted);
     scratch.transcripts.select(self.suite.?);
+    if (accepted) {
+        // The confirmation covers the inner hello and this retry request with its eight
+        // bytes zeroed, as built (RFC 9849 section 7.2.1).
+        var confirm = scratch.transcripts;
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&confirm));
+        try confirm.retry(hrr);
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        switch (self.suite.?) {
+            inline else => |tag| {
+                const Hash = suites.Hash(tag);
+                const digest = confirm.digest(&digest_buf);
+                hrr[hrr.len - 8 ..][0..8].* = Ech.confirmation(Hash, &scratch.client_random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
+            },
+        }
+    }
     try scratch.transcripts.retry(hrr);
     const dst = try self.reserve(hrr.len);
     @memcpy(dst[0..hrr.len], hrr);
@@ -843,6 +893,20 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);
+    if (scratch.ech.status == .accepted) {
+        // The last eight bytes of the random confirm ECH: the inner transcript through this
+        // ServerHello with those bytes zeroed (RFC 9849 section 7.2).
+        const confirmed = hello[4 + 2 + 24 ..][0..8];
+        @memset(confirmed, 0);
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        switch (suite) {
+            inline else => |tag| {
+                const Hash = suites.Hash(tag);
+                const digest = scratch.transcripts.digestWith(&digest_buf, Hash.digest_length, hello);
+                confirmed.* = Ech.confirmation(Hash, &scratch.client_random, Ech.accept_label, digest[0..Hash.digest_length]);
+            },
+        }
+    }
     try scratch.transcripts.commitOwn(hello);
     const dst = try self.reserve(hello.len);
     @memcpy(dst[0..hello.len], hello);
@@ -880,11 +944,15 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
 fn sendEncrypted(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const dst = try self.reserve(1024 + self.options.parameters.len);
+    var retry_len: usize = 0;
+    for (self.options.ech_keys) |key| retry_len += key.config.len;
+    const dst = try self.reserve(1024 + self.options.parameters.len + retry_len);
     const message = try Hello.buildEncrypted(dst, .{
         .server_name = scratch.server_name_len != 0,
         .alpn = self.alpn,
         .parameters = if (self.options.transport == .quic) self.options.parameters else null,
+        // A client whose ECH did not decrypt (or was GREASE) learns the current configs.
+        .ech_retry = if (scratch.ech.status == .rejected) self.options.ech_keys else &.{},
     });
     try self.state.advance(.encrypted_extensions, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
@@ -951,6 +1019,92 @@ fn finishFlight(self: *Server) Client.Error!void {
         },
     }
     scratch.signing = false;
+}
+
+/// Decrypts the encrypted_client_hello of a ClientHelloOuter (RFC 9849 section 7.1) and returns
+/// the reconstructed ClientHelloInner, owned by the scratch; null when the hello is to be used as
+/// it is. A first hello tries each key of its config id (a bounded trial) and a failure to decrypt
+/// is no error: the server goes on with the outer hello and offers its retry configurations. A
+/// second hello after an accepted first must open under the first one's context.
+fn openEch(self: *Server, wire: []const u8, outer: *const ClientHello, second: bool) Client.Error!?[]const u8 {
+    @setRuntimeSafety(true);
+    const e = &self.scratch.?.ech;
+    const body = outer.ech orelse {
+        if (second and e.status == .accepted) return error.MissingExtension;
+        return null;
+    };
+    const offer = switch (Ech.parseOffer(body) catch |err| return err) {
+        // An inner hello comes only out of an outer one, never from the network.
+        .inner => return error.IllegalParameter,
+        .outer => |o| o,
+    };
+    if (second and e.status != .accepted) return null;
+    const payload_at = @intFromPtr(offer.payload.ptr) - @intFromPtr(wire.ptr); // safe: the payload is a slice of `wire`
+    const aad = try self.gpa.dupe(u8, wire[4..]);
+    defer self.gpa.free(aad);
+    @memset(aad[payload_at - 4 ..][0..offer.payload.len], 0);
+    if (offer.payload.len <= Hpke.tag_length) return if (second) error.EchDecryptFailed else self.notDecrypted();
+    const encoded = try self.gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
+    defer {
+        std.crypto.secureZero(u8, encoded);
+        self.gpa.free(encoded);
+    }
+    if (second) {
+        // The same config and suite, no new key: the first hello's context, its next nonce.
+        if (offer.config_id != e.config_id or offer.suite.kdf != e.suite.kdf or offer.suite.aead != e.suite.aead or offer.enc.len != 0) return error.IllegalParameter;
+        e.context.?.open(encoded, aad, offer.payload) catch return error.EchDecryptFailed;
+        // No third hello: the context has done its work.
+        e.context.?.deinit();
+        e.context = null;
+    } else {
+        const opened = for (self.options.ech_keys) |key| {
+            const config = (Ech.parseConfig(key.config) catch continue).config orelse continue;
+            if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
+            const info_buf = try self.gpa.alloc(u8, 8 + key.config.len);
+            defer self.gpa.free(info_buf);
+            var context = Hpke.setupRecipient(offer.suite, offer.enc, key.secret, Ech.info(info_buf, key.config)) catch continue;
+            context.open(encoded, aad, offer.payload) catch {
+                context.deinit();
+                continue;
+            };
+            break context;
+        } else return self.notDecrypted();
+        e.context = opened;
+        e.suite = offer.suite;
+        e.config_id = offer.config_id;
+        e.status = .accepted;
+    }
+    const inner = Ech.reconstruct(self.gpa, wire, encoded) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.IllegalParameter => error.IllegalParameter,
+    };
+    if (e.inner.len != 0) {
+        std.crypto.secureZero(u8, e.inner);
+        self.gpa.free(e.inner);
+    }
+    e.inner = inner;
+    self.ech_accepted = true;
+    return inner;
+}
+
+fn notDecrypted(self: *Server) ?[]const u8 {
+    self.scratch.?.ech.status = .rejected;
+    return null;
+}
+
+/// A ClientHelloInner carries the inner marker and offers TLS 1.3 and nothing older, GREASE
+/// aside (RFC 9849 section 7.1).
+fn checkInner(hello: *const ClientHello) Client.Error!void {
+    @setRuntimeSafety(true);
+    const body = hello.ech orelse return error.IllegalParameter;
+    if ((Ech.parseOffer(body) catch return error.IllegalParameter) != .inner) return error.IllegalParameter;
+    if (!hello.offers13()) return error.IllegalParameter;
+    var at: usize = 0;
+    while (at + 2 <= hello.versions.len) : (at += 2) {
+        const v = std.mem.readInt(u16, hello.versions[at..][0..2], .big);
+        const grease = v & 0x0f0f == 0x0a0a and v >> 8 == v & 0xff;
+        if (!grease and v < 0x0304) return error.IllegalParameter;
+    }
 }
 
 fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
@@ -1112,6 +1266,7 @@ pub fn info(self: *const Server) ?Info {
         .peer_authenticated = self.authenticated,
         .peer_parameters = self.peer_parameters,
         .resumed = self.resumed,
+        .ech_accepted = self.ech_accepted,
     };
 }
 

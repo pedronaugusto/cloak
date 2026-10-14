@@ -300,11 +300,11 @@ epoch and direction; tests lower them.
 Memory. A running handshake holds one scratch block (offered key shares, the
 transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
 record buffer sized to the record being read, a message buffer and the output
-buffer: about 37 KiB at the peak for the default offer. When the connection is
+buffer: about 47 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
-calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (656 bytes) and one
-heap block of 1,184 bytes (the key schedule's exporter and resumption secrets among it), 1,840
+calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (664 bytes) and one
+heap block of 1,264 bytes (the key schedule's exporter and resumption secrets among it), 1,928
 bytes in total, in a Debug build. These are heap figures from a counting allocator; stack use
 is not measured here.
 
@@ -399,7 +399,7 @@ signer that fails ends the connection with internal_error.
 
 A server connection holds no handshake scratch until a peer sends a ClientHello that
 the state table accepts: a connection created and never spoken to, or one fed a few
-bytes, costs its state and credential table (1,064 bytes), not the scratch (3.7 KB
+bytes, costs its state and credential table (1,080 bytes), not the scratch (3.7 KB
 before the first flight grows it). Established connections release it as before.
 
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
@@ -427,7 +427,7 @@ a ServerHello, until the caller accepts them. ALPN is required.
 
 The server flight, the application keys and the handshake scratch are built under
 the same bounds and released at the same moments as the client's. Measured here:
-about 25 KiB at the handshake peak and 1,075 bytes of heap beside the 656-byte struct
+about 25 KiB at the handshake peak and 1,091 bytes of heap beside the 664-byte struct
 once established (counting allocator, Debug test), and key updates behave as in the client. The server's CPU rows are in
 `bench/handshake.zig`; they include harness signing with std's ECDSA.
 
@@ -518,6 +518,64 @@ the server's ChangeCipherSpec and Finished, then the client's two. A NewSessionT
 exactly when promised and before the server's ChangeCipherSpec, in a full handshake too, and the
 client keeps it only once the server's Finished has proven it. A resumed session reports the
 original handshake's authentication and key exchange group.
+
+## Encrypted Client Hello
+
+ECH (RFC 9849) hides the ClientHello that names the server inside one that names a public
+name. std has no HPKE, so cloak has its own (`tls/crypto/Hpke.zig`, RFC 9180 base mode):
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, and AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305
+on std's X25519, HMAC and AEADs, with the sequence counter of section 5.2 (a failed open leaves
+it unchanged). It is pinned by RFC 9180 A.1.1 and by the base-mode vectors of all three AEADs
+in Go's testdata, over 1,000 messages each. No PSK or authenticated mode and no exporter: ECH
+needs none.
+
+A client's `ech` is `off`, `grease`, or the server's ECHConfigList (from its HTTPS record:
+finding it is the caller's). A list makes ECH required: the first usable config is taken
+(X25519, a supported suite, a public name that is a DNS name and not an IPv4 literal, no
+mandatory extension), a list with none is `InvalidOptions` and never a reason to send the true
+name in clear, and the connection offers TLS 1.3 alone. Three encodings of one hello are made:
+the ClientHelloInner (the true name, the inner marker, the real PSK offer), which the inner
+transcript hashes; its encoded form, with an empty session id and supported_groups,
+signature_algorithms, supported_versions, ALPN, cookie and key_share left to the outer hello
+(ech_outer_extensions), padded by section 6.1.3 with the config's maximum name length; and the
+ClientHelloOuter on the wire: the same key shares, the public name, a fresh random, and in place
+of a PSK offer random bytes of the inner offer's lengths (section 6.1.2), so no ticket or binder
+of the true session is ever outside the encryption. The outer hello with a zeroed payload is the
+HPKE associated data. A retry request that confirms acceptance (its encrypted_client_hello
+matches the inner transcript with those bytes zeroed) is answered by a second inner and outer
+hello sealed under the same context with an empty enc; one that does not is answered by the
+outer hello alone, its ECH extension unchanged. The ServerHello accepts when the last eight bytes
+of its random confirm the inner transcript; the inner transcript then becomes the transcript.
+A retry request that accepted binds the ServerHello to accept too (illegal_parameter otherwise).
+Rejected, the handshake goes on with the outer hello only to authenticate the public name: the
+verification request names it, without the origin's pins; a PSK selection is refused (the outer
+offer was GREASE); after the server's Finished the client sends ech_required instead of its
+own flight and fails with `EchRejected`. The server's retry configurations are released
+(`echRetryConfigs`, Session's `ech_retry`) only when the public name was authenticated: empty
+when it sent none, ECH then securely disabled; null for any other outcome. Nothing else of a
+rejected handshake reaches the caller: no info, plaintext, exporter or ticket. The engine does
+not reconnect. GREASE sends a random ECH extension as long as a real one would be (kept for a
+second hello) and is otherwise an ordinary handshake; its retry configs are checked for syntax
+and dropped. The ticket cache key holds the ECH config list, so a session from an ECH handshake
+resumes only inside the same ECH policy.
+
+A server holds `ech_keys` (at most 16, borrowed): each an ECHConfig and the X25519 secret of its
+public key, checked against each other at init. It tries the keys of the offered config id
+whose config lists the offered suite; a failure to decrypt is no error (it may be GREASE): the
+handshake goes on with the outer hello and EncryptedExtensions offers the configs marked
+`retry`. A decrypted inner hello is rebuilt linearly (section 5.1: the outer session id, and
+each named outer extension copied once, in order, never encrypted_client_hello itself; nonzero
+padding refused), parsed like any hello, and must carry the inner marker and offer TLS 1.3 and
+nothing older. From then on it is the hello: its name, ALPN, PSK and transcript. Acceptance is
+confirmed in the ServerHello random and, after a retry request, in the retry request's own
+extension; the second outer hello must name the same config and suite with an empty enc and open
+under the first one's context, or the handshake ends with decrypt_error. An inner hello arriving
+from the network is illegal_parameter. A server without keys ignores the extension entirely.
+
+Live peers (trials): cloak against OpenSSL 4.0.3 and Go 1.27.1 both roles, accepted, across a
+retry request, resumed inside ECH, rejected with retry configs, GREASE, and QUIC against Go.
+OpenSSL 4.0.3's client sends an empty binder in its outer GREASE PSK (below RFC 8446's 32
+bytes); cloak's server refuses that hello with decode_error, as Go's does.
 
 ## TLS 1.2
 

@@ -28,6 +28,8 @@ pub const Alert = enum(u8) {
     unknown_psk_identity = 115,
     certificate_required = 116,
     no_application_protocol = 120,
+    /// The client offered ECH and the server did not accept it (RFC 9849 section 11.2).
+    ech_required = 121,
     _,
 
     /// QUIC reports a TLS alert as the crypto error 0x100 plus its description (RFC 9001).
