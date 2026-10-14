@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-14
+
 ### Changed
 
 - The handshake engine is told what carries it (a stream, QUIC or datagrams), the seam the DTLS carrier drives (C8, docs/design.md "DTLS"): over datagrams it speaks DTLS's wire versions (0xfefd, 0xfefc), the ClientHello's cookie field, the "dtls13" label prefix of DTLS 1.3, DTLS 1.2's transcript of messages with their DTLS headers, and the client's answer to a HelloVerifyRequest, with no middlebox compatibility. TLS and QUIC connections are unchanged; nothing public changed.
