@@ -4,6 +4,14 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `tls.Suite` gains `aes_128_ccm_sha256`, `ecdhe_ecdsa_aes_128_ccm` and `ecdhe_ecdsa_aes_256_ccm`: an exhaustive switch over it needs the three cases.
+
+### Added
+
+- AES-CCM: TLS_AES_128_CCM_SHA256 (TLS 1.3) and TLS_ECDHE_ECDSA_WITH_AES_128_CCM and _AES_256_CCM (TLS 1.2, RFC 7251), for devices whose AES lacks a fast GHASH. They are offered and accepted only when listed in `suites`, never by default; CCM_8's eight-byte tag is not offered. The AEAD is cloak's own AES-CCM with a 12-byte nonce and a 16-byte tag (std's fixes a 13-byte nonce), pinned by Wycheproof, its tag checked in constant time before any plaintext is released. A CCM key protects at most 2^23 records (RFC 9147 appendix B, half GCM's), so a TLS 1.3 connection updates its keys sooner and a TLS 1.2 one closes sooner.
+
 ## [0.7.2] - 2026-10-14
 
 ### Changed

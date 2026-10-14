@@ -33,7 +33,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         pub fn init(key: [A.key_length]u8, iv: [12]u8, limits: Limits) InitError!Self {
             @setRuntimeSafety(true);
             if (limits.records == 0 or limits.records > 1 << 24 or limits.bytes == 0 or limits.bytes > 1 << 38) return error.InvalidLimits;
-            return .{ .key = .init(key), .iv = .init(iv), .limits = .{ .records = .fromRaw(limits.records), .bytes = .fromRaw(limits.bytes) } };
+            // A cipher with a lower record bound (CCM) caps the caller's.
+            const records = @min(limits.records, comptime suites.cipherOf(suite).recordLimit());
+            return .{ .key = .init(key), .iv = .init(iv), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
         }
         /// Consumes the supplied traffic owner on success; error leaves it owned.
         pub fn initTraffic(traffic: *TrafficSecret, limits: Limits) InitError!Self {

@@ -1,6 +1,9 @@
-//! The suites cloak speaks: the three TLS 1.3 suites and the six modern TLS 1.2 ECDHE suites
-//! with AEAD ciphers. Availability is not policy permission.
+//! The suites cloak speaks: the TLS 1.3 suites and the modern TLS 1.2 ECDHE suites with AEAD
+//! ciphers. The AES-CCM ones (RFC 8446, RFC 7251) are spoken only when listed: they are for
+//! devices whose AES has no fast GHASH, and the default offer leaves them out. CCM_8's short tag
+//! is not a suite here. Availability is not policy permission.
 const std = @import("std");
+const ccm = @import("Ccm.zig");
 
 /// Protocol versions, by their wire number on a stream. DTLS shares them: DTLS 1.2 and 1.3 are
 /// these versions carried in datagrams, with wire numbers of their own (`Transport.wire`).
@@ -44,12 +47,15 @@ pub const Suite = enum(u16) {
     aes_128_gcm_sha256 = 0x1301,
     aes_256_gcm_sha384 = 0x1302,
     chacha20_poly1305_sha256 = 0x1303,
+    aes_128_ccm_sha256 = 0x1304,
     ecdhe_ecdsa_aes_128_gcm_sha256 = 0xc02b,
     ecdhe_ecdsa_aes_256_gcm_sha384 = 0xc02c,
     ecdhe_rsa_aes_128_gcm_sha256 = 0xc02f,
     ecdhe_rsa_aes_256_gcm_sha384 = 0xc030,
     ecdhe_rsa_chacha20_poly1305_sha256 = 0xcca8,
     ecdhe_ecdsa_chacha20_poly1305_sha256 = 0xcca9,
+    ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
+    ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
 
     /// The default offer and preference: TLS 1.3 first, AES-128-GCM first within each version.
     pub const default: []const Suite = &.{
@@ -93,6 +99,7 @@ pub const Suite13 = enum(u16) {
     aes_128_gcm_sha256 = 0x1301,
     aes_256_gcm_sha384 = 0x1302,
     chacha20_poly1305_sha256 = 0x1303,
+    aes_128_ccm_sha256 = 0x1304,
 };
 
 /// The TLS 1.2 suites: ECDHE, an ECDSA (or EdDSA) or RSA certificate, an AEAD.
@@ -103,16 +110,21 @@ pub const Suite12 = enum(u16) {
     ecdhe_rsa_aes_256_gcm_sha384 = 0xc030,
     ecdhe_rsa_chacha20_poly1305_sha256 = 0xcca8,
     ecdhe_ecdsa_chacha20_poly1305_sha256 = 0xcca9,
+    ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
+    ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
 
     pub fn cipher(suite: Suite12) Cipher {
         return switch (suite) {
             .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_rsa_aes_128_gcm_sha256 => .aes_128_gcm,
             .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_rsa_aes_256_gcm_sha384 => .aes_256_gcm,
             .ecdhe_rsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_chacha20_poly1305_sha256 => .chacha20_poly1305,
+            .ecdhe_ecdsa_aes_128_ccm => .aes_128_ccm,
+            .ecdhe_ecdsa_aes_256_ccm => .aes_256_ccm,
         };
     }
 
-    /// The PRF hash's digest length: 48 for the SHA-384 suites, 32 otherwise.
+    /// The PRF hash's digest length: 48 for the SHA-384 suites, 32 otherwise (the CCM suites'
+    /// PRF is SHA-256 at either key size, RFC 7251 section 2).
     pub fn digestLength(suite: Suite12) usize {
         return if (suite == .ecdhe_ecdsa_aes_256_gcm_sha384 or suite == .ecdhe_rsa_aes_256_gcm_sha384) 48 else 32;
     }
@@ -121,7 +133,7 @@ pub const Suite12 = enum(u16) {
     /// (RFC 8422 section 5.1).
     pub fn authentication(suite: Suite12) enum { ecdsa, rsa } {
         return switch (suite) {
-            .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256 => .ecdsa,
+            .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm => .ecdsa,
             .ecdhe_rsa_aes_128_gcm_sha256, .ecdhe_rsa_aes_256_gcm_sha384, .ecdhe_rsa_chacha20_poly1305_sha256 => .rsa,
         };
     }
@@ -132,9 +144,21 @@ pub const Cipher = enum {
     aes_128_gcm,
     aes_256_gcm,
     chacha20_poly1305,
+    aes_128_ccm,
+    aes_256_ccm,
 
-    /// Bytes of the fixed IV a TLS 1.2 key block supplies: GCM keeps a four-byte salt and sends
-    /// an eight-byte explicit nonce; ChaCha20-Poly1305 derives its whole nonce (RFC 7905).
+    /// The most records one key may protect: TLS's 2^24 below RFC 8446's GCM bound, and 2^23 for
+    /// CCM, which keeps CCM's confidentiality margin at GCM's (RFC 9147 appendix B).
+    pub fn recordLimit(cipher: Cipher) u64 {
+        return switch (cipher) {
+            .aes_128_ccm, .aes_256_ccm => 1 << 23,
+            else => 1 << 24,
+        };
+    }
+
+    /// Bytes of the fixed IV a TLS 1.2 key block supplies: GCM and CCM keep a four-byte salt and
+    /// send an eight-byte explicit nonce (RFC 5288, RFC 6655); ChaCha20-Poly1305 derives its
+    /// whole nonce (RFC 7905).
     pub fn fixedIvLength12(cipher: Cipher) usize {
         return if (cipher == .chacha20_poly1305) 12 else 4;
     }
@@ -155,6 +179,7 @@ pub fn cipherOf(suite: Suite13) Cipher {
         .aes_128_gcm_sha256 => .aes_128_gcm,
         .aes_256_gcm_sha384 => .aes_256_gcm,
         .chacha20_poly1305_sha256 => .chacha20_poly1305,
+        .aes_128_ccm_sha256 => .aes_128_ccm,
     };
 }
 
@@ -167,6 +192,8 @@ pub fn AeadOf(comptime cipher: Cipher) type {
         .aes_128_gcm => std.crypto.aead.aes_gcm.Aes128Gcm,
         .aes_256_gcm => std.crypto.aead.aes_gcm.Aes256Gcm,
         .chacha20_poly1305 => std.crypto.aead.chacha_poly.ChaCha20Poly1305,
+        .aes_128_ccm => ccm.Aes128Ccm,
+        .aes_256_ccm => ccm.Aes256Ccm,
     };
 }
 

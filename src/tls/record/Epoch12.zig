@@ -40,7 +40,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             var full: [12]u8 = @splat(0);
             @memcpy(full[0..fixed], iv);
             defer std.crypto.secureZero(u8, &full);
-            return .{ .key = .init(key.*), .iv = .init(full), .limits = .{ .records = .fromRaw(limits.records), .bytes = .fromRaw(limits.bytes) } };
+            // A cipher with a lower record bound (CCM) caps the caller's.
+            const records = @min(limits.records, comptime cipher.recordLimit());
+            return .{ .key = .init(key.*), .iv = .init(full), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
         }
 
         pub fn deinit(self: *Self) void {

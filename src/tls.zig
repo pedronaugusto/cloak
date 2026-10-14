@@ -29,6 +29,7 @@ test {
     _ = @import("tls/resumption.zig");
     _ = @import("tls/catalogue_test.zig");
     _ = @import("tls/Tls12_test.zig");
+    _ = @import("tls/Ccm_test.zig");
     _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/Resumption_test.zig");
     _ = @import("tls/wire.zig");

@@ -35,7 +35,10 @@ pub const Keys12 = struct {
     }
 
     pub fn keyLength(cipher: suites.Cipher) usize {
-        return if (cipher == .aes_128_gcm) 16 else 32;
+        return switch (cipher) {
+            .aes_128_gcm, .aes_128_ccm => 16,
+            .aes_256_gcm, .aes_256_ccm, .chacha20_poly1305 => 32,
+        };
     }
 
     pub fn deinit(self: *Keys12) void {

@@ -243,6 +243,7 @@ const Keys = union(Suite13) {
     aes_128_gcm_sha256: Keyed(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Keyed(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Keyed(.chacha20_poly1305_sha256),
+    aes_128_ccm_sha256: Keyed(.aes_128_ccm_sha256),
 };
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
