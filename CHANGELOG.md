@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
 ### Breaking
 
 - `tls.Group` gains `secp256r1_mlkem768` (SecP256r1MLKEM768, 4587) and `secp384r1_mlkem1024` (SecP384r1MLKEM1024, 4589), the NIST-curve ML-KEM hybrids of draft-ietf-tls-ecdhe-mlkem: an exhaustive switch over the groups needs the two arms.
