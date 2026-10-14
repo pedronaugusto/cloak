@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-14
+
 ### Added
 
 - Certificate compression (RFC 8879) through codecs the caller supplies: `certificate_compression` on clients (decoders, offered in TLS 1.3) and servers (encoders, used when the client lists the algorithm and the result is smaller), in `tls.Connection`, `tls.Session` and `tls.quic.Handshake`; `tls.certificate_compression.Codec`. cloak holds no codec. A compressed certificate's declared length is bounded by the handshake message limit before it is decoded, and must be what the codec produces. Failure catalogue row F87.
