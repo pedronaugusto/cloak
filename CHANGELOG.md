@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-14
+
 ### Fixed
 
 - A TLS 1.2 client certificate with an Ed25519 key is presented and signed: Ed25519 signs the handshake messages themselves (RFC 8422 section 5.10), which the client now keeps whole while such a certificate is configured. The client answered with no certificate, and a server that required one refused the connection (found by relic against OpenSSL). A TLS 1.2 server asking for a certificate accepts an Ed25519 one the same way, keeping the messages until the client's CertificateVerify.
