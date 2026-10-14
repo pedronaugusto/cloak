@@ -1,6 +1,6 @@
 .{
     .name = .cloak,
-    .version = "0.9.1",
+    .version = "0.9.2",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x8c4ddc1071f089f6,
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md", "CHANGELOG.md" },

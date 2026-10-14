@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-14
+
 ### Added
 
 - DTLS 1.3 (RFC 9147) and DTLS 1.2 (RFC 6347), both roles: `tls.dtls.Datagram`, a sans-I/O association that takes whole datagrams and the caller's monotonic time, the same handshake as TLS (suites, groups, certificates, client certificates, ALPN, exporters, TLS 1.3 tickets) over its own records: epochs, record-number encryption, replay windows, message sequencing, fragmentation to the MTU (`setMtu`) and reassembly, the flight and its retransmission timer, DTLS 1.3 ACKs and key updates. Invalid datagrams are dropped, never fatal; failed openings count against each AEAD's forgery limit. `tls.dtls.Cookies` checks a server's client statelessly first (a HelloRetryRequest with a cookie, or a HelloVerifyRequest), and the admitted association resumes from it; without one the server sends at most three times what it received until the client's keys prove its address. Live interop against OpenSSL 4.0.3 (DTLS 1.2) and wolfSSL 5.9.4 (DTLS 1.3 and 1.2), both roles. Connection IDs are not built yet.
