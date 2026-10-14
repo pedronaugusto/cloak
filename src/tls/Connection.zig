@@ -127,6 +127,9 @@ tx_epoch: Epoch = .initial,
 phase_now: std.atomic.Value(Phase) = .init(.handshaking),
 /// Set once the handshake completes: from then on the halves may run on two tasks.
 split: bool = false,
+/// What the handshake negotiated, taken as it completes, before the halves may run on two
+/// tasks: either may read it while the read half goes on using the handshake's state.
+negotiated: ?Info = null,
 services: Services,
 // Inbound record and handshake message reassembly.
 record: []u8 = &.{},
@@ -303,7 +306,7 @@ pub fn certificateRequested(self: *const Connection) bool {
 /// Negotiated parameters; null before the handshake completes and after a failure.
 pub fn info(self: *const Connection) ?Info {
     if (self.phase() == .failed) return null;
-    return self.hs.info();
+    return self.negotiated;
 }
 
 /// True once the peer sent close_notify: no more plaintext will arrive.
@@ -578,9 +581,10 @@ fn drain(self: *Connection) Error!void {
                 try self.owe(owe_no_renegotiation);
             },
             .complete => {
+                self.hs.settle();
+                self.negotiated = self.hs.info();
                 self.phase_now.store(.connected, .release);
                 self.split = true;
-                self.hs.settle();
             },
         }
     }

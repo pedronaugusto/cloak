@@ -8,6 +8,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 - `tls.Session.failure` is a function, `failure()`, the first failure behind a `ReadFailed` or `WriteFailed`, which either task may read.
 - `tls.Connection.output` takes the connection mutably: it writes what the read half owes first. `trim` keeps the output buffer once the handshake completes; `trimOutput` returns it.
+- `tls.Session.info` returns `?Info`, null once the session failed: a failure erases what the handshake held, and the unwrap it did then crashed. `tls.Connection.info` reads what the handshake fixed as it completed, so either task may call it.
 
 ### Added
 

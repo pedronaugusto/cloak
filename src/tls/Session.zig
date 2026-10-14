@@ -290,9 +290,9 @@ pub fn deinit(session: *Session) void {
     session.* = undefined;
 }
 
-/// Negotiated parameters.
-pub fn info(session: *const Session) Connection.Info {
-    return session.conn.info().?;
+/// Negotiated parameters; null once the session failed, which erases what the handshake held.
+pub fn info(session: *const Session) ?Connection.Info {
+    return session.conn.info();
 }
 
 /// Why the connection ended and the alerts that crossed it, after a failure or a close.

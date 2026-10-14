@@ -31,8 +31,8 @@ test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
     defer session.deinit();
     // A kept session is read from a later task's Io.
     session.rebind(std.testing.io);
-    try std.testing.expectEqualSlices(u8, "h2", session.info().alpn);
-    try std.testing.expect(session.info().peer_authenticated);
+    try std.testing.expectEqualSlices(u8, "h2", session.info().?.alpn);
+    try std.testing.expect(session.info().?.peer_authenticated);
     try session.writer().writeAll("GET / HTTP/1.1\r\n\r\n");
     try session.writer().flush();
     try std.testing.expectEqualSlices(u8, "GET / HTTP/1.1\r\n\r\n", peer.received.items);
@@ -65,7 +65,7 @@ test "C2 session takes a fully qualified name's trailing dot as the same host" {
     settings.identity = .{ .dns = "example.com." };
     try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
     defer session.deinit();
-    try std.testing.expect(session.info().peer_authenticated);
+    try std.testing.expect(session.info().?.peer_authenticated);
 }
 
 test "C2 session treats a bare transport end as truncation unless allowed" {
@@ -91,6 +91,8 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
         if (eof == .strict) {
             try std.testing.expectError(error.ReadFailed, session.reader().readSliceShort(&line));
             try std.testing.expectEqual(error.Truncated, session.failure().?);
+            // A failed session erased what the handshake held: no parameters, and no crash.
+            try std.testing.expectEqual(null, session.info());
         } else {
             try std.testing.expectEqual(@as(usize, 0), try session.reader().readSliceShort(&line));
             // The end came without close_notify, and the caller can tell.
@@ -136,8 +138,8 @@ test "C3 session accepts over std.Io, serves a request and closes cleanly" {
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     });
     defer session.deinit();
-    try std.testing.expectEqualSlices(u8, "http/1.1", session.info().alpn);
-    try std.testing.expect(!session.info().peer_authenticated);
+    try std.testing.expectEqualSlices(u8, "http/1.1", session.info().?.alpn);
+    try std.testing.expect(!session.info().?.peer_authenticated);
     try std.testing.expect(peer.certificate_verify_ok and peer.server_finished_ok);
     try peer.send("GET / HTTP/1.1\r\n\r\n");
     var line: [32]u8 = undefined;
@@ -267,7 +269,7 @@ test "C2 session checks a snapshot of the system's policy with the system, and i
         }
         try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
         defer session.deinit();
-        try std.testing.expect(session.info().peer_authenticated);
+        try std.testing.expect(session.info().?.peer_authenticated);
     }
 }
 
