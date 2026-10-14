@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-14
+
 ### Added
 
 - Provisioned (external) PSKs, PSK-DHE only, TLS 1.3 and QUIC: a client offers `external_psk` (an opaque identity, its key and the key's hash) instead of a ticket; a server finds keys through `external_psk`, a lookup that sees the identity, the server name, the chosen protocol and the transport, so the caller binds each key to what it was provisioned for. A handshake on a key authenticates both ends by it, with no certificate either way and no X.509 identity implied (`Info.external_psk`); its binder is RFC 8446's "ext binder", so a key never passes for a ticket; identities are compared as exact bytes; such a session issues and keeps no tickets. Failure catalogue rows F85 and F86.
