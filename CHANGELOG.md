@@ -4,6 +4,18 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `tls.Group` gains `secp256r1_mlkem768` (SecP256r1MLKEM768, 4587) and `secp384r1_mlkem1024` (SecP384r1MLKEM1024, 4589), the NIST-curve ML-KEM hybrids of draft-ietf-tls-ecdhe-mlkem: an exhaustive switch over the groups needs the two arms.
+
+### Added
+
+- The two hybrids, both roles, TLS 1.3 (and QUIC): the ECDH value first, then ML-KEM's, in the key share and the secret (X25519MLKEM768 keeps its ML-KEM-first order). Not in the default offer; list them in `groups`. `require_hybrid` accepts any of the three hybrids. A TLS 1.2-only offer without a classical group is refused. Failure catalogue row F91 (the group layouts).
+
+### Changed
+
+- The largest key share is now 1,665 bytes, so a client handshake's peak grows by about 1.4 KB (two shares and the hello's room for them), to about 49 KiB; SecP384r1MLKEM1024 keeps its ML-KEM seed and expands it again to decapsulate, rather than hold a larger expanded key in every share.
+
 ## [0.8.2] - 2026-10-14
 
 ### Added

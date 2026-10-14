@@ -32,7 +32,7 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
         /// secret extracts zeros) and the (EC)DHE `shared` secret: PSK-DHE only, never PSK alone.
         pub fn init(prefix: Labels.Prefix, psk: ?*const [length]u8, shared: []const u8, hello_hash: *const [length]u8, traffic: *Traffic) InitError!Self {
             @setRuntimeSafety(true);
-            if (shared.len != 32 and shared.len != 48 and shared.len != 64) return error.InvalidSharedSecret;
+            if (shared.len != 32 and shared.len != 48 and shared.len != 64 and shared.len != 80) return error.InvalidSharedSecret;
             var early = Secret.init(undefined);
             defer early.deinit();
             var derived = Secret.init(undefined);

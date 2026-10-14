@@ -154,3 +154,73 @@ test "C2 exchange server response refuses small-order and invalid client shares"
     var bad_hybrid: [1216]u8 = @splat(0xff);
     try std.testing.expectError(error.InvalidShare, Exchange.respond(.x25519_mlkem768, &bad_hybrid, &kem_entropy));
 }
+
+const MlKem1024 = std.crypto.kem.ml_kem.MLKem1024;
+
+fn nistLayout(comptime group: Group, comptime G: type, comptime K: type) !void {
+    var entropy: [Exchange.entropyLength(group)]u8 = undefined;
+    fill(&entropy, 13);
+    var share = try Exchange.Share.init(group, &entropy);
+    defer share.deinit();
+    // The client's key_exchange: the uncompressed ECDH point, then the ML-KEM encapsulation key.
+    const wire = share.wire();
+    try std.testing.expectEqual(G.public_length + K.PublicKey.encoded_length, wire.len);
+    try std.testing.expectEqual(@as(u8, 4), wire[0]);
+    var point: [G.public_length]u8 = undefined;
+    try G.publicKey(entropy[0..G.scalar_length], &point);
+    try std.testing.expectEqualSlices(u8, &point, wire[0..G.public_length]);
+    const ek = try K.PublicKey.fromBytes(wire[G.public_length..][0..K.PublicKey.encoded_length]);
+    // An independent server: its point, then the ciphertext; the secret is ECDH's then ML-KEM's.
+    var server_scalar: [G.scalar_length]u8 = undefined;
+    fill(&server_scalar, 17);
+    var reply: [G.public_length + K.ciphertext_length]u8 = undefined;
+    try G.publicKey(&server_scalar, reply[0..G.public_length]);
+    const sealed = ek.encapsDeterministic(&@as([K.encaps_seed_length]u8, @splat(19)));
+    reply[G.public_length..].* = sealed.ciphertext;
+    var agreed = try share.agree(&reply);
+    defer agreed.deinit();
+    var expected: [G.scalar_length + K.shared_length]u8 = undefined;
+    try G.agree(&server_scalar, wire[0..G.public_length], expected[0..G.scalar_length]);
+    expected[G.scalar_length..].* = sealed.shared_secret;
+    try std.testing.expectEqualSlices(u8, &expected, agreed.bytes());
+    // The server side of the same exchange agrees with the client.
+    var respond_entropy: [Exchange.respondEntropyLength(group)]u8 = undefined;
+    fill(&respond_entropy, 23);
+    var response = try Exchange.respond(group, wire, &respond_entropy);
+    defer response.deinit();
+    var mirrored = try share.agree(response.wire());
+    defer mirrored.deinit();
+    try std.testing.expectEqualSlices(u8, response.agreed.bytes(), mirrored.bytes());
+}
+
+test "C10 exchange SecP256r1MLKEM768 and SecP384r1MLKEM1024 put the ECDH value first, in the share and the secret" {
+    try nistLayout(.secp256r1_mlkem768, ecdh.P256, MlKem);
+    try nistLayout(.secp384r1_mlkem1024, ecdh.P384, MlKem1024);
+}
+
+test "F91 catalogue_pq_group_specific_layout_and_auth_policy (group layouts)" {
+    // X25519MLKEM768's ML-KEM-first layout is not the NIST hybrids': a share laid out that way
+    // for SecP256r1MLKEM768 has no curve point where the point must be, and is refused.
+    var entropy: [Exchange.entropyLength(.x25519_mlkem768)]u8 = undefined;
+    fill(&entropy, 29);
+    var x_share = try Exchange.Share.init(.x25519_mlkem768, &entropy);
+    defer x_share.deinit();
+    var swapped: [Group.secp256r1_mlkem768.clientShareLength()]u8 = @splat(0);
+    @memcpy(swapped[0..1184], x_share.wire()[0..1184]);
+    var respond_entropy: [Exchange.respondEntropyLength(.secp256r1_mlkem768)]u8 = undefined;
+    fill(&respond_entropy, 31);
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(.secp256r1_mlkem768, &swapped, &respond_entropy));
+    // Each group's own lengths, either side: one byte off is refused.
+    var p_entropy: [Exchange.entropyLength(.secp256r1_mlkem768)]u8 = undefined;
+    fill(&p_entropy, 37);
+    var p_share = try Exchange.Share.init(.secp256r1_mlkem768, &p_entropy);
+    defer p_share.deinit();
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(.secp256r1_mlkem768, p_share.wire()[0 .. p_share.wire().len - 1], &respond_entropy));
+    var short: [Group.secp256r1_mlkem768.serverShareLength() - 1]u8 = @splat(4);
+    try std.testing.expectError(error.InvalidShare, p_share.agree(&short));
+    // A point off the curve in the ECDH half is refused before ML-KEM runs.
+    var reply: [Group.secp256r1_mlkem768.serverShareLength()]u8 = @splat(0);
+    reply[0] = 4;
+    try std.testing.expectError(error.InvalidShare, p_share.agree(&reply));
+    for (std.enums.values(Group)) |group| try std.testing.expect(Exchange.max_share >= group.clientShareLength() and Exchange.max_share >= group.serverShareLength());
+}

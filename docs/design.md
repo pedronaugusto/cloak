@@ -266,7 +266,11 @@ bad signer cannot put a bad CertificateVerify on the wire.
 Key shares are fresh per hello and per retry. The default offer is X25519MLKEM768
 plus an independent X25519 share; P-256 and P-384 are obtained through
 HelloRetryRequest. Group 4588 sends the ML-KEM encapsulation key first, and its
-secret is the ML-KEM secret then the X25519 secret. P-256 key generation, agreement, ECDSA
+secret is the ML-KEM secret then the X25519 secret. SecP256r1MLKEM768 (4587) and SecP384r1MLKEM1024 (4589), the
+NIST-curve hybrids of draft-ietf-tls-ecdhe-mlkem, go the other way: the uncompressed ECDH point
+then the ML-KEM key (or ciphertext), and the ECDH secret then the ML-KEM one. They are offered only
+when listed, and obtained through a retry request like P-256; any of the three hybrids satisfies
+`require_hybrid`, and none exists in TLS 1.2. P-256 key generation, agreement, ECDSA
 signing and verification run cloak's own kernel (`src/crypto/p256.zig`): a precomputed
 comb of the base point with complete projective additions for secret scalars, signed
 five-bit windows over a public table of the peer's multiples for agreement (every entry
@@ -300,7 +304,7 @@ epoch and direction; tests lower them.
 Memory. A running handshake holds one scratch block (offered key shares, the
 transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
 record buffer sized to the record being read, a message buffer and the output
-buffer: about 48 KiB at the peak for the default offer. When the connection is
+buffer: about 49 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
 calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (664 bytes) and one

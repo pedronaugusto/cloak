@@ -533,7 +533,7 @@ pub fn Peer(comptime suite: Suite13) type {
             try self.out.appendSlice(self.gpa, body);
         }
 
-        const Exchange = struct { public: [1120]u8 = undefined, public_len: usize = 0, secret: [64]u8 = @splat(0), secret_len: usize = 0 };
+        const Exchange = struct { public: [1665]u8 = undefined, public_len: usize = 0, secret: [80]u8 = @splat(0), secret_len: usize = 0 };
 
         fn exchange(self: *const Self, share: []const u8) !Exchange {
             var result: Exchange = .{};
@@ -558,8 +558,22 @@ pub fn Peer(comptime suite: Suite13) type {
                 },
                 .p256 => try curve(std.crypto.sign.ecdsa.EcdsaP256Sha256, 0x61, share, &result),
                 .p384 => try curve(std.crypto.sign.ecdsa.EcdsaP384Sha384, 0x62, share, &result),
+                .secp256r1_mlkem768 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP256Sha256, std.crypto.kem.ml_kem.MLKem768, share, &result),
+                .secp384r1_mlkem1024 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP384Sha384, std.crypto.kem.ml_kem.MLKem1024, share, &result),
             }
             return result;
+        }
+
+        /// The ECDH point and secret first, then ML-KEM's (draft-ietf-tls-ecdhe-mlkem).
+        fn nistHybrid(comptime Ecdsa: type, comptime Kem: type, share: []const u8, result: *Exchange) !void {
+            const point_len = 1 + 2 * Ecdsa.Curve.Fe.encoded_length;
+            try curve(Ecdsa, 0x63, share[0..point_len], result);
+            const ek = try Kem.PublicKey.fromBytes(share[point_len..][0..Kem.PublicKey.encoded_length]);
+            const enc = ek.encapsDeterministic(&@as([Kem.encaps_seed_length]u8, @splat(0x34)));
+            result.public[point_len..][0..Kem.ciphertext_length].* = enc.ciphertext;
+            result.public_len = point_len + Kem.ciphertext_length;
+            result.secret[result.secret_len..][0..32].* = enc.shared_secret;
+            result.secret_len += 32;
         }
 
         fn curve(comptime Ecdsa: type, seed: u8, share: []const u8, result: *Exchange) !void {
@@ -589,7 +603,7 @@ pub fn Peer(comptime suite: Suite13) type {
         }
 
         /// The ServerHello for `kex`, written into `hello`.
-        fn serverHello(self: *const Self, hello: *[1400]u8, kex: *const Exchange) []u8 {
+        fn serverHello(self: *const Self, hello: *[2048]u8, kex: *const Exchange) []u8 {
             var w: Writer = .{ .bytes = hello };
             w.put(&.{ 2, 0, 0, 0, 3, 3 });
             w.put(&@as([32]u8, @splat(0x77)));
@@ -621,7 +635,7 @@ pub fn Peer(comptime suite: Suite13) type {
             if (self.config.tamper == .legacy_server_hello or self.config.tamper == .downgrade_sentinel) return self.sendLegacy();
             var kex = try self.exchange(share);
             defer std.crypto.secureZero(u8, &kex.secret);
-            var hello_buffer: [1400]u8 = undefined;
+            var hello_buffer: [2048]u8 = undefined;
             const server_hello = self.serverHello(&hello_buffer, &kex);
             try self.transcript.commit(server_hello);
 

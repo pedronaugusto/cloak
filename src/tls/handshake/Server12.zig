@@ -67,7 +67,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
         if (candidate.authentication() == wanted and hello.offersSuite(@backingInt(candidate))) break candidate;
     } else return error.NoSharedSuite;
     self.group = for (self.options.groups) |group| {
-        if (group != .x25519_mlkem768 and hello.offersGroup(group)) break group;
+        if (!group.hybrid() and hello.offersGroup(group)) break group;
     } else return error.NoSharedGroup;
     self.scheme = Possession.chooseServer12(leaf.public_key, hello) orelse return error.NoSignatureScheme;
     self.alpn = "";

@@ -81,7 +81,7 @@ pub const ValidateError = error{InvalidOptions};
 pub fn validate(options: Options) ValidateError!void {
     @setRuntimeSafety(true);
     Compression.validate(options.certificate_compression, .decompress) catch return error.InvalidOptions;
-    if (options.suites.len == 0 or options.suites.len > std.enums.values(Suite).len or options.groups.len == 0 or options.groups.len > 4 or options.alpn.len > 32 or options.parameters.len > 65535) return error.InvalidOptions;
+    if (options.suites.len == 0 or options.suites.len > std.enums.values(Suite).len or options.groups.len == 0 or options.groups.len > std.enums.values(Group).len or options.alpn.len > 32 or options.parameters.len > 65535) return error.InvalidOptions;
     for (options.suites, 0..) |suite, i| for (options.suites[0..i]) |old| {
         if (old == suite) return error.InvalidOptions;
     };
@@ -92,7 +92,17 @@ pub fn validate(options: Options) ValidateError!void {
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
-    if (options.require_hybrid and !std.mem.containsAtLeast(Group, options.groups, 1, &.{.x25519_mlkem768})) return error.InvalidOptions;
+    // TLS 1.2 has no hybrid: a TLS 1.2-only offer needs a classical group.
+    if (!options.allows13()) {
+        for (options.groups) |group| {
+            if (!group.hybrid()) break;
+        } else return error.InvalidOptions;
+    }
+    if (options.require_hybrid) {
+        for (options.groups) |group| {
+            if (group.hybrid()) break;
+        } else return error.InvalidOptions;
+    }
     var alpn_bytes: usize = 0;
     for (options.alpn) |protocol| {
         if (protocol.len == 0 or protocol.len > 255) return error.InvalidOptions;
@@ -195,9 +205,9 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     // An encoded inner hello leaves its contiguous run of shared extensions to the outer one.
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
-    var group_bytes: [10]u8 = undefined;
+    var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
     var g: Writer = .{ .bytes = &group_bytes };
-    // safe: at most four group identifiers, each two bytes.
+    // safe: at most every group once, each two bytes.
     try g.int(u16, @intCast(options.groups.len * 2));
     for (options.groups) |group| try g.int(u16, @backingInt(group));
     if (!compress) try extension(&w, 10, group_bytes[0..g.pos]);
@@ -459,7 +469,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (retry and group == null and cookie.len != 0) return .{ .tls13 = .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie, .ech = ech } };
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
-    if (options.require_hybrid and selected != .x25519_mlkem768) return error.HybridRequired;
+    if (options.require_hybrid and !selected.hybrid()) return error.HybridRequired;
     var shared = false;
     for (shares) |offered| if (offered.group == selected) {
         shared = true;

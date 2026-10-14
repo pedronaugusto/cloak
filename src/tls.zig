@@ -68,6 +68,7 @@ test {
     _ = @import("tls/Resumption_test.zig");
     _ = @import("tls/Ech_test.zig");
     _ = @import("tls/CertificateCompression_test.zig");
+    _ = @import("tls/Pq_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

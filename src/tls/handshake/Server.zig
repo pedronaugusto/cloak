@@ -815,7 +815,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
             if (hello.offersGroup(group)) break group;
         } else return error.NoSharedGroup;
     }
-    if (self.options.require_hybrid and self.group.? != .x25519_mlkem768) return error.HybridRequired;
+    if (self.options.require_hybrid and !self.group.?.hybrid()) return error.HybridRequired;
     if (!second) {
         self.credential = self.credentialFor(hello.server_name) orelse switch (self.options.unknown_name) {
             .first => 0,
@@ -902,7 +902,8 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const suite = self.suite.?;
-    var hello_buffer: [1400]u8 = undefined;
+    // A ServerHello: its fixed fields, a session id and the largest key share.
+    var hello_buffer: [256 + Exchange.max_share]u8 = undefined;
     const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);

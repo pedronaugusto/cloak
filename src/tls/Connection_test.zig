@@ -691,7 +691,9 @@ test "C2 connection memory: handshake peak and idle residue are measured and bou
         pair.conn.trimOutput();
         const idle = count.live_bytes;
         std.debug.print("\nC2 memory group={s} handshake peak={d} bytes idle heap={d} bytes connection struct={d} bytes\n", .{ @tagName(group), peak, idle, @sizeOf(Connection) });
-        try std.testing.expect(peak <= 48 * 1024);
+        // The design's ceiling is 64 KiB (designs/cloak.md 7.3); this guards the measured ~49 KiB,
+        // two key shares of the largest group (SecP384r1MLKEM1024, 1,665 bytes) among it.
+        try std.testing.expect(peak <= 52 * 1024);
         // Idle state is the struct plus its one small heap block: two traffic directions,
         // sequences, suite and policy references, exporter state.
         try std.testing.expect(idle + @sizeOf(Connection) <= 2048);
