@@ -300,11 +300,11 @@ epoch and direction; tests lower them.
 Memory. A running handshake holds one scratch block (offered key shares, the
 transcript, queued outputs, the peer chain) of about 25 KiB, a flight buffer, a
 record buffer sized to the record being read, a message buffer and the output
-buffer: about 47 KiB at the peak for the default offer. When the connection is
+buffer: about 48 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
 calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (664 bytes) and one
-heap block of 1,264 bytes (the key schedule's exporter and resumption secrets among it), 1,928
+heap block of 1,280 bytes (the key schedule's exporter and resumption secrets among it), 1,944
 bytes in total, in a Debug build. These are heap figures from a counting allocator; stack use
 is not measured here.
 
@@ -399,7 +399,7 @@ signer that fails ends the connection with internal_error.
 
 A server connection holds no handshake scratch until a peer sends a ClientHello that
 the state table accepts: a connection created and never spoken to, or one fed a few
-bytes, costs its state and credential table (1,080 bytes), not the scratch (3.7 KB
+bytes, costs its state and credential table (1,096 bytes), not the scratch (3.7 KB
 before the first flight grows it). Established connections release it as before.
 
 A ClientHello is parsed once into borrowed views (`ClientHello`), checking structure
@@ -427,7 +427,7 @@ a ServerHello, until the caller accepts them. ALPN is required.
 
 The server flight, the application keys and the handshake scratch are built under
 the same bounds and released at the same moments as the client's. Measured here:
-about 25 KiB at the handshake peak and 1,091 bytes of heap beside the 664-byte struct
+about 25 KiB at the handshake peak and 1,107 bytes of heap beside the 664-byte struct
 once established (counting allocator, Debug test), and key updates behave as in the client. The server's CPU rows are in
 `bench/handshake.zig`; they include harness signing with std's ECDSA.
 
@@ -576,6 +576,24 @@ Live peers (trials): cloak against OpenSSL 4.0.3 and Go 1.27.1 both roles, accep
 retry request, resumed inside ECH, rejected with retry configs, GREASE, and QUIC against Go.
 OpenSSL 4.0.3's client sends an empty binder in its outer GREASE PSK (below RFC 8446's 32
 bytes); cloak's server refuses that hello with decode_error, as Go's does.
+
+## Certificate compression
+
+RFC 8879 lets a server send its Certificate compressed. cloak holds no codec: a caller passes
+`certificate_compression`, codecs naming their algorithm (zlib, brotli, zstd) with a decoder
+(a client offers those, TLS 1.3 only) or an encoder (a server uses the first, in its order,
+whose algorithm the client lists). In the family the codecs are warp's. A server compresses the
+Certificate message's body and sends the CompressedCertificate only when it is smaller; the
+CertificateVerify signs the transcript with the compressed message in it, as it went on the
+wire. A client takes a CompressedCertificate only when it offered a codec: the algorithm must be
+one it offered (illegal_parameter), the declared length is checked against the handshake message
+limit before anything is allocated, and the codec must produce exactly that length from all of
+the input (bad_certificate otherwise: short, long, trailing bytes or a malformed stream); the
+chain is read from the decompressed message and verified as any other, and the transcript takes
+the compressed message. A tiny stream that would expand past the limit never runs. What a codec
+costs in time within those sizes is the caller's codec's to bound. Client certificates are never
+compressed: a cloak server does not offer it in its CertificateRequest. Tests use std's zlib as
+the codec.
 
 ## TLS 1.2
 

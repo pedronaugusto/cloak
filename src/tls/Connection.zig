@@ -29,6 +29,7 @@ const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
 const Flight = @import("handshake/Flight.zig");
 const Ech = @import("handshake/Ech.zig");
+const Compression = @import("handshake/Compression.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -81,6 +82,8 @@ pub const ClientOptions = struct {
     /// Encrypted Client Hello (RFC 9849). With a config list it is required: the connection is
     /// TLS 1.3 only, and fails with `EchRejected` when the server does not accept it.
     ech: Ech.Mode = .off,
+    /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
+    certificate_compression: []const Compression.Codec = &.{},
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -209,6 +212,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .alpn = options.alpn,
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
+            .certificate_compression = options.certificate_compression,
         },
         .resumption = options.resumption,
         .ech = options.ech,
@@ -248,6 +252,8 @@ pub const ServerOptions = struct {
     tls12_tickets: bool = false,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the connection.
     ech_keys: []const Ech.Key = &.{},
+    /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
+    certificate_compression: []const Compression.Codec = &.{},
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -271,6 +277,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
         .ech_keys = options.ech_keys,
+        .certificate_compression = options.certificate_compression,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,

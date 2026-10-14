@@ -15,6 +15,7 @@ const Suite = @import("../crypto/Suite.zig").Suite;
 const Group = @import("../crypto/Group.zig").Group;
 const Alert = @import("../wire/Alert.zig").Alert;
 const Ech = @import("../handshake/Ech.zig");
+const Compression = @import("../handshake/Compression.zig");
 
 pub const Level = enum { initial, handshake, application };
 pub const Direction = Client.Direction;
@@ -43,6 +44,8 @@ pub const Options = struct {
     resumption: ?Client.Resumption = null,
     /// Encrypted Client Hello (RFC 9849); a config list makes it required.
     ech: Ech.Mode = .off,
+    /// Certificate decoders to offer (RFC 8879); borrowed.
+    certificate_compression: []const Compression.Codec = &.{},
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -66,6 +69,8 @@ pub const ServerOptions = struct {
     tickets: ?*Server.TicketKeys = null,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the handshake.
     ech_keys: []const Ech.Key = &.{},
+    /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
+    certificate_compression: []const Compression.Codec = &.{},
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -146,6 +151,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
             .require_hybrid = options.require_hybrid,
             .transport = .quic,
             .parameters = options.parameters,
+            .certificate_compression = options.certificate_compression,
         },
         .resumption = options.resumption,
         .ech = options.ech,
@@ -178,6 +184,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .client_verify = options.client_verify,
         .tickets = options.tickets,
         .ech_keys = options.ech_keys,
+        .certificate_compression = options.certificate_compression,
         .limits = options.limits,
         .key_log = options.key_log,
         .generation = options.generation,

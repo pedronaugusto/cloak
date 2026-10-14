@@ -4,6 +4,7 @@ const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Ech = @import("Ech.zig");
+const Compression = @import("Compression.zig");
 const suites = @import("../crypto/Suite.zig");
 const Suite = suites.Suite;
 const Suite13 = suites.Suite13;
@@ -28,6 +29,8 @@ pub const Options = struct {
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     parameters: []const u8 = "",
+    /// Certificate decoders a client offers (RFC 8879), TLS 1.3 only.
+    certificate_compression: []const Compression.Codec = &.{},
 
     /// Whether TLS 1.2 is offered or accepted: it is allowed, the policy does not need TLS 1.3
     /// (QUIC, hybrid-only), and a TLS 1.2 suite is listed. The version follows from the suites.
@@ -77,6 +80,7 @@ pub const schemes12_verify = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384
 pub const ValidateError = error{InvalidOptions};
 pub fn validate(options: Options) ValidateError!void {
     @setRuntimeSafety(true);
+    Compression.validate(options.certificate_compression, .decompress) catch return error.InvalidOptions;
     if (options.suites.len == 0 or options.suites.len > std.enums.values(Suite).len or options.groups.len == 0 or options.groups.len > 4 or options.alpn.len > 32 or options.parameters.len > 65535) return error.InvalidOptions;
     for (options.suites, 0..) |suite, i| for (options.suites[0..i]) |old| {
         if (old == suite) return error.InvalidOptions;
@@ -208,6 +212,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try s.int(u16, @intCast(offered.len * 2));
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
     if (!compress) try extension(&w, 13, signature_bytes[0..s.pos]);
+    if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
     if (tls12) {
         // extended_master_secret (RFC 7627) and an empty renegotiation_info (RFC 5746).
         try extension(&w, 23, "");

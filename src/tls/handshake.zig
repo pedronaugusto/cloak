@@ -56,3 +56,7 @@ pub const Ech = @import("handshake/Ech.zig");
 test {
     _ = Ech;
 }
+pub const Compression = @import("handshake/Compression.zig");
+test {
+    _ = Compression;
+}

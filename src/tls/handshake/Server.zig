@@ -28,6 +28,7 @@ const Messages12 = @import("Messages12.zig");
 const Server12 = @import("Server12.zig");
 const Ticket = @import("../resumption/Ticket.zig");
 const Ech = @import("Ech.zig");
+const Compression = @import("Compression.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 
 pub const Epoch = Flight.Epoch;
@@ -84,6 +85,9 @@ pub const Options = struct {
     /// at most `Ech.max_keys`, borrowed for the life of the connection. A client whose ECH does
     /// not decrypt is answered with the configs marked `retry`.
     ech_keys: []const Ech.Key = &.{},
+    /// Certificate encoders (RFC 8879), in the server's order of preference: the first whose
+    /// algorithm the client lists compresses the Certificate, when that makes it smaller.
+    certificate_compression: []const Compression.Codec = &.{},
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -195,6 +199,9 @@ const Scratch = struct {
     params12: [Messages12.max_signed]u8 = undefined,
     params12_len: u8 = 0,
     ech: EchScratch = .{},
+    /// The client's compress_certificate list, when it sent one.
+    compression: [255]u8 = undefined,
+    compression_len: u8 = 0,
 };
 
 /// Encrypted Client Hello on the server: whether the first hello's ECH decrypted, the HPKE
@@ -231,6 +238,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     Ech.checkKeys(options.ech_keys) catch return error.InvalidOptions;
+    Compression.validate(options.certificate_compression, .compress) catch return error.InvalidOptions;
     // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
     if (options.ech_keys.len != 0 and (options.max_version != .tls13 or options.transport == .datagram)) return error.InvalidOptions;
     const self = try gpa.create(Server);
@@ -640,6 +648,11 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (second and hello.early_data) return error.IllegalParameter;
     if (!second) self.scratch.?.early_offered = hello.early_data;
     self.scratch.?.takes_tickets = hello.psk_dhe;
+    if (hello.compress_certificate) |list| {
+        // checkExtension bounded it: one length byte and at most 254 bytes of algorithms.
+        @memcpy(self.scratch.?.compression[0..list.len], list);
+        self.scratch.?.compression_len = @intCast(list.len); // safe: at most 255 bytes
+    } else self.scratch.?.compression_len = 0;
     try self.negotiate(&hello, second);
     const group = self.group.?;
     const share = hello.shareFor(group) orelse {
@@ -974,10 +987,29 @@ fn sendCertificate(self: *Server) Client.Error!void {
     const identity = self.options.credentials[self.credential].identity;
     var total: usize = 64;
     for (identity.chain()) |der| total += der.len + 5;
+    const offered = scratch.compression[0..scratch.compression_len];
+    const codec = if (offered.len != 0) Compression.choose(self.options.certificate_compression, offered) else null;
+    try self.state.advance(.certificate, .handshake, .parsed, true);
+    if (codec) |chosen| compressed: {
+        // RFC 8879: the CompressedCertificate takes the Certificate's place, in the transcript too.
+        const plain_buf = try self.gpa.alloc(u8, total);
+        defer self.gpa.free(plain_buf);
+        const plain = try Messages.buildCertificate(plain_buf, "", identity.chain());
+        const dst = try self.reserve(plain.len);
+        const message = Compression.build(dst, chosen, plain) orelse break :compressed;
+        try self.queueMessage(.handshake, message);
+        return self.signCertificate(identity);
+    }
     const dst = try self.reserve(total);
     const message = try Messages.buildCertificate(dst, "", identity.chain());
-    try self.state.advance(.certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
+    return self.signCertificate(identity);
+}
+
+/// The CertificateVerify content over the transcript through the certificate, and its signature.
+fn signCertificate(self: *Server, identity: certificates.Identity) Client.Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const content = Messages.signedContent(&scratch.sign_content, true, scratch.transcripts.digest(&digest_buf));
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.

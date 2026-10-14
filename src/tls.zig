@@ -47,6 +47,15 @@ pub const ech = struct {
         return Hpke.deriveKeyPair(ikm);
     }
 };
+/// Certificate compression (RFC 8879) through codecs the caller supplies: a client offers its
+/// decoders, a server compresses with its encoders. cloak holds no codec.
+pub const certificate_compression = struct {
+    const Compression = @import("tls/handshake/Compression.zig");
+    pub const Codec = Compression.Codec;
+    pub const Algorithm = Compression.Algorithm;
+    pub const Error = Compression.Error;
+    pub const max_codecs = Compression.max_codecs;
+};
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
@@ -58,6 +67,7 @@ test {
     _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/Resumption_test.zig");
     _ = @import("tls/Ech_test.zig");
+    _ = @import("tls/CertificateCompression_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

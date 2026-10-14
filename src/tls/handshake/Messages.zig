@@ -20,6 +20,7 @@ pub const Type = enum(u8) {
     client_key_exchange = 16,
     finished = 20,
     key_update = 24,
+    compressed_certificate = 25,
     _,
 };
 

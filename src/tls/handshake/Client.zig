@@ -23,6 +23,7 @@ const Transcripts = @import("Transcripts.zig");
 const Client12 = @import("Client12.zig");
 const SessionCache = @import("../resumption/SessionCache.zig");
 const Ech = @import("Ech.zig");
+const Compression = @import("Compression.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 
 pub const Epoch = Flight.Epoch;
@@ -1013,6 +1014,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
         .encrypted_extensions => try self.onEncrypted(bytes_in, epoch, boundary),
         .certificate_request => try self.onCertificateRequest(bytes_in, epoch, boundary),
         .certificate => try self.onCertificate(bytes_in, epoch, boundary),
+        .compressed_certificate => try self.onCompressedCertificate(bytes_in, epoch, boundary),
         .certificate_verify => try self.onCertificateVerify(bytes_in, epoch, boundary),
         .finished => try self.onFinished(bytes_in, epoch, boundary),
         .new_session_ticket => try self.onTicket(bytes_in, epoch, boundary),
@@ -1304,7 +1306,38 @@ fn onCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     try self.state.advance(.certificate, epoch, .parsed, boundary);
     // The chain outlives this call: a verification request borrows it until answered.
     if (self.held.len != 0) self.gpa.free(self.held);
+    self.held = &.{};
     self.held = try self.gpa.dupe(u8, msg);
+    return self.takeCertificate(msg);
+}
+
+/// A CompressedCertificate in place of the Certificate (RFC 8879 section 4): an algorithm this
+/// client offered, a declared length within the message limit, and a codec that yields exactly
+/// that length. The chain is read from the decompressed message; the transcript takes the
+/// compressed one, as it crossed the wire.
+fn onCompressedCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    if (self.options.hello.certificate_compression.len == 0) return error.UnexpectedMessage;
+    try self.state.advance(.certificate, epoch, .parsed, boundary);
+    const compressed = Compression.parse(msg) catch |err| return switch (err) {
+        error.DecodeError => error.DecodeError,
+        else => error.IllegalParameter,
+    };
+    if (self.held.len != 0) self.gpa.free(self.held);
+    self.held = &.{};
+    self.held = Compression.decompress(self.gpa, self.options.hello.certificate_compression, compressed, self.options.limits.message) catch |err| return switch (err) {
+        error.IllegalParameter => error.IllegalParameter,
+        error.HandshakeLimit => error.HandshakeLimit,
+        error.OutOfMemory => error.OutOfMemory,
+        error.BadCertificate, error.DecodeError => error.InvalidCertificate,
+    };
+    return self.takeCertificate(msg);
+}
+
+/// The chain of the Certificate message in `held`, with `wire` (what was received) committed.
+fn takeCertificate(self: *Client, wire: []const u8) Error!void {
+    @setRuntimeSafety(true);
+    const msg = wire;
     const limits = self.options.limits;
     const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain);
     if (parsed.context.len != 0) return error.IllegalParameter;

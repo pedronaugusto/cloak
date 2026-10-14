@@ -124,6 +124,8 @@ pub const Options = struct {
     /// offered none (ECH securely disabled). Allocated with the session's allocator; the caller
     /// frees it. Untouched for any other outcome.
     ech_retry: ?*[]u8 = null,
+    /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
+    certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -196,6 +198,7 @@ pub fn open(
         .auth = options.auth,
         .resumption = resumptionFor(options),
         .ech = options.ech,
+        .certificate_compression = options.certificate_compression,
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -267,6 +270,8 @@ pub const ServerOptions = struct {
     tls12_tickets: bool = false,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the session.
     ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
+    /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
+    certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -310,6 +315,7 @@ pub fn accept(
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
         .ech_keys = options.ech_keys,
+        .certificate_compression = options.certificate_compression,
         .limits = options.limits,
         .key_log = options.key_log,
     });
