@@ -176,3 +176,28 @@ test "C8 a DTLS 1.3 session resumes from its ticket, and a TLS ticket never resu
         try carriesData(pair);
     }
 }
+
+test "C8 a server without a cookie check asks for its group with a retry request of its own" {
+    for ([_]@FieldType(Pair.Options, "admission"){ .validated, .unvalidated }) |admission| {
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{ .x25519, .p384 }, .server_groups = &.{.p384}, .admission = admission });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(@import("../crypto/Group.zig").Group.p384, pair.server.dtls.info().?.group);
+        try carriesData(pair);
+    }
+}
+
+test "C8 close_notify ends both ends and erases their keys" {
+    for ([_][]const suites.Suite{ suites.Suite.tls13_only, &.{.ecdhe_ecdsa_aes_128_gcm_sha256} }) |list| {
+        const pair = try Pair.init(gpa, .{ .client_suites = list, .server_suites = list });
+        defer pair.deinit();
+        try pair.run();
+        pair.client.dtls.close();
+        _ = try pair.step();
+        try std.testing.expectEqual(@import("Datagram.zig").Phase.closed, pair.client.dtls.phase());
+        try std.testing.expectEqual(@import("Datagram.zig").Phase.closed, pair.server.dtls.phase());
+        for (pair.client.dtls.writers ++ pair.client.dtls.readers ++ pair.server.dtls.writers ++ pair.server.dtls.readers) |slot| try std.testing.expect(slot == null);
+        var out: [64]u8 = undefined;
+        try std.testing.expectError(error.Closed, pair.client.dtls.write("late", &out));
+    }
+}

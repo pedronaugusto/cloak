@@ -398,6 +398,9 @@ fn fail(self: *Datagram, err: Error) Error {
     }
     self.phase_now = .failed;
     self.hs.wipe();
+    // The read keys go now; the write keys once the fatal alert went out under them.
+    eraseAll(&self.readers);
+    if (self.fatal_due == null) eraseAll(&self.writers);
     self.dropPartials();
     self.clearFlight();
     self.transmitting = false;
@@ -519,6 +522,13 @@ fn put(slots: *[3]?Record.Epoch, keys: Record.Epoch) void {
     }
     slots[oldest].?.deinit();
     slots[oldest] = keys;
+}
+
+fn eraseAll(slots: *[3]?Record.Epoch) void {
+    for (slots) |*slot| if (slot.*) |*e| {
+        e.deinit();
+        slot.* = null;
+    };
 }
 
 fn find(slots: *[3]?Record.Epoch, number: u64) ?*Record.Epoch {
@@ -742,6 +752,9 @@ fn onAlert(self: *Datagram, body: []const u8) Error!void {
     self.alert_received = alert;
     if (alert == .close_notify) {
         self.phase_now = .closed;
+        // Nothing is read or written after it: the keys go.
+        eraseAll(&self.readers);
+        eraseAll(&self.writers);
         return;
     }
     // A warning is passed over in DTLS 1.2; every other alert ends the association.
@@ -980,6 +993,8 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     if (out.len < self.mtu) return error.BufferTooSmall;
     if (self.fatal_due) |alert| {
         self.fatal_due = null;
+        // The alert goes under the write keys, which then go too.
+        defer eraseAll(&self.writers);
         return self.alertDatagram(2, alert, out);
     }
     if (self.phase_now == .failed) return null;
@@ -1031,6 +1046,8 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
         self.close_due = false;
         const alert = try self.alertDatagram(1, .close_notify, out);
         self.phase_now = .closed;
+        eraseAll(&self.writers);
+        eraseAll(&self.readers);
         return alert;
     }
     if (used == 0) return null;
