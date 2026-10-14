@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-14
+
 ### Breaking
 
 - RSA private-key parsing checks that the key's numbers agree (n = pq, e d = 1 modulo p - 1 and q - 1, dp, dq and qinv) and no longer tests p and q for primality, as Go, BoringSSL and ring do: a 4096-bit key took about 3 s to load. `PrivateKey.Entropy` and `ParseOptions.entropy` are gone, with `error.EntropyRequired`. A key whose factors are not prime releases no wrong signature: every RSA signature is checked against the public key before it leaves.
