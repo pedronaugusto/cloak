@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-14
+
 ### Added
 
 - Encrypted Client Hello (RFC 9849), both roles, in `tls.Connection`, `tls.Session` and `tls.quic.Handshake`, on cloak's own HPKE (RFC 9180 base mode: X25519, HKDF-SHA256, AES-GCM and ChaCha20-Poly1305). A client's `ech` option takes the server's ECHConfigList, which makes ECH required (TLS 1.3 only; `error.EchRejected` with an ech_required alert when the server does not accept it), or `.grease`. After a rejection that authenticated the config's public name, the server's retry configs are `echRetryConfigs()` (a `tls.Session` hands them over through `ech_retry`). A server's `ech_keys` are its configs with their X25519 secrets; `tls.ech` builds configs, lists and key pairs. `Info.ech_accepted` says whether a handshake used the inner hello. Failure catalogue rows F75 and F76.
