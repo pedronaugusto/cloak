@@ -483,7 +483,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(null, secret.bytes(), &hello_hash, &traffic);
+            self.schedule = try K.init(.tls13, null, secret.bytes(), &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
             self.rx = try epochFrom(&self.server_hs);
@@ -492,7 +492,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 self.tx = try epochFrom(&self.client_hs);
                 var verify_data: Secret = undefined;
                 const digest = self.transcript.digest();
-                Labels.finished(Hash, &verify_data, &self.client_hs, &digest);
+                Labels.finished(Hash, .tls13, &verify_data, &self.client_hs, &digest);
                 var finished: std.ArrayList(u8) = .empty;
                 defer finished.deinit(self.gpa);
                 try self.appendMessage(&finished, 20, &verify_data);
@@ -576,7 +576,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
 
         fn onServerFinished(self: *Self, message: []const u8) !void {
             const digest = self.transcript.digest();
-            Labels.checkFinished(Hash, &self.server_hs, &digest, message[4..]) catch {
+            Labels.checkFinished(Hash, .tls13, &self.server_hs, &digest, message[4..]) catch {
                 self.alert = 51;
                 return;
             };
@@ -647,7 +647,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             }
             const digest = self.transcript.digest();
             var verify_data: Secret = undefined;
-            Labels.finished(Hash, &verify_data, &self.client_hs, &digest);
+            Labels.finished(Hash, .tls13, &verify_data, &self.client_hs, &digest);
             if (t == .bad_finished) verify_data[0] ^= 1;
             const fin_start = flight.items.len;
             try self.appendMessage(&flight, 20, &verify_data);

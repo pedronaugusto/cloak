@@ -34,13 +34,13 @@ test "F27 catalogue_heartbeat_and_nested_length_overread across DER, hellos, cer
 
     var buffer: [256]u8 = undefined;
     // The extension block claims sixteen bytes; four follow.
-    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x10\x00\x0a\x00\x00")));
+    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x10\x00\x0a\x00\x00"), .stream));
     // key_share: the extension is six bytes, its share list claims eight.
-    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0a\x00\x33\x00\x06\x00\x08\x00\x1d\x00\x20")));
+    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0a\x00\x33\x00\x06\x00\x08\x00\x1d\x00\x20"), .stream));
     // key_share: one entry claims 32 bytes of key and the list ends after two.
-    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0c\x00\x33\x00\x08\x00\x06\x00\x1d\x00\x20\xaa\xbb")));
+    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0c\x00\x33\x00\x08\x00\x06\x00\x1d\x00\x20\xaa\xbb"), .stream));
     // server_name: the host name claims more than its list.
-    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0b\x00\x00\x00\x07\x00\x05\x00\x00\x09ab")));
+    try std.testing.expectError(error.InvalidLength, ClientHello.parse(hello(&buffer, "\x00\x0b\x00\x00\x00\x07\x00\x05\x00\x00\x09ab"), .stream));
     // A handshake header claiming more than the message.
     try std.testing.expectError(error.InvalidLength, Messages.body("\x0b\x00\x00\x09\x00\x00"));
 

@@ -213,6 +213,9 @@ const Scratch = struct {
     shares: [2]?Exchange.Share = @splat(null),
     cookie: [4096]u8 = undefined,
     cookie_len: u16 = 0,
+    /// DTLS 1.2: a HelloVerifyRequest's cookie, for the hello's cookie field.
+    legacy_cookie: [255]u8 = undefined,
+    legacy_cookie_len: u8 = 0,
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
     cr_schemes: [1024]u8 = undefined,
@@ -249,7 +252,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         .full => if (options.identity == .none) return error.InvalidOptions,
         .none => {},
     }
-    if (options.hello.quic and options.compat) return error.InvalidOptions;
+    // Middlebox compatibility is a stream's: QUIC and DTLS have neither its session id nor its
+    // ChangeCipherSpec.
+    if (options.hello.transport != .stream and options.compat) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     if (options.resumption) |resumption| if (resumption.namespace.len > 1024 or resumption.max_age.nanoseconds <= 0) return error.InvalidOptions;
     const self = try gpa.create(Client);
@@ -257,8 +262,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     const scratch = try gpa.create(Scratch);
     errdefer gpa.destroy(scratch);
     scratch.* = .{};
-    self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = if (options.hello.quic) .quic else .stream }, .scratch = scratch };
+    self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = options.hello.transport }, .scratch = scratch };
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
+    // A datagram hello that may be answered in DTLS 1.2 is hashed in its DTLS form too.
+    if (options.hello.transport == .datagram and options.hello.allows12()) scratch.transcripts.startDatagram(0, 0, options.hello.allows13());
     if (options.resumption) |resumption| {
         // A ticket is chosen and aged by the clock, before the hello.
         if (options.hello.allows13() or (resumption.tls12 and options.hello.allows12())) self.need_now = .time;
@@ -457,7 +464,7 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
     part(&h, "cloak session cache v1");
     part(&h, namespace);
     part(&h, options.hello.sni);
-    part(&h, &.{ @intFromBool(options.hello.quic), @intFromBool(options.hello.require_hybrid), @intFromBool(options.hello.require_alpn) });
+    part(&h, &.{ @backingInt(options.hello.transport), @intFromBool(options.hello.require_hybrid), @intFromBool(options.hello.require_alpn) });
     part(&h, std.mem.asBytes(&options.hello.alpn.len));
     for (options.hello.alpn) |protocol| part(&h, protocol);
     // The reference identity and the whole verification policy, through the request digest of
@@ -658,7 +665,7 @@ pub fn reserve(self: *Client, want: usize) Error![]u8 {
 /// `message` was built at the end of the flight buffer: commit it to the transcript and queue it.
 pub fn queueMessage(self: *Client, epoch: Epoch, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
-    try self.scratch.?.transcripts.commit(wire);
+    try self.scratch.?.transcripts.commitOwn(wire);
     try self.scratch.?.flight.queueMessage(epoch, wire.len);
 }
 
@@ -697,7 +704,8 @@ fn sendHello(self: *Client) Error!void {
         resumption.age = @truncate(age +% entry.age_add);
         resumption.binder_len = suites.digestLength(entry.suite.tls13().?);
     }
-    const hello = try Hello.client(dst, &self.scratch.?.random, self.scratch.?.session[0..self.scratch.?.session_len], shares, self.scratch.?.cookie[0..self.scratch.?.cookie_len], self.options.hello, resumption);
+    const scratch = self.scratch.?;
+    const hello = try Hello.client(dst, &scratch.random, scratch.session[0..scratch.session_len], scratch.legacy_cookie[0..scratch.legacy_cookie_len], shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption);
     if (self.offered) |taken| {
         // The binder covers the transcript so far and this hello up to its binders.
         const n = resumption.binder_len;
@@ -706,7 +714,7 @@ fn sendHello(self: *Client) Error!void {
         switch (taken.entry.suite.tls13().?) {
             inline else => |tag| {
                 const K = Schedule.Schedule(tag);
-                K.binder(taken.entry.secretBytes()[0..K.length], truncated[0..K.length], hello[hello.len - K.length ..][0..K.length]);
+                K.binder(self.options.hello.transport.prefix(), taken.entry.secretBytes()[0..K.length], truncated[0..K.length], hello[hello.len - K.length ..][0..K.length]);
             },
         }
     }
@@ -733,6 +741,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
     if (self.version == .tls12) return Client12.receive(self, parsed.kind, bytes_in, epoch, boundary);
     switch (parsed.kind) {
         .server_hello => try self.onServerHello(bytes_in, epoch, boundary),
+        .hello_verify_request => try self.onHelloVerify(bytes_in, epoch, boundary),
         .encrypted_extensions => try self.onEncrypted(bytes_in, epoch, boundary),
         .certificate_request => try self.onCertificateRequest(bytes_in, epoch, boundary),
         .certificate => try self.onCertificate(bytes_in, epoch, boundary),
@@ -759,7 +768,8 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     var offered: [2]Hello.Share = undefined;
     const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, .{ .psk = self.offered != null, .ticket12 = self.sendsTickets12() and self.retry_suite == null, .session12 = self.offered12 != null and self.retry_suite == null });
     const parsed = switch (answer) {
-        .tls13 => |hello| hello,
+        // A DTLS 1.3 server never asks for a HelloVerifyRequest's cookie (RFC 9147 section 5.2).
+        .tls13 => |hello| if (self.state.verified != 0) return error.IllegalParameter else hello,
         .tls12 => |hello| {
             // TLS 1.2 after a retry request is a version change mid-handshake.
             if (self.retry_suite != null) return error.IllegalParameter;
@@ -803,7 +813,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
             var traffic: K.Traffic = .{};
             errdefer traffic.deinit();
             const key: ?*const [K.length]u8 = if (psk) |entry| entry.secretBytes()[0..K.length] else null;
-            var schedule = try K.init(key, agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
+            var schedule = try K.init(self.options.hello.transport.prefix(), key, agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
             errdefer schedule.deinit();
             self.keys = @unionInit(Keys, @tagName(suite), .{ .schedule = schedule, .handshake = traffic });
         },
@@ -866,6 +876,21 @@ pub fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
     sink.write(sink.context, line[0 .. at + 1]);
 }
 
+/// A DTLS 1.2 server asks the hello again with its cookie (RFC 6347 section 4.2.1): the same
+/// hello, its cookie field filled, with the next message_seq; neither hello nor request enters
+/// the transcript.
+fn onHelloVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    try self.state.advance(.hello_verify, epoch, .parsed, boundary);
+    const cookie = try Hello.helloVerify(msg);
+    const scratch = self.scratch.?;
+    @memcpy(scratch.legacy_cookie[0..cookie.len], cookie);
+    // safe: the parser bounds the cookie at 255 bytes.
+    scratch.legacy_cookie_len = @intCast(cookie.len);
+    scratch.transcripts.restart();
+    try self.sendHello();
+}
+
 fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.hello_retry, epoch, .parsed, boundary);
@@ -895,7 +920,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
     for (self.options.hello.alpn) |offered| if (std.mem.eql(u8, offered, parsed.alpn)) {
         self.alpn = offered;
     };
-    if (self.options.hello.quic) {
+    if (self.options.hello.transport == .quic) {
         if (parsed.parameters.len > 64 * 1024) return error.HandshakeLimit;
         self.peer_parameters = try self.gpa.dupe(u8, parsed.parameters);
         self.need_now = .parameters;
@@ -954,7 +979,7 @@ fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             const Hash = suites.Hash(tag);
             const received = try Messages.finished(msg, Hash.digest_length);
             const before = self.scratch.?.transcripts.digest(&before_buf);
-            try Labels.checkFinished(Hash, k.handshake.server.expose(), before[0..Hash.digest_length], received);
+            try Labels.checkFinished(Hash, k.schedule.prefix, k.handshake.server.expose(), before[0..Hash.digest_length], received);
             try self.state.advance(.finished, epoch, .finished, boundary);
             try self.scratch.?.transcripts.commit(msg);
             var after_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1017,7 +1042,7 @@ fn finishFlight(self: *Client) Error!void {
             const Hash = suites.Hash(tag);
             const digest = self.scratch.?.transcripts.digest(&digest_buf);
             var verify_data: [Hash.digest_length]u8 = undefined;
-            Labels.finished(Hash, &verify_data, k.handshake.client.expose(), digest[0..Hash.digest_length]);
+            Labels.finished(Hash, k.schedule.prefix, &verify_data, k.handshake.client.expose(), digest[0..Hash.digest_length]);
             const dst = try self.reserve(4 + Hash.digest_length);
             const message_bytes = try Messages.buildFinished(dst, &verify_data);
             try self.state.advance(.local_finished, .handshake, .finished, true);

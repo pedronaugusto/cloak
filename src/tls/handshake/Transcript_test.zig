@@ -27,7 +27,7 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
     while (pos < plain.bytes.len) {
         const size = 4 + @as(usize, std.mem.readInt(u24, plain.bytes[pos + 1 ..][0..3], .big));
         const message = plain.bytes[pos..][0..size];
-        if (message[0] == 20) try L.checkFinished(H, &traffic, &transcript.digest(), message[4..]);
+        if (message[0] == 20) try L.checkFinished(H, .tls13, &traffic, &transcript.digest(), message[4..]);
         try transcript.commit(message);
         pos += size;
     }

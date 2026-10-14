@@ -10,7 +10,7 @@ fn options(hello: Hello.Options) Client.Options {
 test "C2 client options are validated before any state exists" {
     const gpa = std.testing.allocator;
     try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .verify = .{ .full = .{ .trust_generation = .fromRaw(1) } } }));
-    try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .hello = .{ .quic = true, .alpn = &.{"h3"} }, .verify = .none, .compat = true }));
+    try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .hello = .{ .transport = .quic, .alpn = &.{"h3"} }, .verify = .none, .compat = true }));
     try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .hello = .{ .suites = &.{} }, .verify = .none }));
     try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .verify = .none, .limits = .{ .message = 10 } }));
     try std.testing.expectError(error.InvalidOptions, Client.init(gpa, .{ .verify = .none, .limits = .{ .certificates = 0 } }));

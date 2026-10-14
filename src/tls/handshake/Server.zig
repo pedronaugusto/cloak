@@ -61,7 +61,8 @@ pub const Options = struct {
     /// Fail when the client offers no protocol at all.
     require_alpn: bool = false,
     require_hybrid: bool = false,
-    quic: bool = false,
+    /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
+    transport: suites.Transport = .stream,
     /// The server's QUIC transport parameters.
     parameters: []const u8 = "",
     /// At least one. The first answers when no name matches or none was sent.
@@ -131,6 +132,9 @@ app_read: ?Traffic = null,
 server_name_copy: []const u8 = &.{},
 /// The handshake resumed a session from a ticket.
 resumed: bool = false,
+/// DTLS: the message_seq of the client's hello, from which DTLS 1.2 numbers both sides'
+/// messages in its transcript (RFC 6347 section 4.2.2). The carrier sets it.
+first_sequence: u16 = 0,
 // TLS 1.2.
 version: suites.Version = .tls13,
 suite12: ?suites.Suite12 = null,
@@ -200,7 +204,7 @@ const Keys = union(Suite13) {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
-    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.quic, .require_hybrid = options.require_hybrid, .quic = options.quic, .parameters = options.parameters });
+    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .transport = options.transport, .parameters = options.parameters });
     if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
     for (options.credentials) |credential| for (credential.names) |name| {
         if (name.len == 0 or name.len > 253) return error.InvalidOptions;
@@ -216,7 +220,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     self.* = .{
         .gpa = gpa,
         .options = options,
-        .state = .{ .role = .server, .mode = if (options.quic) .quic else .stream, .auth = options.client_auth },
+        .state = .{ .role = .server, .mode = options.transport, .auth = options.client_auth },
     };
     self.options.credentials = credentials;
     for (credentials) |credential| _ = credential.identity.retain();
@@ -341,7 +345,7 @@ pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
         // The ClientHello waited for the clock; it was parsed and checked once already.
         errdefer self.state.fail();
         self.scratch.?.hello_held = false;
-        const hello = ClientHello.parse(self.held) catch unreachable; // unreachable: these bytes parsed before
+        const hello = ClientHello.parse(self.held, self.options.transport) catch unreachable; // unreachable: these bytes parsed before
         if (self.version == .tls12) return Server12.answer(self, self.held, &hello);
         return self.answerHello(self.held, &hello);
     }
@@ -472,7 +476,7 @@ pub fn reserve(self: *Server, want: usize) Client.Error![]u8 {
 
 pub fn queueMessage(self: *Server, epoch: Epoch, wire: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
-    try self.scratch.?.transcripts.commit(wire);
+    try self.scratch.?.transcripts.commitOwn(wire);
     try self.scratch.?.flight.queueMessage(epoch, wire.len);
 }
 
@@ -567,9 +571,9 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     // The scratch is the connection's one large allocation, made when a peer first sends a
     // ClientHello the state table accepts; a connection that never speaks holds none.
     const scratch = self.scratch orelse try self.startScratch();
-    const hello = try ClientHello.parse(msg);
+    const hello = try ClientHello.parse(msg, self.options.transport);
     const second = self.retried;
-    if (!hello.offersVersion(0x0304) or !self.allows13()) {
+    if (!hello.offers13() or !self.allows13()) {
         // A client without TLS 1.3 (or a server without it): TLS 1.2 when both sides allow it,
         // never after a retry.
         if (second or !self.allows12() or !hello.offers12()) return error.UnsupportedVersion;
@@ -577,6 +581,8 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     }
     // A TLS 1.3 hello offers the null compression method alone (RFC 8446 section 4.1.2).
     if (!hello.null_compression_only) return error.IllegalParameter;
+    // A DTLS 1.3 hello's cookie field is empty (RFC 9147 section 5.3).
+    if (hello.legacy_cookie.len != 0) return error.IllegalParameter;
     if (second) {
         if (!std.mem.eql(u8, &hello.fingerprint(), &scratch.first)) return error.IllegalParameter;
         if (hello.cookie.len != 0) return error.UnexpectedCookie;
@@ -585,7 +591,7 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
         @memcpy(scratch.session[0..hello.session.len], hello.session);
         // safe: parsing bounds the session id at 32 bytes.
         scratch.session_len = @intCast(hello.session.len);
-        if (self.options.quic and hello.session.len != 0) return error.IllegalParameter;
+        if (self.options.transport == .quic and hello.session.len != 0) return error.IllegalParameter;
         scratch.first = hello.fingerprint();
         @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
         // safe: parsing bounds a host name at 253 bytes.
@@ -640,7 +646,7 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
     const entropy: Need = .{ .entropy = .{ .len = 32 + Exchange.respondEntropyLength(group) + noise + tickets } };
     // QUIC: the client's transport parameters are provisional, and the server says nothing
     // that depends on them until the caller accepts them.
-    if (self.options.quic and !self.parameters_accepted) {
+    if (self.options.transport == .quic and !self.parameters_accepted) {
         self.deferred = entropy;
         self.need_now = .parameters;
     } else self.need_now = entropy;
@@ -687,7 +693,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
             inline else => |tag| {
                 const K = Schedule.Schedule(tag);
                 const truncated = scratch.transcripts.digestWith(&digest_buf, K.length, hello.truncated(msg));
-                try K.checkBinder(state.secretBytes()[0..K.length], truncated[0..K.length], hello.pskBinder(index));
+                try K.checkBinder(self.options.transport.prefix(), state.secretBytes()[0..K.length], truncated[0..K.length], hello.pskBinder(index));
             },
         }
         try self.state.markResumed();
@@ -732,13 +738,13 @@ pub fn policyDigest(self: *const Server) [32]u8 {
 
 /// Whether this server speaks TLS 1.3.
 pub fn allows13(self: *const Server) bool {
-    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .quic = self.options.quic };
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .transport = self.options.transport };
     return hello.allows13();
 }
 
 /// Whether this server takes TLS 1.2 clients.
 pub fn allows12(self: *const Server) bool {
-    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .quic = self.options.quic };
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .transport = self.options.transport };
     return hello.allows12();
 }
 
@@ -774,10 +780,10 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     self.alpn = "";
     if (self.options.alpn.len != 0) {
         if (hello.alpn.len == 0) {
-            if (self.options.require_alpn or self.options.quic) return error.NoApplicationProtocol;
+            if (self.options.require_alpn or self.options.transport == .quic) return error.NoApplicationProtocol;
         } else self.alpn = hello.selectAlpn(self.options.alpn) orelse return error.NoApplicationProtocol;
     }
-    if (self.options.quic) {
+    if (self.options.transport == .quic) {
         if (hello.parameters == null) return error.MissingExtension;
         if (self.peer_parameters.len == 0) {
             if (hello.parameters.?.len > 64 * 1024) return error.HandshakeLimit;
@@ -800,7 +806,7 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
     const scratch = self.scratch.?;
     try self.state.advance(.hello_retry, .initial, .parsed, true);
     var buffer: [128]u8 = undefined;
-    const hrr = try Hello.buildRetry(&buffer, scratch.session[0..scratch.session_len], self.suite.?, group);
+    const hrr = try Hello.buildRetry(&buffer, self.options.transport, self.echoedSession(), self.suite.?, group);
     scratch.transcripts.select(self.suite.?);
     try scratch.transcripts.retry(hrr);
     const dst = try self.reserve(hrr.len);
@@ -811,9 +817,17 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
     scratch.retry_group = group;
 }
 
+/// The legacy session id a TLS 1.3 ServerHello echoes: the client's on a stream, none in DTLS
+/// (RFC 9147 section 5) or QUIC, where a client sends none.
+fn echoedSession(self: *const Server) []const u8 {
+    const scratch = self.scratch.?;
+    return if (self.options.transport == .datagram) "" else scratch.session[0..scratch.session_len];
+}
+
 fn sendCompatCcs(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.ccs_sent or self.scratch.?.session_len == 0) return;
+    // Middlebox compatibility is a stream's: never a ChangeCipherSpec of TLS 1.3 in DTLS.
+    if (self.ccs_sent or self.scratch.?.session_len == 0 or self.options.transport == .datagram) return;
     self.ccs_sent = true;
     try self.push(.compat_ccs);
 }
@@ -825,10 +839,10 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     const scratch = self.scratch.?;
     const suite = self.suite.?;
     var hello_buffer: [1400]u8 = undefined;
-    const hello = try Hello.buildServer(&hello_buffer, random[0..32], scratch.session[0..scratch.session_len], suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
+    const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.resumed) self.scratch.?.psk_index else null);
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);
-    try scratch.transcripts.commit(hello);
+    try scratch.transcripts.commitOwn(hello);
     const dst = try self.reserve(hello.len);
     @memcpy(dst[0..hello.len], hello);
     try scratch.flight.queueMessage(.initial, hello.len);
@@ -842,7 +856,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             var traffic: K.Traffic = .{};
             errdefer traffic.deinit();
             const psk: ?*const [K.length]u8 = if (self.resumed) scratch.psk.expose()[0..K.length] else null;
-            var schedule = try K.init(psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
+            var schedule = try K.init(self.options.transport.prefix(), psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
             errdefer schedule.deinit();
             self.keys = @unionInit(Keys, @tagName(tag), .{ .schedule = schedule, .handshake = traffic });
         },
@@ -869,7 +883,7 @@ fn sendEncrypted(self: *Server) Client.Error!void {
     const message = try Hello.buildEncrypted(dst, .{
         .server_name = scratch.server_name_len != 0,
         .alpn = self.alpn,
-        .parameters = if (self.options.quic) self.options.parameters else null,
+        .parameters = if (self.options.transport == .quic) self.options.parameters else null,
     });
     try self.state.advance(.encrypted_extensions, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
@@ -919,7 +933,7 @@ fn finishFlight(self: *Server) Client.Error!void {
             const Hash = suites.Hash(tag);
             const before = scratch.transcripts.digest(&before_buf);
             var verify_data: [Hash.digest_length]u8 = undefined;
-            Labels.finished(Hash, &verify_data, k.handshake.server.expose(), before[0..Hash.digest_length]);
+            Labels.finished(Hash, k.schedule.prefix, &verify_data, k.handshake.server.expose(), before[0..Hash.digest_length]);
             const dst = try self.reserve(4 + Hash.digest_length);
             const message = try Messages.buildFinished(dst, &verify_data);
             try self.state.advance(.local_finished, .handshake, .finished, true);
@@ -990,7 +1004,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             const Hash = suites.Hash(tag);
             const received = try Messages.finished(msg, Hash.digest_length);
             const before = scratch.transcripts.digest(&before_buf);
-            try Labels.checkFinished(Hash, k.handshake.client.expose(), before[0..Hash.digest_length], received);
+            try Labels.checkFinished(Hash, k.schedule.prefix, k.handshake.client.expose(), before[0..Hash.digest_length], received);
             try self.state.advance(.finished, epoch, .finished, boundary);
             try scratch.transcripts.commit(msg);
             var finished_buf: [Transcripts.max_digest]u8 = undefined;

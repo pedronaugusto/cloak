@@ -35,14 +35,14 @@ test "C2 catalogue_finished_entropy_failure_is_never_success" {
         const traffic: [Hash.digest_length]u8 = @splat(1);
         const transcript: [Hash.digest_length]u8 = @splat(2);
         var valid: [Hash.digest_length]u8 = undefined;
-        L.finished(Hash, &valid, &traffic, &transcript);
-        try L.checkFinished(Hash, &traffic, &transcript, &valid);
+        L.finished(Hash, .tls13, &valid, &traffic, &transcript);
+        try L.checkFinished(Hash, .tls13, &traffic, &transcript, &valid);
         for (0..valid.len) |i| {
             valid[i] ^= 1;
-            try std.testing.expectError(error.BadFinished, L.checkFinished(Hash, &traffic, &transcript, &valid));
+            try std.testing.expectError(error.BadFinished, L.checkFinished(Hash, .tls13, &traffic, &transcript, &valid));
             valid[i] ^= 1;
         }
-        try std.testing.expectError(error.BadFinished, L.checkFinished(Hash, &traffic, &transcript, valid[1..]));
+        try std.testing.expectError(error.BadFinished, L.checkFinished(Hash, .tls13, &traffic, &transcript, valid[1..]));
         var out: [256]u8 = @splat(0xa5);
         try std.testing.expectError(error.InvalidLabel, L.expand(Hash, &out, &traffic, "", ""));
         try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));

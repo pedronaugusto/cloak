@@ -9,6 +9,7 @@ pub const Type = enum(u8) {
     hello_request = 0,
     client_hello = 1,
     server_hello = 2,
+    hello_verify_request = 3,
     new_session_ticket = 4,
     encrypted_extensions = 8,
     certificate = 11,

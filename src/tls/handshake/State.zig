@@ -3,7 +3,7 @@
 //! Published aegis has no typestate module; this table remains always checked.
 const std = @import("std");
 pub const Role = enum { client, server };
-pub const Mode = enum { stream, quic };
+pub const Mode = @import("../crypto/Suite.zig").Transport;
 pub const Epoch = enum { initial, handshake, application };
 pub const Auth = enum { none, optional, required };
 pub const Version = enum { tls13, tls12 };
@@ -57,6 +57,8 @@ pub const Phase = enum {
 };
 pub const Action = enum {
     client_hello,
+    /// DTLS 1.2: a HelloVerifyRequest asks the hello again with a cookie.
+    hello_verify,
     hello_retry,
     server_hello,
     encrypted_extensions,
@@ -90,6 +92,8 @@ const Edge = struct { version: Version = .tls13, role: Role, from: Phase, action
 const edges = [_]Edge{
     .{ .role = .client, .from = .start, .action = .client_hello, .epoch = .initial, .to = .hello },
     .{ .role = .client, .from = .hello, .action = .hello_retry, .epoch = .initial, .to = .retry, .boundary = true },
+    // A datagram hello may be asked again with a cookie, before any version is chosen.
+    .{ .role = .client, .from = .hello, .action = .hello_verify, .epoch = .initial, .to = .start, .boundary = true },
     .{ .role = .client, .from = .retry, .action = .client_hello, .epoch = .initial, .to = .hello },
     .{ .role = .client, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .extensions, .boundary = true },
     .{ .role = .client, .from = .extensions, .action = .encrypted_extensions, .epoch = .handshake, .to = .certificate_request, .resumed = false },
@@ -188,6 +192,8 @@ pub const State = struct {
     /// TLS 1.2: the ServerHello said a NewSessionTicket follows, which then must, before the
     /// server's ChangeCipherSpec; without it none may come.
     ticket12: bool = false,
+    /// DTLS: HelloVerifyRequests answered so far.
+    verified: u2 = 0,
     /// Marks the handshake resumed: in TLS 1.3 as the ServerHello is received (client) or chosen
     /// (server), before EncryptedExtensions; in TLS 1.2 before the ServerHello's edge is taken.
     pub fn markResumed(self: *State) AdvanceError!void {
@@ -218,6 +224,8 @@ pub const State = struct {
                 if (!boundary) return error.RecordAlignment;
                 return;
             }
+            // A DTLS record names its epoch, so what follows a KeyUpdate is under the keys it says.
+            if (action == .key_update and self.mode == .datagram) return;
             return error.UnexpectedMessage;
         }
         for (edges) |edge| {
@@ -233,7 +241,12 @@ pub const State = struct {
                 if (action == .local_finished and self.requested_certificate) return error.MissingProof;
                 if (action != .local_finished and !self.requested_certificate) return error.UnexpectedMessage;
             }
-            if (action == .hello_retry and self.retried) return error.UnexpectedMessage;
+            if (action == .hello_retry and (self.retried or self.verified != 0)) return error.UnexpectedMessage;
+            // A HelloVerifyRequest is DTLS's alone, never after a retry request, at most three.
+            if (action == .hello_verify) {
+                if (self.mode != .datagram or self.retried or self.verified == 3) return error.UnexpectedMessage;
+                self.verified += 1;
+            }
             if (self.role == .server and action == .certificate_request and self.auth == .none) return error.UnexpectedMessage;
             if (self.role == .server and action == .certificate and self.phase == .certificate_request and self.auth != .none) return error.MissingProof;
             if (action == .empty_certificate and self.auth == .required) return error.MissingProof;

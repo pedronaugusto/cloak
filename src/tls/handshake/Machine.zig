@@ -221,6 +221,15 @@ pub fn earlySkip(self: Machine) EarlySkip {
     };
 }
 
+/// DTLS: the message_seq of the hello a server's first message is, from which DTLS 1.2 numbers
+/// its transcript. The datagram carrier sets it before the hello; a client starts at zero.
+pub fn firstSequence(self: Machine, sequence: u16) void {
+    switch (self.state) {
+        .client => {},
+        .server => |m| m.first_sequence = sequence,
+    }
+}
+
 /// The state table's phase, for the callers that must not act on a failed machine.
 pub fn failed(self: Machine) bool {
     return switch (self.state) {

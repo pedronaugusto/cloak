@@ -12,7 +12,7 @@ test "C2 RFC8448 master application and exporter root schedule" {
     defer hs.deinit();
     const shared = hex("8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d");
     const hello = hex("860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8");
-    var schedule = try K.init(null, &shared, &hello, &hs);
+    var schedule = try K.init(.tls13, null, &shared, &hello, &hs);
     defer schedule.deinit();
     try std.testing.expectEqualSlices(u8, &hex("b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21"), hs.client.expose());
     try std.testing.expectEqualSlices(u8, &hex("b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38"), hs.server.expose());
@@ -47,7 +47,7 @@ test "C2 schedule invalid phases never expose prior output" {
         const H = suites.Hash(suite);
         var traffic: K.Traffic = .{};
         defer traffic.deinit();
-        var schedule = try K.init(null, &@as([64]u8, @splat(1)), &@as([H.digest_length]u8, @splat(2)), &traffic);
+        var schedule = try K.init(.tls13, null, &@as([64]u8, @splat(1)), &@as([H.digest_length]u8, @splat(2)), &traffic);
         defer schedule.deinit();
         var out: [H.digest_length]u8 = @splat(0xa5);
         try std.testing.expectError(error.WrongPhase, schedule.complete(&@as([H.digest_length]u8, @splat(4))));
@@ -66,20 +66,20 @@ test "C5 RFC8448 resumed handshake: binder, PSK-DHE handshake secrets and resump
     // Section 4: the binder over the hash of the ClientHello up to its binders.
     const truncated = hex("63224b2e4573f2d3454ca84b9d009a04f6be9e05711a8396473aefa01e924a14");
     var binder: [32]u8 = undefined;
-    K.binder(&psk, &truncated, &binder);
+    K.binder(.tls13, &psk, &truncated, &binder);
     const expected = hex("3add4fb2d8fdf822a0ca3cf7678ef5e88dae990141c5924d57bb6fa31b9e5f9d");
     try std.testing.expectEqualSlices(u8, &expected, &binder);
-    try K.checkBinder(&psk, &truncated, &expected);
+    try K.checkBinder(.tls13, &psk, &truncated, &expected);
     var flipped = expected;
     flipped[31] ^= 1;
-    try std.testing.expectError(error.BadBinder, K.checkBinder(&psk, &truncated, &flipped));
-    try std.testing.expectError(error.BadBinder, K.checkBinder(&psk, &truncated, expected[0..31]));
+    try std.testing.expectError(error.BadBinder, K.checkBinder(.tls13, &psk, &truncated, &flipped));
+    try std.testing.expectError(error.BadBinder, K.checkBinder(.tls13, &psk, &truncated, expected[0..31]));
     // The handshake secrets: early secret from the PSK, then the X25519 secret.
     const shared = hex("f44194756ff9ec9d25180635d66ea6824c6ab3bf179977be37f723570e7ccb2e");
     const hello = hex("f736cb34fe25e701551bee6fd24c1cc7102a7daf9405cb15d97aafe16f757d03");
     var hs: K.Traffic = .{};
     defer hs.deinit();
-    var schedule = try K.init(&psk, &shared, &hello, &hs);
+    var schedule = try K.init(.tls13, &psk, &shared, &hello, &hs);
     errdefer schedule.deinit();
     try std.testing.expectEqualSlices(u8, &hex("2faac08f851d35fea3604fcb4de82dc62c9b164a70974d0462e27f1ab278700f"), hs.client.expose());
     try std.testing.expectEqualSlices(u8, &hex("fe927ae271312e8bf0275b581c54eef020450dc4ecffaa05a1a35d27518e7803"), hs.server.expose());

@@ -24,13 +24,14 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
-    quic: bool = false,
+    /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
+    transport: suites.Transport = .stream,
     parameters: []const u8 = "",
 
     /// Whether TLS 1.2 is offered or accepted: it is allowed, the policy does not need TLS 1.3
     /// (QUIC, hybrid-only), and a TLS 1.2 suite is listed. The version follows from the suites.
     pub fn allows12(options: Options) bool {
-        if (options.min_version != .tls12 or options.quic or options.require_hybrid) return false;
+        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid) return false;
         for (options.suites) |suite| if (suite.version() == .tls12) return true;
         return false;
     }
@@ -82,7 +83,7 @@ pub fn validate(options: Options) ValidateError!void {
     if (@backingInt(options.min_version) > @backingInt(options.max_version)) return error.InvalidOptions;
     // Some version must be left, and QUIC and a hybrid-only policy need TLS 1.3.
     if (!options.allows13() and !options.allows12()) return error.InvalidOptions;
-    if ((options.quic or options.require_hybrid) and !options.allows13()) return error.InvalidOptions;
+    if ((options.transport == .quic or options.require_hybrid) and !options.allows13()) return error.InvalidOptions;
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
@@ -92,7 +93,7 @@ pub fn validate(options: Options) ValidateError!void {
         if (protocol.len == 0 or protocol.len > 255) return error.InvalidOptions;
         alpn_bytes += 1 + protocol.len;
     }
-    if (alpn_bytes > 65533 or ((options.require_alpn or options.quic) and options.alpn.len == 0)) return error.InvalidOptions;
+    if (alpn_bytes > 65533 or ((options.require_alpn or options.transport == .quic) and options.alpn.len == 0)) return error.InvalidOptions;
     if (options.sni.len > 253) return error.InvalidOptions;
     if (options.sni.len != 0) {
         var label: usize = 0;
@@ -122,11 +123,17 @@ pub const Resume = struct {
     /// TLS 1.2 SessionTicket (RFC 5077): null sends none, empty asks for one, else the ticket.
     ticket12: ?[]const u8 = null,
 };
-pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume) EncodeError![]u8 {
+/// A ClientHello. `legacy_cookie` is a datagram hello's cookie field (RFC 6347 section 4.2.1):
+/// empty, or a DTLS 1.2 HelloVerifyRequest's cookie; a stream hello has no such field. `cookie`
+/// is a HelloRetryRequest's cookie extension.
+pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cookie: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume) EncodeError![]u8 {
     @setRuntimeSafety(true);
     try validate(options);
-    // Key shares are TLS 1.3: present exactly when it is offered.
-    if (session.len > 32 or (options.quic and session.len != 0) or (shares.len == 0) == options.allows13() or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
+    const datagram = options.transport == .datagram;
+    // Key shares are TLS 1.3: present exactly when it is offered. QUIC and DTLS 1.3 have no
+    // legacy session id; a datagram hello sends one only to resume a DTLS 1.2 ticket.
+    if (session.len > 32 or (options.transport == .quic and session.len != 0) or (datagram and session.len != 0 and !options.allows12()) or (shares.len == 0) == options.allows13() or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
+    if (legacy_cookie.len > 255 or (legacy_cookie.len != 0 and !datagram)) return error.InvalidOptions;
     for (shares, 0..) |share, i| {
         if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != share.group.clientShareLength()) return error.InvalidOptions;
         for (shares[0..i]) |old| if (old.group == share.group) return error.InvalidOptions;
@@ -134,9 +141,11 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
     const tls12 = options.allows12();
     const tls13 = options.allows13();
     var w: Writer = .{ .bytes = out };
-    try w.put(&.{ 1, 0, 0, 0, 3, 3 });
+    try w.put(&.{ 1, 0, 0, 0 });
+    try w.int(u16, options.transport.legacy());
     try w.put(random);
     try w.vector(u8, session);
+    if (datagram) try w.vector(u8, legacy_cookie);
     var offered_suites: usize = 0;
     for (options.suites) |suite| offered_suites += @intFromBool(if (suite.version() == .tls13) tls13 else tls12);
     // safe: the allowlist has at most nine two-byte suite identifiers.
@@ -178,7 +187,13 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
         if (resumption.ticket12) |ticket| try extension(&w, 35, ticket);
     }
     // A TLS 1.2-only client sends no supported_versions, as TLS 1.2 clients do.
-    if (tls13) try extension(&w, 43, if (tls12) &.{ 4, 3, 4, 3, 3 } else &.{ 2, 3, 4 });
+    if (tls13) {
+        var versions: [5]u8 = undefined;
+        versions[0] = if (tls12) 4 else 2;
+        std.mem.writeInt(u16, versions[1..3], options.transport.wire(.tls13), .big);
+        std.mem.writeInt(u16, versions[3..5], options.transport.wire(.tls12), .big);
+        try extension(&w, 43, versions[0 .. 1 + @as(usize, versions[0])]);
+    }
     if (options.alpn.len != 0) {
         // Bounded client offer, not a record buffer retained by an idle connection.
         var alpn: [8194]u8 = undefined;
@@ -207,7 +222,7 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
         // safe: the key_share vector is two bytes shorter than the bounded extension.
         std.mem.writeInt(u16, out[share_at + 4 ..][0..2], @intCast(w.pos - share_at - 6), .big);
     }
-    if (options.quic) try extension(&w, 57, options.parameters);
+    if (options.transport == .quic) try extension(&w, 57, options.parameters);
     if (tls13 and (resumption.modes or resumption.ticket.len != 0)) try extension(&w, 45, &.{ 1, 1 });
     if (tls13 and resumption.ticket.len != 0) {
         // pre_shared_key is the last extension (RFC 8446 section 4.2.11).
@@ -274,7 +289,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
             43 => {
-                if (try value.int(u16) != 0x0304) return error.InvalidHello;
+                if (try value.int(u16) != options.transport.wire(.tls13)) return error.InvalidHello;
                 version13 = true;
             },
             51 => {
@@ -341,7 +356,9 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (!version13 and psk) return error.InvalidHello;
     if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12 }, options);
     if (only12) return error.InvalidHello;
-    if (legacy_version != 0x0303 or !std.mem.eql(u8, echoed, session)) return error.InvalidHello;
+    // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
+    const echo = if (options.transport == .datagram) "" else session;
+    if (legacy_version != options.transport.legacy() or !std.mem.eql(u8, echoed, echo)) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite13, suite_id) orelse return error.UnofferedSelection;
     if (!options.offers13(suite)) return error.UnofferedSelection;
     if (retry and group == null and cookie.len != 0) return .{ .tls13 = .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie } };
@@ -365,7 +382,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     // A server answering below TLS 1.3 marks its random; this client offered TLS 1.3, so a
     // marked random is an attacker's downgrade (RFC 8446 section 4.1.3).
     if (options.allows13() and (std.mem.eql(u8, random[24..], downgrade_tls12) or std.mem.eql(u8, random[24..], "DOWNGRD\x00"))) return error.Downgrade;
-    if (legacy_version != 0x0303 or !options.allows12()) return error.UnsupportedVersion;
+    if (legacy_version != options.transport.legacy() or !options.allows12()) return error.UnsupportedVersion;
     // No TLS 1.3 field in a TLS 1.2 answer, and no resumption this client did not ask for: an echo
     // of its session id resumes, which it may only with a ticket it sent (RFC 5077 section 3.4).
     if (seen.group or std.mem.eql(u8, random, &retry_random)) return error.InvalidHello;
@@ -379,6 +396,32 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
     return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket } };
 }
+/// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
+/// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
+pub fn helloVerify(message: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    if (message.len < 4 or message[0] != 3 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
+    var r: Reader = .{ .bytes = message[4..] };
+    const version = try r.int(u16);
+    if (version != 0xfeff and version != 0xfefd) return error.InvalidHello;
+    const cookie = (try r.vector(u8)).bytes;
+    try r.finish();
+    if (cookie.len == 0) return error.InvalidHello;
+    return cookie;
+}
+
+/// A HelloVerifyRequest carrying `cookie`, with DTLS 1.0's version as RFC 6347 asks.
+pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
+    @setRuntimeSafety(true);
+    if (cookie.len == 0 or cookie.len > 255) return error.BufferTooSmall;
+    var w: Writer = .{ .bytes = out };
+    try w.put(&.{ 3, 0, 0, 0, 0xfe, 0xff });
+    try w.vector(u8, cookie);
+    // safe: at most 258 bytes.
+    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
+    return out[0..w.pos];
+}
+
 pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8 };
 pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExtensions {
     @setRuntimeSafety(true);
@@ -412,30 +455,32 @@ pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExte
             if (!matched or alpn.len == 0) return error.UnofferedSelection;
         },
         57 => {
-            if (!options.quic) return error.InvalidHello;
+            if (options.transport != .quic) return error.InvalidHello;
             parameters = item.bytes;
             has_parameters = true;
         },
         else => return error.InvalidHello,
     };
-    if ((options.require_alpn or options.quic) and alpn.len == 0) return error.NoApplicationProtocol;
-    if (options.quic and !has_parameters) return error.MissingExtension;
+    if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
+    if (options.transport == .quic and !has_parameters) return error.MissingExtension;
     return .{ .alpn = alpn, .parameters = parameters };
 }
 
 /// A ServerHello selecting `suite`, answering the client's share for `group`, and, when `psk`,
 /// selecting the PSK identity at index `psk`.
-pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8, psk: ?u16) Writer.WriteError![]u8 {
+pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8, psk: ?u16) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
-    try w.put(&.{ 2, 0, 0, 0, 3, 3 });
+    try w.put(&.{ 2, 0, 0, 0 });
+    try w.int(u16, transport.legacy());
     try w.put(random);
     try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
     try w.put(&.{0});
     const ext_at = w.pos;
     try w.int(u16, 0);
-    try w.put(&.{ 0, 43, 0, 2, 3, 4 });
+    try w.put(&.{ 0, 43, 0, 2 });
+    try w.int(u16, transport.wire(.tls13));
     try w.int(u16, 51);
     // safe: a key_exchange entry is at most 1,120 bytes.
     try w.int(u16, @intCast(4 + share.len));
@@ -459,10 +504,11 @@ pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
 /// ALPN answers.
-pub fn buildServer12(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite12, alpn: []const u8, echo: Echo12) Writer.WriteError![]u8 {
+pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]u8, session: []const u8, suite: Suite12, alpn: []const u8, echo: Echo12) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
-    try w.put(&.{ 2, 0, 0, 0, 3, 3 });
+    try w.put(&.{ 2, 0, 0, 0 });
+    try w.int(u16, transport.legacy());
     try w.put(random);
     try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
@@ -489,16 +535,18 @@ pub fn buildServer12(out: []u8, random: *const [32]u8, session: []const u8, suit
 }
 
 /// A HelloRetryRequest asking for `group` (RFC 8446 section 4.1.4).
-pub fn buildRetry(out: []u8, session: []const u8, suite: Suite13, group: Group) Writer.WriteError![]u8 {
+pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, suite: Suite13, group: Group) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
-    try w.put(&.{ 2, 0, 0, 0, 3, 3 });
+    try w.put(&.{ 2, 0, 0, 0 });
+    try w.int(u16, transport.legacy());
     try w.put(&retry_random);
     try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
     try w.put(&.{0});
     try w.int(u16, 12);
-    try w.put(&.{ 0, 43, 0, 2, 3, 4 });
+    try w.put(&.{ 0, 43, 0, 2 });
+    try w.int(u16, transport.wire(.tls13));
     try w.put(&.{ 0, 51, 0, 2 });
     try w.int(u16, @backingInt(group));
     // safe: the message is 56 bytes plus the session id.

@@ -2,10 +2,41 @@
 //! with AEAD ciphers. Availability is not policy permission.
 const std = @import("std");
 
-/// Protocol versions, by their wire number.
+/// Protocol versions, by their wire number on a stream. DTLS shares them: DTLS 1.2 and 1.3 are
+/// these versions carried in datagrams, with wire numbers of their own (`Transport.wire`).
 pub const Version = enum(u16) {
     tls12 = 0x0303,
     tls13 = 0x0304,
+};
+
+/// What carries the handshake: TLS records on a stream, QUIC's levels, or DTLS records in
+/// datagrams. A carrier sets it; it decides the wire versions and the label prefix.
+pub const Transport = enum(u8) {
+    stream,
+    quic,
+    datagram,
+
+    /// The number a version has on this transport's wire (RFC 9147 section 5.3: DTLS 1.2 is
+    /// 0xfefd, DTLS 1.3 0xfefc).
+    pub fn wire(transport: Transport, version: Version) u16 {
+        return switch (transport) {
+            .stream, .quic => @backingInt(version),
+            .datagram => switch (version) {
+                .tls12 => 0xfefd,
+                .tls13 => 0xfefc,
+            },
+        };
+    }
+
+    /// The legacy_version of a hello: TLS 1.2's or DTLS 1.2's number.
+    pub fn legacy(transport: Transport) u16 {
+        return transport.wire(.tls12);
+    }
+
+    /// The HKDF-Expand-Label prefix of TLS 1.3 on this transport.
+    pub fn prefix(transport: Transport) @import("Labels.zig").Prefix {
+        return if (transport == .datagram) .dtls13 else .tls13;
+    }
 };
 
 /// Every suite of either version, by its IANA number.

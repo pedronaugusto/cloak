@@ -56,6 +56,8 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
     };
     // The TLS 1.3 key shares play no part in a TLS 1.2 exchange.
     self.eraseShares();
+    // A datagram client that offered both versions hashed its hello both ways until now.
+    scratch.transcripts.choose12();
     try scratch.transcripts.commit(msg);
     if (self.resumed) {
         // The session's master secret, and the keys of both directions from it and the new randoms.

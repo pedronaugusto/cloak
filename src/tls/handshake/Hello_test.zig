@@ -13,7 +13,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
     try std.testing.expectEqual(.x25519, parsed.group);
     try std.testing.expectEqual(@as(usize, 32), parsed.share.len);
     var out: [4096]u8 = undefined;
-    const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .min_version = .tls13 }, .{});
+    const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .min_version = .tls13 }, .{});
     try std.testing.expectEqual(@as(usize, std.mem.readInt(u24, ch[1..4], .big)), ch.len - 4);
     var r: Reader = .{ .bytes = ch[4..] };
     try std.testing.expectEqual(@as(u16, 0x0303), try r.int(u16));
@@ -31,7 +31,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
     }
     try std.testing.expectEqualSlices(u16, &.{ 0, 10, 13, 43, 16, 51 }, ids[0..count]);
     // With TLS 1.2 offered too: point formats, extended master secret and renegotiation_info.
-    const both = try H.client(&out, &@as([32]u8, @splat(2)), "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" } }, .{});
+    const both = try H.client(&out, &@as([32]u8, @splat(2)), "", "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" } }, .{});
     var rb: Reader = .{ .bytes = both[4..] };
     _ = try rb.take(34);
     _ = try rb.vector(u8);
@@ -44,7 +44,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
         count += 1;
     }
     try std.testing.expectEqualSlices(u16, &.{ 0, 10, 11, 13, 23, 0xff01, 43, 16, 51 }, ids[0..count]);
-    try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", &shares, "", .{}, .{}));
+    try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", "", &shares, "", .{}, .{}));
 }
 test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
     var hrr = fixture.*;
@@ -118,7 +118,7 @@ test "C2 cookie-only HRR and empty QUIC parameter presence" {
     try std.testing.expect(retry.retry and retry.group == null);
     try std.testing.expectEqualSlices(u8, "ok", retry.cookie);
     const ee = "\x08\x00\x00\x0f\x00\x0d\x00\x10\x00\x05\x00\x03\x02h2\x00\x39\x00\x00";
-    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .quic = true });
+    const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .transport = .quic });
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);
     try std.testing.expectEqual(@as(usize, 0), parsed.parameters.len);
     // Acceptance belongs to the QUIC parameter service, not this opaque parser.

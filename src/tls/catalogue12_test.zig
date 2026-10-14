@@ -183,7 +183,7 @@ test "F57 catalogue_renegotiation_prefix_and_initial_signal" {
     // The SCSV counts as the signal.
     var scsv_hello: [512]u8 = undefined;
     const scsv = clientHello12(&scsv_hello, &.{ 0xc02b, 0x00ff }, &.{0}, no_signal);
-    _ = try ClientHello.parse(scsv);
+    _ = try ClientHello.parse(scsv, .stream);
     // A server answer without it, or with a prefix, is refused by the client.
     var buffer: [256]u8 = undefined;
     try std.testing.expectError(error.NoSecureRenegotiation, answer(serverHello12(&buffer, 0xc02b, 0, "\x00\x17\x00\x00", &random), client12));

@@ -7,15 +7,15 @@ const Hello = @import("Hello.zig");
 fn encode(out: []u8, options: Hello.Options, session: []const u8, cookie: []const u8) ![]u8 {
     const x: [32]u8 = @splat(7);
     const shares = [_]Hello.Share{.{ .group = .x25519, .bytes = &x }};
-    return Hello.client(out, &@as([32]u8, @splat(9)), session, &shares, cookie, options, .{});
+    return Hello.client(out, &@as([32]u8, @splat(9)), session, "", &shares, cookie, options, .{});
 }
 
 test "C3 client hello parser reads what the client encoder writes" {
     var out: [4096]u8 = undefined;
-    const wire = try encode(&out, .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .quic = true, .parameters = "tp" }, "", "");
-    const hello = try ClientHello.parse(wire);
+    const wire = try encode(&out, .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .transport = .quic, .parameters = "tp" }, "", "");
+    const hello = try ClientHello.parse(wire, .stream);
     try std.testing.expectEqualSlices(u8, "example.com", hello.server_name);
-    try std.testing.expect(hello.offersVersion(0x0304) and !hello.offersVersion(0x0303));
+    try std.testing.expect(hello.offers13() and !hello.offers12());
     try std.testing.expect(hello.offersSuite(0x1301) and hello.offersSuite(0x1303) and hello.offersSuite(0x1302));
     try std.testing.expect(hello.offersGroup(.x25519_mlkem768) and hello.offersGroup(.p384));
     try std.testing.expect(hello.accepts(0x0403) and hello.accepts(0x0807) and !hello.accepts(0x0201));
@@ -32,19 +32,19 @@ test "C3 client hello parser rejects hostile structure" {
     const good = try encode(&out, .{ .sni = "example.com" }, "0123456789abcdef0123456789abcdef", "");
     var copy: [4096]u8 = undefined;
     // Truncation at every length is a length error.
-    for (0..good.len) |len| try std.testing.expect(std.meta.isError(ClientHello.parse(good[0..len])));
+    for (0..good.len) |len| try std.testing.expect(std.meta.isError(ClientHello.parse(good[0..len], .stream)));
     // A session id above 32 bytes, an odd suite list, a non-null compression method.
     @memcpy(copy[0..good.len], good);
     copy[38] = 33;
-    try std.testing.expect(std.meta.isError(ClientHello.parse(copy[0..good.len])));
+    try std.testing.expect(std.meta.isError(ClientHello.parse(copy[0..good.len], .stream)));
     @memcpy(copy[0..good.len], good);
     copy[38 + 1 + 32 + 1] = 5;
-    try std.testing.expect(std.meta.isError(ClientHello.parse(copy[0..good.len])));
+    try std.testing.expect(std.meta.isError(ClientHello.parse(copy[0..good.len], .stream)));
     // Trailing bytes after the extension block.
     @memcpy(copy[0..good.len], good);
     copy[good.len] = 0;
     std.mem.writeInt(u24, copy[1..4], @intCast(good.len - 3), .big);
-    try std.testing.expectError(error.InvalidLength, ClientHello.parse(copy[0 .. good.len + 1]));
+    try std.testing.expectError(error.InvalidLength, ClientHello.parse(copy[0 .. good.len + 1], .stream));
 }
 
 test "C3 client hello parser enforces extension rules" {
@@ -83,8 +83,8 @@ test "C3 client hello parser enforces extension rules" {
         @memcpy(message[6 + prefix.len ..][0..case.extensions.len], case.extensions);
         const wire = message[0 .. 4 + body_len];
         if (case.err) |expected| {
-            try std.testing.expectError(expected, ClientHello.parse(wire));
-        } else _ = try ClientHello.parse(wire);
+            try std.testing.expectError(expected, ClientHello.parse(wire, .stream));
+        } else _ = try ClientHello.parse(wire, .stream);
     }
 }
 
@@ -94,14 +94,14 @@ test "C3 client hello fingerprint ignores the extensions a retry may change" {
     const x: [32]u8 = @splat(7);
     const p256: [65]u8 = @splat(4);
     const random: [32]u8 = @splat(1);
-    const first = try ClientHello.parse(try Hello.client(&first_buf, &random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}));
-    const second = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "cookie", .{ .sni = "example.com" }, .{}));
+    const first = try ClientHello.parse(try Hello.client(&first_buf, &random, "", "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}), .stream);
+    const second = try ClientHello.parse(try Hello.client(&second_buf, &random, "", "", &.{.{ .group = .p256, .bytes = &p256 }}, "cookie", .{ .sni = "example.com" }, .{}), .stream);
     try std.testing.expectEqual(first.fingerprint(), second.fingerprint());
     // A changed name, ALPN list or random is a different hello.
-    const renamed = try ClientHello.parse(try Hello.client(&second_buf, &random, "", &.{.{ .group = .p256, .bytes = &p256 }}, "", .{ .sni = "example.net" }, .{}));
+    const renamed = try ClientHello.parse(try Hello.client(&second_buf, &random, "", "", &.{.{ .group = .p256, .bytes = &p256 }}, "", .{ .sni = "example.net" }, .{}), .stream);
     try std.testing.expect(!std.mem.eql(u8, &first.fingerprint(), &renamed.fingerprint()));
     const other_random: [32]u8 = @splat(2);
-    const reseeded = try ClientHello.parse(try Hello.client(&second_buf, &other_random, "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}));
+    const reseeded = try ClientHello.parse(try Hello.client(&second_buf, &other_random, "", "", &.{.{ .group = .x25519, .bytes = &x }}, "", .{ .sni = "example.com" }, .{}), .stream);
     try std.testing.expect(!std.mem.eql(u8, &first.fingerprint(), &reseeded.fingerprint()));
 }
 
@@ -120,7 +120,7 @@ fn fuzz(_: void, case: *shakedown.Case) !void {
         for (0..shakedown.gen.int(s, u3)) |_| seed[shakedown.gen.intRange(s, u16, 0, @intCast(seed.len - 1))] = shakedown.gen.int(s, u8);
         input = seed;
     }
-    if (ClientHello.parse(input)) |hello| {
+    if (ClientHello.parse(input, .stream)) |hello| {
         try std.testing.expect(hello.random.len == 32 and hello.session.len <= 32);
         // No supported_versions extension (a TLS 1.2 hello, or the extension's type edited away) leaves no versions.
         try std.testing.expect(hello.versions.len == 0 or (hello.versions.len >= 2 and hello.versions.len % 2 == 0));
@@ -139,8 +139,8 @@ test "C3 client hello without an extension block parses and offers no version" {
     message[0] = 1;
     std.mem.writeInt(u24, message[1..4], body.len, .big);
     @memcpy(message[4..][0..body.len], body);
-    const hello = try ClientHello.parse(message[0 .. 4 + body.len]);
-    try std.testing.expect(!hello.offersVersion(0x0304));
+    const hello = try ClientHello.parse(message[0 .. 4 + body.len], .stream);
+    try std.testing.expect(!hello.offers13());
     try std.testing.expect(hello.offersSuite(0xc02b));
     try std.testing.expectEqual(@as(usize, 0), hello.extensions.len);
 }

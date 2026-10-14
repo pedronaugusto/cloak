@@ -49,3 +49,6 @@ pub const Messages12 = @import("handshake/Messages12.zig");
 test {
     _ = Messages12;
 }
+test {
+    _ = @import("handshake/Datagram_test.zig");
+}

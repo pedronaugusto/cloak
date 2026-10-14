@@ -110,6 +110,8 @@ pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!v
     self.state.ticket12 = issue;
     // A client may answer the CertificateRequest with Ed25519, which signs the messages themselves.
     if (self.options.client_auth != .none and !self.resumed) scratch.transcripts.keep(self.gpa);
+    // DTLS 1.2 numbers both sides' messages from the client's hello.
+    if (self.options.transport == .datagram) scratch.transcripts.startDatagram(self.first_sequence, self.first_sequence, false);
     try scratch.transcripts.commit(msg);
     self.answered = true;
     const exchange = if (self.resumed) 0 else Exchange.entropyLength(self.group.?) + self.signNoiseLength();
@@ -168,7 +170,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
@@ -199,7 +201,7 @@ fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     if (self.state.ticket12) try sendTicket(self);

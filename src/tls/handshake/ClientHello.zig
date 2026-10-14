@@ -4,6 +4,7 @@ const std = @import("std");
 const Reader = @import("../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Group = @import("../crypto/Group.zig").Group;
+const Transport = @import("../crypto/Suite.zig").Transport;
 
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     InvalidHello,
@@ -15,8 +16,12 @@ pub const ParseError = Reader.ReadError || Extensions.NextError || error{
 
 const ClientHello = @This();
 
+/// The carrier this hello came over: it decides the wire versions and the cookie field.
+transport: Transport,
 random: []const u8,
 session: []const u8,
+/// A datagram hello's cookie field (RFC 6347 section 4.2.1); always empty on a stream.
+legacy_cookie: []const u8,
 /// Two-byte cipher suite identifiers, in the client's order.
 suites: []const u8,
 /// supported_groups identifiers, two bytes each; empty when the extension is absent.
@@ -64,16 +69,18 @@ null_compression_only: bool,
 /// The whole extension block, for the comparison a retry requires.
 extensions: []const u8,
 
-pub fn parse(message: []const u8) ParseError!ClientHello {
+pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 1 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
     var r: Reader = .{ .bytes = message[4..] };
     var self: ClientHello = undefined;
+    self.transport = transport;
     // legacy_version decides only when supported_versions is absent.
     self.legacy_version = try r.int(u16);
     self.random = try r.take(32);
     self.session = (try r.vector(u8)).bytes;
     if (self.session.len > 32) return error.DecodeError;
+    self.legacy_cookie = if (transport == .datagram) (try r.vector(u8)).bytes else "";
     self.suites = (try r.vector(u16)).bytes;
     if (self.suites.len < 2 or self.suites.len % 2 != 0) return error.DecodeError;
     const compression = (try r.vector(u8)).bytes;
@@ -302,16 +309,21 @@ pub fn truncated(self: *const ClientHello, message: []const u8) []const u8 {
     return message[0 .. message.len - self.psk_binders_wire];
 }
 
-pub fn offersVersion(self: *const ClientHello, version: u16) bool {
-    return containsU16(self.versions, version);
+/// Whether TLS 1.3 (DTLS 1.3 in a datagram) is listed in supported_versions.
+pub fn offers13(self: *const ClientHello) bool {
+    return containsU16(self.versions, self.transport.wire(.tls13));
 }
 
 /// Whether TLS 1.2 is offered: listed in supported_versions, or, when that extension is
 /// absent, a legacy version of at least TLS 1.2 (RFC 8446 section 4.2.1: a server that speaks
-/// TLS 1.2 negotiates it even for a legacy_version of 0x0304 or later).
+/// TLS 1.2 negotiates it even for a legacy_version of 0x0304 or later). DTLS numbers its
+/// versions downward: DTLS 1.2 is 0xfefd and a newer one smaller.
 pub fn offers12(self: *const ClientHello) bool {
-    if (self.versions.len != 0) return containsU16(self.versions, 0x0303);
-    return self.legacy_version >= 0x0303;
+    if (self.versions.len != 0) return containsU16(self.versions, self.transport.wire(.tls12));
+    return switch (self.transport) {
+        .stream, .quic => self.legacy_version >= 0x0303 and self.legacy_version < 0xfe00,
+        .datagram => self.legacy_version <= 0xfefd and self.legacy_version >= 0xfe00,
+    };
 }
 
 /// Secure renegotiation is indicated by the extension or TLS_EMPTY_RENEGOTIATION_INFO_SCSV.

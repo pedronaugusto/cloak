@@ -628,7 +628,7 @@ pub fn Peer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(null, kex.secret[0..kex.secret_len], &hello_hash, &traffic);
+            self.schedule = try K.init(.tls13, null, kex.secret[0..kex.secret_len], &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
             if (!self.config.quic) {
@@ -700,7 +700,7 @@ pub fn Peer(comptime suite: Suite13) type {
             }
             const digest = self.transcript.digest();
             var verify_data: Secret = undefined;
-            Labels.finished(Hash, &verify_data, &self.server_hs, &digest);
+            Labels.finished(Hash, .tls13, &verify_data, &self.server_hs, &digest);
             if (self.config.tamper == .bad_finished) verify_data[0] ^= 1;
             start = flight.items.len;
             try appendMessage(self.gpa, &flight, 20, &verify_data);
@@ -920,7 +920,7 @@ pub fn Peer(comptime suite: Suite13) type {
                 },
                 20 => {
                     const digest = self.transcript.digest();
-                    Labels.checkFinished(Hash, &self.client_hs, &digest, message[4..]) catch {
+                    Labels.checkFinished(Hash, .tls13, &self.client_hs, &digest, message[4..]) catch {
                         self.alert = 51;
                         return;
                     };
