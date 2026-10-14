@@ -1,6 +1,6 @@
 //! TLS 1.2 handshake messages: Certificate without contexts or entry extensions, the ECDHE
-//! ServerKeyExchange, CertificateRequest, ServerHelloDone and ClientKeyExchange (RFC 5246,
-//! RFC 8422). Parsed fields borrow their message; every length is checked against its parent.
+//! ServerKeyExchange, CertificateRequest, ServerHelloDone, ClientKeyExchange and the session
+//! ticket's NewSessionTicket (RFC 5246, RFC 8422, RFC 5077). Parsed fields borrow their message; every length is checked against its parent.
 const std = @import("std");
 const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
@@ -185,6 +185,30 @@ pub fn buildClientKeyExchange(out: []u8, public: []const u8) BuildError![]u8 {
     var w: Writer = .{ .bytes = out };
     try Messages.header(&w, .client_key_exchange);
     try w.vector(u8, public);
+    return Messages.seal(&w);
+}
+
+/// A TLS 1.2 NewSessionTicket (RFC 5077 section 3.3): the lifetime hint in seconds (zero for
+/// none) and the ticket, which may be empty when the server changed its mind.
+pub const Ticket = struct { lifetime_hint: u32, ticket: []const u8 };
+
+pub fn newSessionTicket(message: []const u8) ParseError!Ticket {
+    @setRuntimeSafety(true);
+    const parsed = try Messages.body(message);
+    if (parsed.kind != .new_session_ticket) return error.InvalidMessage;
+    var r: Reader = .{ .bytes = parsed.bytes };
+    const hint = try r.int(u32);
+    const ticket = (try r.vector(u16)).bytes;
+    try r.finish();
+    return .{ .lifetime_hint = hint, .ticket = ticket };
+}
+
+pub fn buildNewSessionTicket(out: []u8, lifetime_hint: u32, ticket: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try Messages.header(&w, .new_session_ticket);
+    try w.int(u32, lifetime_hint);
+    try w.vector(u16, ticket);
     return Messages.seal(&w);
 }
 

@@ -1,27 +1,41 @@
 //! The server's session state inside a ticket: versioned, authenticated, opened only by the
 //! ring key that sealed it. The client holds it as an opaque bearer token.
 //!
-//! Wire: version (1) | key id (8) | salt (16) | ciphertext | tag (16). The sealing key is HKDF
-//! of the ring key over the salt, used for this one ticket with a zero nonce; the header is the
-//! associated data. The plaintext is the session's TLS 1.3 suite, its PSK, the times that bound
-//! it, the age obfuscator, the ALPN protocol and server name it was made for, the client's
-//! authentication and its expiry, and the digest of the policy it was made under.
+//! Wire: format (1) | key id (8) | salt (16) | ciphertext | tag (16). The format byte names the
+//! protocol version the session is for (1: a TLS 1.3 PSK, 2: a TLS 1.2 master secret), so a
+//! ticket of one version is never opened as the other. The sealing key is HKDF of the ring key
+//! over the salt, used for this one ticket with a zero nonce; the header is the associated data.
+//! The plaintext is the session's suite, its secret, the times that bound it, the age obfuscator
+//! (TLS 1.3), the ALPN protocol and server name it was made for, the client's authentication
+//! and its expiry, and the digest of the policy it was made under.
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
-const Suite13 = suites.Suite13;
+const Group = @import("../crypto/Group.zig").Group;
 const TicketKeys = @import("TicketKeys.zig");
 
-pub const version: u8 = 1;
+/// The format byte of each protocol version's tickets.
+pub fn format(version: suites.Version) u8 {
+    return switch (version) {
+        .tls13 => 1,
+        .tls12 => 2,
+    };
+}
 pub const salt_length = 16;
 const header_length = 1 + 8 + salt_length;
 const Aead = suites.AeadOf(.aes_256_gcm);
 const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 
-/// What a ticket says of its session. `psk` is a secret; `deinit` erases it.
+/// What a ticket says of its session. `secret` (a TLS 1.3 PSK or a TLS 1.2 master secret) is
+/// erased by `deinit`.
 pub const State = struct {
-    suite: Suite13,
-    psk: aegis.Secret([48]u8) = .init(@splat(0)),
+    version: suites.Version = .tls13,
+    /// A suite of `version`.
+    suite: suites.Suite,
+    secret: aegis.Secret([48]u8) = .init(@splat(0)),
+    /// The key exchange group of the session's full handshake (a resumed TLS 1.2 handshake has
+    /// none of its own).
+    group: Group = .x25519,
     /// When this ticket was issued, and when every ticket of its session expires (seconds).
     issued: i64,
     expires: i64,
@@ -35,8 +49,16 @@ pub const State = struct {
     auth_expires: i64 = 0,
     policy: [32]u8,
 
-    pub fn pskBytes(state: *const State) []const u8 {
-        return state.psk.expose()[0..suites.digestLength(state.suite)];
+    /// The secret's length: the suite's digest for a TLS 1.3 PSK, 48 bytes for a master secret.
+    pub fn secretLength(version: suites.Version, suite: suites.Suite) usize {
+        return switch (version) {
+            .tls13 => suites.digestLength(suite.tls13().?),
+            .tls12 => 48,
+        };
+    }
+
+    pub fn secretBytes(state: *const State) []const u8 {
+        return state.secret.expose()[0..secretLength(state.version, state.suite)];
     }
 
     pub fn alpnBytes(state: *const State) []const u8 {
@@ -48,12 +70,12 @@ pub const State = struct {
     }
 
     pub fn deinit(state: *State) void {
-        state.psk.deinit();
+        state.secret.deinit();
     }
 };
 
 /// The longest plaintext: suite, PSK, times, age obfuscator, names, authentication, policy.
-const max_plain = 2 + 1 + 48 + 8 + 8 + 4 + 1 + 255 + 1 + 253 + 1 + 8 + 32;
+const max_plain = 2 + 1 + 48 + 2 + 8 + 8 + 4 + 1 + 255 + 1 + 253 + 1 + 8 + 32;
 pub const max_length = header_length + max_plain + Aead.tag_length;
 
 pub const SealError = error{BufferTooSmall};
@@ -66,7 +88,7 @@ pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *co
     const plain = encode(state, &plain_buf);
     const total = header_length + plain.len + Aead.tag_length;
     if (out.len < total) return error.BufferTooSmall;
-    out[0] = version;
+    out[0] = format(state.version);
     out[1..9].* = key.id;
     out[9..][0..salt_length].* = salt.*;
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
@@ -82,7 +104,12 @@ pub const OpenError = error{Undecryptable};
 /// Every failure is the same refusal: an unknown, retired, forged or malformed ticket.
 pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *State) OpenError!void {
     @setRuntimeSafety(true);
-    if (ticket.len < header_length + Aead.tag_length or ticket.len > max_length or ticket[0] != version) return error.Undecryptable;
+    if (ticket.len < header_length + Aead.tag_length or ticket.len > max_length) return error.Undecryptable;
+    const version: suites.Version = switch (ticket[0]) {
+        1 => .tls13,
+        2 => .tls12,
+        else => return error.Undecryptable,
+    };
     const key = ring.find(ticket[1..9], now) orelse return error.Undecryptable;
     const salt = ticket[9..][0..salt_length];
     var plain_buf: [max_plain]u8 = undefined;
@@ -93,7 +120,7 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
     defer sealing.deinit();
     derive(key, salt, sealing.exposeMut());
     Aead.decrypt(plain, ticket[header_length..][0..length], ticket[ticket.len - Aead.tag_length ..][0..Aead.tag_length].*, ticket[0..header_length], @splat(0), sealing.expose().*) catch return error.Undecryptable;
-    decode(plain, out) catch {
+    decode(version, plain, out) catch {
         out.deinit();
         return error.Undecryptable;
     };
@@ -114,11 +141,13 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
     var at: usize = 0;
     std.mem.writeInt(u16, out[at..][0..2], @backingInt(state.suite), .big);
     at += 2;
-    const psk = state.pskBytes();
-    // safe: a PSK is a digest, 32 or 48 bytes.
-    out[at] = @intCast(psk.len);
-    @memcpy(out[at + 1 ..][0..psk.len], psk);
-    at += 1 + psk.len;
+    const secret = state.secretBytes();
+    // safe: a secret is 32 or 48 bytes.
+    out[at] = @intCast(secret.len);
+    @memcpy(out[at + 1 ..][0..secret.len], secret);
+    at += 1 + secret.len;
+    std.mem.writeInt(u16, out[at..][0..2], @backingInt(state.group), .big);
+    at += 2;
     for ([_]i64{ state.issued, state.expires }) |t| {
         std.mem.writeInt(i64, out[at..][0..8], t, .big);
         at += 8;
@@ -140,7 +169,7 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
     return out[0..at];
 }
 
-fn decode(plain: []const u8, out: *State) error{Invalid}!void {
+fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid}!void {
     @setRuntimeSafety(true);
     var at: usize = 0;
     const take = struct {
@@ -150,11 +179,13 @@ fn decode(plain: []const u8, out: *State) error{Invalid}!void {
             return p[pos.*..][0..n];
         }
     }.bytes;
-    const suite = std.enums.fromInt(Suite13, std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big)) orelse return error.Invalid;
-    const psk_len = (try take(plain, &at, 1))[0];
-    if (psk_len != suites.digestLength(suite)) return error.Invalid;
-    out.* = .{ .suite = suite, .issued = 0, .expires = 0, .age_add = 0, .policy = undefined };
-    @memcpy(out.psk.exposeMut()[0..psk_len], try take(plain, &at, psk_len));
+    const suite = std.enums.fromInt(suites.Suite, std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big)) orelse return error.Invalid;
+    if (suite.version() != version) return error.Invalid;
+    const secret_len = (try take(plain, &at, 1))[0];
+    if (secret_len != State.secretLength(version, suite)) return error.Invalid;
+    out.* = .{ .version = version, .suite = suite, .issued = 0, .expires = 0, .age_add = 0, .policy = undefined };
+    @memcpy(out.secret.exposeMut()[0..secret_len], try take(plain, &at, secret_len));
+    out.group = std.enums.fromInt(Group, std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big)) orelse return error.Invalid;
     out.issued = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     out.expires = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     const span = std.math.sub(i64, out.expires, out.issued) catch return error.Invalid;

@@ -184,6 +184,47 @@ test "C5 resumed handshakes: no certificate flight either way, and resumption ma
     var late: S.State = .{ .role = .client, .mode = .stream, .phase = .certificate_request };
     try std.testing.expectError(error.UnexpectedMessage, late.markResumed());
     try std.testing.expectEqual(.failed, late.phase);
-    var tls12: S.State = .{ .role = .server, .mode = .stream, .phase = .hello, .version = .tls12 };
+    var tls12: S.State = .{ .role = .server, .mode = .stream, .phase = .s_certificate12, .version = .tls12 };
     try std.testing.expectError(error.UnexpectedMessage, tls12.markResumed());
+}
+
+test "C5 TLS 1.2 abbreviated handshakes and tickets: a NewSessionTicket exactly where promised" {
+    // Client, resumed: the server's ticket, ChangeCipherSpec and Finished, then the client's.
+    var client: S.State = .{ .role = .client, .mode = .stream, .version = .tls12, .phase = .hello, .ticket12 = true };
+    try client.markResumed();
+    try client.advance(.server_hello, .initial, .parsed, true);
+    try std.testing.expectEqual(.peer_ccs12, client.phase);
+    var early_ccs = client;
+    // The promised ticket cannot be skipped.
+    try std.testing.expectError(error.MissingProof, early_ccs.advance(.ccs, .initial, .parsed, true));
+    try client.advance(.ticket, .initial, .parsed, true);
+    try client.advance(.ccs, .initial, .parsed, true);
+    try client.advance(.finished, .application, .finished, true);
+    try client.advance(.local_ccs, .initial, .parsed, true);
+    try client.advance(.local_finished, .application, .finished, true);
+    try std.testing.expectEqual(.connected, client.phase);
+    // No ticket that was not promised, and none after the handshake.
+    var unpromised: S.State = .{ .role = .client, .mode = .stream, .version = .tls12, .phase = .peer_ccs12 };
+    try std.testing.expectError(error.UnexpectedMessage, unpromised.advance(.ticket, .initial, .parsed, true));
+    var after: S.State = .{ .role = .client, .mode = .stream, .version = .tls12, .phase = .connected, .ticket12 = true };
+    try std.testing.expectError(error.UnexpectedMessage, after.advance(.ticket, .application, .parsed, true));
+    // A resumed client sends no certificate or key exchange.
+    var resumed: S.State = .{ .role = .client, .mode = .stream, .version = .tls12, .phase = .hello };
+    try resumed.markResumed();
+    try resumed.advance(.server_hello, .initial, .parsed, true);
+    var cert = resumed;
+    try std.testing.expectError(error.UnexpectedMessage, cert.advance(.certificate, .initial, .parsed, true));
+    // Server, resumed: its ticket, ChangeCipherSpec and Finished, then the client's two.
+    var server: S.State = .{ .role = .server, .mode = .stream, .version = .tls12, .phase = .hello, .ticket12 = true };
+    try server.markResumed();
+    try server.advance(.server_hello, .initial, .parsed, true);
+    var no_ticket = server;
+    try std.testing.expectError(error.MissingProof, no_ticket.advance(.local_ccs, .initial, .parsed, true));
+    try server.advance(.local_ticket, .initial, .parsed, true);
+    try server.advance(.local_ccs, .initial, .parsed, true);
+    try server.advance(.local_finished, .application, .finished, true);
+    try std.testing.expectEqual(.c_ccs12, server.phase);
+    try server.advance(.ccs, .initial, .parsed, true);
+    try server.advance(.finished, .application, .finished, true);
+    try std.testing.expectEqual(.connected, server.phase);
 }

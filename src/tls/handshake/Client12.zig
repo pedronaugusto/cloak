@@ -2,7 +2,10 @@
 //! server's Certificate, ServerKeyExchange, optional CertificateRequest and ServerHelloDone; then
 //! the client's ECDHE share, optional certificate and CertificateVerify, ChangeCipherSpec and
 //! Finished; then the server's ChangeCipherSpec and Finished. Only ECDHE with AEAD suites and
-//! the extended master secret (RFC 7627); no renegotiation and no resumption.
+//! the extended master secret (RFC 7627); no renegotiation. With a session ticket (RFC 5077) the
+//! server may instead resume: its ServerHello echoes the session id, then its ChangeCipherSpec
+//! and Finished, then the client's, all from the ticket's master secret; a NewSessionTicket comes
+//! before the server's ChangeCipherSpec whenever its ServerHello said so.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
@@ -27,6 +30,21 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
     @setRuntimeSafety(true);
     self.version = .tls12;
     self.state.version = .tls12;
+    // The offered ticket is spent whether or not it resumed.
+    defer self.releaseOffer();
+    if (hello.resumed) {
+        // The parser accepts the echo only when a ticket went with the session id.
+        const entry = self.offered12.?.entry;
+        // A session resumes with the suite it was made with.
+        if (entry.suite.tls12().? != hello.suite) return error.IllegalParameter;
+        try self.state.markResumed();
+        self.resumed = true;
+        self.authenticated = entry.authenticated;
+        self.origin = entry.origin;
+        self.auth_expires = entry.auth_expires;
+        self.group = entry.group;
+    }
+    self.state.ticket12 = hello.ticket;
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
     self.suite12 = hello.suite;
@@ -39,6 +57,14 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
     // The TLS 1.3 key shares play no part in a TLS 1.2 exchange.
     self.eraseShares();
     try scratch.transcripts.commit(msg);
+    if (self.resumed) {
+        // The session's master secret, and the keys of both directions from it and the new randoms.
+        @memcpy(self.tls12.?.master.exposeMut(), self.offered12.?.entry.secretBytes());
+        switch (hello.suite) {
+            inline else => |suite| self.tls12.?.deriveKeys(suites.Hash12(suite), suite, .client),
+        }
+        self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
+    }
 }
 
 pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -48,6 +74,7 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
         .server_key_exchange => try onServerKeyExchange(self, msg, epoch, boundary),
         .certificate_request => try onCertificateRequest(self, msg, epoch, boundary),
         .server_hello_done => try onServerHelloDone(self, msg, epoch, boundary),
+        .new_session_ticket => try onTicket(self, msg, epoch, boundary),
         .finished => try onFinished(self, msg, epoch, boundary),
         // A server asking to renegotiate. cloak never renegotiates: while negotiating the request
         // is ignored, as RFC 5246 section 7.4.1.1 says, and afterwards refused with a warning.
@@ -232,7 +259,7 @@ fn sendCertificateVerify(self: anytype, signature: []const u8) Error!void {
 }
 
 /// ChangeCipherSpec, the client write keys, then Finished under them. The server's keys wait
-/// for its ChangeCipherSpec.
+/// for its ChangeCipherSpec. A resumed session derived both directions at the ServerHello.
 fn finishFlight(self: anytype) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
@@ -241,7 +268,7 @@ fn finishFlight(self: anytype) Error!void {
     switch (self.suite12.?) {
         inline else => |suite| {
             const Hash = suites.Hash12(suite);
-            self.tls12.?.deriveKeys(Hash, suite, .client);
+            if (!self.resumed) self.tls12.?.deriveKeys(Hash, suite, .client);
             try self.tls12.?.release(self, .write);
             var digest_buf: [Transcripts.max_digest]u8 = undefined;
             var verify_data: [Prf.verify_length]u8 = undefined;
@@ -274,7 +301,56 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     }
     try self.state.advance(.finished, epoch, .finished, boundary);
     try scratch.transcripts.commit(msg);
+    // The server's Finished covers its NewSessionTicket: only now is the ticket the server's.
+    storeTicket(self);
+    // A resumed session's client speaks last.
+    if (self.resumed) try finishFlight(self);
     self.established = true;
     self.authenticated = self.authenticated and self.options.verify == .full;
     try self.push(.complete);
+}
+
+/// A NewSessionTicket, exactly where the ServerHello promised one; kept until the server's
+/// Finished proves it.
+fn onTicket(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    try self.state.advance(.ticket, epoch, .parsed, boundary);
+    const ticket = try Messages12.newSessionTicket(msg);
+    try self.scratch.?.transcripts.commit(msg);
+    self.dropTicket12();
+    // An empty ticket: the server changed its mind (RFC 5077 section 3.3).
+    if (ticket.ticket.len == 0 or self.options.resumption == null) return;
+    self.ticket12 = try self.gpa.dupe(u8, ticket.ticket);
+    self.ticket12_hint = ticket.lifetime_hint;
+}
+
+/// Keeps the session's ticket for a later connection, as the TLS 1.3 client does: it expires with
+/// its lifetime hint (or none), the maximum age from the full handshake, or the server
+/// authentication's expiry. One the cache cannot keep is dropped.
+fn storeTicket(self: anytype) void {
+    @setRuntimeSafety(true);
+    defer self.dropTicket12();
+    const resumption = self.options.resumption orelse return;
+    if (self.ticket12.len == 0) return;
+    const now = self.now orelse return;
+    const now_s = certificates.types.seconds(now);
+    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
+    var expires = @min(by_age, self.auth_expires);
+    if (self.ticket12_hint != 0) expires = @min(expires, now_s +| @as(i64, self.ticket12_hint));
+    if (expires <= now_s) return;
+    resumption.cache.store(.{
+        .key = &self.cache_key,
+        .ticket = self.ticket12,
+        .version = .tls12,
+        .suite = suites.Suite.from12(self.suite12.?),
+        .secret = self.tls12.?.master.expose(),
+        .group = self.group.?,
+        .age_add = 0,
+        .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+        .expires = expires,
+        .origin = self.origin,
+        .auth_expires = self.auth_expires,
+        .authenticated = self.authenticated and self.options.verify == .full,
+    }) catch return;
 }

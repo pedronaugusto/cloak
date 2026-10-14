@@ -3,8 +3,11 @@
 //! CertificateRequest and ServerHelloDone; then the client's certificate, ClientKeyExchange,
 //! CertificateVerify, ChangeCipherSpec and Finished; then the server's ChangeCipherSpec and
 //! Finished. ECDHE with AEAD suites only, extended master secret and secure renegotiation
-//! indication required, no renegotiation, no resumption. The server random carries the TLS 1.3
-//! downgrade sentinel, since this server would have spoken TLS 1.3.
+//! indication required, no renegotiation. With TLS 1.2 tickets on, a client's session ticket may
+//! resume its session (RFC 5077): the ServerHello echoes its session id, then this server's
+//! ChangeCipherSpec and Finished, then the client's; a NewSessionTicket goes before this server's
+//! ChangeCipherSpec, in either handshake, to a client that asked. The server random carries the
+//! TLS 1.3 downgrade sentinel, since this server would have spoken TLS 1.3.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
@@ -17,6 +20,8 @@ const Messages = @import("Messages.zig");
 const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
+const Ticket = @import("../resumption/Ticket.zig");
+const types = certificates.types;
 
 const Error = @import("Errors.zig").Error;
 const Epoch = Flight.Epoch;
@@ -73,27 +78,95 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     }
     _ = epoch;
     _ = boundary;
-    try scratch.transcripts.commit(msg);
-    self.answered = true;
-    self.need_now = .{ .entropy = .{ .len = 32 + Exchange.entropyLength(self.group.?) + self.signNoiseLength() } };
+    // The client's session id: echoed when its ticket resumes.
+    @memcpy(scratch.session[0..hello.session.len], hello.session);
+    // safe: parsing bounds the session id at 32 bytes.
+    scratch.session_len = @intCast(hello.session.len);
+    // Tickets are opened and issued by the clock: the hello waits for it.
+    if (takesTickets(self, hello) and self.now == null) return self.holdHello(msg);
+    return answer(self, msg, hello);
 }
 
-/// The server random, its ECDHE share and signing noise: send the flight.
+/// TLS 1.2 tickets are on and the client sent the SessionTicket extension.
+fn takesTickets(self: anytype, hello: *const ClientHello) bool {
+    return self.options.tls12_tickets and self.options.tickets != null and hello.session_ticket != null;
+}
+
+/// The ClientHello this server answers: its ticket resumes the session if it may, a ticket is
+/// promised if one can be issued, and the entropy is asked for.
+pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    var issue = false;
+    if (takesTickets(self, hello)) {
+        var snapshot = self.options.tickets.?.acquire();
+        defer if (snapshot) |*held| held.release();
+        if (snapshot) |*held| {
+            const now = types.seconds(self.now.?);
+            if (hello.session_ticket.?.len != 0) try resumeTicket(self, held.ring(), hello, now);
+            issue = held.ring().issuing(now) != null;
+        }
+    }
+    self.state.ticket12 = issue;
+    try scratch.transcripts.commit(msg);
+    self.answered = true;
+    const exchange = if (self.resumed) 0 else Exchange.entropyLength(self.group.?) + self.signNoiseLength();
+    self.need_now = .{ .entropy = .{ .len = 32 + exchange + @as(usize, if (issue) Ticket.salt_length else 0) } };
+}
+
+/// Resumes the session of a ticket this server opens and may resume: a TLS 1.2 ticket, of a suite
+/// both sides still accept, for this name, protocol and client-certificate policy, before its and
+/// the client authentication's expiry. Anything else is a full handshake.
+fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zig").Ring, hello: *const ClientHello, now: i64) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    var state: Ticket.State = undefined;
+    Ticket.open(ring, hello.session_ticket.?, now, &state) catch return;
+    defer state.deinit();
+    if (state.version != .tls12) return;
+    const suite = state.suite.tls12() orelse return;
+    if (!hello.offersSuite(@backingInt(suite)) or !std.mem.containsAtLeast(suites.Suite, self.options.suites, 1, &.{state.suite})) return;
+    if (now >= state.expires or state.issued > now +| 60) return;
+    if (!std.ascii.eqlIgnoreCase(state.serverName(), scratch.server_name[0..scratch.server_name_len])) return;
+    if (!std.mem.eql(u8, state.alpnBytes(), self.alpn)) return;
+    if (!std.mem.eql(u8, &state.policy, &self.policyDigest())) return;
+    if (state.client_authenticated) {
+        if (now >= state.auth_expires) return;
+    } else if (self.options.client_auth == .required) return;
+    try self.state.markResumed();
+    self.resumed = true;
+    self.suite12 = suite;
+    self.group = state.group;
+    @memcpy(self.tls12.?.master.exposeMut(), state.secretBytes());
+    scratch.session_expires = state.expires;
+    self.authenticated = state.client_authenticated;
+    scratch.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
+}
+
+/// The server random, its ECDHE share and signing noise (and a ticket's salt): send the flight.
 pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
+    var random: [32]u8 = entropy[0..32].*;
+    // A server that speaks TLS 1.3 marks a TLS 1.2 random (RFC 8446 section 4.1.3).
+    if (self.allows13()) random[24..32].* = Hello.downgrade_tls12.*;
+    const salt_at = entropy.len - @as(usize, if (self.state.ticket12) Ticket.salt_length else 0);
+    @memcpy(scratch.ticket_entropy[0 .. entropy.len - salt_at], entropy[salt_at..]);
+    if (self.resumed) {
+        self.need_now = .none;
+        @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
+        @memcpy(self.tls12.?.randoms[32..64], &random);
+        return sendResumed(self, &random);
+    }
     const group = self.group.?;
     const share_end = 32 + Exchange.entropyLength(group);
     scratch.share12 = Exchange.Share.init(group, entropy[32..share_end]) catch return error.InvalidEntropy;
     self.need_now = .none;
-    var random: [32]u8 = entropy[0..32].*;
-    // A server that speaks TLS 1.3 marks a TLS 1.2 random (RFC 8446 section 4.1.3).
-    if (self.allows13()) random[24..32].* = Hello.downgrade_tls12.*;
     @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
     @memcpy(self.tls12.?.randoms[32..64], &random);
-    @memcpy(scratch.sign_noise[0 .. entropy.len - share_end], entropy[share_end..]);
+    @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, &random, self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats });
+    const hello = try Hello.buildServer12(&hello_buffer, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
@@ -115,6 +188,79 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
         return sendKeyExchange(self, signature);
     }
     self.need_now = .sign;
+}
+
+/// The abbreviated handshake's flight: the ServerHello echoing the client's session id, a new
+/// ticket if promised, then this server's ChangeCipherSpec and Finished from the session's master
+/// secret and the new randoms.
+fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    var hello_buffer: [600]u8 = undefined;
+    const hello = try Hello.buildServer12(&hello_buffer, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
+    try self.state.advance(.server_hello, .initial, .parsed, true);
+    try queue(self, hello);
+    if (self.state.ticket12) try sendTicket(self);
+    try self.state.advance(.local_ccs, .initial, .parsed, true);
+    try self.push(.change_cipher_spec);
+    switch (self.suite12.?) {
+        inline else => |suite| {
+            const Hash = suites.Hash12(suite);
+            self.tls12.?.deriveKeys(Hash, suite, .server);
+            try self.tls12.?.release(self, .write);
+            var digest_buf: [Transcripts.max_digest]u8 = undefined;
+            var verify_data: [Prf.verify_length]u8 = undefined;
+            Prf.finished(Hash, &verify_data, self.tls12.?.master.expose(), false, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
+            const message = try Messages.buildFinished(try self.reserve(4 + verify_data.len), &verify_data);
+            try self.state.advance(.local_finished, .application, .finished, true);
+            try self.queueMessage(.application, message);
+        },
+    }
+    self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
+}
+
+/// The NewSessionTicket the ServerHello promised: the session's master secret, sealed under the
+/// ring's issuing key, or an empty ticket if none issues any more (RFC 5077 section 3.3). A
+/// resumed session's ticket keeps the expiry its first had; none outlives the client's
+/// authentication.
+fn sendTicket(self: anytype) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    const now = types.seconds(self.now.?);
+    var sealed_buf: [Ticket.max_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &sealed_buf);
+    var sealed: []const u8 = "";
+    var hint: u32 = 0;
+    var snapshot = self.options.tickets.?.acquire();
+    defer if (snapshot) |*held| held.release();
+    if (snapshot) |*held| if (held.ring().issuing(now)) |key| {
+        var expires = if (self.resumed) scratch.session_expires else now +| held.ring().lifetime;
+        if (self.authenticated) expires = @min(expires, scratch.client_auth_expires);
+        if (expires > now) {
+            var state: Ticket.State = .{
+                .version = .tls12,
+                .suite = suites.Suite.from12(self.suite12.?),
+                .group = self.group.?,
+                .issued = now,
+                .expires = expires,
+                .age_add = 0,
+                .client_authenticated = self.authenticated,
+                .auth_expires = if (self.authenticated) scratch.client_auth_expires else 0,
+                .policy = self.policyDigest(),
+            };
+            defer state.deinit();
+            @memcpy(state.secret.exposeMut(), self.tls12.?.master.expose());
+            @memcpy(state.alpn[0..self.alpn.len], self.alpn);
+            state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
+            @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
+            state.server_name_len = scratch.server_name_len;
+            sealed = Ticket.seal(key, scratch.ticket_entropy[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
+            hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
+        }
+    };
+    const message = try Messages12.buildNewSessionTicket(try self.reserve(4 + 4 + 2 + sealed.len), hint, sealed);
+    try self.state.advance(.local_ticket, .initial, .parsed, true);
+    try self.queueMessage(.initial, message);
 }
 
 fn queue(self: anytype, message: []const u8) Error!void {
@@ -255,15 +401,18 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             try Prf.checkFinished(Hash, self.tls12.?.master.expose(), true, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length), received);
             try self.state.advance(.finished, epoch, .finished, boundary);
             try scratch.transcripts.commit(msg);
-            // ChangeCipherSpec, the server write keys, then its Finished under them.
-            try self.state.advance(.local_ccs, .initial, .parsed, true);
-            try self.push(.change_cipher_spec);
-            try self.tls12.?.release(self, .write);
-            var verify_data: [Prf.verify_length]u8 = undefined;
-            Prf.finished(Hash, &verify_data, self.tls12.?.master.expose(), false, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
-            const message = try Messages.buildFinished(try self.reserve(4 + verify_data.len), &verify_data);
-            try self.state.advance(.local_finished, .application, .finished, true);
-            try self.queueMessage(.application, message);
+            if (!self.resumed) {
+                // A promised ticket, then ChangeCipherSpec, the server write keys, and its Finished under them.
+                if (self.state.ticket12) try sendTicket(self);
+                try self.state.advance(.local_ccs, .initial, .parsed, true);
+                try self.push(.change_cipher_spec);
+                try self.tls12.?.release(self, .write);
+                var verify_data: [Prf.verify_length]u8 = undefined;
+                Prf.finished(Hash, &verify_data, self.tls12.?.master.expose(), false, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
+                const message = try Messages.buildFinished(try self.reserve(4 + verify_data.len), &verify_data);
+                try self.state.advance(.local_finished, .application, .finished, true);
+                try self.queueMessage(.application, message);
+            }
         },
     }
     self.established = true;

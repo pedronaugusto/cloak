@@ -263,19 +263,19 @@ test "F67 catalogue_ticket_age_add_and_identifier_privacy" {
     const first = try connect(fixture.options(1));
     first.deinit();
     // The two tickets of one connection: their own obfuscators, PSKs and bytes.
-    var a = fixture.cache.take(&firstKey(&fixture), 0).?;
+    var a = fixture.cache.take(&firstKey(&fixture), .tls13, 0).?;
     defer a.release();
-    var b = fixture.cache.take(&a.entry.key, 0).?;
+    var b = fixture.cache.take(&a.entry.key, .tls13, 0).?;
     defer b.release();
     try std.testing.expect(a.entry.age_add != b.entry.age_add);
-    try std.testing.expect(!std.mem.eql(u8, a.entry.pskBytes(), b.entry.pskBytes()));
+    try std.testing.expect(!std.mem.eql(u8, a.entry.secretBytes(), b.entry.secretBytes()));
     try std.testing.expect(!std.mem.eql(u8, a.entry.ticket, b.entry.ticket));
     // Another connection draws other obfuscators: nothing in a ticket is a constant identity.
     // (A ticket is still a bearer token that links the connections that use it; each is offered
     // once, which is all the unlinkability claimed.)
     const second = try connect(fixture.options(2));
     second.deinit();
-    var c = fixture.cache.take(&a.entry.key, 0).?;
+    var c = fixture.cache.take(&a.entry.key, .tls13, 0).?;
     defer c.release();
     try std.testing.expect(c.entry.age_add != a.entry.age_add and c.entry.age_add != b.entry.age_add);
     try std.testing.expect(!std.mem.eql(u8, c.entry.ticket[9..25], a.entry.ticket[9..25]));
@@ -453,7 +453,7 @@ test "F71 catalogue_early_data_replay_rejection_budget" {
     defer fixture.deinit();
     const duo = try connect(fixture.options(1));
     duo.deinit();
-    var taken = fixture.cache.take(&firstKey(&fixture), 0).?;
+    var taken = fixture.cache.take(&firstKey(&fixture), .tls13, 0).?;
     defer taken.release();
     try std.testing.expect(taken.entry.ticket.len > 0);
 }
@@ -591,4 +591,134 @@ test "F71 after a retry request a record failing under the handshake keys is fat
     const pair = try Pair.init(gpa, .{ .early_data = true, .early_records = 1, .shares = &.{.p256}, .tamper = .bad_record_after_second }, .{ .groups = &.{.x25519} });
     defer pair.deinit();
     try std.testing.expectError(error.BadRecord, pair.run());
+}
+
+fn options12(fixture: *Fixture, seed: u64) Duo.Options {
+    var options = fixture.options(seed);
+    options.client_max = .tls12;
+    options.client_tls12_tickets = true;
+    options.server_tls12_tickets = true;
+    return options;
+}
+
+test "C5 TLS 1.2 tickets: an abbreviated handshake from the session's master secret, every suite" {
+    const suites12 = [_]Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256 };
+    for (suites12) |suite| {
+        var fixture: Fixture = undefined;
+        try fixture.init();
+        defer fixture.deinit();
+        var options = options12(&fixture, 1);
+        options.client_suites = &.{suite};
+        const first = try connect(options);
+        try std.testing.expect(!first.client.info().?.resumed and first.client.info().?.version == .tls12);
+        first.deinit();
+        try std.testing.expectEqual(@as(usize, 1), fixture.cache.count());
+        options.seed = 2;
+        const second = try connect(options);
+        defer second.deinit();
+        const info = second.client.info().?;
+        try std.testing.expect(info.resumed and second.server.info().?.resumed);
+        try std.testing.expect(info.peer_authenticated and info.version == .tls12 and info.suite == suite);
+        try exportsMatch(second);
+        var out: [16]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, "resumed", try second.echo(&second.client, &second.server, "resumed", &out));
+        try std.testing.expectEqualSlices(u8, "back", try second.echo(&second.server, &second.client, "back", &out));
+        // The resumed handshake issued a new ticket for the next.
+        try std.testing.expectEqual(@as(usize, 1), fixture.cache.count());
+        options.seed = 3;
+        const third = try connect(options);
+        defer third.deinit();
+        try std.testing.expect(third.client.info().?.resumed);
+    }
+}
+
+test "C5 TLS 1.2 tickets stay off unless both ends ask, and a client certificate session resumes authenticated" {
+    var fixture: Fixture = undefined;
+    try fixture.init();
+    defer fixture.deinit();
+    var client_only = options12(&fixture, 1);
+    client_only.server_tls12_tickets = false;
+    try std.testing.expect(!try resumes(client_only, client_only));
+    try std.testing.expectEqual(@as(usize, 0), fixture.cache.count());
+    var server_only = options12(&fixture, 1);
+    server_only.client_tls12_tickets = false;
+    try std.testing.expect(!try resumes(server_only, server_only));
+    try std.testing.expectEqual(@as(usize, 0), fixture.cache.count());
+    var mutual = options12(&fixture, 3);
+    mutual.client_auth = .required;
+    mutual.client_cert = true;
+    const first = try connect(mutual);
+    first.deinit();
+    mutual.seed = 4;
+    const second = try connect(mutual);
+    defer second.deinit();
+    try std.testing.expect(second.server.info().?.resumed and second.server.info().?.peer_authenticated);
+}
+
+test "F70 a ticket of one version never resumes the other" {
+    var fixture: Fixture = undefined;
+    try fixture.init();
+    defer fixture.deinit();
+    // TLS 1.3 tickets, relabelled TLS 1.2 in the client's cache: offered as TLS 1.2 tickets, they
+    // open as TLS 1.3 state and the server declines them.
+    const first = try connect(fixture.options(1));
+    first.deinit();
+    {
+        var guard = fixture.cache.table.acquire();
+        defer guard.deinit();
+        for (guard.value().slots) |slot| if (slot) |entry| {
+            entry.version = .tls12;
+            entry.suite = .ecdhe_ecdsa_aes_128_gcm_sha256;
+        };
+    }
+    var as12 = options12(&fixture, 2);
+    as12.client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256};
+    const second = try connect(as12);
+    try std.testing.expect(!second.server.info().?.resumed);
+    second.deinit();
+    // And a TLS 1.2 ticket offered as a TLS 1.3 PSK opens as TLS 1.2 state and is declined.
+    fixture.cache.clear();
+    const third = try connect(options12(&fixture, 3));
+    third.deinit();
+    {
+        var guard = fixture.cache.table.acquire();
+        defer guard.deinit();
+        for (guard.value().slots) |slot| if (slot) |entry| {
+            entry.version = .tls13;
+            entry.suite = .aes_128_gcm_sha256;
+        };
+    }
+    var as13 = fixture.options(4);
+    as13.client_tls12_tickets = true;
+    as13.server_tls12_tickets = true;
+    const fourth = try connect(as13);
+    defer fourth.deinit();
+    try std.testing.expect(!fourth.server.info().?.resumed and fourth.client.info().?.version == .tls13);
+}
+
+test "F69 TLS 1.2 tickets bind the same authority as TLS 1.3's" {
+    var fixture: Fixture = undefined;
+    try fixture.init();
+    defer fixture.deinit();
+    var mutual = options12(&fixture, 1);
+    mutual.client_auth = .optional;
+    mutual.client_cert = true;
+    var changed = mutual;
+    changed.seed = 2;
+    changed.server_policy_generation = 2;
+    try std.testing.expect(!try resumes(mutual, changed));
+    fixture.cache.clear();
+    var alpn = options12(&fixture, 3);
+    var other = alpn;
+    other.seed = 4;
+    other.client_alpn = &.{"h2"};
+    other.server_alpn = &.{"h2"};
+    try std.testing.expect(!try resumes(alpn, other));
+    fixture.cache.clear();
+    alpn.seed = 5;
+    try std.testing.expect(try resumes(alpn, blk: {
+        var same = alpn;
+        same.seed = 6;
+        break :blk same;
+    }));
 }

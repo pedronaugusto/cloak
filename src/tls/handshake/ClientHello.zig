@@ -43,6 +43,8 @@ psk_binders: []const u8,
 psk_binders_wire: usize,
 /// psk_key_exchange_modes lists psk_dhe_ke, the only mode cloak uses.
 psk_dhe: bool,
+/// TLS 1.2 SessionTicket (RFC 5077): absent, empty (asking for one) or a ticket.
+session_ticket: ?[]const u8,
 has_groups: bool,
 has_shares: bool,
 has_schemes: bool,
@@ -96,6 +98,7 @@ pub fn parse(message: []const u8) ParseError!ClientHello {
     self.psk_binders = "";
     self.psk_binders_wire = 0;
     self.psk_dhe = false;
+    self.session_ticket = null;
     self.has_groups = false;
     self.has_shares = false;
     self.has_schemes = false;
@@ -197,6 +200,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.has_shares = true;
         },
         57 => self.parameters = bytes,
+        35 => self.session_ticket = bytes,
         11 => {
             const formats = (try value.vector(u8)).bytes;
             try value.finish();

@@ -34,6 +34,8 @@ pub const Phase = enum {
     local_ccs12,
     local_finished12,
     peer_ccs12,
+    /// The server's NewSessionTicket came; its ChangeCipherSpec is next.
+    ticket_seen12,
     peer_finished12,
     // TLS 1.2, server role.
     s_certificate12,
@@ -47,6 +49,8 @@ pub const Phase = enum {
     c_ccs12,
     c_finished12,
     s_ccs12,
+    /// This server's NewSessionTicket went out; its ChangeCipherSpec is next.
+    s_ticket_sent12,
     s_finished12,
     connected,
     failed,
@@ -75,6 +79,8 @@ pub const Action = enum {
     local_key_exchange,
     local_ccs,
     ccs,
+    /// A TLS 1.2 server sends its NewSessionTicket.
+    local_ticket,
 };
 pub const Proof = enum { parsed, chain, possession, finished };
 /// `resumed` limits an edge to a full (false) or PSK-resumed (true) handshake; null is either.
@@ -119,7 +125,10 @@ const edges = [_]Edge{
     // TLS 1.2 client. Everything before ChangeCipherSpec is plaintext (initial); the Finished
     // messages travel under the new keys (application). A CertificateVerify follows the key
     // exchange exactly when a certificate was sent (see `advance`).
-    .{ .version = .tls12, .role = .client, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .server_certificate12 },
+    .{ .version = .tls12, .role = .client, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .server_certificate12, .resumed = false },
+    // An abbreviated handshake (RFC 5077 section 3.1): the server's ChangeCipherSpec and Finished,
+    // after its NewSessionTicket when it said one follows, then the client's.
+    .{ .version = .tls12, .role = .client, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .peer_ccs12, .resumed = true },
     .{ .version = .tls12, .role = .client, .from = .server_certificate12, .action = .certificate, .epoch = .initial, .to = .server_chain12 },
     .{ .version = .tls12, .role = .client, .from = .server_chain12, .action = .verify_chain, .epoch = .initial, .proof = .chain, .to = .server_key_exchange12 },
     .{ .version = .tls12, .role = .client, .from = .server_key_exchange12, .action = .server_key_exchange, .epoch = .initial, .proof = .possession, .to = .server_request12 },
@@ -132,11 +141,16 @@ const edges = [_]Edge{
     .{ .version = .tls12, .role = .client, .from = .local_key_exchange12, .action = .local_key_exchange, .epoch = .initial, .to = .local_ccs12 },
     .{ .version = .tls12, .role = .client, .from = .local_verify12, .action = .local_certificate_verify, .epoch = .initial, .proof = .possession, .to = .local_ccs12 },
     .{ .version = .tls12, .role = .client, .from = .local_ccs12, .action = .local_ccs, .epoch = .initial, .to = .local_finished12 },
-    .{ .version = .tls12, .role = .client, .from = .local_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .peer_ccs12 },
+    .{ .version = .tls12, .role = .client, .from = .local_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .peer_ccs12, .resumed = false },
+    .{ .version = .tls12, .role = .client, .from = .local_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .connected, .resumed = true },
+    .{ .version = .tls12, .role = .client, .from = .peer_ccs12, .action = .ticket, .epoch = .initial, .to = .ticket_seen12 },
+    .{ .version = .tls12, .role = .client, .from = .ticket_seen12, .action = .ccs, .epoch = .initial, .to = .peer_finished12, .boundary = true },
     .{ .version = .tls12, .role = .client, .from = .peer_ccs12, .action = .ccs, .epoch = .initial, .to = .peer_finished12, .boundary = true },
-    .{ .version = .tls12, .role = .client, .from = .peer_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .connected, .boundary = true },
+    .{ .version = .tls12, .role = .client, .from = .peer_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .connected, .boundary = true, .resumed = false },
+    .{ .version = .tls12, .role = .client, .from = .peer_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .local_ccs12, .boundary = true, .resumed = true },
     // TLS 1.2 server.
-    .{ .version = .tls12, .role = .server, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .s_certificate12 },
+    .{ .version = .tls12, .role = .server, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .s_certificate12, .resumed = false },
+    .{ .version = .tls12, .role = .server, .from = .hello, .action = .server_hello, .epoch = .initial, .to = .s_ccs12, .resumed = true },
     .{ .version = .tls12, .role = .server, .from = .s_certificate12, .action = .certificate, .epoch = .initial, .to = .s_key_exchange12 },
     .{ .version = .tls12, .role = .server, .from = .s_key_exchange12, .action = .server_key_exchange, .epoch = .initial, .proof = .possession, .to = .s_request12 },
     .{ .version = .tls12, .role = .server, .from = .s_request12, .action = .certificate_request, .epoch = .initial, .to = .s_done12 },
@@ -148,9 +162,13 @@ const edges = [_]Edge{
     .{ .version = .tls12, .role = .server, .from = .c_key_exchange12, .action = .client_key_exchange, .epoch = .initial, .to = .c_ccs12 },
     .{ .version = .tls12, .role = .server, .from = .c_verify12, .action = .certificate_verify, .epoch = .initial, .proof = .possession, .to = .c_ccs12 },
     .{ .version = .tls12, .role = .server, .from = .c_ccs12, .action = .ccs, .epoch = .initial, .to = .c_finished12, .boundary = true },
-    .{ .version = .tls12, .role = .server, .from = .c_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .s_ccs12, .boundary = true },
+    .{ .version = .tls12, .role = .server, .from = .c_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .s_ccs12, .boundary = true, .resumed = false },
+    .{ .version = .tls12, .role = .server, .from = .c_finished12, .action = .finished, .epoch = .application, .proof = .finished, .to = .connected, .boundary = true, .resumed = true },
+    .{ .version = .tls12, .role = .server, .from = .s_ccs12, .action = .local_ticket, .epoch = .initial, .to = .s_ticket_sent12 },
+    .{ .version = .tls12, .role = .server, .from = .s_ticket_sent12, .action = .local_ccs, .epoch = .initial, .to = .s_finished12 },
     .{ .version = .tls12, .role = .server, .from = .s_ccs12, .action = .local_ccs, .epoch = .initial, .to = .s_finished12 },
-    .{ .version = .tls12, .role = .server, .from = .s_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .connected },
+    .{ .version = .tls12, .role = .server, .from = .s_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .connected, .resumed = false },
+    .{ .version = .tls12, .role = .server, .from = .s_finished12, .action = .local_finished, .epoch = .application, .proof = .finished, .to = .c_ccs12, .resumed = true },
 };
 pub const AdvanceError = error{ UnexpectedMessage, WrongEpoch, MissingProof, RecordAlignment, Closed };
 pub const State = struct {
@@ -164,16 +182,23 @@ pub const State = struct {
     /// TLS 1.2: a certificate was sent (client) or verified (server), so its CertificateVerify
     /// must follow the key exchange.
     certificate_proof: bool = false,
-    /// TLS 1.3: the ServerHello accepted a PSK; set once, by `markResumed`, as the ServerHello is
-    /// sent or received.
+    /// The ServerHello resumed a session (a TLS 1.3 PSK, a TLS 1.2 ticket); set once, by
+    /// `markResumed`, as the ServerHello is sent or received.
     resumed: bool = false,
-    /// Marks the handshake resumed: only before EncryptedExtensions, and only in TLS 1.3.
+    /// TLS 1.2: the ServerHello said a NewSessionTicket follows, which then must, before the
+    /// server's ChangeCipherSpec; without it none may come.
+    ticket12: bool = false,
+    /// Marks the handshake resumed: in TLS 1.3 as the ServerHello is received (client) or chosen
+    /// (server), before EncryptedExtensions; in TLS 1.2 before the ServerHello's edge is taken.
     pub fn markResumed(self: *State) AdvanceError!void {
-        const ready = switch (self.role) {
-            .client => self.phase == .extensions,
-            .server => self.phase == .hello,
+        const ready = switch (self.version) {
+            .tls13 => switch (self.role) {
+                .client => self.phase == .extensions,
+                .server => self.phase == .hello,
+            },
+            .tls12 => self.phase == .hello,
         };
-        if (!ready or self.version != .tls13) {
+        if (!ready) {
             self.phase = .failed;
             return error.UnexpectedMessage;
         }
@@ -198,6 +223,9 @@ pub const State = struct {
         for (edges) |edge| {
             if (edge.version != self.version or edge.role != self.role or edge.from != self.phase or edge.action != action) continue;
             if (edge.resumed) |resumed| if (resumed != self.resumed) continue;
+            // TLS 1.2: a NewSessionTicket exactly when the ServerHello promised one.
+            if (self.version == .tls12 and (action == .ticket or action == .local_ticket) and !self.ticket12) return error.UnexpectedMessage;
+            if (self.version == .tls12 and self.ticket12 and ((self.role == .client and self.phase == .peer_ccs12 and action == .ccs) or (self.role == .server and self.phase == .s_ccs12 and action == .local_ccs))) return error.MissingProof;
             if (edge.epoch != epoch) return error.WrongEpoch;
             if (edge.proof != proof) return error.MissingProof;
             if (edge.boundary and !boundary) return error.RecordAlignment;

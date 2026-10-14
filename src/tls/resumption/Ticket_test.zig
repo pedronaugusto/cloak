@@ -5,7 +5,7 @@ const types = @import("../../certificates.zig").types;
 
 fn sample() Ticket.State {
     var state: Ticket.State = .{ .suite = .aes_256_gcm_sha384, .issued = 1000, .expires = 2000, .age_add = 0x01020304, .policy = @splat(9), .client_authenticated = true, .auth_expires = 1500 };
-    @memset(state.psk.exposeMut(), 0x5a);
+    @memset(state.secret.exposeMut(), 0x5a);
     @memcpy(state.alpn[0..2], "h2");
     state.alpn_len = 2;
     @memcpy(state.server_name[0..11], "example.com");
@@ -27,13 +27,13 @@ test "C5 ticket seals and opens the session state under its ring key alone" {
     try Ticket.open(snapshot.ring(), sealed, 1001, &opened);
     defer opened.deinit();
     try std.testing.expectEqual(state.suite, opened.suite);
-    try std.testing.expectEqualSlices(u8, state.pskBytes(), opened.pskBytes());
+    try std.testing.expectEqualSlices(u8, state.secretBytes(), opened.secretBytes());
     try std.testing.expectEqualSlices(u8, "h2", opened.alpnBytes());
     try std.testing.expectEqualSlices(u8, "example.com", opened.serverName());
     try std.testing.expect(opened.client_authenticated);
     try std.testing.expectEqual(@as(i64, 1500), opened.auth_expires);
     // The PSK is not in the clear.
-    try std.testing.expect(std.mem.find(u8, sealed, state.pskBytes()) == null);
+    try std.testing.expect(std.mem.find(u8, sealed, state.secretBytes()) == null);
     // Every flipped bit, a truncation and a wrong version refuse.
     var copy: [Ticket.max_length]u8 = undefined;
     for (0..sealed.len * 8) |bit| {

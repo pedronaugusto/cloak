@@ -118,6 +118,8 @@ pub const Resume = struct {
     ticket: []const u8 = "",
     age: u32 = 0,
     binder_len: usize = 0,
+    /// TLS 1.2 SessionTicket (RFC 5077): null sends none, empty asks for one, else the ticket.
+    ticket12: ?[]const u8 = null,
 };
 pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume) EncodeError![]u8 {
     @setRuntimeSafety(true);
@@ -172,6 +174,7 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, shares: []c
         // extended_master_secret (RFC 7627) and an empty renegotiation_info (RFC 5746).
         try extension(&w, 23, "");
         try extension(&w, 0xff01, &.{0});
+        if (resumption.ticket12) |ticket| try extension(&w, 35, ticket);
     }
     // A TLS 1.2-only client sends no supported_versions, as TLS 1.2 clients do.
     if (tls13) try extension(&w, 43, if (tls12) &.{ 4, 3, 4, 3, 3 } else &.{ 2, 3, 4 });
@@ -234,11 +237,16 @@ fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
 pub const ServerHello = struct { suite: Suite13, group: ?Group, share: []const u8, retry: bool, cookie: []const u8, psk: bool = false };
 /// A TLS 1.2 ServerHello: always a full handshake with extended master secret and secure
 /// renegotiation indicated.
-pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8 };
+/// `resumed`: the server echoed the session id sent with a ticket, resuming that session; `ticket`:
+/// a NewSessionTicket follows (RFC 5077 section 3.2).
+pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
-/// `psk_offered` says the client offered one PSK identity, which a ServerHello may then select.
-pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options, psk_offered: bool) ParseError!Answer {
+/// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
+/// select; a TLS 1.2 SessionTicket extension, which a ServerHello may answer, and a ticket in it,
+/// which it may resume by echoing the session id.
+pub const Offered = struct { psk: bool = false, ticket12: bool = false, session12: bool = false };
+pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options, sent: Offered) ParseError!Answer {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
     var r: Reader = .{ .bytes = message[4..] };
@@ -260,6 +268,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var ems = false;
     var renegotiation = false;
     var psk = false;
+    var ticket = false;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
@@ -273,7 +282,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             },
             41 => {
                 // The client offered one identity; a retry request selects none.
-                if (!psk_offered) return error.UnsolicitedExtension;
+                if (!sent.psk) return error.UnsolicitedExtension;
                 if (retry or try value.int(u16) != 0) return error.InvalidHello;
                 psk = true;
             },
@@ -307,6 +316,13 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 only12 = true;
                 ems = true;
             },
+            35 => {
+                // An empty SessionTicket: a NewSessionTicket will follow.
+                only12 = true;
+                if (!sent.ticket12) return error.UnsolicitedExtension;
+                if (item.bytes.len != 0) return error.InvalidHello;
+                ticket = true;
+            },
             0xff01 => {
                 only12 = true;
                 // The initial handshake's renegotiated_connection is empty (RFC 5746 section 3.4).
@@ -322,7 +338,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12 }, options);
     if (only12) return error.InvalidHello;
     if (legacy_version != 0x0303 or !std.mem.eql(u8, echoed, session)) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite13, suite_id) orelse return error.UnofferedSelection;
@@ -342,23 +358,25 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk } };
 }
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool };
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool };
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {
     @setRuntimeSafety(true);
     // A server answering below TLS 1.3 marks its random; this client offered TLS 1.3, so a
     // marked random is an attacker's downgrade (RFC 8446 section 4.1.3).
     if (options.allows13() and (std.mem.eql(u8, random[24..], downgrade_tls12) or std.mem.eql(u8, random[24..], "DOWNGRD\x00"))) return error.Downgrade;
     if (legacy_version != 0x0303 or !options.allows12()) return error.UnsupportedVersion;
-    // No TLS 1.3 field in a TLS 1.2 answer, and no resumption this client did not ask for: an
-    // echo of its compatibility session id would be one.
+    // No TLS 1.3 field in a TLS 1.2 answer, and no resumption this client did not ask for: an echo
+    // of its session id resumes, which it may only with a ticket it sent (RFC 5077 section 3.4).
     if (seen.group or std.mem.eql(u8, random, &retry_random)) return error.InvalidHello;
-    if (echoed.len > 32 or (session.len != 0 and std.mem.eql(u8, echoed, session))) return error.InvalidHello;
+    if (echoed.len > 32) return error.InvalidHello;
+    const resumed = session.len != 0 and std.mem.eql(u8, echoed, session);
+    if (resumed and !seen.session12) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite12, suite_id) orelse return error.UnofferedSelection;
     if (!options.offers12(suite)) return error.UnofferedSelection;
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket } };
 }
 pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8 };
 pub fn encrypted(message: []const u8, options: Options) ParseError!EncryptedExtensions {
@@ -435,16 +453,17 @@ pub fn buildServer(out: []u8, random: *const [32]u8, session: []const u8, suite:
 
 /// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
 /// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
-pub const Echo12 = struct { server_name: bool, point_formats: bool };
+pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false };
 
-/// A TLS 1.2 ServerHello: an empty session id (nothing to resume), the suite, and the extended
-/// master secret, renegotiation_info, point formats and ALPN answers.
-pub fn buildServer12(out: []u8, random: *const [32]u8, suite: Suite12, alpn: []const u8, echo: Echo12) Writer.WriteError![]u8 {
+/// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
+/// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
+/// ALPN answers.
+pub fn buildServer12(out: []u8, random: *const [32]u8, session: []const u8, suite: Suite12, alpn: []const u8, echo: Echo12) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0, 3, 3 });
     try w.put(random);
-    try w.put(&.{0});
+    try w.vector(u8, session);
     try w.int(u16, @backingInt(suite));
     try w.put(&.{0});
     const ext_at = w.pos;
@@ -453,6 +472,7 @@ pub fn buildServer12(out: []u8, random: *const [32]u8, suite: Suite12, alpn: []c
     if (echo.point_formats) try w.put(&.{ 0, 11, 0, 2, 1, 0 });
     try w.put(&.{ 0, 23, 0, 0 });
     try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
+    if (echo.ticket) try w.put(&.{ 0, 35, 0, 0 });
     if (alpn.len != 0) {
         try w.int(u16, 16);
         // safe: a protocol name is at most 255 bytes.

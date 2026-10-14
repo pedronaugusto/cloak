@@ -502,8 +502,22 @@ under the handshake keys, until one opens; at most 64 KiB in all, past which the
 EndOfEarlyData is an unexpected message. QUIC resumes through the same engine (tickets travel at
 the application level) and offers no 0-RTT; its early packets are the QUIC stack's to drop.
 
-TLS 1.2 sessions and tickets are not yet built: a TLS 1.2 connection neither takes nor issues
-them.
+TLS 1.2 resumes from session tickets (RFC 5077) when both ends ask: `Resumption.tls12` on the
+client, `tls12_tickets` on the server, from the same cache and ring. An abbreviated TLS 1.2
+handshake reuses the session's master secret with fresh randoms and no key exchange, so it gives
+up forward secrecy between the connections of a session; that is why it is off by default. The
+extended master secret is required in every TLS 1.2 handshake, the abbreviated one included
+(RFC 7627 section 5.3). There is no server session-ID cache: tickets keep no state on the server.
+A client with TLS 1.2 tickets sends the SessionTicket extension (empty, or with a ticket of its
+cache key and a suite it offers) and a session id, which the server echoes to resume. A ticket's
+format byte names its version, so a TLS 1.3 ticket never opens as TLS 1.2 state or the reverse.
+The server resumes a ticket under the same rules as in TLS 1.3, with the ticket's own suite,
+which both sides must still accept; the client refuses a resumption with any other suite. The
+resumed flight is the ServerHello, a NewSessionTicket when the ServerHello said one follows, and
+the server's ChangeCipherSpec and Finished, then the client's two. A NewSessionTicket comes
+exactly when promised and before the server's ChangeCipherSpec, in a full handshake too, and the
+client keeps it only once the server's Finished has proven it. A resumed session reports the
+original handshake's authentication and key exchange group.
 
 ## TLS 1.2
 
@@ -523,7 +537,8 @@ record sequence; the master secret is always the extended one (RFC 7627), and a 
 without it is refused, as is one without the secure renegotiation indication (RFC 5746).
 No suite of RSA key exchange, finite-field DHE, static ECDH, CBC, RC4, 3DES or NULL exists
 to be negotiated; compression other than null, SSLv2 hellos, MD5 and SHA-1 signatures,
-renegotiation (a HelloRequest or a second ClientHello) and session resumption are refused.
+renegotiation (a HelloRequest or a second ClientHello) is refused; resumption is the session
+tickets above, off unless both ends ask.
 A server that speaks TLS 1.3 marks its TLS 1.2 random with the downgrade sentinel and
 refuses TLS_FALLBACK_SCSV; a client that offered TLS 1.3 refuses a marked TLS 1.2 answer.
 

@@ -238,6 +238,9 @@ pub const ServerOptions = struct {
     client_verify: Verify = .none,
     /// Session tickets to issue and resume from; shared, and outliving the connection.
     tickets: ?*Server.TicketKeys = null,
+    /// TLS 1.2 session tickets too (RFC 5077): an abbreviated TLS 1.2 handshake reuses the
+    /// session's master secret with no new key exchange, so they are off unless asked for.
+    tls12_tickets: bool = false,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -259,6 +262,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
         .tickets = options.tickets,
+        .tls12_tickets = options.tls12_tickets,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,

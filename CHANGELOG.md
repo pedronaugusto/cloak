@@ -4,6 +4,20 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+### Breaking
+
+- `tls.SessionCache.take` takes the protocol version of the ticket wanted; a cache entry's `secret` (a TLS 1.3 PSK or a TLS 1.2 master secret) replaces `psk`, its `suite` is a `tls.Suite` of either version, and it records its `version` and key exchange `group`. Callers that only hand a cache to connections are not affected.
+
+### Added
+
+- TLS 1.2 session tickets (RFC 5077), off unless both ends ask: `resumption.tls12` on a client, `tls12_tickets` on a server (`tls.Connection`, `tls.Session`), from the same `tls.SessionCache` and `tls.TicketKeys`. An abbreviated handshake reuses the session's master secret without a new key exchange, which is why it is opt-in; the extended master secret stays required. A ticket's format names its version, so neither version's ticket resumes the other. `Info.group` of a resumed TLS 1.2 session is the original handshake's.
+
+### Changed
+
+- Tickets issued by 0.6.1 servers no longer open (their state gained the key exchange group): clients holding them do one full handshake.
+
 ## [0.6.1] - 2026-10-14
 
 ### Added

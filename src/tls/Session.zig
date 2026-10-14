@@ -248,6 +248,9 @@ pub const ServerOptions = struct {
     /// Session tickets to issue and resume from (TLS 1.3, PSK-DHE, never early data). The ring
     /// is shared between sessions and must outlive them; rotate it on the caller's schedule.
     tickets: ?*Connection.TicketKeys = null,
+    /// TLS 1.2 session tickets too (RFC 5077), from the same ring: an abbreviated TLS 1.2
+    /// handshake reuses the session's master secret with no new key exchange. Off unless asked.
+    tls12_tickets: bool = false,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -289,6 +292,7 @@ pub fn accept(
         .client_auth = options.client_auth,
         .client_verify = policy,
         .tickets = options.tickets,
+        .tls12_tickets = options.tls12_tickets,
         .limits = options.limits,
         .key_log = options.key_log,
     });

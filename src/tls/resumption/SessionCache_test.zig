@@ -2,7 +2,7 @@ const std = @import("std");
 const SessionCache = @import("SessionCache.zig");
 
 fn fields(key: *const [32]u8, ticket: []const u8, expires: i64) SessionCache.Fields {
-    return .{ .key = key, .ticket = ticket, .suite = .aes_128_gcm_sha256, .psk = &@as([32]u8, @splat(1)), .age_add = 7, .received_ms = 0, .expires = expires, .origin = 0, .auth_expires = expires, .authenticated = true };
+    return .{ .key = key, .ticket = ticket, .suite = .aes_128_gcm_sha256, .secret = &@as([32]u8, @splat(1)), .age_add = 7, .received_ms = 0, .expires = expires, .origin = 0, .auth_expires = expires, .authenticated = true };
 }
 
 test "C5 session cache: newest first, used once, expired dropped, bounded per key" {
@@ -15,14 +15,14 @@ test "C5 session cache: newest first, used once, expired dropped, bounded per ke
     try cache.store(fields(&a, "three", 100));
     try cache.store(fields(&b, "other", 100));
     try std.testing.expectEqual(@as(usize, 3), cache.count());
-    var taken = cache.take(&a, 50).?;
+    var taken = cache.take(&a, .tls13, 50).?;
     try std.testing.expectEqualSlices(u8, "three", taken.entry.ticket);
     taken.release();
-    taken = cache.take(&a, 50).?;
+    taken = cache.take(&a, .tls13, 50).?;
     try std.testing.expectEqualSlices(u8, "two", taken.entry.ticket);
     taken.release();
-    try std.testing.expect(cache.take(&a, 50) == null);
-    try std.testing.expect(cache.take(&b, 100) == null); // expired, and dropped
+    try std.testing.expect(cache.take(&a, .tls13, 50) == null);
+    try std.testing.expect(cache.take(&b, .tls13, 100) == null); // expired, and dropped
     try std.testing.expectEqual(@as(usize, 0), cache.count());
 }
 
@@ -36,9 +36,9 @@ test "C5 session cache bounds entries and bytes and clears" {
     }
     try std.testing.expectEqual(@as(usize, 3), cache.count());
     key[0] = 0;
-    try std.testing.expect(cache.take(&key, 0) == null);
+    try std.testing.expect(cache.take(&key, .tls13, 0) == null);
     key[0] = 9;
-    var newest = cache.take(&key, 0).?;
+    var newest = cache.take(&key, .tls13, 0).?;
     newest.release();
     try std.testing.expectError(error.TicketTooLong, cache.store(fields(&key, "", 100)));
     var long: [SessionCache.max_ticket + 1]u8 = @splat(1);

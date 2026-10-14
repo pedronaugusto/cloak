@@ -38,6 +38,9 @@ pub const Options = struct {
     namespace: []const u8 = "",
     max_age: std.Io.Duration = .fromSeconds(7 * 24 * 60 * 60),
     tickets: ?*TicketKeys = null,
+    /// TLS 1.2 tickets at the client and at the server.
+    client_tls12_tickets: bool = false,
+    server_tls12_tickets: bool = false,
     /// The calendar time both ends are told, in seconds.
     time: i64 = pki.time,
     /// The verification policy generations of the client and of the server's client checks.
@@ -100,7 +103,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.client = try Connection.client(gpa, .{
         .identity = .{ .dns = options.identity },
         .verify = .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
-        .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age } else null,
+        .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
         .max_version = options.client_max,
@@ -119,6 +122,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .client_auth = options.client_auth,
         .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
+        .tls12_tickets = options.server_tls12_tickets,
     });
     return self;
 }

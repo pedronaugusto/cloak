@@ -74,6 +74,9 @@ pub const Options = struct {
     /// Session tickets: issued after each TLS 1.3 handshake and resumed from (PSK-DHE). The
     /// ring is shared, and must outlive the connections using it.
     tickets: ?*TicketKeys = null,
+    /// TLS 1.2 session tickets too (RFC 5077), from the same ring. An abbreviated TLS 1.2
+    /// handshake reuses the session's master secret with no new key exchange: off unless asked.
+    tls12_tickets: bool = false,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -84,7 +87,7 @@ pub const Info = Client.Info;
 /// Tickets sent after each handshake (design: at most two).
 pub const tickets_per_handshake = 2;
 /// Entropy each ticket draws: its sealing salt and its age obfuscator.
-const ticket_entropy = Ticket.salt_length + 4;
+pub const ticket_entropy = Ticket.salt_length + 4;
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
 pub const Error = Client.Error || Flight.Error || ClientHello.ParseError || error{
@@ -338,6 +341,7 @@ pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
         errdefer self.state.fail();
         self.scratch.?.hello_held = false;
         const hello = ClientHello.parse(self.held) catch unreachable; // unreachable: these bytes parsed before
+        if (self.version == .tls12) return Server12.answer(self, self.held, &hello);
         return self.answerHello(self.held, &hello);
     }
     self.need_now = .verify;
@@ -604,15 +608,18 @@ fn onClientHello(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     };
     if (share.len != group.clientShareLength()) return error.IllegalParameter;
     // Tickets are opened and issued by the clock: the hello waits for it.
-    if (self.options.tickets != null and self.now == null) {
-        if (self.held.len != 0) self.gpa.free(self.held);
-        self.held = &.{};
-        self.held = try self.gpa.dupe(u8, msg);
-        self.scratch.?.hello_held = true;
-        self.need_now = .time;
-        return;
-    }
+    if (self.options.tickets != null and self.now == null) return self.holdHello(msg);
     return self.answerHello(msg, &hello);
+}
+
+/// Keeps the ClientHello and asks for the time; `provideTime` answers it.
+pub fn holdHello(self: *Server, msg: []const u8) Client.Error!void {
+    @setRuntimeSafety(true);
+    if (self.held.len != 0) self.gpa.free(self.held);
+    self.held = &.{};
+    self.held = try self.gpa.dupe(u8, msg);
+    self.scratch.?.hello_held = true;
+    self.need_now = .time;
 }
 
 /// The ClientHello that a ServerHello answers: a PSK is chosen if one resumes, the hello joins
@@ -643,7 +650,9 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
 fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    if (suites.digestLength(state.suite) != suites.digestLength(self.suite.?)) return false;
+    if (state.version != .tls13) return false;
+    const suite = state.suite.tls13() orelse return false;
+    if (suites.digestLength(suite) != suites.digestLength(self.suite.?)) return false;
     // Issued no later than a minute ahead of this clock, and not yet expired.
     if (now >= state.expires or state.issued > now +| 60) return false;
     if (!std.ascii.eqlIgnoreCase(state.serverName(), scratch.server_name[0..scratch.server_name_len])) return false;
@@ -677,11 +686,11 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
             inline else => |tag| {
                 const K = Schedule.Schedule(tag);
                 const truncated = scratch.transcripts.digestWith(&digest_buf, K.length, hello.truncated(msg));
-                try K.checkBinder(state.pskBytes()[0..K.length], truncated[0..K.length], hello.pskBinder(index));
+                try K.checkBinder(state.secretBytes()[0..K.length], truncated[0..K.length], hello.pskBinder(index));
             },
         }
         try self.state.markResumed();
-        @memcpy(scratch.psk.exposeMut()[0..state.pskBytes().len], state.pskBytes());
+        @memcpy(scratch.psk.exposeMut()[0..state.secretBytes().len], state.secretBytes());
         self.resumed = true;
         self.scratch.?.psk_index = index;
         self.scratch.?.session_expires = state.expires;
@@ -693,7 +702,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
 
 /// What a ticket's resumption depends on beyond its session: how this server treats client
 /// certificates, by mode and by the whole verification policy.
-fn policyDigest(self: *const Server) [32]u8 {
+pub fn policyDigest(self: *const Server) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update("cloak ticket policy v1");
@@ -1018,7 +1027,7 @@ fn issueTickets(self: *Server) Client.Error!void {
     for (0..tickets_per_handshake) |i| {
         const drawn = scratch.ticket_entropy[i * ticket_entropy ..][0..ticket_entropy];
         var state: Ticket.State = .{
-            .suite = self.suite.?,
+            .suite = Suite.from13(self.suite.?),
             .issued = now_s,
             .expires = expires,
             .age_add = std.mem.readInt(u32, drawn[Ticket.salt_length..][0..4], .big),
@@ -1036,7 +1045,7 @@ fn issueTickets(self: *Server) Client.Error!void {
         switch (keys.*) {
             inline else => |*k, tag| {
                 const K = Schedule.Schedule(tag);
-                k.schedule.ticketSecret(&nonce, state.psk.exposeMut()[0..K.length]) catch |err| switch (err) {
+                k.schedule.ticketSecret(&nonce, state.secret.exposeMut()[0..K.length]) catch |err| switch (err) {
                     error.InvalidLabel => unreachable, // unreachable: a fixed label and a one-byte nonce
                     error.WrongPhase => return error.WrongPhase,
                 };

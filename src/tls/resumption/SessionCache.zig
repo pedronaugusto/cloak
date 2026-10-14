@@ -7,7 +7,8 @@
 //! There is no process-global cache and no persistence.
 const std = @import("std");
 const aegis = @import("aegis");
-const Suite13 = @import("../crypto/Suite.zig").Suite13;
+const suites = @import("../crypto/Suite.zig");
+const Group = @import("../crypto/Group.zig").Group;
 
 pub const Options = struct {
     /// Tickets kept across every key.
@@ -26,8 +27,13 @@ pub const Entry = struct {
     key: [32]u8,
     sequence: u64 = 0,
     ticket: []u8,
-    suite: Suite13,
-    psk: aegis.Secret([48]u8),
+    /// A TLS 1.3 ticket carries a PSK of its suite's hash; a TLS 1.2 one the master secret.
+    version: suites.Version,
+    suite: suites.Suite,
+    secret: aegis.Secret([48]u8),
+    /// TLS 1.2: the key exchange group of the session's full handshake.
+    group: Group = .x25519,
+    /// TLS 1.3: the ticket age obfuscator.
     age_add: u32,
     /// When it was received, in milliseconds of the calendar clock, for the ticket age.
     received_ms: i64,
@@ -39,8 +45,11 @@ pub const Entry = struct {
     /// The server was authenticated under the key's verification policy.
     authenticated: bool,
 
-    pub fn pskBytes(entry: *const Entry) []const u8 {
-        return entry.psk.expose()[0..@import("../crypto/Suite.zig").digestLength(entry.suite)];
+    pub fn secretBytes(entry: *const Entry) []const u8 {
+        return entry.secret.expose()[0..switch (entry.version) {
+            .tls13 => suites.digestLength(entry.suite.tls13().?),
+            .tls12 => 48,
+        }];
     }
 };
 
@@ -128,16 +137,16 @@ fn cost(entry: *const Entry) usize {
 
 fn free(self: *SessionCache, entry: *Entry) void {
     @setRuntimeSafety(true);
-    entry.psk.deinit();
+    entry.secret.deinit();
     std.crypto.secureZero(u8, entry.ticket);
     self.gpa.free(entry.ticket);
     std.crypto.secureZero(u8, std.mem.asBytes(entry));
     self.gpa.destroy(entry);
 }
 
-/// Takes the newest ticket for `key` that has not expired at `now` (seconds), removing it.
-/// Expired tickets met on the way are dropped.
-pub fn take(self: *SessionCache, key: *const [32]u8, now: i64) ?Taken {
+/// Takes the newest ticket of `version` for `key` that has not expired at `now` (seconds),
+/// removing it. Expired tickets met on the way are dropped.
+pub fn take(self: *SessionCache, key: *const [32]u8, version: suites.Version, now: i64) ?Taken {
     @setRuntimeSafety(true);
     var expired: [16]?*Entry = @splat(null);
     var expired_count: usize = 0;
@@ -159,6 +168,7 @@ pub fn take(self: *SessionCache, key: *const [32]u8, now: i64) ?Taken {
                 }
                 continue;
             }
+            if (entry.version != version) continue;
             if (best == null or table.slots[best.?].?.sequence < entry.sequence) best = i;
         }
         if (best) |i| {
@@ -177,8 +187,10 @@ pub const StoreError = std.mem.Allocator.Error || error{TicketTooLong};
 pub const Fields = struct {
     key: *const [32]u8,
     ticket: []const u8,
-    suite: Suite13,
-    psk: []const u8,
+    version: suites.Version = .tls13,
+    suite: suites.Suite,
+    secret: []const u8,
+    group: Group = .x25519,
     age_add: u32,
     received_ms: i64,
     expires: i64,
@@ -198,8 +210,10 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
     entry.* = .{
         .key = fields.key.*,
         .ticket = ticket,
+        .version = fields.version,
         .suite = fields.suite,
-        .psk = .init(@splat(0)),
+        .group = fields.group,
+        .secret = .init(@splat(0)),
         .age_add = fields.age_add,
         .received_ms = fields.received_ms,
         .expires = fields.expires,
@@ -207,7 +221,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
         .auth_expires = fields.auth_expires,
         .authenticated = fields.authenticated,
     };
-    @memcpy(entry.psk.exposeMut()[0..fields.psk.len], fields.psk);
+    @memcpy(entry.secret.exposeMut()[0..fields.secret.len], fields.secret);
     if (cost(entry) > self.options.max_bytes) {
         self.free(entry);
         return;
