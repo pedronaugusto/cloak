@@ -149,8 +149,8 @@ an SDK. The layering inside the module is
 enforced by the layer check at file level: the TLS layers import the certificates
 facade downward and nothing in the certificates imports TLS. The portable probes are a private
 module of their own, since they reach files the public surface does not.
-DTLS is reserved for a datagram concern at C8 with no claim of datagram support;
-it will be a namespace unless it brings a dependency others should not fetch. The private TLS handshake imports crypto and wire;
+DTLS is the namespace `tls.dtls` (below), a third carrier of the same handshake;
+it brings no dependency of its own. The private TLS handshake imports crypto and wire;
 record protection imports crypto only. Neither imports an adapter or facade.
 
 `record.Epoch` owns one direction's key, IV, sequence and byte/record counts.
@@ -565,3 +565,120 @@ nobody has spoken to stays as small as before. Tests run a cloak client against 
 server for every suite, group and certificate key, client certificates, version selection
 both ways, one-byte delivery and the failure catalogue's TLS 1.2 rows (F46–F64); live
 peers are the trials campaign's.
+
+## DTLS (C8): contract and transitions
+
+DTLS is a third carrier of the one handshake, beside stream records (`Connection`) and QUIC
+levels (`quic.Handshake`). DTLS 1.3 (RFC 9147) takes TLS 1.3's messages, key schedule,
+suites and checked edges; DTLS 1.2 (RFC 6347) takes the TLS 1.2 ones. What is new is only
+the datagram carrier, `tls.dtls.Datagram`, and the rules by which a datagram handshake
+differs on the wire and in its transcript. There is no second state machine and no copy of
+handshake logic: `handshake.Machine` is driven exactly as the other carriers drive it.
+
+### What the engine learns (the carrier seam)
+
+The machine is told its transport (`stream`, `quic` or `datagram`, a carrier's choice that
+callers of `Connection` never set), and these follow from it, nothing else:
+
+- Versions. A datagram handshake speaks DTLS 1.2 (0xfefd) and DTLS 1.3 (0xfefc) where a
+  stream speaks TLS 1.2 and 1.3, and `Info.version` names the same generation (`tls12`,
+  `tls13`): the versions are shared, their wire numbers are the carrier's. A hello's
+  legacy_version is 0xfefd, supported_versions lists 0xfefc and 0xfefd, the ServerHello's
+  legacy_version is 0xfefd, and the downgrade sentinel marks a DTLS 1.2 answer from a server
+  that speaks DTLS 1.3 exactly as in TLS.
+- The ClientHello carries a legacy_cookie after the session id. In DTLS 1.3 it is empty and
+  a server refuses any other with illegal_parameter; in DTLS 1.2 it holds a
+  HelloVerifyRequest's cookie, at most 255 bytes.
+- No middlebox compatibility: no legacy session id in DTLS 1.3, none echoed, and no
+  ChangeCipherSpec outside DTLS 1.2. The state table refuses a compat_ccs in datagram mode.
+- Labels. Every HKDF-Expand-Label of DTLS 1.3 uses the prefix "dtls13" where TLS uses
+  "tls13 " (RFC 9147 section 5.9): the schedule, Finished, binders, tickets, exporters, the
+  record keys and IVs, key updates and the record-number keys. The schedule holds the prefix,
+  so no derivation can take the wrong one.
+- Transcript. DTLS 1.3 hashes the TLS-form messages; the carrier strips message_seq and the
+  fragment fields before the machine sees a message. DTLS 1.2 hashes each message with its
+  twelve-byte DTLS header as if sent unfragmented (message_seq, offset 0, fragment length
+  the message length; RFC 6347 section 4.2.6), and the transcript numbers messages itself:
+  its own from the carrier's first sequence, the peer's in the order the carrier delivers
+  them, which is strictly message_seq order. A client offering both versions hashes its
+  hello both ways until the ServerHello chooses. The Ed25519 copy of the messages is kept in
+  the same form.
+- HelloVerifyRequest (DTLS 1.2) is a client edge `hello -> hello_verify -> hello`: the
+  client sends its hello again, unchanged but for the cookie, with the next message_seq; the
+  first hello and the request leave the transcript. At most three requests are answered.
+  A ServerHello choosing DTLS 1.3 after a HelloVerifyRequest is refused (a DTLS 1.3 server
+  never sends one). The server machine never sends one: return routability is the stateless
+  `dtls.Cookies` check before any association exists (below).
+- No EndOfEarlyData and no early data: none is offered or accepted, as in TLS.
+
+Every other edge, check and proof is the TLS one: hello negotiation, HelloRetryRequest
+(once), certificates, CertificateVerify, Finished, client authentication, resumption, key
+update. A datagram is never a reason to skip a check.
+
+### What the carrier owns
+
+`dtls.Datagram` owns, for one association: the record layer of both versions (epochs,
+explicit sequence numbers, DTLS 1.3 record-number encryption, the replay window), handshake
+message sequencing, fragmentation to the MTU and reassembly, the flight cache and its
+retransmission timer, DTLS 1.3 ACKs, connection IDs, and the pre-validation output
+allowance. It exchanges whole datagrams and takes explicit monotonic time; it stores no
+`Io`, socket or clock and performs no I/O, like `Connection`. Requests (entropy, time,
+verification, signing) are the same service tokens as on the other carriers.
+
+- Records. DTLS 1.2: a 13-byte header (type, version, 16-bit epoch, 48-bit sequence,
+  length); AEAD nonce and additional data from epoch and sequence (RFC 6347 section 4.1.2.1;
+  GCM's explicit nonce is the epoch and sequence; RFC 9146's form with a CID). DTLS 1.3: the
+  unified header (CID, 8- or 16-bit sequence, length), the AEAD nonce from the 64-bit
+  sequence alone, the header before record-number encryption as additional data, and the
+  sequence masked with AES-ECB or ChaCha20 under the epoch's sn_key over the first 16
+  bytes of ciphertext; a ciphertext shorter than 16 bytes is refused, and a short plaintext
+  padded to reach it. Epochs: 0 plaintext, 2 handshake, 3 application, 4 and up per key
+  update (DTLS 1.3); 0 then 1 after ChangeCipherSpec (DTLS 1.2). The sequence is
+  reconstructed nearest the highest authenticated one.
+- Invalid input is dropped, never fatal (RFC 9147 section 4.5.2): a record that fails to
+  parse, to authenticate, falls outside the replay window or names an unknown epoch is
+  discarded without touching the association, its timers or its handshake state, and its
+  failed authentications are counted per key against the AEAD's forgery limit (2^36 for GCM
+  and ChaCha20-Poly1305, 2^23.5 for CCM), past which the association closes. A record is
+  marked in the replay window only after it authenticates. Each datagram's records are
+  processed in order and processing is bounded per datagram.
+- Handshake reliability. Messages carry message_seq; one ahead of the expected is buffered,
+  older is a retransmission (it triggers a resend of the flight that answers it, at most once
+  per timer period), further ahead is dropped. Reassembly checks offset plus length against
+  the declared total before any write, keeps the type, total and sequence of a message
+  fixed across fragments, and refuses a retransmitted byte that differs; at most 16
+  incomplete messages and 256 KiB. The flight cache keeps each sent message's exact bytes
+  until the flight is acknowledged (by the peer's next flight, or a DTLS 1.3 ACK); a
+  retransmission re-fragments from that cache at the current MTU into fresh records, never
+  from a send cursor. Timer: 1 s doubling to 60 s, at most 7 retransmissions, then the
+  handshake fails. DTLS 1.3 ACKs the client's final flight, a NewSessionTicket and a
+  KeyUpdate, and sends an empty ACK when it cannot yet read the peer's flight.
+- Return routability. A server first checks a ClientHello with `dtls.Cookies`, statelessly:
+  a hello without a valid cookie gets a HelloVerifyRequest (DTLS 1.2) or a
+  HelloRetryRequest with a cookie (DTLS 1.3) built into the caller's buffer, never larger
+  than the hello, and nothing is allocated. A cookie is a MAC under a caller-rotated key over
+  the client's address, a time, the hello (for DTLS 1.3, the transcript hash of the first
+  hello, the chosen suite and group, which the server's association then resumes from) and
+  is honoured for a bounded age. A server configured without cookies (an ICE-validated path)
+  sends at most three times the bytes it received until the client's handshake keys prove
+  the path.
+- Key updates (DTLS 1.3): the KeyUpdate is ACKed before the sender switches; the receiver
+  keeps the old read epoch until a record authenticates under the new one; epochs never
+  wrap, and a sender stops at 2^48.
+- Connection IDs: RFC 9146 for DTLS 1.2 (tls12_cid records) and RFC 9147's for DTLS 1.3,
+  negotiated in the hellos; the CID is chosen by the caller. A record's CID that is not this
+  association's is dropped. Address changes are the caller's to authorize.
+
+Defaults are design §5.7's: MTU 1,200, replay window 128 records per retained epoch,
+reassembly 16 messages / 256 KiB, flight cache 256 KiB, pre-validation output 3x.
+
+### AES-CCM
+
+AES-128-CCM (16-byte tag) is a suite of TLS 1.3 and DTLS 1.3 (TLS_AES_128_CCM_SHA256), and
+ECDHE_ECDSA with AES-128-CCM and AES-256-CCM of TLS 1.2 and DTLS 1.2 (RFC 7251), offered
+only when listed, never by default. CCM_8's 8-byte tag is refused: RFC 9147 section 4.5.3
+forbids it in DTLS without other forgery protection, and TLS gains nothing from it. std's
+CCM fixes a 13-byte nonce, so cloak's CCM is its own (12-byte nonce, 16-byte tag) in
+`src/crypto/`, pinned by Wycheproof's and RFC 3610's vectors, its tag compared in constant
+time. CCM's confidentiality limit is 2^23 records per key (RFC 9147 Appendix B), below
+the GCM limit, and its records fail authentication at most 2^23.5 times per key.
