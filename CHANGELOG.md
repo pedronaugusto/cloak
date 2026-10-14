@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
 ### Breaking
 
 - `tls.Session.failure` is a function, `failure()`, the first failure behind a `ReadFailed` or `WriteFailed`, which either task may read.
