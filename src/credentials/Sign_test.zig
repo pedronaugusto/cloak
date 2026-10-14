@@ -113,7 +113,6 @@ fn edDifferential(_: void, case: *shakedown.Case) !void {
 }
 
 const Rsa = @import("Rsa.zig");
-const Entropy = @import("Entropy.zig");
 const signature = @import("../verify/signature.zig");
 const certificate = @import("../certificate.zig");
 const StdRsa = std.crypto.Certificate.rsa;
@@ -128,7 +127,7 @@ const odd_keys = .{ @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("..
 
 fn rsaKey(der: []const u8) !Rsa.Key {
     var key: Rsa.Key = undefined;
-    try Rsa.parse(der, .{ .entropy = Entropy.fromIo(&std.testing.io) }, &key);
+    try Rsa.parse(der, &key);
     return key;
 }
 

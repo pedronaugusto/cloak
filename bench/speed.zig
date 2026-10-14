@@ -349,7 +349,7 @@ fn rsa(ctx: *const Context, comptime name: []const u8) !void {
     };
     const pem = try ctx.file(name ++ ".key.pem");
     defer ctx.gpa.free(pem);
-    var signing: Signing = .{ .key = try cloak.PrivateKey.parse(ctx.gpa, pem, .{ .entropy = cloak.PrivateKey.Entropy.fromIo(&ctx.io) }), .message = ctx.message, .noise = undefined };
+    var signing: Signing = .{ .key = try cloak.PrivateKey.parse(ctx.gpa, pem, .{}), .message = ctx.message, .noise = undefined };
     defer signing.key.deinit();
     ctx.io.random(&signing.noise);
     try ctx.primitive("cloak", name ++ "/sign-pss", &signing, Signing.pss);

@@ -197,7 +197,7 @@ fn signatureGeneration(comptime file: []const u8, expected: usize) !void {
     var checked: usize = 0;
     for (parsed.testGroups) |group| {
         const hash = hashNamed(group.sha) orelse continue;
-        const key = try PrivateKey.parse(std.testing.allocator, try hex(gpa, group.privateKeyPkcs8), .{ .entropy = PrivateKey.Entropy.fromIo(&std.testing.io) });
+        const key = try PrivateKey.parse(std.testing.allocator, try hex(gpa, group.privateKeyPkcs8), .{});
         defer key.deinit();
         var noise: [PrivateKey.max_noise]u8 = @splat(0x6e);
         for (group.tests) |vector| {

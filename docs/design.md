@@ -9,7 +9,7 @@ Public owners live at the package root. `PrivateKey` retains immutable key
 material, `Identity` owns public certificate encodings and a retained matched
 key, and `ClientAuth` retains that identity. Final private-key release wipes its
 owned material. Import preparation validates components and ranges; it is not a
-private signing implementation. Entropy and passphrase inputs are borrowed only
+private signing implementation. A passphrase is borrowed only
 during construction. `credentials` owns private formats/arithmetic below those
 owners, without depending on public verification orchestration.
 
@@ -369,9 +369,11 @@ signature) buys protection only against a fault in the signer.
 
 RSA signing is the private operation of `crypto/rsa.zig` under the RFC 8017 encodings
 (EMSA-PSS with MGF1 and a salt as long as the hash, and EMSA-PKCS1-v1_5 with the exact
-DigestInfo for TLS 1.2). The key keeps n, e, p, q, dp, dq and qinv, validated at parse
-(primality, n = pq, the CRT congruences) and erased with the key; d is checked and not
-kept. Moduli of 2048 to 4096 bits sign; a valid key with a factor above 2048 bits is
+DigestInfo for TLS 1.2). The key keeps n, e, p, q, dp, dq and qinv, checked at parse to
+agree (n = pq, e d = 1 modulo p - 1 and q - 1, dp, dq and qinv) and erased with the key; d
+is checked and not kept. Whether p and q are prime is the key generator's to ensure, as Go,
+BoringSSL and ring hold it: a key whose factors are not releases no wrong signature, since
+every RSA signature is checked against the public key before it leaves. Moduli of 2048 to 4096 bits sign; a valid key with a factor above 2048 bits is
 refused at parse as `UnsupportedKey`. The operation uses the Chinese remainder theorem:
 each half raises the message to dp or dq modulo its factor in fixed four-bit windows over
 the factor's full width, every window's multiple read by a masked scan of the whole table,

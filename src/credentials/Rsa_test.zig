@@ -1,6 +1,5 @@
 const std = @import("std");
 const Rsa = @import("Rsa.zig");
-const Entropy = @import("Entropy.zig");
 const Pem = @import("Pem.zig");
 test "credential complete RSA CRT fields reject tampering" {
     @setRuntimeSafety(true);
@@ -8,11 +7,11 @@ test "credential complete RSA CRT fields reject tampering" {
     var block = (try pem.next(std.testing.allocator, 65536)).?;
     defer block.deinit(std.testing.allocator);
     var key: Rsa.Key = undefined;
-    try Rsa.parse(block.der, .{ .entropy = Entropy.fromIo(&std.testing.io) }, &key);
+    try Rsa.parse(block.der, &key);
     defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
     block.der[block.der.len - 1] ^= 2;
     var tampered: Rsa.Key = undefined;
-    try std.testing.expectError(error.InvalidKey, Rsa.parse(block.der, .{ .entropy = Entropy.fromIo(&std.testing.io) }, &tampered));
+    try std.testing.expectError(error.InvalidKey, Rsa.parse(block.der, &tampered));
 }
 
 test "credential RSA mathematical congruence does not permit out of range secret integers" {
@@ -20,6 +19,6 @@ test "credential RSA mathematical congruence does not permit out of range secret
     for ([_][]const u8{ @embedFile("testdata/rsa.invalid-qinv-range.der"), @embedFile("testdata/rsa.invalid-d-range.der") }) |encoded| {
         var key: Rsa.Key = undefined;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
-        try std.testing.expectError(error.InvalidKey, Rsa.parse(encoded, .{ .entropy = Entropy.fromIo(&std.testing.io) }, &key));
+        try std.testing.expectError(error.InvalidKey, Rsa.parse(encoded, &key));
     }
 }

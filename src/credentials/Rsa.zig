@@ -1,13 +1,13 @@
-//! Mathematical validation of complete two-prime RSA input, kept in the CRT form the private
-//! operation of `crypto/rsa.zig` uses.
+//! Validation of complete two-prime RSA input, kept in the CRT form the private operation of
+//! `crypto/rsa.zig` uses. A key's numbers are checked to agree with each other (n = pq, the
+//! exponents and the CRT values); whether p and q are prime is its generator's to ensure, as Go,
+//! BoringSSL and ring hold it. No wrong signature leaves on a key whose factors are not: the
+//! private operation checks each signature against the public key before releasing it.
 const std = @import("std");
-const Entropy = @import("Entropy.zig");
-const Primality = @import("Primality.zig");
 const Der = @import("../wire/Der.zig");
 const kernel = @import("../crypto/rsa.zig");
 /// `UnsupportedKey`: a valid key the private operation cannot hold, a factor above 2048 bits.
-pub const Error = Der.Error || Primality.CheckError || error{ InvalidKey, EntropyRequired, UnsupportedKey };
-pub const Options = struct { entropy: ?Entropy = null };
+pub const Error = Der.Error || error{ InvalidKey, UnsupportedKey };
 /// The public modulus and exponent as parsed, for matching a certificate, and the private key
 /// as the CRT operation holds it: n, e, p, q, dp, dq and qinv with their Montgomery constants.
 /// The private exponent d is validated and not kept. The owner erases the whole value.
@@ -22,7 +22,7 @@ const Uint = @import("Uint.zig");
 const limb_bits = @bitSizeOf(usize) - 1;
 /// Parses and validates an RSAPrivateKey into `out`, which holds the key on success and only
 /// zeros on failure.
-pub fn parse(encoded: []const u8, options: Options, out: *Key) Error!void {
+pub fn parse(encoded: []const u8, out: *Key) Error!void {
     @setRuntimeSafety(true);
     var r = (try Der.single(encoded, 0x30)).reader();
     if (try Der.number((try r.expect(2)).value) != 0) return error.InvalidKey;
@@ -70,19 +70,6 @@ pub fn parse(encoded: []const u8, options: Options, out: *Key) Error!void {
     if (!congruent(&values[2], &pm, &values[5]) or !congruent(&values[2], &qm, &values[6])) return error.InvalidKey;
     product = Uint.zero;
     if (multiply(&product, q, &values[7]) != 0 or !congruent(&product, p, &one)) return error.InvalidKey;
-    // Small composites are rejected before an entropy request, then both factors
-    // receive independent full-strength strong probable-prime validation.
-    for (integers[3..5]) |factor| {
-        inline for (.{ 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47 }) |prime| {
-            var residue: u32 = 0;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&residue));
-            for (factor) |byte| residue = (residue * 256 + byte) % prime;
-            if (residue == 0) return error.InvalidKey;
-        }
-    }
-    const entropy = options.entropy orelse return error.EntropyRequired;
-    try Primality.check(integers[3], entropy);
-    try Primality.check(integers[4], entropy);
     out.* = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
     errdefer std.crypto.secureZero(u8, std.mem.asBytes(out));
     @memcpy(out.n[0..n.len], n);

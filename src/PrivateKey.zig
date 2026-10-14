@@ -13,8 +13,6 @@ state: *State,
 const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), material: Secret(parser.Material) };
 pub const ParseError = parser.ParseError;
 pub const ParseOptions = parser.Options;
-/// Caller-provided fresh CSPRNG witnesses for RSA material validation.
-pub const Entropy = @import("credentials/Entropy.zig");
 /// Stack a parse and a signature reach below their entry, erased when they return: the frames
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
 /// A test measures every key type and scheme against them in each build mode.
@@ -205,7 +203,6 @@ fn parseReleased(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOption
 
 test "a parse and a signature reach less stack than the depths that erase it" {
     const gpa = std.testing.allocator;
-    const entropy = Entropy.fromIo(&std.testing.io);
     const keys = [_][]const u8{
         @embedFile("crypto/testdata/rsa4096.der"),
         @embedFile("crypto/testdata/rsa2049.der"),
@@ -218,7 +215,7 @@ test "a parse and a signature reach less stack than the depths that erase it" {
     var parsing: usize = 0;
     var signing: usize = 0;
     for (keys) |bytes| {
-        const options: ParseOptions = .{ .entropy = entropy, .passphrase = if (isEncrypted(bytes)) "correct-horse" else null };
+        const options: ParseOptions = .{ .passphrase = if (isEncrypted(bytes)) "correct-horse" else null };
         parsing = @max(parsing, aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ gpa, bytes, options }));
         const key = try parse(gpa, bytes, options);
         defer key.deinit();

@@ -67,8 +67,7 @@ test "credential identity signs for the keys cloak holds and says so for the res
         var pem = Pem.init(case.cert);
         var block = (try pem.next(gpa, 65536)).?;
         defer block.deinit(gpa);
-        const io = std.testing.io;
-        const key = try PrivateKey.parse(gpa, case.key, .{ .entropy = PrivateKey.Entropy.fromIo(&io) });
+        const key = try PrivateKey.parse(gpa, case.key, .{});
         defer key.deinit();
         const identity = try Identity.init(gpa, &.{block.der}, key, .{});
         defer identity.deinit();

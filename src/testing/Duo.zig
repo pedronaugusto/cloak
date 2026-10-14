@@ -62,7 +62,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .p384 => pki.p384_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
-    }, .{ .entropy = certificates.PrivateKey.Entropy.fromIo(&std.testing.io) });
+    }, .{});
     defer key.deinit();
     const leaf = switch (options.cert) {
         .p256 => pki.p256,

@@ -1,26 +1,38 @@
 //! Independent C1 credential review regression. The verifier ship owns only this test.
 const std = @import("std");
-const Entropy = @import("../credentials/Entropy.zig");
-const Primality = @import("../credentials/Primality.zig");
 const shakedown = @import("shakedown");
 const Montgomery = @import("../credentials/Montgomery.zig");
 const Rsa = @import("../credentials/Rsa.zig");
+const Sign = @import("../credentials/Sign.zig");
+const signature = @import("signature.zig");
+const Algorithm = @import("../certificate/Algorithm.zig");
 const Kdf = @import("../credentials/Kdf.zig");
 const EdKey = @import("../credentials/EdKey.zig");
-test "credential review composite factors cannot become prepared RSA material" {
+test "credential review a key with composite factors releases no wrong signature" {
+    // Its numbers agree (n = pq, the CRT congruences) but p and q are not prime: the parse
+    // checks agreement, and the private operation refuses any signature the public key rejects.
     var material: Rsa.Key = undefined;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
-    const rejected = if (Rsa.parse(@embedFile("fixtures/rsa-composite.der"), .{}, &material)) false else |err| err == error.InvalidKey;
-    // A failed rejection prints only a boolean, never prepared private material.
-    try std.testing.expect(rejected);
-}
-
-test "credential review full primality rejects a strong pseudoprime and accepts a prime" {
-    const entropy = Entropy.fromIo(&std.testing.io);
-    var composite: [8]u8 = undefined;
-    std.mem.writeInt(u64, &composite, 341550071728321, .big);
-    try std.testing.expectError(error.InvalidKey, Primality.check(&composite, entropy));
-    try Primality.check("\x01\x01", entropy);
+    Rsa.parse(@embedFile("fixtures/rsa-composite.der"), &material) catch |err| {
+        // The kernel may refuse the shape outright; that releases nothing either.
+        return std.testing.expectEqual(error.UnsupportedKey, err);
+    };
+    const public: Algorithm.PublicKey = .{ .rsa = .{ .modulus = material.n[0..material.size], .exponent = material.e[0..material.exponent_size] } };
+    var released: usize = 0;
+    for (0..32) |i| {
+        var message: [8]u8 = undefined;
+        std.mem.writeInt(u64, &message, i, .big);
+        var noise: [Sign.rsa.noise_length]u8 = @splat(@truncate(i));
+        var out: [Sign.max_signature]u8 = undefined;
+        const made = Sign.rsa.pkcs1(std.crypto.hash.sha2.Sha256, &material.crt, &message, &noise, &out) catch |err| {
+            try std.testing.expectEqual(error.SigningFailed, err);
+            continue;
+        };
+        released += 1;
+        try signature.verify(public, .{ .rsa = .sha256 }, &message, made);
+    }
+    // A failed check prints counts only, never prepared private material.
+    try std.testing.expect(released <= 32);
 }
 
 test "credential review Montgomery full-width differential arithmetic and carries" {

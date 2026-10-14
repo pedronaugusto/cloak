@@ -1,7 +1,6 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const PrivateKey = @import("../PrivateKey.zig");
-const Entropy = @import("Entropy.zig");
 const Pem = @import("Pem.zig");
 test "credential key formats match modern certificate public keys" {
     @setRuntimeSafety(true);
@@ -24,7 +23,7 @@ test "credential key formats match modern certificate public keys" {
         .{ .key = @embedFile("testdata/ed25519.enc-aes256-sha512.pem"), .cert = @embedFile("testdata/ed25519.cert.pem"), .passphrase = "correct-horse" },
     };
     for (cases) |case| {
-        const key = try PrivateKey.parse(std.testing.allocator, case.key, .{ .passphrase = case.passphrase, .entropy = Entropy.fromIo(&std.testing.io) });
+        const key = try PrivateKey.parse(std.testing.allocator, case.key, .{ .passphrase = case.passphrase });
         defer key.deinit();
         var cert_pem = Pem.init(case.cert);
         var block: ?Pem.Block = if (std.mem.startsWith(u8, case.cert, "-----")) (try cert_pem.next(std.testing.allocator, 65536)).? else null;
@@ -60,7 +59,6 @@ test "credential PEM complete input and declared key format are strict" {
     try rejectKey(error.InvalidPem, PrivateKey.parse(std.testing.allocator, pem ++ "junk", .{}));
     const rsa_label = "-----BEGIN RSA PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END RSA PRIVATE KEY-----";
     try rejectKey(error.InvalidKey, PrivateKey.parse(std.testing.allocator, rsa_label, .{}));
-    try rejectKey(error.EntropyRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.pkcs1.pem"), .{}));
 }
 
 test "credential PEM key after the attributes a PKCS #12 export writes" {
@@ -105,7 +103,7 @@ test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a messag
     const signature = @import("../verify/signature.zig");
     const certificate = @import("../certificate.zig");
     const gpa = std.testing.allocator;
-    const key = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{ .entropy = Entropy.fromIo(&std.testing.io) });
+    const key = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{});
     defer key.deinit();
     var cert_pem = Pem.init(@embedFile("testdata/rsa.cert.pem"));
     var block = (try cert_pem.next(gpa, 65536)).?;

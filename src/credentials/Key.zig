@@ -4,7 +4,6 @@ const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
-const Entropy = @import("Entropy.zig");
 const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
 const Kdf = @import("Kdf.zig");
@@ -17,7 +16,7 @@ const Ed25519 = std.crypto.sign.Ed25519;
 const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair };
-pub const Options = struct { entropy: ?Entropy = null, passphrase: ?[]const u8 = null, bytes: usize = 65536, depth: usize = 24, elements: usize = 4096, iterations: usize = 1_000_000, salt_bytes: usize = 1024, password_bytes: usize = 4096 };
+pub const Options = struct { passphrase: ?[]const u8 = null, bytes: usize = 65536, depth: usize = 24, elements: usize = 4096, iterations: usize = 1_000_000, salt_bytes: usize = 1024, password_bytes: usize = 4096 };
 pub const ParseError = Der.Error || Pem.Error || Rsa.Error || Cbc.Error || error{ UnsupportedKey, UnsupportedEncryption, PasswordRequired, KdfLimit };
 const oid_rsa = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
@@ -94,16 +93,16 @@ fn parseDer(bytes: []const u8, options: Options, out: *Material) ParseError!void
     const version = try Der.number((try r.expect(2)).value);
     return switch (r.peek() orelse return error.InvalidKey) {
         0x30 => if (version == 0) pkcs8(&r, options, out) else error.InvalidKey,
-        2 => if (version == 0) rsaKey(bytes, options, out) else error.InvalidKey,
+        2 => if (version == 0) rsaKey(bytes, out) else error.InvalidKey,
         4 => if (version == 1) sec1(bytes, null, out) else error.InvalidKey,
         else => error.InvalidKey,
     };
 }
 /// An RSAPrivateKey, parsed straight into `out`'s RSA arm.
-fn rsaKey(bytes: []const u8, options: Options, out: *Material) ParseError!void {
+fn rsaKey(bytes: []const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     out.* = .{ .rsa = undefined };
-    Rsa.parse(bytes, .{ .entropy = options.entropy }, &out.rsa) catch |err| {
+    Rsa.parse(bytes, &out.rsa) catch |err| {
         std.crypto.secureZero(u8, std.mem.asBytes(out));
         return err;
     };
@@ -123,7 +122,7 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
     try validate(key, options);
     if (std.mem.eql(u8, id, oid_rsa)) {
         if (parameter) |p| if (p.tag != 5 or p.value.len != 0) return error.InvalidKey;
-        return rsaKey(key, options, out);
+        return rsaKey(key, out);
     }
     if (std.mem.eql(u8, id, oid_ec)) {
         const p = parameter orelse return error.InvalidKey;
@@ -263,7 +262,7 @@ fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
     const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, data, plain) else try Cbc.decrypt(key[0..key_len], iv[0..16].*, data, plain);
     return parseDer(decoded, options, out) catch |err| switch (err) {
-        error.OutOfMemory, error.EntropyRequired, error.EntropyUnavailable => err,
+        error.OutOfMemory => err,
         else => error.BadPassword,
     };
 }

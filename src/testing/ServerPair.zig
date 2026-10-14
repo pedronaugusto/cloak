@@ -117,7 +117,7 @@ pub fn ServerPair(comptime suite: Suite13) type {
                 .p384 => pki.p384_pem,
                 .ed25519 => pki.ed25519_pem,
                 .rsa => pki.rsa_pem,
-            }, .{ .entropy = witnesses });
+            }, .{});
             defer key.deinit();
             const leaf = switch (cert) {
                 .p256 => pki.p256,
@@ -127,15 +127,6 @@ pub fn ServerPair(comptime suite: Suite13) type {
             };
             if (external) return certificates.Identity.initExternal(gpa, &.{ leaf, pki.ca }, .{});
             return certificates.Identity.init(gpa, &.{ leaf, pki.ca }, key, .{});
-        }
-
-        /// Primality witnesses for parsing the RSA fixture: a fixed stream is enough for a test key.
-        const witnesses: certificates.PrivateKey.Entropy = .{ .context = &witness_anchor, .fill = fill };
-        const witness_anchor: u8 = 0;
-
-        fn fill(_: *const anyopaque, out: []u8) certificates.PrivateKey.Entropy.FillError!void {
-            var prng: std.Random.DefaultPrng = .init(0x7e57);
-            prng.random().bytes(out);
         }
 
         fn dropIdentities(self: *Self) void {

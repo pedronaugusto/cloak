@@ -47,7 +47,7 @@ pub fn authenticate(
 
 The returned receipt owns the selected DER path; its caller calls `deinit()`. Check it against the unchanged request before accepting a service completion. Snapshot generations are scoped to their builder; reload across owners also changes the caller's policy generation and completion token.
 
-`PrivateKey.parse` owns its material and wipes it on final release. RSA parsing requires fresh caller CSPRNG witnesses through `PrivateKey.Entropy.fromIo(&io)`. Passphrases and Io are borrowed only for the parse call. `Identity.init` copies the chain, checks the leaf key and retains the key; `ClientAuth` shares that immutable identity.
+`PrivateKey.parse` owns its material and wipes it on final release. An RSA key's numbers are checked to agree; that its factors are prime is its generator's to ensure, and every RSA signature is checked against the public key before it leaves. A passphrase is borrowed only for the parse call. `Identity.init` copies the chain, checks the leaf key and retains the key; `ClientAuth` shares that immutable identity.
 
 Native system trust uses `NativeVerification` with an empty explicit-anchor list. A finite timeout requires a bounded caller executor before inputs are copied. The executor owns the completion until it runs and releases it, including after abandonment and during shutdown. The driver applies portable floors to the exact OS-selected chain before returning a receipt. See [ownership and integration](docs/design.md).
 

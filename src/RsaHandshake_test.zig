@@ -39,7 +39,7 @@ test "RSA server certificate: the signature noise comes with the key exchange en
 test "RSA client certificate: cloak answers a CertificateRequest with rsa_pss_rsae" {
     const gpa = std.testing.allocator;
     const P = Pair(.aes_128_gcm_sha256);
-    const key = try certificates.PrivateKey.parse(gpa, pki.rsa_pem, .{ .entropy = certificates.PrivateKey.Entropy.fromIo(&std.testing.io) });
+    const key = try certificates.PrivateKey.parse(gpa, pki.rsa_pem, .{});
     defer key.deinit();
     const auth = try certificates.ClientAuth.init(gpa, &.{pki.rsa}, key, .{});
     defer auth.deinit();
@@ -59,7 +59,7 @@ test "RSA client certificate: cloak answers a CertificateRequest with rsa_pss_rs
 
 test "RSA client certificate: a request without an RSA scheme gets an empty Certificate" {
     const gpa = std.testing.allocator;
-    const key = try certificates.PrivateKey.parse(gpa, pki.rsa_pem, .{ .entropy = certificates.PrivateKey.Entropy.fromIo(&std.testing.io) });
+    const key = try certificates.PrivateKey.parse(gpa, pki.rsa_pem, .{});
     defer key.deinit();
     const auth = try certificates.ClientAuth.init(gpa, &.{pki.rsa}, key, .{});
     defer auth.deinit();
