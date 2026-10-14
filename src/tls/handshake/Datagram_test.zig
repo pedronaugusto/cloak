@@ -37,7 +37,7 @@ test "C8 a DTLS 1.3 handshake of two machines completes" {
     // The ServerHello names DTLS 1.2 in its legacy version and DTLS 1.3 in supported_versions.
     const server_hello = pair.server.sent.items[0];
     try std.testing.expectEqualSlices(u8, &.{ 0xfe, 0xfd }, server_hello[4..6]);
-    try std.testing.expect(std.mem.indexOf(u8, server_hello, &.{ 0, 43, 0, 2, 0xfe, 0xfc }) != null);
+    try std.testing.expect(std.mem.find(u8, server_hello, &.{ 0, 43, 0, 2, 0xfe, 0xfc }) != null);
 }
 
 test "C8 a DTLS 1.3 handshake derives under dtls13, not under TLS's labels" {
