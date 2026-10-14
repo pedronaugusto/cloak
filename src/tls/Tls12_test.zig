@@ -352,13 +352,23 @@ test "C4 a TLS 1.2 client offers at least one TLS 1.2 suite" {
 test "C4 an output popped from the queue leaves no key bytes behind" {
     const Flight = @import("handshake/Flight.zig");
     var flight: Flight = .{};
-    var keys: Flight.Keys12 = .{ .cipher = .aes_128_gcm, .key = .init(@splat(0xaa)), .iv = .init(@splat(0xbb)) };
+    // Searched for as whole sequences: a single byte can turn up by chance, and Debug fills an
+    // emptied slot's payload with 0xaa, its pattern for undefined memory.
+    var key: [32]u8 = undefined;
+    for (&key, 0..) |*byte, i| byte.* = @intCast(0x40 + i); // safe: i is below 32
+    const iv: [12]u8 = .{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c };
+    var keys: Flight.Keys12 = .{ .cipher = .aes_256_gcm, .key = .init(key), .iv = .init(iv) };
     try flight.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });
     keys.deinit();
     var out: Flight.Emit = undefined;
     try std.testing.expect(flight.pop(&out));
     defer Flight.eraseEmit(&out);
-    try std.testing.expectEqual(@as(u8, 0xaa), out.keys12.keys.key.expose()[0]);
-    for (&flight.queue) |*slot| try std.testing.expect(std.mem.findScalar(u8, std.mem.asBytes(slot), 0xaa) == null);
+    try std.testing.expectEqualSlices(u8, &key, out.keys12.keys.key.expose());
+    for (&flight.queue) |*slot| {
+        const bytes = std.mem.asBytes(slot);
+        try std.testing.expect(std.mem.find(u8, bytes, key[0..8]) == null);
+        try std.testing.expect(std.mem.find(u8, bytes, key[24..32]) == null);
+        try std.testing.expect(std.mem.find(u8, bytes, iv[0..8]) == null);
+    }
     try std.testing.expect(!flight.pop(&out));
 }
