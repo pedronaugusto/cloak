@@ -55,6 +55,44 @@ fn measureServer(comptime suite: harness.Suite13, scenario: ServerScenario, init
     });
 }
 
+/// Both cloak ends in memory: one full handshake, or one resumed from the previous connection's
+/// ticket (TLS 1.3 PSK-DHE, or a TLS 1.2 abbreviated handshake), timed together, client and server.
+fn measureResumption(name: []const u8, tls12: bool, resumed: bool, init: std.process.Init, writer: *std.Io.Writer, samples: usize) !void {
+    const gpa = std.heap.smp_allocator;
+    const cloak = harness.cloak;
+    const times = try gpa.alloc(u64, samples);
+    defer gpa.free(times);
+    var cache = try cloak.tls.SessionCache.init(gpa, .{});
+    defer cache.deinit();
+    var keys = try cloak.tls.TicketKeys.init(gpa, .{});
+    defer keys.deinit();
+    try keys.rotate(&@as([32]u8, @splat(0x5e)), .fromNanoseconds(@as(i96, harness.Peer.pki.time) * std.time.ns_per_s));
+    for (times, 0..) |*slot, i| {
+        var options: harness.Duo.Options = .{ .seed = i + 1, .cache = &cache, .tickets = &keys };
+        if (tls12) {
+            options.client_max = .tls12;
+            options.client_tls12_tickets = true;
+            options.server_tls12_tickets = true;
+        }
+        if (resumed) {
+            const first = try harness.Duo.init(gpa, options);
+            defer first.deinit();
+            try first.handshake();
+        } else cache.clear();
+        options.seed = i + 1_000_000;
+        const duo = try harness.Duo.init(gpa, options);
+        defer duo.deinit();
+        const start = std.Io.Clock.awake.now(init.io).nanoseconds;
+        try duo.handshake();
+        // safe: monotonic nanoseconds only grow.
+        slot.* = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds - start);
+        if (duo.client.info().?.resumed != resumed) return error.UnexpectedResumption;
+    }
+    std.mem.sort(u64, times, {}, std.sort.asc(u64));
+    const median = times[times.len / 2];
+    try writer.print("both ends {s}: min={d}us median={d}us p95={d}us\n", .{ name, times[0] / 1000, median / 1000, times[times.len * 95 / 100] / 1000 });
+}
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke");
@@ -82,5 +120,9 @@ pub fn main(init: std.process.Init) !void {
     inline for (.{ harness.Suite13.aes_128_gcm_sha256, harness.Suite13.chacha20_poly1305_sha256 }) |suite| {
         for (server_scenarios) |scenario| try measureServer(suite, scenario, init, &out.interface, samples);
     }
+    try measureResumption("TLS 1.3 full, hybrid ML-KEM, P-256 chain verified", false, false, init, &out.interface, samples);
+    try measureResumption("TLS 1.3 resumed, hybrid ML-KEM", false, true, init, &out.interface, samples);
+    try measureResumption("TLS 1.2 full, X25519, P-256 chain verified", true, false, init, &out.interface, samples);
+    try measureResumption("TLS 1.2 resumed (abbreviated)", true, true, init, &out.interface, samples);
     try out.interface.flush();
 }
