@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-14
+
 ### Breaking
 
 - `tls.Suite` gains `aes_128_ccm_sha256`, `ecdhe_ecdsa_aes_128_ccm` and `ecdhe_ecdsa_aes_256_ccm`: an exhaustive switch over it needs the three cases.
