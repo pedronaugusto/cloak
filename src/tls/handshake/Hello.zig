@@ -21,7 +21,7 @@ pub const Options = struct {
     /// The lowest and highest versions offered or accepted.
     min_version: Version = .tls12,
     max_version: Version = .tls13,
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     sni: []const u8 = "",
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
@@ -33,9 +33,13 @@ pub const Options = struct {
     certificate_compression: []const Compression.Codec = &.{},
 
     /// Whether TLS 1.2 is offered or accepted: it is allowed, the policy does not need TLS 1.3
-    /// (QUIC, hybrid-only), and a TLS 1.2 suite is listed. The version follows from the suites.
+    /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
+    /// TLS 1.2 has. The version follows from the suites and groups.
     pub fn allows12(options: Options) bool {
         if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid) return false;
+        for (options.groups) |group| {
+            if (group.classical()) break;
+        } else return false;
         for (options.suites) |suite| if (suite.version() == .tls12) return true;
         return false;
     }
@@ -92,12 +96,6 @@ pub fn validate(options: Options) ValidateError!void {
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
-    // TLS 1.2 has no hybrid: a TLS 1.2-only offer needs a classical group.
-    if (!options.allows13()) {
-        for (options.groups) |group| {
-            if (!group.hybrid()) break;
-        } else return error.InvalidOptions;
-    }
     if (options.require_hybrid) {
         for (options.groups) |group| {
             if (group.hybrid()) break;
@@ -177,9 +175,11 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         else => options.sni,
     };
     const datagram = options.transport == .datagram;
-    // Key shares are TLS 1.3: present exactly when it is offered. QUIC and DTLS 1.3 have no
-    // legacy session id; a datagram hello sends one only to resume a DTLS 1.2 ticket.
-    if (session.len > 32 or (options.transport == .quic and session.len != 0) or (datagram and session.len != 0 and !options.allows12()) or (shares.len == 0) == options.allows13() or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
+    // Key shares are TLS 1.3: present exactly when it is offered, except that a datagram hello
+    // may carry none (it must fit one datagram; the retry request asks for the group). QUIC and
+    // DTLS 1.3 have no legacy session id; a datagram hello sends one only to resume a DTLS 1.2 ticket.
+    const shares_ok = if (options.allows13()) shares.len != 0 or datagram else shares.len == 0;
+    if (session.len > 32 or (options.transport == .quic and session.len != 0) or (datagram and session.len != 0 and !options.allows12()) or !shares_ok or shares.len > 2 or cookie.len > 4096) return error.InvalidOptions;
     if (legacy_cookie.len > 255 or (legacy_cookie.len != 0 and !datagram)) return error.InvalidOptions;
     for (shares, 0..) |share, i| {
         if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{share.group}) or share.bytes.len != share.group.clientShareLength()) return error.InvalidOptions;

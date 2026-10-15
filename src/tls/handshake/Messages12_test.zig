@@ -23,6 +23,8 @@ test "C4 TLS 1.2 messages round-trip and refuse lengths past their parent" {
     // Explicit curves, the hybrid group and short points are refused.
     try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x08\x01\x00\x1d\x00\x04\x03\x00\x00"));
     try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x09\x03\x11\xec\x01\x00\x04\x03\x00\x01"));
+    // Nor a pure ML-KEM group: TLS 1.2 has only classical ones.
+    try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x09\x03\x02\x02\x01\x00\x04\x03\x00\x01"));
     try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x09\x03\x00\x1d\x01\xaa\x04\x03\x00\x01"));
     // CertificateRequest and ServerHelloDone.
     const request = try Messages12.buildCertificateRequest(&buffer, &.{ 0x0403, 0x0804 });

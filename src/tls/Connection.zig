@@ -73,7 +73,7 @@ pub const ClientOptions = struct {
     /// `max_version = .tls12` speaks only TLS 1.2.
     min_version: Version = .tls12,
     max_version: Version = .tls13,
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
@@ -241,7 +241,7 @@ pub const ServerOptions = struct {
     /// `max_version = .tls12` speaks only TLS 1.2.
     min_version: Version = .tls12,
     max_version: Version = .tls13,
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     /// Application protocols in the server's order of preference.
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,

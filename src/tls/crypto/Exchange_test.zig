@@ -117,7 +117,7 @@ fn symmetric(_: void, case: *shakedown.Case) !void {
 }
 
 test "C2 exchange server response agrees with the client share for every group" {
-    inline for (.{ Group.x25519, Group.x25519_mlkem768, Group.p256, Group.p384 }) |group| {
+    inline for (comptime std.enums.values(Group)) |group| {
         var client_entropy: [Exchange.entropyLength(group)]u8 = undefined;
         fill(&client_entropy, 11);
         var client = try Exchange.Share.init(group, &client_entropy);
@@ -223,4 +223,75 @@ test "F91 catalogue_pq_group_specific_layout_and_auth_policy (group layouts)" {
     reply[0] = 4;
     try std.testing.expectError(error.InvalidShare, p_share.agree(&reply));
     for (std.enums.values(Group)) |group| try std.testing.expect(Exchange.max_share >= group.clientShareLength() and Exchange.max_share >= group.serverShareLength());
+}
+
+fn pureLayout(comptime group: Group, comptime K: type) !void {
+    var entropy: [Exchange.entropyLength(group)]u8 = undefined;
+    fill(&entropy, 41);
+    var share = try Exchange.Share.init(group, &entropy);
+    defer share.deinit();
+    // The client's key_exchange is the encapsulation key alone, from the seed (FIPS 203 d || z).
+    const wire = share.wire();
+    try std.testing.expectEqual(K.PublicKey.encoded_length, wire.len);
+    const pair = try K.KeyPair.generateDeterministic(entropy[0..K.seed_length].*);
+    try std.testing.expectEqualSlices(u8, &pair.public_key.toBytes(), wire);
+    // An independent server: the ciphertext alone; the secret is ML-KEM's alone.
+    const ek = try K.PublicKey.fromBytes(wire[0..K.PublicKey.encoded_length]);
+    const sealed = ek.encapsDeterministic(&@as([K.encaps_seed_length]u8, @splat(43)));
+    var agreed = try share.agree(&sealed.ciphertext);
+    defer agreed.deinit();
+    try std.testing.expectEqualSlices(u8, &sealed.shared_secret, agreed.bytes());
+    // A damaged ciphertext is implicitly rejected: a secret, not the agreed one, and no error.
+    var damaged = sealed.ciphertext;
+    damaged[3] ^= 1;
+    var other = try share.agree(&damaged);
+    defer other.deinit();
+    try std.testing.expect(!std.mem.eql(u8, agreed.bytes(), other.bytes()));
+    // The server side: its ciphertext and secret agree with the client's.
+    var respond_entropy: [Exchange.respondEntropyLength(group)]u8 = undefined;
+    fill(&respond_entropy, 47);
+    try std.testing.expectEqual(K.encaps_seed_length, respond_entropy.len);
+    var response = try Exchange.respond(group, wire, &respond_entropy);
+    defer response.deinit();
+    try std.testing.expectEqual(K.ciphertext_length, response.wire().len);
+    try std.testing.expectEqualSlices(u8, &ek.encapsDeterministic(&respond_entropy).ciphertext, response.wire());
+    var mirrored = try share.agree(response.wire());
+    defer mirrored.deinit();
+    try std.testing.expectEqualSlices(u8, response.agreed.bytes(), mirrored.bytes());
+    // Lengths are each group's own, either side.
+    try std.testing.expectError(error.InvalidShare, share.agree(sealed.ciphertext[1..]));
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(group, wire[1..], &respond_entropy));
+    // The server checks the encapsulation key (FIPS 203 7.2): a coefficient at or above q is refused.
+    var bad: [K.PublicKey.encoded_length]u8 = wire[0..K.PublicKey.encoded_length].*;
+    bad[0] = 0xff;
+    bad[1] |= 0x0f;
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(group, &bad, &respond_entropy));
+}
+
+test "C10 exchange MLKEM768 and MLKEM1024: the encapsulation key, the ciphertext and the secret alone" {
+    try pureLayout(.mlkem768, MlKem);
+    try pureLayout(.mlkem1024, MlKem1024);
+}
+
+test "F91 catalogue_pq_group_specific_layout_and_auth_policy (pure ML-KEM is not a hybrid)" {
+    // Pure ML-KEM groups are post-quantum but not hybrids, and never classical; nothing defaults to them.
+    for ([_]Group{ .mlkem768, .mlkem1024 }) |group| {
+        try std.testing.expect(!group.hybrid() and !group.classical());
+    }
+    for ([_]Group{ .x25519, .p256, .p384 }) |group| try std.testing.expect(group.classical() and !group.hybrid());
+    for ([_]Group{ .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024 }) |group| try std.testing.expect(!group.classical());
+    // A hybrid share is not a pure one: X25519MLKEM768's wire is longer than MLKEM768's.
+    var entropy: [Exchange.entropyLength(.x25519_mlkem768)]u8 = undefined;
+    fill(&entropy, 53);
+    var hybrid = try Exchange.Share.init(.x25519_mlkem768, &entropy);
+    defer hybrid.deinit();
+    var respond_entropy: [Exchange.respondEntropyLength(.mlkem768)]u8 = undefined;
+    fill(&respond_entropy, 59);
+    try std.testing.expectError(error.InvalidShare, Exchange.respond(.mlkem768, hybrid.wire(), &respond_entropy));
+    // MLKEM768's ciphertext (1,088 bytes) is not MLKEM1024's (1,568).
+    var pure_entropy: [Exchange.entropyLength(.mlkem1024)]u8 = undefined;
+    fill(&pure_entropy, 61);
+    var pure = try Exchange.Share.init(.mlkem1024, &pure_entropy);
+    defer pure.deinit();
+    try std.testing.expectError(error.InvalidShare, pure.agree(&@as([1088]u8, @splat(5))));
 }

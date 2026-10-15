@@ -38,7 +38,7 @@ pub const Options = struct {
     server_name: ServerName = .identity,
     /// TLS 1.3 suites only: QUIC is TLS 1.3.
     suites: []const Suite = Suite.tls13_only,
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     require_hybrid: bool = false,
     auth: ?certificates.ClientAuth = null,
     /// TLS 1.3 session resumption from a ticket cache (no early data: QUIC 0-RTT is not offered).
@@ -64,7 +64,7 @@ pub const ServerOptions = struct {
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
     /// TLS 1.3 suites only: QUIC is TLS 1.3.
     suites: []const Suite = Suite.tls13_only,
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     require_hybrid: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,

@@ -4,6 +4,20 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `tls.Group` gains `mlkem768` (MLKEM768, 513) and `mlkem1024` (MLKEM1024, 514), pure ML-KEM key exchange (draft-ietf-tls-mlkem): an exhaustive switch over the groups needs the two arms.
+
+### Added
+
+- MLKEM768 and MLKEM1024, both roles, TLS 1.3, QUIC and DTLS 1.3: the client's share is the encapsulation key, the server's the ciphertext, the secret ML-KEM's alone; the server checks the encapsulation key (FIPS 203) and a damaged ciphertext is implicitly rejected. For a policy that wants no elliptic curve in its key exchange (CNSA 2.0): never in the default offer, used only when listed in `groups`. They are not hybrids: `require_hybrid` is not met by them, and a list of only pure groups with `require_hybrid` is refused. Failure catalogue row F91 covers them. Live interop against OpenSSL 4.0.3 (both groups) and Go 1.27.1 (MLKEM1024), both roles.
+- `Group.default`, the one default offer every carrier's options take, and `Group.classical`, the groups TLS 1.2 has.
+
+### Changed
+
+- TLS 1.2 is offered or accepted only when a classical group (X25519, P-256, P-384) is listed: a list of only post-quantum groups no longer advertises a version it cannot agree on.
+- A DTLS client's first hello carries at most one classical share (X25519 when listed), and none for a hybrid-only or post-quantum-only list: their shares do not fit one datagram beside the hello, so a stateless cookie server dropped it and the handshake timed out (X25519MLKEM768 alone, or `require_hybrid`, included). The server asks for its group with the retry request that brings its cookie.
+
 ## [0.9.2] - 2026-10-14
 
 ### Added

@@ -270,7 +270,15 @@ secret is the ML-KEM secret then the X25519 secret. SecP256r1MLKEM768 (4587) and
 NIST-curve hybrids of draft-ietf-tls-ecdhe-mlkem, go the other way: the uncompressed ECDH point
 then the ML-KEM key (or ciphertext), and the ECDH secret then the ML-KEM one. They are offered only
 when listed, and obtained through a retry request like P-256; any of the three hybrids satisfies
-`require_hybrid`, and none exists in TLS 1.2. P-256 key generation, agreement, ECDSA
+`require_hybrid`, and none exists in TLS 1.2. MLKEM768 (513) and MLKEM1024 (514) of
+draft-ietf-tls-mlkem are ML-KEM alone: the encapsulation key from the client, the ciphertext
+from the server, the 32-byte ML-KEM secret; the server refuses an encapsulation key that fails
+FIPS 203's check. They are for a policy that wants no elliptic curve in its key exchange (CNSA
+2.0), so they are never in `Group.default`, the one default offer, and are used only when listed;
+they are not hybrids and do not meet `require_hybrid`, so such a policy is a `groups` list of
+them alone. As for the hybrid with the same KEM, a client keeps ML-KEM-768's expanded key and
+ML-KEM-1024's seed. TLS 1.2 has only the classical groups, and is offered or accepted only when
+one is listed. P-256 key generation, agreement, ECDSA
 signing and verification run cloak's own kernel (`src/crypto/p256.zig`): a precomputed
 comb of the base point with complete projective additions for secret scalars, signed
 five-bit windows over a public table of the peer's multiples for agreement (every entry
@@ -782,9 +790,11 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   first, offer the suite and bring the share); for DTLS 1.2 the hello's random, session id
   and suites, in 32 bytes (DTLS 1.0's limit, which wolfSSL keeps: it sent back an empty
   cookie for a longer one). A hello that does not fit one datagram is checked only by a
-  cookie its first fragment carries, so a client's first DTLS hello offers one X25519 share
-  (a server that prefers the hybrid group asks for it in the retry request that brings its
-  cookie). A server without cookies (an ICE-validated path, `.{}`) is trusted; one created
+  cookie its first fragment carries, so a client's first DTLS hello offers at most one
+  classical share (X25519 when listed) and none for a hybrid-only or post-quantum-only list,
+  whose shares do not fit beside the hello (wolfSSL's client empties its first key share
+  likewise); a server that wants another group asks for it in the retry request that brings
+  its cookie. A server without cookies (an ICE-validated path, `.{}`) is trusted; one created
   with no admission sends at most three times the bytes it received until the client's
   handshake keys prove the path.
 - Key updates (DTLS 1.3): one at a time (`UpdatePending` until its ACK); the KeyUpdate goes

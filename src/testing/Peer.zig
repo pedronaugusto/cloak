@@ -560,8 +560,21 @@ pub fn Peer(comptime suite: Suite13) type {
                 .p384 => try curve(std.crypto.sign.ecdsa.EcdsaP384Sha384, 0x62, share, &result),
                 .secp256r1_mlkem768 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP256Sha256, std.crypto.kem.ml_kem.MLKem768, share, &result),
                 .secp384r1_mlkem1024 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP384Sha384, std.crypto.kem.ml_kem.MLKem1024, share, &result),
+                .mlkem768 => try pure(std.crypto.kem.ml_kem.MLKem768, share, &result),
+                .mlkem1024 => try pure(std.crypto.kem.ml_kem.MLKem1024, share, &result),
             }
             return result;
+        }
+
+        /// The ciphertext alone, and the ML-KEM secret alone (draft-ietf-tls-mlkem).
+        fn pure(comptime Kem: type, share: []const u8, result: *Exchange) !void {
+            if (share.len != Kem.PublicKey.encoded_length) return error.InvalidShare;
+            const ek = try Kem.PublicKey.fromBytes(share[0..Kem.PublicKey.encoded_length]);
+            const enc = ek.encapsDeterministic(&@as([Kem.encaps_seed_length]u8, @splat(0x35)));
+            result.public[0..Kem.ciphertext_length].* = enc.ciphertext;
+            result.public_len = Kem.ciphertext_length;
+            result.secret[0..32].* = enc.shared_secret;
+            result.secret_len = 32;
         }
 
         /// The ECDH point and secret first, then ML-KEM's (draft-ietf-tls-ecdhe-mlkem).

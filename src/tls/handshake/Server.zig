@@ -58,7 +58,7 @@ pub const Options = struct {
     min_version: Version = .tls12,
     max_version: Version = .tls13,
     /// Groups in the server's order of preference.
-    groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
+    groups: []const Group = Group.default,
     /// Application protocols in the server's order of preference. When set and the client offers
     /// some, one must match.
     alpn: []const []const u8 = &.{},

@@ -36,11 +36,28 @@ fn NistHybrid(comptime G: type, comptime K: type) type {
 const P256MlKem768 = NistHybrid(ecdh.P256, MlKem);
 const P384MlKem1024 = NistHybrid(ecdh.P384, MlKem1024);
 
+/// Pure ML-KEM (draft-ietf-tls-mlkem): the encapsulation key from the client, the ciphertext from
+/// the server, and the ML-KEM secret alone. The client keeps what the matching hybrid keeps: the
+/// expanded ML-KEM-768 key, the ML-KEM-1024 seed.
+fn Pure(comptime K: type) type {
+    return struct {
+        pub const Kem = K;
+        pub const keeps_seed = K.SecretKey != MlKem.SecretKey;
+        pub const Private = aegis.Secret(if (keeps_seed) [K.seed_length]u8 else K.SecretKey);
+    };
+}
+const PureMlKem768 = Pure(MlKem);
+const PureMlKem1024 = Pure(MlKem1024);
+
 comptime {
     std.debug.assert(P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength());
     std.debug.assert(P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength());
     std.debug.assert(P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength());
     std.debug.assert(P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength());
+    std.debug.assert(MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength());
+    std.debug.assert(MlKem.ciphertext_length == Group.mlkem768.serverShareLength());
+    std.debug.assert(MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength());
+    std.debug.assert(MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength());
 }
 
 pub const InitError = error{ InvalidEntropy, WeakKey };
@@ -55,6 +72,8 @@ pub fn entropyLength(group: Group) usize {
         .x25519_mlkem768 => MlKem.seed_length + X25519.seed_length,
         .secp256r1_mlkem768 => P256MlKem768.entropy,
         .secp384r1_mlkem1024 => P384MlKem1024.entropy,
+        .mlkem768 => MlKem.seed_length,
+        .mlkem1024 => MlKem1024.seed_length,
     };
 }
 
@@ -83,6 +102,8 @@ const Private = union(Group) {
     },
     secp256r1_mlkem768: P256MlKem768.Private,
     secp384r1_mlkem1024: P384MlKem1024.Private,
+    mlkem768: PureMlKem768.Private,
+    mlkem1024: PureMlKem1024.Private,
 };
 
 /// One offered key share. The private half never leaves; `deinit` erases it.
@@ -119,8 +140,20 @@ pub const Share = struct {
             },
             .secp256r1_mlkem768 => try initNist(P256MlKem768, &self, entropy),
             .secp384r1_mlkem1024 => try initNist(P384MlKem1024, &self, entropy),
+            .mlkem768 => self.private = .{ .mlkem768 = try initPure(PureMlKem768, &self, entropy) },
+            .mlkem1024 => self.private = .{ .mlkem1024 = try initPure(PureMlKem1024, &self, entropy) },
         }
         return self;
+    }
+
+    fn initPure(comptime P: type, self: *Share, entropy: []const u8) InitError!P.Private {
+        @setRuntimeSafety(true);
+        const seed = entropy[0..P.Kem.seed_length];
+        var pair = P.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy;
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
+        const ek = pair.public_key.toBytes();
+        self.public[0..ek.len].* = ek;
+        return .init(if (P.keeps_seed) seed.* else pair.secret_key);
     }
 
     fn initNist(comptime H: type, self: *Share, entropy: []const u8) InitError!void {
@@ -178,8 +211,29 @@ pub const Share = struct {
             },
             .secp256r1_mlkem768 => |*key| out.len = try agreeNist(P256MlKem768, key, peer, into),
             .secp384r1_mlkem1024 => |*key| out.len = try agreeNist(P384MlKem1024, key, peer, into),
+            .mlkem768 => |*key| out.len = try agreePure(PureMlKem768, key, peer, into),
+            .mlkem1024 => |*key| out.len = try agreePure(PureMlKem1024, key, peer, into),
         }
         return out;
+    }
+
+    fn agreePure(comptime P: type, key: *const P.Private, peer: []const u8, into: *[max_secret]u8) AgreeError!usize {
+        @setRuntimeSafety(true);
+        // Implicit rejection: a damaged ciphertext yields an unrelated secret, never an error.
+        var kem = try decaps(P.Kem, P.keeps_seed, key.expose(), peer[0..P.Kem.ciphertext_length]);
+        defer std.crypto.secureZero(u8, &kem);
+        into[0..kem.len].* = kem;
+        return kem.len;
+    }
+
+    /// Decapsulates under a kept ML-KEM key, or under the key expanded again from its kept seed.
+    fn decaps(comptime K: type, comptime from_seed: bool, key: anytype, ciphertext: *const [K.ciphertext_length]u8) AgreeError![K.shared_length]u8 {
+        @setRuntimeSafety(true);
+        if (from_seed) {
+            var pair = K.KeyPair.generateDeterministic(key.*) catch return error.InvalidShare;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
+            return pair.secret_key.decaps(ciphertext) catch error.InvalidShare;
+        } else return key.decaps(ciphertext) catch error.InvalidShare;
     }
 
     fn agreeNist(comptime H: type, key: *const H.Private, peer: []const u8, into: *[max_secret]u8) AgreeError!usize {
@@ -188,11 +242,7 @@ pub const Share = struct {
         H.Curve.agree(key.ec.expose(), peer[0..H.Curve.public_length], into[0..n]) catch |err| return mapCurve(err);
         // Implicit rejection, as for X25519MLKEM768: no validity oracle from the ciphertext.
         const ciphertext = peer[H.Curve.public_length..][0..H.Kem.ciphertext_length];
-        var kem = if (H.keeps_seed) blk: {
-            var pair = H.Kem.KeyPair.generateDeterministic(key.kem.expose().*) catch return error.InvalidShare;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-            break :blk pair.secret_key.decaps(ciphertext) catch return error.InvalidShare;
-        } else key.kem.expose().decaps(ciphertext) catch return error.InvalidShare;
+        var kem = try decaps(H.Kem, H.keeps_seed, key.kem.expose(), ciphertext);
         defer std.crypto.secureZero(u8, &kem);
         into[n..][0..kem.len].* = kem;
         return n + kem.len;
@@ -227,6 +277,7 @@ pub const Share = struct {
                 key.kem.deinit();
                 key.ec.deinit();
             },
+            inline .mlkem768, .mlkem1024 => |*key| key.deinit(),
         }
         std.crypto.secureZero(u8, &self.public);
         self.* = undefined;
@@ -242,6 +293,8 @@ pub fn respondEntropyLength(group: Group) usize {
         .x25519_mlkem768 => MlKem.encaps_seed_length + X25519.seed_length,
         .secp256r1_mlkem768 => P256MlKem768.respond_entropy,
         .secp384r1_mlkem1024 => P384MlKem1024.respond_entropy,
+        .mlkem768 => MlKem.encaps_seed_length,
+        .mlkem1024 => MlKem1024.encaps_seed_length,
     };
 }
 
@@ -299,8 +352,22 @@ pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (Ini
         .p384 => try respondCurve(ecdh.P384, &out, client_share, entropy),
         .secp256r1_mlkem768 => try respondNist(P256MlKem768, &out, client_share, entropy),
         .secp384r1_mlkem1024 => try respondNist(P384MlKem1024, &out, client_share, entropy),
+        .mlkem768 => try respondPure(MlKem, &out, client_share, entropy),
+        .mlkem1024 => try respondPure(MlKem1024, &out, client_share, entropy),
     }
     return out;
+}
+
+/// Encapsulates to the client's key after FIPS 203's encapsulation key check (`fromBytes` refuses
+/// a coefficient at or above q), so a malformed key is `InvalidShare`, never a secret.
+fn respondPure(comptime K: type, out: *Response, client_share: []const u8, entropy: []const u8) AgreeError!void {
+    @setRuntimeSafety(true);
+    const ek = K.PublicKey.fromBytes(client_share[0..K.PublicKey.encoded_length]) catch return error.InvalidShare;
+    var sealed = ek.encapsDeterministic(entropy[0..K.encaps_seed_length]);
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&sealed));
+    out.public[0..K.ciphertext_length].* = sealed.ciphertext;
+    out.agreed.secret.exposeMut()[0..K.shared_length].* = sealed.shared_secret;
+    out.agreed.len = K.shared_length;
 }
 
 fn respondNist(comptime H: type, out: *Response, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!void {

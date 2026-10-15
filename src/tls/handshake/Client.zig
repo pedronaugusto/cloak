@@ -419,10 +419,16 @@ fn initialGroups(self: *const Client) struct { groups: [2]?Group, count: usize }
     // A TLS 1.2-only client sends no key shares.
     if (!self.options.hello.allows13()) return .{ .groups = out, .count = 0 };
     // A datagram hello stays within one datagram, so that a server can check its address
-    // without keeping state (RFC 9147 section 5.1): one X25519 share, and the hybrid group listed
-    // for a server that prefers it to ask for with the retry request that brings its cookie.
-    if (self.options.hello.transport == .datagram and !self.options.hello.require_hybrid and std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{.x25519})) {
-        out[0] = .x25519;
+    // without keeping state (RFC 9147 section 5.1): at most one classical share, X25519 when
+    // listed, and none for a hybrid-only or post-quantum-only list, whose shares (1,184 to 1,665
+    // bytes) do not fit beside the hello. The server asks for the group it wants with the retry
+    // request that brings its cookie.
+    if (self.options.hello.transport == .datagram) {
+        if (self.options.hello.require_hybrid) return .{ .groups = out, .count = 0 };
+        const classical = if (std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{.x25519})) .x25519 else for (self.options.hello.groups) |group| {
+            if (group.classical()) break group;
+        } else return .{ .groups = out, .count = 0 };
+        out[0] = classical;
         return .{ .groups = out, .count = 1 };
     }
     for ([_]Group{ .x25519_mlkem768, .x25519 }) |group| {
