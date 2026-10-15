@@ -251,10 +251,8 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try g.int(u16, @intCast(options.groups.len * 2));
     for (options.groups) |group| try g.int(u16, @backingInt(group));
     if (!compress) try extension(&w, 10, group_bytes[0..g.pos]);
-    if (tls12) {
-        // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
-        try extension(&w, 11, &.{ 1, 0 });
-    }
+    // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
+    if (tls12) try extension(&w, 11, &.{ 1, 0 });
     const offered: []const SignatureScheme = if (tls12) &schemes12 else &schemes;
     var signature_bytes: [2 + schemes12.len * 2]u8 = undefined;
     var s: Writer = .{ .bytes = &signature_bytes };
@@ -286,24 +284,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         std.mem.writeInt(u16, alpn[0..2], @intCast(a.pos - 2), .big);
         try extension(&w, 16, alpn[0..a.pos]);
     }
-    if (datagram) {
-        if (options.connection_id) |cid| {
-            try w.int(u16, connection_id_extension);
-            // safe: validate bounds a connection ID at 255 bytes.
-            try w.int(u16, @intCast(cid.len + 1));
-            try w.vector(u8, cid);
-        }
-        if (options.srtp.len != 0) {
-            // UseSRTPData: the profiles in preference order and an empty srtp_mki: cloak keys no
-            // MKI (RFC 5764 section 4.1.1).
-            try w.int(u16, srtp_extension);
-            // safe: at most four distinct profiles.
-            try w.int(u16, @intCast(2 + 2 * options.srtp.len + 1));
-            try w.int(u16, @intCast(2 * options.srtp.len));
-            for (options.srtp) |profile| try w.int(u16, @backingInt(profile));
-            try w.int(u8, 0);
-        }
-    }
+    if (datagram) try datagramOffer(&w, options);
     if (cookie.len != 0 and !compress) {
         try w.int(u16, 44);
         // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
@@ -341,6 +322,27 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// connection_id and use_srtp as a datagram hello offers them.
+fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
+    @setRuntimeSafety(true);
+    if (options.connection_id) |cid| {
+        try w.int(u16, connection_id_extension);
+        // safe: validate bounds a connection ID at 255 bytes.
+        try w.int(u16, @intCast(cid.len + 1));
+        try w.vector(u8, cid);
+    }
+    if (options.srtp.len != 0) {
+        // UseSRTPData: the profiles in preference order and an empty srtp_mki: cloak keys no MKI
+        // (RFC 5764 section 4.1.1).
+        try w.int(u16, srtp_extension);
+        // safe: at most four distinct profiles.
+        try w.int(u16, @intCast(2 + 2 * options.srtp.len + 1));
+        try w.int(u16, @intCast(2 * options.srtp.len));
+        for (options.srtp) |profile| try w.int(u16, @backingInt(profile));
+        try w.int(u8, 0);
+    }
+}
+
 fn serverName(w: *Writer, sni: []const u8) EncodeError!void {
     @setRuntimeSafety(true);
     if (sni.len > 253) return error.InvalidOptions;
@@ -449,22 +451,11 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var psk = false;
     var ticket = false;
     var ech: ?*const [8]u8 = null;
-    var connection_id: ?[]const u8 = null;
-    var srtp: ?Srtp = null;
+    var answered: DatagramAnswer = .{};
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
-            connection_id_extension => {
-                // Either version's ServerHello answers it, never a retry request.
-                if (options.connection_id == null) return error.UnsolicitedExtension;
-                if (retry) return error.InvalidHello;
-                connection_id = (try value.vector(u8)).bytes;
-            },
-            srtp_extension => {
-                // DTLS 1.3 answers use_srtp in EncryptedExtensions.
-                only12 = true;
-                srtp = try selectedSrtp(&value, options);
-            },
+            connection_id_extension, srtp_extension => try answered.read(item.id, &value, options, retry),
             43 => {
                 if (try value.int(u16) != options.transport.wire(.tls13)) return error.InvalidHello;
                 version13 = true;
@@ -532,8 +523,9 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = connection_id, .srtp = srtp }, options);
-    if (only12) return error.InvalidHello;
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp }, options);
+    // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
+    if (only12 or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
     const echo = if (options.transport == .datagram) "" else session;
     if (legacy_version != options.transport.legacy() or !std.mem.eql(u8, echoed, echo)) return error.InvalidHello;
@@ -552,8 +544,26 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     } else {
         if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
-    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = connection_id } };
+    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = answered.connection_id } };
 }
+
+/// A ServerHello's answers to a datagram hello's connection_id and use_srtp.
+const DatagramAnswer = struct {
+    connection_id: ?[]const u8 = null,
+    srtp: ?Srtp = null,
+
+    fn read(self: *DatagramAnswer, id: u16, value: *Reader, options: Options, retry: bool) ParseError!void {
+        @setRuntimeSafety(true);
+        if (id == srtp_extension) {
+            self.srtp = try selectedSrtp(value, options);
+            return;
+        }
+        // Either version's ServerHello answers connection_id, never a retry request.
+        if (options.connection_id == null) return error.UnsolicitedExtension;
+        if (retry) return error.InvalidHello;
+        self.connection_id = (try value.vector(u8)).bytes;
+    }
+};
 
 /// The one SRTP profile a use_srtp answer selects, which this end offered, with no MKI: cloak
 /// offers none, so a server's MKI differs from it (RFC 5764 section 4.1.3).
