@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-15
+
 ### Added
 
 - DTLS connection IDs, both versions (RFC 9146; RFC 9147 section 9): `connection_id` on either end's options is the ID it receives with, offered or answered; once agreed every protected record carries the peer's (DTLS 1.2's tls12_cid records, DTLS 1.3's C bit), and one without this end's own, or with one when none was agreed, is dropped. `Datagram.connectionIds`, `Datagram.connectionIdOf` (the ID on a datagram, for the caller's lookup before `receive`) and `receivedNewest` (the datagram authenticated a record newer than any before it, RFC 9146 section 6's condition for following a peer to a new address). DTLS 1.3: `newConnectionIds` (spare or immediate), `requestConnectionIds`, `connectionIdsRequested`, `spareConnectionIds`, `useSpareConnectionId`; the peer's NewConnectionId and RequestConnectionId are taken only when the agreement allows them, and a request while its last is unanswered ends the association with too_many_cids_requested (`tls.Alert` names it).
