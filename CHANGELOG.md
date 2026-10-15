@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-15
+
 ### Changed
 
 - Every comparison of a secret or a MAC (Finished, PSK binders, the AES-CCM tag, ECH confirmations, DTLS cookies, certificate pins, verification request digests, the curve-scalar range check) runs aegis's `Choice` kernels instead of std's `timing_safe`, releasing only the completed verdict. aegis 0.1.9, whose kernels now compile for every target cloak builds for.
