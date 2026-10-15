@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-10-15
+
 ### Fixed
 
 - A caller that consumes more plaintext than is readable (`Connection.consume`) or acknowledges more ciphertext than is pending (`Connection.acknowledge`, and `quic.Handshake.ack` past an event's data) is stopped in every build mode. The checks were `std.debug.assert`, which ReleaseFast takes as a fact to optimize on: such a call ran on there, with the buffer's cursors past their ends. `zig build check-failstop` runs each misuse in ReleaseFast and requires the stop.
