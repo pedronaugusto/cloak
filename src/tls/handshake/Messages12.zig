@@ -2,6 +2,7 @@
 //! ServerKeyExchange, CertificateRequest, ServerHelloDone, ClientKeyExchange and the session
 //! ticket's NewSessionTicket (RFC 5246, RFC 8422, RFC 5077). Parsed fields borrow their message; every length is checked against its parent.
 const std = @import("std");
+const aegis = @import("aegis");
 const Reader = @import("../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -102,7 +103,7 @@ pub fn buildServerKeyExchange(out: []u8, params: []const u8, scheme: u16, signat
 pub const max_signed = 32 + 32 + 4 + 97;
 pub fn signedParams(out: *[max_signed]u8, client_random: *const [32]u8, server_random: *const [32]u8, params: []const u8) []const u8 {
     @setRuntimeSafety(true);
-    std.debug.assert(params.len <= max_signed - 64);
+    aegis.assert.invariant(params.len <= max_signed - 64, "the signed parameters fit their buffer");
     @memcpy(out[0..32], client_random);
     @memcpy(out[32..64], server_random);
     @memcpy(out[64..][0..params.len], params);

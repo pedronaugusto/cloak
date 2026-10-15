@@ -2,6 +2,7 @@
 //! highest authenticated record sequence and which of the 127 before it arrived. A record is
 //! checked before it is opened and marked only after it authenticates, so a forgery moves nothing.
 const std = @import("std");
+const aegis = @import("aegis");
 
 const Window = @This();
 
@@ -35,7 +36,7 @@ pub fn mark(self: *Window, sequence: u64) void {
         return;
     }
     const behind = top - sequence;
-    std.debug.assert(behind < size);
+    aegis.assert.invariant(behind < size, "a record behind the top is within the window");
     self.seen |= @as(u128, 1) << @intCast(behind);
 }
 

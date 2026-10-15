@@ -1,6 +1,7 @@
 //! The running handshake hash. Until a hello names the suite both candidate hashes run;
 //! the choice then fixes one and erases the other.
 const std = @import("std");
+const aegis = @import("aegis");
 const Transcript = @import("Transcript.zig").Transcript;
 const Suite13 = @import("../crypto/Suite.zig").Suite13;
 const suites = @import("../crypto/Suite.zig");
@@ -62,7 +63,7 @@ pub const Side = enum { own, peer };
 /// TLS form when the version is still open (`open`), instead of it otherwise. Called before the
 /// first commit.
 pub fn startDatagram(self: *Self, own: u16, peer: u16, open: bool) void {
-    std.debug.assert(self.messages() == 0);
+    aegis.assert.invariant(self.messages() == 0, "a datagram transcript starts before its first message");
     self.datagram12 = .{ .own = own, .peer = peer, .shadow = if (open) .{} else null };
 }
 
@@ -112,8 +113,8 @@ pub fn select(self: *Self, suite: Suite13) void {
             std.crypto.secureZero(u8, std.mem.asBytes(&self.state));
             self.state = if (hash384) .{ .sha384 = hashes.sha384 } else .{ .sha256 = hashes.sha256 };
         },
-        .sha256 => std.debug.assert(suites.digestLength(suite) == 32),
-        .sha384 => std.debug.assert(suites.digestLength(suite) == 48),
+        .sha256 => aegis.assert.invariant(suites.digestLength(suite) == 32, "a SHA-256 suite has 32-byte digests"),
+        .sha384 => aegis.assert.invariant(suites.digestLength(suite) == 48, "a SHA-384 suite has 48-byte digests"),
     }
 }
 
@@ -203,13 +204,13 @@ pub fn digestOf(self: *const Self, out: *[max_digest]u8, len: usize) []const u8 
                 out.* = both.sha384.digest();
                 return out[0..48];
             }
-            std.debug.assert(len == 32);
+            aegis.assert.invariant(len == 32, "the other digest is SHA-256's");
             out[0..32].* = both.sha256.digest();
             return out[0..32];
         },
         else => {
             const d = self.digest(out);
-            std.debug.assert(d.len == len);
+            aegis.assert.invariant(d.len == len, "the digest is the length asked for");
             return d;
         },
     }
@@ -222,11 +223,11 @@ pub fn digestWith(self: *const Self, out: *[max_digest]u8, len: usize, extra: []
     switch (self.state) {
         .pending => |*both| return if (len == 48) finishWith(Sha384, &both.sha384, out, extra) else finishWith(Sha256, &both.sha256, out, extra),
         .sha256 => |*t| {
-            std.debug.assert(len == 32);
+            aegis.assert.invariant(len == 32, "a SHA-256 transcript gives 32 bytes");
             return finishWith(Sha256, t, out, extra);
         },
         .sha384 => |*t| {
-            std.debug.assert(len == 48);
+            aegis.assert.invariant(len == 48, "a SHA-384 transcript gives 48 bytes");
             return finishWith(Sha384, t, out, extra);
         },
     }

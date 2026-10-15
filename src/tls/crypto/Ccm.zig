@@ -26,8 +26,8 @@ fn AesCcm(comptime Aes: type) type {
         /// Seals `m` into `c` (the same length; `c` may be `m`) and writes the tag.
         pub fn encrypt(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) void {
             @setRuntimeSafety(true);
-            std.debug.assert(c.len == m.len);
-            std.debug.assert(m.len <= max_message);
+            aegis.assert.invariant(c.len == m.len, "CCM seals in place or into an equal buffer");
+            aegis.assert.invariant(m.len <= max_message, "a CCM message is within its counter's reach");
             var ctx = Aes.initEnc(key);
             defer crypto.secureZero(u8, std.mem.asBytes(&ctx));
             var mac: [block_length]u8 = undefined;
@@ -44,7 +44,7 @@ fn AesCcm(comptime Aes: type) type {
         /// nothing of it is released.
         pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) crypto.errors.AuthenticationError!void {
             @setRuntimeSafety(true);
-            std.debug.assert(c.len == m.len);
+            aegis.assert.invariant(c.len == m.len, "CCM opens in place or into an equal buffer");
             if (c.len > max_message) return error.AuthenticationFailed;
             var ctx = Aes.initEnc(key);
             defer crypto.secureZero(u8, std.mem.asBytes(&ctx));

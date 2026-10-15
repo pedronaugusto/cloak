@@ -110,7 +110,7 @@ pub const Context = struct {
     /// Seals `plaintext` into `out` (ciphertext then tag, `plaintext.len + tag_length` bytes).
     pub fn seal(self: *Context, out: []u8, aad: []const u8, plaintext: []const u8) SealError!void {
         @setRuntimeSafety(true);
-        std.debug.assert(out.len == plaintext.len + tag_length);
+        aegis.assert.invariant(out.len == plaintext.len + tag_length, "the sealed output is the plaintext and its tag");
         if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
         var n = self.nonce();
         defer std.crypto.secureZero(u8, &n);
@@ -128,7 +128,7 @@ pub const Context = struct {
     pub fn open(self: *Context, out: []u8, aad: []const u8, ciphertext: []const u8) OpenError!void {
         @setRuntimeSafety(true);
         if (ciphertext.len < tag_length) return error.AuthenticationFailed;
-        std.debug.assert(out.len == ciphertext.len - tag_length);
+        aegis.assert.invariant(out.len == ciphertext.len - tag_length, "the opened output is the ciphertext without its tag");
         if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
         var n = self.nonce();
         defer std.crypto.secureZero(u8, &n);
@@ -229,7 +229,7 @@ fn labeledExtract(out: *[32]u8, suite_id: []const u8, salt: []const u8, label: [
 /// block over I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info.
 fn labeledExpand(out: []u8, prk: *const [32]u8, suite_id: []const u8, label: []const u8, info: []const []const u8) void {
     @setRuntimeSafety(true);
-    std.debug.assert(out.len <= 32);
+    aegis.assert.invariant(out.len <= 32, "a labeled expansion is one block");
     var length: [2]u8 = undefined;
     std.mem.writeInt(u16, &length, @intCast(out.len), .big); // safe: at most 32
     var h = Hmac.init(prk);

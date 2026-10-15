@@ -3,6 +3,7 @@
 //! secrets to install, the peer's transport parameters, authentication) and answers each
 //! `request`. There is no TLS record, ChangeCipherSpec, KeyUpdate or close_notify here.
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("../handshake/Client.zig");
@@ -416,7 +417,7 @@ pub fn ack(self: *Handshake, consumed: usize) void {
     const current = &(self.current orelse return);
     switch (current.*) {
         .data => |*d| {
-            std.debug.assert(consumed <= d.len - d.acked);
+            aegis.assert.pre(consumed <= d.len - d.acked, "the caller acknowledges at most the event's data");
             // safe: the remainder of a message is at most its u32 length.
             d.acked += @intCast(consumed);
             if (d.acked < d.len) return;

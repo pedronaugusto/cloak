@@ -1,6 +1,7 @@
 //! Committed ciphertext awaiting the transport. Records are sealed once, here, and kept
 //! byte for byte until acknowledged, so a partial write never re-seals.
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const Error = std.mem.Allocator.Error || error{OutputFull};
 
@@ -16,7 +17,7 @@ pub fn pending(self: *const Outbox) []const u8 {
 
 pub fn acknowledge(self: *Outbox, n: usize) void {
     @setRuntimeSafety(true);
-    std.debug.assert(n <= self.end - self.start);
+    aegis.assert.pre(n <= self.end - self.start, "the caller acknowledges at most what is pending");
     self.start += n;
     if (self.start == self.end) {
         self.start = 0;
@@ -50,7 +51,7 @@ pub fn tail(self: *Outbox, gpa: std.mem.Allocator, want: usize, cap: usize) Erro
 
 pub fn commit(self: *Outbox, n: usize) void {
     @setRuntimeSafety(true);
-    std.debug.assert(n <= self.buf.len - self.end);
+    aegis.assert.invariant(n <= self.buf.len - self.end, "a commit fits the output buffer");
     self.end += n;
 }
 

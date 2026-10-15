@@ -62,6 +62,8 @@ pub fn dev(b: *std.Build, tools: type) void {
     run_options.addFileArg(p.dependency("aegis", .{ .target = target, .optimize = optimize }).path("src/root.zig"));
     run_options.setCwd(p.path("."));
     b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
+    const failstop = b.addExecutable(.{ .name = "cloak-failstop", .root_module = b.createModule(.{ .root_source_file = p.path("ci/failstop.zig"), .target = host, .optimize = .fast, .imports = &.{.{ .name = "cloak", .module = createCloak(b, p, host, .fast) }} }) });
+    b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     const wasm_module = b.createModule(.{ .root_source_file = p.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
     wasm_module.addImport("probes", createProbes(b, p, wasm_target, .safe));

@@ -18,6 +18,7 @@
 //! 4. Fault check on the exact bytes to be released: they must encode a value below n whose
 //!    e-th power mod n is m. A result that fails it is never written out.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const ct = @import("p256/Montgomery.zig");
 
@@ -123,7 +124,7 @@ const Modulus = struct {
     fn reduce(self: *const Modulus, out: []u64, input: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        std.debug.assert(input.len <= 2 * len);
+        aegis.assert.invariant(input.len <= 2 * len, "a reduction takes at most twice the modulus");
         var t: [2 * max_limbs + 1]u64 = @splat(0);
         defer wipe(&t);
         @memcpy(t[0..input.len], input);
@@ -164,7 +165,7 @@ const Modulus = struct {
     /// `out = base^e` in Montgomery form for a public exponent: the schedule follows e's bits.
     fn powPublic(self: *const Modulus, out: []u64, base: []const u64, e: u64) void {
         @setRuntimeSafety(true);
-        std.debug.assert(e != 0);
+        aegis.assert.invariant(e != 0, "a public exponent is nonzero");
         var acc: Limbs = undefined;
         defer wipe(&acc);
         const len = self.len;
@@ -192,7 +193,7 @@ const Modulus = struct {
         defer wipe(&chosen);
         var window: u64 = 0;
         defer wipe(&window);
-        std.debug.assert(len <= max_half);
+        aegis.assert.invariant(len <= max_half, "a CRT half fits its buffers");
         // table[i] = base^i: table[0] is R mod m, the form of one.
         var one: Limbs = @splat(0);
         one[0] = 1;

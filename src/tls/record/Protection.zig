@@ -38,7 +38,7 @@ pub fn init(suite: Suite13, secret: []const u8, limits: Limits) InitError!Protec
     switch (suite) {
         inline else => |tag| {
             const Hash = suites.Hash(tag);
-            std.debug.assert(secret.len == Hash.digest_length);
+            aegis.assert.invariant(secret.len == Hash.digest_length, "a traffic secret is the suite's hash length");
             var holder = aegis.Secret([Hash.digest_length]u8).init(secret[0..Hash.digest_length].*);
             defer holder.deinit();
             return .{ .state = @unionInit(@FieldType(Protection, "state"), @tagName(tag), try Epoch.Epoch(tag).initTraffic(&holder, limits)) };
@@ -52,7 +52,7 @@ pub fn init12(cipher: suites.Cipher, key: []const u8, iv: []const u8, limits: Li
     switch (cipher) {
         inline else => |tag| {
             const E = Epoch12(tag);
-            std.debug.assert(key.len == E.key_length and iv.len == E.iv_length);
+            aegis.assert.invariant(key.len == E.key_length and iv.len == E.iv_length, "TLS 1.2 keys are the cipher's lengths");
             return .{ .state = @unionInit(@FieldType(Protection, "state"), "tls12_" ++ @tagName(tag), try E.init(key[0..E.key_length], iv[0..E.iv_length], limits)) };
         },
     }

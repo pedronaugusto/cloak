@@ -126,7 +126,7 @@ pub const Epoch = struct {
     /// sequence and window.
     pub fn next(self: *const Epoch) Epoch {
         @setRuntimeSafety(true);
-        std.debug.assert(self.version == .dtls13);
+        aegis.assert.invariant(self.version == .dtls13, "only DTLS 1.3 epochs advance this way");
         var out: Epoch = .{
             .version = .dtls13,
             .cipher = self.cipher,
@@ -233,7 +233,7 @@ pub const Epoch = struct {
     /// masked. One sequence is spent whatever the caller then does with the record.
     pub fn seal13(self: *Epoch, content: Content, plain: []const u8, cid: []const u8, out: []u8) SealError![]u8 {
         @setRuntimeSafety(true);
-        std.debug.assert(self.version == .dtls13);
+        aegis.assert.invariant(self.version == .dtls13, "a DTLS 1.3 record");
         if (plain.len > max_content or cid.len > max_cid) return error.InvalidLength;
         if (content != .application and plain.len == 0) return error.InvalidLength;
         if (self.sequence >= self.record_limit) return error.RecordLimit;
@@ -264,7 +264,7 @@ pub const Epoch = struct {
     /// content type are returned only after the tag and the replay window pass.
     pub fn open13(self: *Epoch, record: []u8, header: Header13) OpenError!Opened {
         @setRuntimeSafety(true);
-        std.debug.assert(self.version == .dtls13);
+        aegis.assert.invariant(self.version == .dtls13, "a DTLS 1.3 record");
         const ciphertext = record[header.length..];
         if (ciphertext.len < 16 or ciphertext.len < tag_length + 1) return error.Drop;
         const masked = self.mask(ciphertext[0..16]);
@@ -293,7 +293,7 @@ pub const Epoch = struct {
     /// set).
     pub fn seal12(self: *Epoch, content: Content, plain: []const u8, cid: []const u8, out: []u8) SealError![]u8 {
         @setRuntimeSafety(true);
-        std.debug.assert(self.version == .dtls12);
+        aegis.assert.invariant(self.version == .dtls12, "a DTLS 1.2 record");
         if (plain.len > max_content or cid.len > max_cid) return error.InvalidLength;
         if (self.sequence >= self.record_limit or self.sequence >= 1 << 48) return error.RecordLimit;
         const explicit = self.cipher.explicitNonceLength12();
@@ -324,7 +324,7 @@ pub const Epoch = struct {
     /// Opens a DTLS 1.2 record in place, as `Header.parse12` found it.
     pub fn open12(self: *Epoch, record: []u8, header: Header12) OpenError!Opened {
         @setRuntimeSafety(true);
-        std.debug.assert(self.version == .dtls12);
+        aegis.assert.invariant(self.version == .dtls12, "a DTLS 1.2 record");
         const explicit = self.cipher.explicitNonceLength12();
         const payload = record[header.length..];
         if (payload.len < explicit + tag_length + @as(usize, if (header.cid_len != 0) 1 else 0)) return error.Drop;

@@ -14,6 +14,7 @@
 //! read from either. `info`, `certificateRequested` and `exportKeyingMaterial` read what the
 //! handshake fixed and may be called from either task while the connection lives.
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../certificates.zig");
 const types = certificates.types;
 const Client = @import("handshake/Client.zig");
@@ -549,7 +550,7 @@ pub fn acknowledge(self: *Connection, n: usize) void {
 fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void {
     @setRuntimeSafety(true);
     // Handshake messages are the handshake's; after it the read half queues none.
-    std.debug.assert(!self.split);
+    aegis.assert.invariant(!self.split, "a split connection seals no handshake message");
     if (epoch != self.tx_epoch) return error.UnexpectedRecord;
     var rest = message;
     while (rest.len != 0) {
@@ -750,7 +751,7 @@ pub fn readable(self: *const Connection) []const u8 {
 
 pub fn consume(self: *Connection, n: usize) void {
     @setRuntimeSafety(true);
-    std.debug.assert(n <= self.plain_end - self.plain_pos);
+    aegis.assert.pre(n <= self.plain_end - self.plain_pos, "the caller consumes at most what is readable");
     self.plain_pos += n;
     if (self.plain_pos == self.plain_end and self.plain_kind == .application) self.clearRecord();
 }
