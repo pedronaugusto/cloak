@@ -192,7 +192,7 @@ fn admit13(self: *const Cookies, address: []const u8, seconds: u64, cookie: []co
     if ((hash_len != 32 and hash_len != 48) or cookie.len != 47 + hash_len + 32) return .drop;
     var expected: [32]u8 = undefined;
     mac(key, "cloak dtls cookie 1.3", address, &.{cookie[0 .. 47 + hash_len]}, &expected);
-    if (!std.crypto.timing_safe.eql([32]u8, expected, cookie[47 + hash_len ..][0..32].*)) return .drop;
+    if (!aegis.secret.equal(32, &expected, cookie[47 + hash_len ..][0..32]).declassify("a forged cookie is dropped")) return .drop;
     if (!self.fresh(std.mem.readInt(u64, cookie[2..10], .big), seconds)) return .drop;
     const suite = std.enums.fromInt(suites.Suite13, std.mem.readInt(u16, cookie[10..12], .big)) orelse return .drop;
     const group = std.enums.fromInt(Group, std.mem.readInt(u16, cookie[12..14], .big)) orelse return .drop;
@@ -241,7 +241,7 @@ fn admit12(self: *const Cookies, address: []const u8, seconds: u64, random: []co
     const key = self.keyFor(cookie[0]) orelse return .drop;
     var expected: [32]u8 = undefined;
     mac(key, "cloak dtls cookie 1.2", address, &.{ cookie[0..5], random, session, offered }, &expected);
-    if (!std.crypto.timing_safe.eql([27]u8, expected[0..27].*, cookie[5..32].*)) return .drop;
+    if (!aegis.secret.equal(27, expected[0..27], cookie[5..32]).declassify("a forged cookie is dropped")) return .drop;
     // The 32-bit time wraps: its age is the difference, which must be within the lifetime.
     const lifetime: u64 = @intCast(@max(0, @divFloor(self.lifetime.nanoseconds, std.time.ns_per_s)));
     const age = @as(u32, @truncate(seconds)) -% std.mem.readInt(u32, cookie[1..5], .big);

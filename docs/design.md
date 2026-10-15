@@ -185,10 +185,13 @@ not a certificate/signature verifier: its internal proof arguments must be
 issued by the crypto/verification driver. Named tests cover individual catalogue
 components; the complete F27–F45 rows remain open until integration and campaigns.
 
-Published aegis constant-time choices currently require baseline hosted LLVM
-profiles. They cannot serve native CPU dispatch or freestanding/wasm TLS yet.
-Finished uses std's fixed-size timing-safe comparison, with only the completed
-verdict released. AEAD selects std's kernels and rejects `.none` mitigations
+Every comparison of a secret or a MAC runs aegis's `Choice` kernels (Finished, binders,
+the CCM tag, ECH confirmations, DTLS cookies, pins, request digests, the curve-scalar
+range), each releasing only its completed verdict through a named `declassify`. They
+compile for every target cloak builds for; `aegis.secret.Choice.audited` says whether a
+build is one whose lowering aegis inspects (the hosted targets at their baseline and
+common CPU models, the BSDs, wasm32), and cloak's timing checks on the built binary cover
+the rest. AEAD selects std's kernels and rejects `.none` mitigations
 independently of caller options. Generated-code/timing campaigns remain required
 before a complete TLS security claim. Named wipes cover owned storage, not all
 compiler-created argument copies, register spills or std AEAD local schedules.

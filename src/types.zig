@@ -210,7 +210,7 @@ pub const Verification = struct {
     pub fn check(self: Verification, request: Request) CheckError!void {
         @setRuntimeSafety(true);
         if (request.chain.len == 0) return error.WrongVerificationRequest;
-        if (!std.crypto.timing_safe.eql([32]u8, self.request_digest, request.digest()) or self.token.generation != request.token.generation or self.token.id != request.token.id) return error.WrongVerificationRequest;
+        if (!aegis.secret.equal(32, &self.request_digest, &request.digest()).declassify("a request mismatch is refused") or self.token.generation != request.token.generation or self.token.id != request.token.id) return error.WrongVerificationRequest;
         if (self.purpose != request.purpose or self.trust_generation != request.trust_generation or self.policy_generation != request.policy_generation or self.path.len == 0 or !std.mem.eql(u8, self.path[0], request.chain[0])) return error.WrongVerificationRequest;
         switch (self.identity) {
             .none => if (request.identity != .none) return error.WrongVerificationRequest,

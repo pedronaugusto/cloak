@@ -70,7 +70,7 @@ pub fn checkFinished(comptime Hash: type, master: *const [master_length]u8, clie
     var expected = aegis.Secret([verify_length]u8).init(undefined);
     defer expected.deinit();
     finished(Hash, expected.exposeMut(), master, client, transcript);
-    if (!std.crypto.timing_safe.eql([verify_length]u8, expected.expose().*, received[0..verify_length].*)) return error.BadFinished;
+    if (!aegis.secret.equal(verify_length, expected.expose(), received[0..verify_length]).declassify("a bad Finished ends the handshake")) return error.BadFinished;
 }
 
 pub const ExportError = error{ InvalidLabel, ReservedLabel };

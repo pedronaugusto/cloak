@@ -1,6 +1,5 @@
 //! One handshake key-schedule owner. Traffic holders transfer to the transport; the
 //! resumption master secret stays for the tickets that follow the handshake.
-const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Labels = @import("../crypto/Labels.zig");
@@ -106,7 +105,7 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             var expected = Secret.init(undefined);
             defer expected.deinit();
             binderOf(prefix, kind, psk, truncated_hash, expected.exposeMut());
-            if (!std.crypto.timing_safe.eql([length]u8, expected.expose().*, received[0..length].*)) return error.BadBinder;
+            if (!aegis.secret.equal(length, expected.expose(), received[0..length]).declassify("a bad binder ends the handshake")) return error.BadBinder;
         }
         pub fn exportBytes(self: *const Self, out: []u8, label: []const u8, context: []const u8) ExportError!void {
             @setRuntimeSafety(true);

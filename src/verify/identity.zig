@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 pub const Error = C.ParseError || error{ IdentityRequired, IdentityMismatch, PinMismatch, InvalidPurpose };
@@ -34,9 +35,10 @@ pub fn pins(cert: *const C.Certificate, set: []const [32]u8) Error!void {
     if (set.len == 0) return;
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(cert.spki, &hash, .{});
-    var matches: u8 = 0;
-    for (set) |pin| matches |= @intFromBool(std.crypto.timing_safe.eql([32]u8, hash, pin));
-    if (matches == 0) return error.PinMismatch;
+    // Every pin is compared; only whether one matched is released.
+    var matches = aegis.secret.Choice.fromBit(0) catch unreachable; // unreachable: 0 is a bit
+    for (set) |*pin| matches = matches.@"or"(aegis.secret.equal(32, &hash, pin));
+    if (!matches.declassify("a pin mismatch is refused")) return error.PinMismatch;
 }
 pub fn purpose(cert: *const C.Certificate, desired: T.Purpose, ca: bool) Error!void {
     @setRuntimeSafety(true);

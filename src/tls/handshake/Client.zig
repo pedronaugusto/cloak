@@ -1177,7 +1177,7 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
             const Hash = suites.Hash(tag);
             const digest = e.inner.digestWith(&digest_buf, Hash.digest_length, zeroed);
             const expected = Ech.confirmation(Hash, &scratch.random, Ech.accept_label, digest[0..Hash.digest_length]);
-            break :blk std.crypto.timing_safe.eql([8]u8, expected, msg[4 + 2 + 24 ..][0..8].*);
+            break :blk aegis.secret.equal(8, &expected, msg[4 + 2 + 24 ..][0..8]).declassify("ECH acceptance shows in the keys that follow");
         },
     };
     if (e.context) |*context| context.deinit();
@@ -1313,7 +1313,7 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
                 const Hash = suites.Hash(tag);
                 const digest = confirm.digest(&digest_buf);
                 const expected = Ech.confirmation(Hash, &scratch.random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
-                accepted = std.crypto.timing_safe.eql([8]u8, expected, got.*);
+                accepted = aegis.secret.equal(8, &expected, got).declassify("ECH acceptance shows in the keys that follow");
             },
         }
         std.crypto.secureZero(u8, std.mem.asBytes(&confirm));

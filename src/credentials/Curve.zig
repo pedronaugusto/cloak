@@ -1,6 +1,7 @@
 //! Borrowed-scalar fixed-window base multiplication for credential construction.
 //! Adapted from Zig 0.17 pcMul16/pcSelect; see docs/design.md.
 const std = @import("std");
+const aegis = @import("aegis");
 const curve_point = @import("curve/Point.zig");
 pub const MultiplyError = error{IdentityElement};
 
@@ -88,7 +89,7 @@ pub fn validate(comptime Point: type, scalar: *const [@sizeOf(Point.scalar.Compr
         break :value bytes;
     };
     // Comparison borrows bytes; only the final invalid-key result is observable.
-    if (std.crypto.timing_safe.compare(u8, scalar, &order, .big) != .lt) return error.InvalidScalar;
+    if (!aegis.secret.compareUnsigned(order.len, .big, scalar, &order).lt.declassify("an out-of-range key is refused")) return error.InvalidScalar;
 }
 fn precompute(comptime Point: type) [16]Point {
     @setRuntimeSafety(true);

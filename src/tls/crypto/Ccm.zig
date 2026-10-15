@@ -5,6 +5,7 @@
 //! (key schedule, MAC state, keystream block) erased. It has the shape of std's AEADs, so the
 //! record layer takes it as it takes AES-GCM.
 const std = @import("std");
+const aegis = @import("aegis");
 const crypto = std.crypto;
 
 pub const Aes128Ccm = AesCcm(crypto.core.aes.Aes128);
@@ -55,7 +56,7 @@ fn AesCcm(comptime Aes: type) type {
             defer crypto.secureZero(u8, &expected);
             ctx.encrypt(&expected, &counterBlock(npub, 0));
             for (&expected, mac) |*e, a| e.* ^= a;
-            if (!crypto.timing_safe.eql([tag_length]u8, expected, tag)) {
+            if (!aegis.secret.equal(tag_length, expected[0..tag_length], &tag).declassify("a bad tag drops the record")) {
                 crypto.secureZero(u8, m);
                 return error.AuthenticationFailed;
             }

@@ -102,7 +102,7 @@ pub fn take(job: Job, request: types.Request) TakeError!Path {
     guard = job.state.shared.acquire();
     defer guard.deinit();
     try ready(guard.value().phase);
-    if (!std.crypto.timing_safe.eql([32]u8, expected, supplied)) return error.WrongVerificationRequest;
+    if (!aegis.secret.equal(32, &expected, &supplied).declassify("a request mismatch is refused")) return error.WrongVerificationRequest;
     const result = guard.value().result.?;
     guard.value().result = null;
     guard.value().phase = .acknowledged;

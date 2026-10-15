@@ -70,10 +70,7 @@ pub fn checkFinished(comptime Hash: type, prefix: Prefix, traffic: *const [Hash.
     var expected = aegis.Secret([Hash.digest_length]u8).init(undefined);
     defer expected.deinit();
     finished(Hash, prefix, expected.exposeMut(), traffic, transcript);
-    // Published aegis Choice only accepts baseline hosted LLVM targets; TLS also
-    // supports native CPU dispatch and freestanding/wasm. Use std's fixed-size
-    // comparison here until that dependency covers these profiles.
-    if (!std.crypto.timing_safe.eql([Hash.digest_length]u8, expected.expose().*, received[0..Hash.digest_length].*)) return error.BadFinished;
+    if (!aegis.secret.equal(Hash.digest_length, expected.expose(), received[0..Hash.digest_length]).declassify("a bad Finished ends the handshake")) return error.BadFinished;
 }
 test {
     _ = @import("Labels_test.zig");
