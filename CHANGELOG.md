@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-15
+
 ### Breaking
 
 - `tls.Group` gains `mlkem768` (MLKEM768, 513) and `mlkem1024` (MLKEM1024, 514), pure ML-KEM key exchange (draft-ietf-tls-mlkem): an exhaustive switch over the groups needs the two arms.
