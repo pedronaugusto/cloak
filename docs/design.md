@@ -246,8 +246,12 @@ the event type for QUIC, where levels and secrets need an ordered stream.
 
 Owners, bottom to top. `crypto` holds suites, HKDF and key shares (`Exchange`).
 `record` holds `Epoch` and `Protection`, the one sequence and limit owner per
-direction. `handshake` holds the message parsers, the checked state table, the
-transcript, the schedule and `Client`, which consumes whole handshake messages and
+direction. `handshake` holds the message parsers, the checked state table (`State`: one
+aegis typestate machine per role, whose topology aegis validates when it is analyzed and
+whose states carry the history the protocol depends on, a resumption, a certificate asked
+for or sent, so no transition is rewritten after it is taken; each edge's epoch, proof and
+record boundary and the client-auth, ticket and retry policy are checked before it is
+committed), the transcript, the schedule and `Client`, which consumes whole handshake messages and
 returns outputs through a queue: messages to send, traffic secrets to install, and
 requests for entropy, time, peer verification and signing. `Connection` turns those
 outputs into records and key slots; `quic.Handshake` turns the same outputs into

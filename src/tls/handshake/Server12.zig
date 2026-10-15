@@ -324,7 +324,7 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
 
 fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .c_certificate12) return error.UnexpectedMessage;
+    if (self.state.phase() != .c_certificate12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const limits = self.options.limits;
     var probe: [Messages12.max_certificates][]const u8 = undefined;
@@ -375,7 +375,7 @@ fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
 
 fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .c_verify12) return error.UnexpectedMessage;
+    if (self.state.phase() != .c_verify12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const parsed = try Messages.certificateVerify(msg);
     const scheme = std.enums.fromInt(Hello.SignatureScheme, parsed.scheme) orelse return error.UnofferedScheme;
@@ -403,7 +403,7 @@ pub fn onCcs(self: anytype) Error!void {
 
 fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .c_finished12) return error.UnexpectedMessage;
+    if (self.state.phase() != .c_finished12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const received = try Messages.finished(msg, Prf.verify_length);
     switch (self.suite12.?) {

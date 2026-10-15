@@ -275,7 +275,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     self.* = .{
         .gpa = gpa,
         .options = options,
-        .state = .{ .role = .server, .mode = options.transport, .auth = options.client_auth },
+        .state = server_state: {
+            var state = State.State.init(.server, options.transport);
+            state.auth = options.client_auth;
+            break :server_state state;
+        },
     };
     self.options.credentials = credentials;
     for (credentials) |credential| _ = credential.identity.retain();
@@ -321,7 +325,7 @@ pub fn wipe(self: *Server) void {
         self.gpa.free(self.server_name_copy);
         self.server_name_copy = &.{};
     }
-    self.state.phase = .failed;
+    self.state.fail();
 }
 
 fn startScratch(self: *Server) std.mem.Allocator.Error!*Scratch {
@@ -353,7 +357,7 @@ fn releaseScratch(self: *Server) void {
 /// A ChangeCipherSpec record arrived; only TLS 1.2 expects one, once, before the client's Finished.
 pub fn receiveCcs(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase == .failed) return error.Closed;
+    if (self.state.phase() == .failed) return error.Closed;
     if (self.version != .tls12) return error.UnexpectedMessage;
     errdefer self.state.fail();
     return Server12.onCcs(self);
@@ -589,7 +593,7 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
 /// Consumes one complete handshake message; `boundary` says it ended exactly at its record.
 pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase == .failed) return error.Closed;
+    if (self.state.phase() == .failed) return error.Closed;
     if (self.need_now != .none) return error.Pending;
     errdefer self.state.fail();
     if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
@@ -700,7 +704,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
 /// `group`, `suite` among its offer and the cookie the request carried.
 pub fn resumeRetry(self: *Server, suite: Suite13, group: Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.options.transport != .datagram or self.state.phase != .start or self.scratch != null) return error.UnexpectedMessage;
+    if (self.options.transport != .datagram or self.state.phase() != .start or self.scratch != null) return error.UnexpectedMessage;
     errdefer self.state.fail();
     const scratch = try self.startScratch();
     try self.state.advance(.client_hello, .initial, .parsed, true);
@@ -1260,7 +1264,7 @@ fn checkInner(hello: *const ClientHello) Client.Error!void {
 
 fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .client_certificate) return error.UnexpectedMessage;
+    if (self.state.phase() != .client_certificate) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     var probe: [Messages.max_certificates][]const u8 = undefined;
     const limits = self.options.limits;
@@ -1288,7 +1292,7 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
 
 fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .client_possession) return error.UnexpectedMessage;
+    if (self.state.phase() != .client_possession) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const parsed = try Messages.certificateVerify(msg);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1302,7 +1306,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
 
 fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .client_finished) return error.UnexpectedMessage;
+    if (self.state.phase() != .client_finished) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     var before_buf: [Transcripts.max_digest]u8 = undefined;
     switch (self.keys.?) {
@@ -1409,7 +1413,7 @@ pub fn settle(self: *Server) void {
 
 pub fn info(self: *const Server) ?Info {
     @setRuntimeSafety(true);
-    if (!self.established or self.state.phase == .failed) return null;
+    if (!self.established or self.state.phase() == .failed) return null;
     return .{
         .version = self.version,
         .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
@@ -1430,7 +1434,7 @@ pub const ExportError = Client.ExportError;
 pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     @setRuntimeSafety(true);
     // A failed connection has erased its secrets; established stays true for the record.
-    if (!self.established or self.state.phase == .failed) return error.WrongPhase;
+    if (!self.established or self.state.phase() == .failed) return error.WrongPhase;
     if (self.version == .tls12) {
         const secrets = self.tls12 orelse return error.WrongPhase;
         return secrets.exportKeyingMaterial(self.suite12 orelse return error.WrongPhase, out, label, context);

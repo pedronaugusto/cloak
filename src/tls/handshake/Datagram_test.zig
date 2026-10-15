@@ -2,6 +2,7 @@
 //! cookie field, the "dtls13" label prefix, the DTLS 1.2 transcript form and the
 //! HelloVerifyRequest edge, between two machines with no record layer.
 const std = @import("std");
+const at = @import("../../testing/StateAt.zig").at;
 const Pair = @import("../../testing/MachinePair.zig");
 const Hello = @import("Hello.zig");
 const ClientHello = @import("ClientHello.zig");
@@ -135,15 +136,15 @@ test "C8 a ServerHello of DTLS 1.3 after a HelloVerifyRequest is refused by the 
 }
 
 test "C8 HelloVerifyRequest edges: datagram only, never after a retry request, at most three" {
-    var stream: State.State = .{ .role = .client, .mode = .stream, .phase = .hello };
+    var stream: State.State = at(.client, .stream, .hello, .{});
     try std.testing.expectError(error.UnexpectedMessage, stream.advance(.hello_verify, .initial, .parsed, true));
-    var quic: State.State = .{ .role = .client, .mode = .quic, .phase = .hello };
+    var quic: State.State = at(.client, .quic, .hello, .{});
     try std.testing.expectError(error.UnexpectedMessage, quic.advance(.hello_verify, .initial, .parsed, true));
-    var retried: State.State = .{ .role = .client, .mode = .datagram, .phase = .hello, .retried = true };
+    var retried: State.State = at(.client, .datagram, .hello, .{ .retried = true });
     try std.testing.expectError(error.UnexpectedMessage, retried.advance(.hello_verify, .initial, .parsed, true));
-    var server: State.State = .{ .role = .server, .mode = .datagram, .phase = .hello };
+    var server: State.State = at(.server, .datagram, .hello, .{});
     try std.testing.expectError(error.UnexpectedMessage, server.advance(.hello_verify, .initial, .parsed, true));
-    var datagram: State.State = .{ .role = .client, .mode = .datagram };
+    var datagram: State.State = State.State.init(.client, .datagram);
     for (0..3) |_| {
         try datagram.advance(.client_hello, .initial, .parsed, true);
         try datagram.advance(.hello_verify, .initial, .parsed, true);
@@ -151,7 +152,7 @@ test "C8 HelloVerifyRequest edges: datagram only, never after a retry request, a
     try datagram.advance(.client_hello, .initial, .parsed, true);
     try std.testing.expectError(error.UnexpectedMessage, datagram.advance(.hello_verify, .initial, .parsed, true));
     // And a retry request may not follow one.
-    var verified: State.State = .{ .role = .client, .mode = .datagram };
+    var verified: State.State = State.State.init(.client, .datagram);
     try verified.advance(.client_hello, .initial, .parsed, true);
     try verified.advance(.hello_verify, .initial, .parsed, true);
     try verified.advance(.client_hello, .initial, .parsed, true);

@@ -121,7 +121,7 @@ fn suiteKey(suite: suites.Suite12, key: certificates.certificate.PublicKey) Erro
 
 fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .server_key_exchange12) return error.UnexpectedMessage;
+    if (self.state.phase() != .server_key_exchange12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const ske = try Messages12.serverKeyExchange(msg);
     if (!std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{ske.group})) return error.UnofferedSelection;
@@ -170,7 +170,7 @@ fn onServerHelloDone(self: anytype, msg: []const u8, epoch: Epoch, boundary: boo
 /// The entropy for the client's ECDHE share: send the flight.
 pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .local_flight12) return error.UnexpectedService;
+    if (self.state.phase() != .local_flight12) return error.UnexpectedService;
     const scratch = self.scratch.?;
     scratch.share12 = Exchange.Share.init(self.group.?, entropy) catch return error.InvalidEntropy;
     self.need_now = .none;
@@ -311,7 +311,7 @@ pub fn onCcs(self: anytype) Error!void {
 
 fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .peer_finished12) return error.UnexpectedMessage;
+    if (self.state.phase() != .peer_finished12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const received = try Messages.finished(msg, Prf.verify_length);
     switch (self.suite12.?) {

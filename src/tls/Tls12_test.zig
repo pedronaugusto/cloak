@@ -202,8 +202,8 @@ test "C4 a TLS 1.2 server that asked for no certificate ends connected in its st
         options.client_auth = auth;
         const duo = try connect(options);
         defer duo.deinit();
-        try std.testing.expectEqual(.connected, duo.server.hs.state.server.state.phase);
-        try std.testing.expectEqual(.connected, duo.client.hs.state.client.state.phase);
+        try std.testing.expectEqual(.connected, duo.server.hs.state.server.state.phase());
+        try std.testing.expectEqual(.connected, duo.client.hs.state.client.state.phase());
     }
 }
 

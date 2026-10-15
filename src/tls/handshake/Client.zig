@@ -341,7 +341,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     const scratch = try gpa.create(Scratch);
     errdefer gpa.destroy(scratch);
     scratch.* = .{};
-    self.* = .{ .gpa = gpa, .options = options, .state = .{ .role = .client, .mode = options.hello.transport }, .scratch = scratch };
+    self.* = .{ .gpa = gpa, .options = options, .state = .init(.client, options.hello.transport), .scratch = scratch };
     self.options.hello = hello;
     self.external_offered = options.external_psk != null;
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
@@ -398,7 +398,7 @@ pub fn wipe(self: *Client) void {
         self.gpa.free(self.peer_parameters);
         self.peer_parameters = &.{};
     }
-    self.state.phase = .failed;
+    self.state.fail();
 }
 
 // ---------------------------------------------------------------- services
@@ -406,7 +406,7 @@ pub fn wipe(self: *Client) void {
 /// A ChangeCipherSpec record arrived; only TLS 1.2 expects one, once, before the server's Finished.
 pub fn receiveCcs(self: *Client) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase == .failed) return error.Closed;
+    if (self.state.phase() == .failed) return error.Closed;
     if (self.version != .tls12) return error.UnexpectedMessage;
     errdefer self.state.fail();
     return Client12.onCcs(self);
@@ -489,7 +489,7 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
     if (entropy.len != expected) return error.InvalidEntropy;
     errdefer self.eraseShares();
     if (self.version == .tls12) return Client12.onEntropy(self, entropy);
-    if (self.state.phase == .start) {
+    if (self.state.phase() == .start) {
         var at: usize = 0;
         self.scratch.?.random = entropy[0..32].*;
         at += 32;
@@ -593,7 +593,7 @@ pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;
-    if (self.state.phase == .start) {
+    if (self.state.phase() == .start) {
         // Resumption's clock, before the hello: the session this one may resume, then the draw.
         self.origin = types.seconds(now);
         self.takeTicket();
@@ -1059,7 +1059,7 @@ fn sendOuterHello(self: *Client) Error!void {
 /// end of its record, which key-changing messages require.
 pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase == .failed) return error.Closed;
+    if (self.state.phase() == .failed) return error.Closed;
     if (self.need_now != .none) return error.Pending;
     errdefer self.state.fail();
     if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
@@ -1439,7 +1439,7 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
 
 fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .possession) return error.UnexpectedMessage;
+    if (self.state.phase() != .possession) return error.UnexpectedMessage;
     const parsed = try Messages.certificateVerify(msg);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
@@ -1451,7 +1451,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
 
 fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
-    if (self.state.phase != .finished) return error.UnexpectedMessage;
+    if (self.state.phase() != .finished) return error.UnexpectedMessage;
     var before_buf: [Transcripts.max_digest]u8 = undefined;
     switch (self.keys.?) {
         inline else => |*k, tag| {
@@ -1624,7 +1624,7 @@ pub fn settle(self: *Client) void {
 
 pub fn info(self: *const Client) ?Info {
     @setRuntimeSafety(true);
-    if (!self.established or self.state.phase == .failed) return null;
+    if (!self.established or self.state.phase() == .failed) return null;
     return .{
         .version = self.version,
         .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
@@ -1646,7 +1646,7 @@ pub const ExportError = @import("Errors.zig").ExportError;
 pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     @setRuntimeSafety(true);
     // A failed connection has erased its secrets; established stays true for the record.
-    if (!self.established or self.state.phase == .failed) return error.WrongPhase;
+    if (!self.established or self.state.phase() == .failed) return error.WrongPhase;
     if (self.version == .tls12) {
         const secrets = self.tls12 orelse return error.WrongPhase;
         return secrets.exportKeyingMaterial(self.suite12 orelse return error.WrongPhase, out, label, context);
