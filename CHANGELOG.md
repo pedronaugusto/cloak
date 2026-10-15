@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-15
+
 ### Changed
 
 - The handshake's state table is two aegis typestate machines, one per role, both versions: aegis validates each topology when it is analyzed (one edge per state and event, every state reachable from the start, no state without a way out) and a step is one table load. The states now carry what the old table kept in flags and rewrote after a step (a resumption, a certificate the server asked for, a TLS 1.2 certificate whose CertificateVerify must follow), so every transition is the table's. The phases callers see are unchanged.
