@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- A client that offers certificate compression and ECH together completes the handshake: its compress_certificate extension sat inside the run of extensions the encoded inner hello leaves to the outer one, so the server rebuilt an inner hello in another order than the client's, the two transcripts split, and the handshake failed with bad_record_mac. It now comes before that run.
+
 ## [0.10.0] - 2026-10-15
 
 ### Breaking

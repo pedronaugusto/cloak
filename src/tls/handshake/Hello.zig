@@ -202,7 +202,8 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     const ext_at = w.pos;
     try w.int(u16, 0);
     if (sni.len != 0) try serverName(&w, sni);
-    // An encoded inner hello leaves its contiguous run of shared extensions to the outer one.
+    // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
+    if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
     var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
@@ -222,7 +223,6 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try s.int(u16, @intCast(offered.len * 2));
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
     if (!compress) try extension(&w, 13, signature_bytes[0..s.pos]);
-    if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
     if (tls12) {
         // extended_master_secret (RFC 7627) and an empty renegotiation_info (RFC 5746).
         try extension(&w, 23, "");
