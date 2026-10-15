@@ -7,6 +7,7 @@ const inputs = @import("../../testing/inputs.zig");
 const Pair = @import("../../testing/DatagramPair.zig");
 const Datagram = @import("Datagram.zig");
 const Cookies = @import("Cookies.zig");
+const Record = @import("Record.zig");
 const suites = @import("../crypto/Suite.zig");
 
 const gpa = std.testing.allocator;
@@ -47,7 +48,9 @@ test "C8 fuzz datagrams to an established DTLS association are dropped" {
 fn fuzzEstablished(_: void, case: *shakedown.Case) !void {
     const s = case.source;
     const list: []const suites.Suite = if (shakedown.gen.boolean(s)) suites.Suite.tls13_only else &.{.ecdhe_ecdsa_aes_128_gcm_sha256};
-    const pair = try Pair.init(gpa, .{ .client_suites = list, .server_suites = list });
+    // With connection IDs or without.
+    const cids = shakedown.gen.boolean(s);
+    const pair = try Pair.init(gpa, .{ .client_suites = list, .server_suites = list, .client_cid = if (cids) "c1" else null, .server_cid = if (cids) "srv-12" else null });
     defer pair.deinit();
     try pair.run();
     var out: [256]u8 = undefined;
@@ -84,11 +87,19 @@ fn fuzzCookies(_: void, case: *shakedown.Case) !void {
     try pair.serveClient();
     var hello_out: [2048]u8 = undefined;
     const hello = (try pair.client.dtls.send(&hello_out, pair.now)).?;
-    const seeds = [_][]const u8{ hello, examples[0] };
+    // The hello whole, and its first fragment.
+    var fragment: [2048]u8 = undefined;
+    @memcpy(fragment[0..hello.len], hello);
+    const keep = @min(hello.len - Record.header12 - 12, 70);
+    std.mem.writeInt(u24, fragment[Record.header12 + 9 ..][0..3], @intCast(keep), .big);
+    std.mem.writeInt(u16, fragment[11..13], @intCast(12 + keep), .big);
+    const seeds = [_][]const u8{ hello, examples[0], fragment[0 .. Record.header12 + 12 + keep] };
     var bytes: [2048]u8 = undefined;
     const input = inputs.draw(case, &bytes, &seeds, 128);
     var out: [8192]u8 = undefined;
-    const options = pair.serverOptions();
+    // A server of both versions, or of DTLS 1.2 alone, which answers hello fragments too.
+    var options = pair.serverOptions();
+    if (shakedown.gen.boolean(case.source)) options.max_version = .tls12;
     switch (cookies.check(&options, "addr", pair.now, input, &out)) {
         .respond => |answer| try std.testing.expect(answer.len <= 3 * input.len),
         // No hello the client sent carries a cookie of this key: nothing is admitted.

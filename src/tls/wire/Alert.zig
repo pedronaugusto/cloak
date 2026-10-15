@@ -15,6 +15,8 @@ pub const Alert = enum(u8) {
     access_denied = 49,
     decode_error = 50,
     decrypt_error = 51,
+    /// DTLS 1.3: a peer asked for more connection IDs than it may (RFC 9147 section 9).
+    too_many_cids_requested = 52,
     protocol_version = 70,
     insufficient_security = 71,
     internal_error = 80,

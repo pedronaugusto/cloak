@@ -4,6 +4,26 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- DTLS connection IDs, both versions (RFC 9146; RFC 9147 section 9): `connection_id` on either end's options is the ID it receives with, offered or answered; once agreed every protected record carries the peer's (DTLS 1.2's tls12_cid records, DTLS 1.3's C bit), and one without this end's own, or with one when none was agreed, is dropped. `Datagram.connectionIds`, `Datagram.connectionIdOf` (the ID on a datagram, for the caller's lookup before `receive`) and `receivedNewest` (the datagram authenticated a record newer than any before it, RFC 9146 section 6's condition for following a peer to a new address). DTLS 1.3: `newConnectionIds` (spare or immediate), `requestConnectionIds`, `connectionIdsRequested`, `spareConnectionIds`, `useSpareConnectionId`; the peer's NewConnectionId and RequestConnectionId are taken only when the agreement allows them, and a request while its last is unanswered ends the association with too_many_cids_requested (`tls.Alert` names it).
+- use_srtp (RFC 5764) for WebRTC: `srtp` profiles on either end's options (AES128_CM_HMAC_SHA1_80 and _32, AEAD_AES_128_GCM and AEAD_AES_256_GCM; no NULL-cipher profile, no MKI), the chosen one in `Info.srtp`, and `Datagram.srtpKeys` for this end's and the peer's master keys and salts from the "EXTRACTOR-dtls_srtp" exporter.
+- `exportKeyingMaterial` (`Connection`, `Session`, `quic.Handshake`, `dtls.Datagram`) takes an optional context: null is RFC 5705's form without one, which TLS 1.2 tells from an empty context (DTLS-SRTP and EAP-TLS use it); in TLS 1.3 the two are the same. Callers passing a context are unchanged.
+- A DTLS server of DTLS 1.2 alone answers the first fragment of a client's first hello with a HelloVerifyRequest (`dtls.Cookies`): OpenSSL on macOS falls back to the 256-byte minimum MTU and fragments a hello with use_srtp. A server that also speaks DTLS 1.3 still drops such a fragment, since the hello's versions may lie beyond it.
+- Live interop of all this against wolfSSL 5.9.4 (DTLS 1.3 and 1.2), OpenSSL 4.0.3 and pion/dtls 3.1.12 (DTLS 1.2), both roles: connection IDs, SRTP keying material equal to each peer's, resumption from either side's tickets, key updates from cloak's side.
+- After a DTLS 1.3 handshake each NewSessionTicket, KeyUpdate, NewConnectionId and RequestConnectionId is a flight of its own with its own timer (RFC 9147 section 5.8.4). A client that receives records under keys it does not hold yet answers with an ACK of what it has, or of nothing, and a server sends its handshake flight again at such an ACK or a partial one, at most once a timer period.
+
+### Fixed
+
+- The TLS 1.2 exporter always put a context in its seed, so keying material meant to have none (RFC 5705 section 4) could not be had; null now leaves it out.
+- DTLS 1.3: a peer's KeyUpdate request while this end's NewSessionTicket waited for its ACK started a new flight, and the ticket was never sent again; a ticket lost then was lost for good.
+- DTLS 1.3: a client took the server's application data for the ACK of its final flight and stopped sending that flight again, so a server that sends before the client's Finished arrives (RFC 9147 section 5.8.1 allows it) never completed when that flight was lost. Only the ACK ends the wait now.
+- DTLS 1.3: a client ACKed the server's last handshake flight, which its own final flight answers (RFC 9147 section 7.1); an ACK too long for the datagram was never sent, and now lists the newest records that fit, in increasing order.
+
+### Changed
+
+- A server connection is 32 bytes larger at creation (two options), 1,144 bytes; an idle client connection 2,024 bytes with its struct, of the design's 2 KiB.
+
 ## [0.10.2] - 2026-10-15
 
 ### Changed

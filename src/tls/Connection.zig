@@ -363,7 +363,10 @@ pub fn readClosed(self: *const Connection) bool {
 }
 
 pub const ExportError = Client.ExportError;
-pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u8, context: []const u8) ExportError!void {
+/// Keying material (RFC 5705, RFC 8446 section 7.5) under `label`. In TLS 1.2 a context, even
+/// an empty one, enters with its length and null leaves it out, which RFC 5705 tells apart; in
+/// TLS 1.3 null and empty are the same.
+pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     if (self.phase() == .failed) return error.WrongPhase;
     return self.hs.exportKeyingMaterial(out, label, context);
 }

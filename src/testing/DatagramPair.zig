@@ -35,11 +35,20 @@ pub const Options = struct {
     reorder: u16 = 0,
     /// Drop the first `drop_first` datagrams each side sends.
     drop_first: usize = 0,
+    /// Datagrams lost by number, counting from 1, of those each side sends.
+    drop_client: []const usize = &.{},
+    drop_server: []const usize = &.{},
     /// Prints each datagram's records as it goes, for a failing test.
     trace: bool = false,
     /// How the server meets its client: a stateless cookie check first, a path validated
     /// otherwise, or an unproven address held to three times what it sent.
     admission: enum { cookies, validated, unvalidated } = .cookies,
+    /// Connection IDs each end receives with (null: not offered or not answered).
+    client_cid: ?[]const u8 = null,
+    server_cid: ?[]const u8 = null,
+    /// use_srtp profiles each end offers or accepts.
+    client_srtp: []const Datagram.Srtp = &.{},
+    server_srtp: []const Datagram.Srtp = &.{},
 };
 
 const Packet = struct { bytes: []u8 };
@@ -79,6 +88,9 @@ server_ready: bool = false,
 cookies: Cookies = .{},
 /// Datagrams the stateless check answered, and what it dropped.
 cookie_answers: usize = 0,
+/// `run` goes on through every timer until nothing is left to send, not only until both ends
+/// are connected and quiet.
+settle: bool = false,
 
 pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
     const self = try gpa.create(Pair);
@@ -109,6 +121,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .resumption = if (options.cache) |cache| .{ .cache = cache } else null,
         .mtu = options.mtu,
         .generation = .fromRaw(21),
+        .connection_id = options.client_cid,
+        .srtp = options.client_srtp,
     }) };
     errdefer self.client.dtls.deinit();
     self.server = .{ .dtls = undefined };
@@ -129,6 +143,8 @@ pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
         .tickets = self.options.tickets,
         .mtu = self.options.mtu,
         .generation = .fromRaw(23),
+        .connection_id = self.options.server_cid,
+        .srtp = self.options.server_srtp,
     };
 }
 
@@ -193,6 +209,8 @@ fn transmit(self: *Pair, side: *Side, other: *Side) !bool {
         moved = true;
         side.sent += 1;
         if (self.options.trace) self.show(side, datagram);
+        const lost = if (side == &self.client) self.options.drop_client else self.options.drop_server;
+        if (std.mem.findScalar(usize, lost, side.sent) != null) continue;
         if (side.sent <= self.options.drop_first or self.chance(self.options.loss)) continue;
         const copy = try self.gpa.dupe(u8, datagram);
         if (self.chance(self.options.reorder) and other.held == null) {
@@ -214,7 +232,10 @@ fn show(self: *Pair, side: *Side, datagram: []const u8) void {
     @memcpy(copy[0..datagram.len], datagram);
     var rest: []u8 = copy[0..datagram.len];
     std.debug.print("t={d}ms {s} sends {d} bytes:", .{ @divTrunc(self.now.nanoseconds, std.time.ns_per_ms), if (side == &self.client) "client" else "server", datagram.len });
-    while (Record.split(rest, 0)) |next| {
+    // Records carry the connection ID of the end they go to.
+    const ready = side != &self.server or self.server_ready;
+    const cid_len: usize = if (ready and side.dtls.cids_agreed) side.dtls.peer_cid_len else 0;
+    while (Record.split(rest, cid_len)) |next| {
         rest = next.rest;
         switch (next.kind) {
             .classic => |h| {
@@ -267,6 +288,11 @@ pub fn step(self: *Pair) !bool {
     return moved;
 }
 
+/// Moves datagrams until nothing moves, without advancing the clock.
+pub fn flush(self: *Pair) !void {
+    while (try self.step()) {}
+}
+
 /// Runs until both ends are connected and quiet, advancing the clock to the next timeout when
 /// nothing moves.
 pub fn run(self: *Pair) !void {
@@ -290,7 +316,7 @@ pub fn run(self: *Pair) !void {
             if (self.server_ready) if (self.server.dtls.failure()) |err| return err;
             return error.Stalled;
         };
-        if (connected and self.client.inbox.items.len == 0 and self.server.inbox.items.len == 0 and rounds > 0 and next.nanoseconds - self.now.nanoseconds > 0 and self.options.loss == 0 and self.options.drop_first == 0) return;
+        if (connected and self.client.inbox.items.len == 0 and self.server.inbox.items.len == 0 and rounds > 0 and next.nanoseconds - self.now.nanoseconds > 0 and self.options.loss == 0 and self.options.drop_first == 0 and !self.settle) return;
         self.now = next;
     }
     return error.Stalled;

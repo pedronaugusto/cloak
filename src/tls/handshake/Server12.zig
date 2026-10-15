@@ -76,6 +76,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
             if (self.options.require_alpn) return error.NoApplicationProtocol;
         } else self.alpn = hello.selectAlpn(self.options.alpn) orelse return error.NoApplicationProtocol;
     }
+    self.negotiateDatagram(hello);
     _ = epoch;
     _ = boundary;
     // The client's session id: echoed when its ticket resumes.
@@ -169,8 +170,8 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
-    var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
+    var hello_buffer: [1024]u8 = undefined;
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
@@ -200,8 +201,8 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
 fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    var hello_buffer: [600]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12 });
+    var hello_buffer: [1024]u8 = undefined;
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     if (self.state.ticket12) try sendTicket(self);

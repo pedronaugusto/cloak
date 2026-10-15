@@ -389,7 +389,7 @@ fn noteFailure(session: *Session, err: anyerror) void {
 }
 
 /// RFC 5705/8446 keying material; see `Connection.exportKeyingMaterial`.
-pub fn exportKeyingMaterial(session: *const Session, out: []u8, label: []const u8, context: []const u8) Connection.ExportError!void {
+pub fn exportKeyingMaterial(session: *const Session, out: []u8, label: []const u8, context: ?[]const u8) Connection.ExportError!void {
     return session.conn.exportKeyingMaterial(out, label, context);
 }
 

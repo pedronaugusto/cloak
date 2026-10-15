@@ -89,9 +89,10 @@ pub fn check(self: *const Cookies, options: *const Datagram.ServerOptions, addre
     if (offset != 0 or fragment_len > body.len - 12 or fragment_len > length or length > 64 * 1024) return .drop;
     const fragment = body[12..][0..fragment_len];
     const seconds: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_s)));
+    const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid };
     // A whole hello is read as such; the first fragment of a longer one can still carry its
     // cookie (in the cookie field or, early enough, the cookie extension).
-    if (fragment_len < length) return self.admitFragment(address, seconds, fragment);
+    if (fragment_len < length) return self.checkFragment(&policy, address, seconds, fragment, header.sequence, datagram.len, out);
     if (out.len < 4 + length + Record.header12 + 12) return .drop;
     // The hello in its TLS form: type and length, then the body.
     const message = out[0 .. 4 + length];
@@ -100,14 +101,13 @@ pub fn check(self: *const Cookies, options: *const Datagram.ServerOptions, addre
     std.mem.writeInt(u24, message[1..4], @intCast(length), .big);
     @memcpy(message[4..], fragment);
     const hello = ClientHello.parse(message, .datagram) catch return .drop;
-    const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid };
     if (hello.offers13() and policy.allows13()) {
         if (hello.cookie.len != 0) return self.admit13(address, seconds, hello.cookie);
         return self.retry13(policy, address, seconds, &hello, message, header.sequence, datagram.len, out);
     }
     if (hello.offers12() and policy.allows12()) {
         if (hello.legacy_cookie.len != 0) return self.admit12(address, seconds, hello.random, hello.session, hello.suites, hello.legacy_cookie);
-        return self.verify12(address, seconds, &hello, header.sequence, datagram.len, out);
+        return self.verify12(address, seconds, hello.random, hello.session, hello.suites, header.sequence, datagram.len, out);
     }
     return .drop;
 }
@@ -221,14 +221,14 @@ fn admit13(self: *const Cookies, address: []const u8, seconds: u64, cookie: []co
 /// bytes of the MAC.
 const cookie12 = 32;
 
-fn verify12(self: *const Cookies, address: []const u8, seconds: u64, hello: *const ClientHello, record_sequence: u64, received: usize, out: []u8) Verdict {
+fn verify12(self: *const Cookies, address: []const u8, seconds: u64, random: []const u8, session: []const u8, offered: []const u8, record_sequence: u64, received: usize, out: []u8) Verdict {
     @setRuntimeSafety(true);
     const key = &self.keys[0].?;
     var cookie: [cookie12]u8 = undefined;
     cookie[0] = key.id;
     std.mem.writeInt(u32, cookie[1..5], @truncate(seconds), .big);
     var full: [32]u8 = undefined;
-    mac(key, "cloak dtls cookie 1.2", address, &.{ cookie[0..5], hello.random, hello.session, hello.suites }, &full);
+    mac(key, "cloak dtls cookie 1.2", address, &.{ cookie[0..5], random, session, offered }, &full);
     cookie[5..32].* = full[0..27].*;
     var buffer: [64]u8 = undefined;
     const request = Hello.buildHelloVerify(&buffer, &cookie) catch return .drop;
@@ -249,9 +249,13 @@ fn admit12(self: *const Cookies, address: []const u8, seconds: u64, random: []co
     return .{ .admit = .{} };
 }
 
-/// The first fragment of a hello too long for one datagram: admitted if it carries a valid
-/// cookie, else dropped (a stateless server answers only a hello it has whole).
-fn admitFragment(self: *const Cookies, address: []const u8, seconds: u64, fragment: []const u8) Verdict {
+/// The first fragment of a hello too long for one record: admitted if it carries a valid cookie.
+/// Without one, a server of DTLS 1.2 alone answers it with a HelloVerifyRequest, whose cookie
+/// covers only the random, session id and suites at its start; a server that also speaks DTLS 1.3
+/// drops it, since the hello's versions may lie beyond the fragment, a DTLS 1.3 server must not
+/// send a HelloVerifyRequest (RFC 9147 section 5.2), and its retry request's cookie covers the
+/// whole hello's hash.
+fn checkFragment(self: *const Cookies, policy: *const Hello.Options, address: []const u8, seconds: u64, fragment: []const u8, record_sequence: u64, received: usize, out: []u8) Verdict {
     @setRuntimeSafety(true);
     var r: Reader = .{ .bytes = fragment };
     _ = r.int(u16) catch return .drop;
@@ -260,6 +264,10 @@ fn admitFragment(self: *const Cookies, address: []const u8, seconds: u64, fragme
     const legacy_cookie = (r.vector(u8) catch return .drop).bytes;
     const offered = (r.vector(u16) catch return .drop).bytes;
     if (legacy_cookie.len != 0) return self.admit12(address, seconds, random, session, offered, legacy_cookie);
+    if (!policy.allows13() and policy.allows12()) {
+        if (session.len > 32 or offered.len < 2 or offered.len % 2 != 0) return .drop;
+        return self.verify12(address, seconds, random, session, offered, record_sequence, received, out);
+    }
     _ = r.vector(u8) catch return .drop;
     // The extensions present in this fragment, looking for the cookie.
     _ = r.int(u16) catch return .drop;

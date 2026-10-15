@@ -93,6 +93,13 @@ pub const Options = struct {
     /// that proves one is authenticated by it, with no certificate either way, and is issued no
     /// tickets. Tried before tickets.
     external_psk: ?Psk.Lookup = null,
+    /// DTLS: connection_id (RFC 9146), answered when a client offers it. Null answers none;
+    /// otherwise the connection ID this server receives records with, borrowed; empty: it sends
+    /// with the client's but takes none.
+    connection_id: ?[]const u8 = null,
+    /// DTLS: the SRTP profiles accepted (RFC 5764), in preference order: the first the client
+    /// offered is chosen. None answers no use_srtp.
+    srtp: []const Hello.Srtp = &.{},
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -130,6 +137,8 @@ scratch: ?*Scratch = null,
 suite: ?Suite13 = null,
 group: ?Group = null,
 alpn: []const u8 = "",
+/// DTLS: the SRTP profile chosen.
+srtp: ?Hello.Srtp = null,
 credential: usize = 0,
 scheme: Hello.SignatureScheme = .ed25519,
 keys: ?Keys = null,
@@ -212,6 +221,11 @@ const Scratch = struct {
     /// The client's compress_certificate list, when it sent one.
     compression: [255]u8 = undefined,
     compression_len: u8 = 0,
+    /// DTLS: the client offered connection_id and this server answers it: the client's
+    /// connection ID, which records this server sends carry.
+    peer_cid: [255]u8 = undefined,
+    peer_cid_len: u8 = 0,
+    cid_agreed: bool = false,
 };
 
 /// Encrypted Client Hello on the server: whether the first hello's ECH decrypted, the HPKE
@@ -240,7 +254,7 @@ const Keys = union(Suite13) {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
-    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .transport = options.transport, .parameters = options.parameters });
+    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
     if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
     for (options.credentials) |credential| for (credential.names) |name| {
         if (name.len == 0 or name.len > 253) return error.InvalidOptions;
@@ -905,6 +919,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
             if (self.options.require_alpn or self.options.transport == .quic) return error.NoApplicationProtocol;
         } else self.alpn = hello.selectAlpn(self.options.alpn) orelse return error.NoApplicationProtocol;
     }
+    self.negotiateDatagram(hello);
     if (self.options.transport == .quic) {
         if (hello.parameters == null) return error.MissingExtension;
         if (self.peer_parameters.len == 0) {
@@ -916,6 +931,34 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     @memcpy(scratch.schemes[0..keep], hello.schemes[0..keep]);
     // safe: at most 256 bytes are kept.
     scratch.schemes_len = @intCast(keep);
+}
+
+/// DTLS: connection IDs when the client offers them and this server answers them, and the
+/// first SRTP profile of the server's the client offered.
+pub fn negotiateDatagram(self: *Server, hello: *const ClientHello) void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    scratch.cid_agreed = false;
+    self.srtp = null;
+    if (self.options.transport != .datagram) return;
+    if (self.options.connection_id != null) if (hello.connection_id) |cid| {
+        @memcpy(scratch.peer_cid[0..cid.len], cid);
+        scratch.peer_cid_len = @intCast(cid.len); // safe: a vector<0..255>
+        scratch.cid_agreed = true;
+    };
+    const offered = hello.srtp orelse return;
+    self.srtp = for (self.options.srtp) |profile| {
+        var at: usize = 0;
+        while (at < offered.len) : (at += 2) {
+            if (std.mem.readInt(u16, offered[at..][0..2], .big) == @backingInt(profile)) break;
+        } else continue;
+        break profile;
+    } else null;
+}
+
+/// The connection ID a ServerHello answers connection_id with, when it does.
+pub fn ownConnectionId(self: *const Server) ?[]const u8 {
+    return if (self.scratch.?.cid_agreed) self.options.connection_id else null;
 }
 
 fn hasRetryGroup(self: *const Server, hello: *const ClientHello) bool {
@@ -977,8 +1020,8 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
     const scratch = self.scratch.?;
     const suite = self.suite.?;
     // A ServerHello: its fixed fields, a session id and the largest key share.
-    var hello_buffer: [256 + Exchange.max_share]u8 = undefined;
-    const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.pskMode()) self.scratch.?.psk_index else null);
+    var hello_buffer: [512 + Exchange.max_share]u8 = undefined;
+    const hello = try Hello.buildServer(&hello_buffer, self.options.transport, random[0..32], self.echoedSession(), suite, self.group.?, response.wire(), if (self.pskMode()) self.scratch.?.psk_index else null, self.ownConnectionId());
     try self.state.advance(.server_hello, .initial, .parsed, true);
     scratch.transcripts.select(suite);
     if (scratch.ech.status == .accepted) {
@@ -1041,6 +1084,7 @@ fn sendEncrypted(self: *Server) Client.Error!void {
         .parameters = if (self.options.transport == .quic) self.options.parameters else null,
         // A client whose ECH did not decrypt (or was GREASE) learns the current configs.
         .ech_retry = if (scratch.ech.status == .rejected) self.options.ech_keys else &.{},
+        .srtp = self.srtp,
     });
     try self.state.advance(.encrypted_extensions, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
@@ -1377,12 +1421,13 @@ pub fn info(self: *const Server) ?Info {
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external,
+        .srtp = self.srtp,
     };
 }
 
 pub const ExportError = Client.ExportError;
 
-pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: []const u8) ExportError!void {
+pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     @setRuntimeSafety(true);
     // A failed connection has erased its secrets; established stays true for the record.
     if (!self.established or self.state.phase == .failed) return error.WrongPhase;
@@ -1392,7 +1437,8 @@ pub fn exportKeyingMaterial(self: *const Server, out: []u8, label: []const u8, c
     }
     const keys = if (self.keys) |*keys| keys else return error.WrongPhase;
     switch (keys.*) {
-        inline else => |*k| try k.schedule.exportBytes(out, label, context),
+        // TLS 1.3 has one form: no context is the empty one (RFC 8446 section 7.5).
+        inline else => |*k| try k.schedule.exportBytes(out, label, context orelse ""),
     }
 }
 

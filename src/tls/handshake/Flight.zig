@@ -112,8 +112,10 @@ pub const Secrets12 = struct {
         return self.randoms[32..64];
     }
 
-    /// RFC 5705 keying material over the extended master secret; the context is always included.
-    pub fn exportKeyingMaterial(self: *const Secrets12, suite: suites.Suite12, out: []u8, label: []const u8, context: []const u8) Prf.ExportError!void {
+    /// RFC 5705 keying material over the extended master secret. A context, even an empty one,
+    /// enters the seed with its length; null leaves it out, as RFC 5705 distinguishes (DTLS-SRTP's
+    /// "EXTRACTOR-dtls_srtp" takes none, RFC 5764 section 4.2).
+    pub fn exportKeyingMaterial(self: *const Secrets12, suite: suites.Suite12, out: []u8, label: []const u8, context: ?[]const u8) Prf.ExportError!void {
         @setRuntimeSafety(true);
         switch (suite) {
             inline else => |tag| try Prf.exporter(suites.Hash12(tag), out, self.master.expose(), label, self.clientRandom(), self.serverRandom(), context),

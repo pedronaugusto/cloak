@@ -127,7 +127,7 @@ pub fn echRetryConfigs(self: Machine) ?[]const u8 {
     };
 }
 
-pub fn exportKeyingMaterial(self: Machine, out: []u8, label: []const u8, context: []const u8) ExportError!void {
+pub fn exportKeyingMaterial(self: Machine, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     return switch (self.state) {
         inline else => |m| m.exportKeyingMaterial(out, label, context),
     };
@@ -231,6 +231,19 @@ pub fn earlySkip(self: Machine) EarlySkip {
 
 /// DTLS: the message_seq of the hello a server's first message is, from which DTLS 1.2 numbers
 /// its transcript. The datagram carrier sets it before the hello; a client starts at zero.
+/// DTLS: the connection ID records this end sends carry, when the hellos agreed on connection
+/// IDs (RFC 9146), and null when they did not; known once the hellos are processed and until
+/// the handshake completes.
+pub fn peerConnectionId(self: Machine) ?[]const u8 {
+    return switch (self.state) {
+        inline else => |m| {
+            const scratch = m.scratch orelse return null;
+            if (!scratch.cid_agreed) return null;
+            return scratch.peer_cid[0..scratch.peer_cid_len];
+        },
+    };
+}
+
 pub fn firstSequence(self: Machine, sequence: u16) void {
     switch (self.state) {
         .client => {},

@@ -665,7 +665,8 @@ certificate, from the client's hello; the copy is bounded by the handshake limit
 scratch, and dropped as soon as TLS 1.3 is chosen. A key held elsewhere receives the digest with
 `prehashed` set, or for Ed25519 the messages. There is no key update: a TLS 1.2 connection
 closes before the record and byte caps instead. The exporter is RFC 5705's over the
-extended master secret, always with the caller's context.
+extended master secret, with the caller's context, or none when the caller passes null, which
+RFC 5705 tells from an empty one (TLS 1.3 does not).
 
 What a TLS 1.2 connection keeps past its handshake (the master secret and both randoms,
 for the exporter) is one allocation made only when TLS 1.2 is negotiated, so a connection
@@ -718,6 +719,15 @@ callers of `Connection` never set), and these follow from it, nothing else:
   never sends one). The server machine never sends one: return routability is the stateless
   `dtls.Cookies` check before any association exists (below).
 - No EndOfEarlyData and no early data: none is offered or accepted, as in TLS.
+- Two hello extensions are datagram-only: connection_id (RFC 9146, in the ClientHello and either
+  version's ServerHello, never a retry request) and use_srtp (RFC 5764: the ClientHello, a DTLS
+  1.2 ServerHello or DTLS 1.3 EncryptedExtensions). An answer to one not offered is
+  unsupported_extension; a use_srtp answer names exactly one offered profile and an empty MKI
+  (cloak keys none, so a server MKI differs from the client's, illegal_parameter). The server
+  answers connection_id when it has an ID of its own to receive with and the client offered one,
+  and chooses the first of its SRTP profiles the client lists; the engine keeps the peer's
+  connection ID for the carrier until the handshake ends and the profile in `Info.srtp`. The
+  NULL-cipher SRTP profiles are not offered.
 - A record's epoch is explicit, so a message that changes keys needs no record of its own as
   on a stream: the table's epoch check refuses a message under the wrong keys.
 
@@ -751,6 +761,23 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   application, 4 and up per key update (DTLS 1.3); 0 then 1 after ChangeCipherSpec (DTLS
   1.2). The sequence is reconstructed nearest one past the highest authenticated one, the
   epoch from its two bits as the newest read epoch that has them.
+- Connection IDs. Once the hellos agree, every protected record this end sends carries the
+  peer's ID (DTLS 1.2's tls12_cid records with RFC 9146's additional data, DTLS 1.3's C bit),
+  and a protected record arriving without this end's own (or with one when none was agreed) is
+  dropped, though it would authenticate in the other form (RFC 9146 section 3). An empty ID in a
+  direction means none on those records. A record does not say its ID's length, so the IDs an
+  end hands out all have its own's length; `connectionIdOf` reads it off a datagram for the
+  caller's lookup before any association is involved. DTLS 1.3's NewConnectionId and
+  RequestConnectionId are the carrier's, never the engine's: they are accepted only after the
+  handshake under application keys and only when the agreement allows them (NewConnectionId
+  from a peer that takes IDs, RequestConnectionId from one that sends with this end's,
+  unexpected_message otherwise); immediate usage switches at once, spares are kept (four, the
+  rest discarded), and a request while the peer's last one is unanswered is
+  too_many_cids_requested. The caller hands IDs out (`newConnectionIds`), since they are its
+  routing keys, sees how many the peer asked for, asks for more and moves to a spare on a new
+  path. Addresses are the caller's: `receivedNewest` says a datagram authenticated a record newer
+  than any before it, the condition RFC 9146 section 6 sets before following a peer to a new
+  address, with the caller's own check that the address answers.
 - Invalid input is dropped, never fatal (RFC 9147 section 4.5.2): a record that fails to
   parse, to authenticate, falls outside the replay window or names an epoch with no keys is
   discarded without touching the association, its timers or its handshake, and its failed
@@ -761,6 +788,12 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   records after it in the same datagram. Once the peer's keys are in (or the handshake is
   over) a new plaintext handshake message can only be forged: it is dropped, where the engine
   would refuse it and end the association. A plaintext alert counts only before any key.
+- Flights. The handshake's flight is one state machine; after the handshake each NewSessionTicket,
+  KeyUpdate, NewConnectionId and RequestConnectionId is a flight of its own with its own timer
+  (RFC 9147 section 5.8.4), so a message of one kind never stops another's retransmission: at
+  most one KeyUpdate, one NewConnectionId and one RequestConnectionId wait at once, tickets as
+  the server issues them. A record an ACK names belongs to one flight by its slot and
+  generation, and a partial ACK makes that flight's missing part go again early.
 - Handshake reliability. Messages carry message_seq; up to 16 ahead of the expected are
   buffered, older ones are a retransmission, further ahead dropped. Reassembly checks offset
   plus length against the declared total in 64 bits before any write and before allocation,
@@ -778,8 +811,17 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   again. DTLS 1.3 ACKs what no flight of its own answers: the client's final flight at a
   server, NewSessionTicket and KeyUpdate, with records named by an ACK freed from
   retransmission and an ACK of every record ending the flight; the peer's application data
-  ends a client's wait for the ACK of its final flight. After the handshake a flight whose ACK
-  never comes is given up on without ending the association. DTLS 1.2's last flight has no
+  does not end a client's wait for the ACK of its final flight, since a server may send it before
+  that flight arrives (RFC 9147 section 5.8.1); only the ACK does, and the server's own last
+  handshake flight is answered by the client's, never ACKed. After the handshake each record of
+  a peer's message is ACKed, a repeat too, and an ACK lists the newest records that fit the
+  datagram, in increasing order. A client that receives records under keys it does not hold yet
+  (the datagram with the ServerHello lost) sends an ACK of what it has, or of nothing, in the
+  clear before it has keys (RFC 9147 section 7.1); an ACK in the clear proves nothing, so what it
+  names counts for nothing, but like an authenticated partial ACK it may make the handshake
+  flight go again before its timer, once a timer period, so no ACK makes a flight go more than
+  twice a period. After the handshake a flight whose ACK never comes, or whose keys a later
+  update retired, is given up on without ending the association. DTLS 1.2's last flight has no
   timer: it goes again when the peer repeats its own.
 - Return routability. A server first checks a ClientHello with `dtls.Cookies`, statelessly:
   a hello without a valid cookie gets a HelloVerifyRequest (DTLS 1.2) or a HelloRetryRequest
@@ -797,9 +839,17 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   classical share (X25519 when listed) and none for a hybrid-only or post-quantum-only list,
   whose shares do not fit beside the hello (wolfSSL's client empties its first key share
   likewise); a server that wants another group asks for it in the retry request that brings
-  its cookie. A server without cookies (an ICE-validated path, `.{}`) is trusted; one created
+  its cookie. A server of DTLS 1.2 alone answers the first fragment of a cookieless hello
+  with a HelloVerifyRequest over the random, session id and suites it starts with (OpenSSL
+  falls back to DTLS's 256-byte minimum MTU where it cannot read the path's, and fragments a
+  hello with use_srtp); one that also speaks DTLS 1.3 drops it, since the versions may lie
+  beyond the fragment and a DTLS 1.3 server sends no HelloVerifyRequest. A server without cookies (an ICE-validated path, `.{}`) is trusted; one created
   with no admission sends at most three times the bytes it received until the client's
   handshake keys prove the path.
+- use_srtp. `srtpKeys` gives the master keys and salts of the agreed profile from the
+  "EXTRACTOR-dtls_srtp" exporter without a context (which in DTLS 1.2 differs from an empty
+  one, RFC 5705 section 4) in RFC 5764 section 4.2's layout, split into this end's and the
+  peer's, in a value the caller erases; the SRTP itself is the application's.
 - Key updates (DTLS 1.3): one at a time (`UpdatePending` until its ACK); the KeyUpdate goes
   under the old keys and the sender switches when it is acknowledged; a peer's update adds
   the next read epoch beside the current, which a record under the new one retires; a write
@@ -807,8 +857,6 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   has none, and its association ends at the record limit.
 - Resumption: TLS 1.3 tickets as on a stream; a ticket's format byte names its carrier, so a
   DTLS ticket (its keys from "dtls13" labels) never resumes over TLS or the reverse.
-
-Not yet built: connection IDs (RFC 9146, RFC 9147 section 9) and use_srtp (RFC 5764).
 
 Defaults are design §5.7's: MTU 1,200, replay window 128 records per retained epoch,
 reassembly 16 messages / 256 KiB, flight cache 256 KiB, pre-validation output 3x.

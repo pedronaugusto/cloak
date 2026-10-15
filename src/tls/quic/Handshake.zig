@@ -227,7 +227,7 @@ pub fn echRetryConfigs(self: *const Handshake) ?[]const u8 {
 }
 
 pub const ExportError = Client.ExportError;
-pub fn exportKeyingMaterial(self: *const Handshake, out: []u8, label: []const u8, context: []const u8) ExportError!void {
+pub fn exportKeyingMaterial(self: *const Handshake, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     return self.hs.exportKeyingMaterial(out, label, context);
 }
 

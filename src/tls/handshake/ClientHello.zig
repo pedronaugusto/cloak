@@ -72,6 +72,10 @@ extensions: []const u8,
 ech: ?[]const u8,
 /// compress_certificate (RFC 8879): the algorithm list with its length byte, when sent.
 compress_certificate: ?[]const u8,
+/// DTLS connection_id (RFC 9146): the connection ID the client receives on, when sent.
+connection_id: ?[]const u8,
+/// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
+srtp: ?[]const u8,
 
 pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
@@ -119,6 +123,8 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.point_formats = false;
     self.ech = null;
     self.compress_certificate = null;
+    self.connection_id = null;
+    self.srtp = null;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -218,6 +224,17 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         27 => {
             @import("Compression.zig").checkExtension(bytes) catch return error.DecodeError;
             self.compress_certificate = bytes;
+        },
+        54 => {
+            self.connection_id = (try value.vector(u8)).bytes;
+            try value.finish();
+        },
+        14 => {
+            const profiles = (try value.vector(u16)).bytes;
+            _ = try value.vector(u8);
+            try value.finish();
+            if (profiles.len < 2 or profiles.len % 2 != 0) return error.DecodeError;
+            self.srtp = profiles;
         },
         // ech_outer_extensions lives only inside an encrypted inner hello (RFC 9849 section 5.1).
         0xfd00 => return error.IllegalParameter,

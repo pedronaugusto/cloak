@@ -135,6 +135,9 @@ pub const Info = struct {
     ech_accepted: bool = false,
     /// The handshake used a provisioned key: the peer is whoever holds it, no certificate.
     external_psk: bool = false,
+    /// DTLS: the SRTP profile use_srtp agreed (RFC 5764), keyed by the "EXTRACTOR-dtls_srtp"
+    /// exporter; null when none was offered or none agreed.
+    srtp: ?Hello.Srtp = null,
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
@@ -189,6 +192,7 @@ suite: ?Suite13 = null,
 group: ?Group = null,
 keys: ?Keys = null,
 alpn: []const u8 = "",
+srtp: ?Hello.Srtp = null,
 peer_parameters: []u8 = &.{},
 held: []u8 = &.{},
 now: ?std.Io.Timestamp = null,
@@ -241,6 +245,10 @@ const Scratch = struct {
     /// DTLS 1.2: a HelloVerifyRequest's cookie, for the hello's cookie field.
     legacy_cookie: [255]u8 = undefined,
     legacy_cookie_len: u8 = 0,
+    /// DTLS: the server answered connection_id with the connection ID it receives on.
+    peer_cid: [255]u8 = undefined,
+    peer_cid_len: u8 = 0,
+    cid_agreed: bool = false,
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
     cr_schemes: [1024]u8 = undefined,
@@ -1104,6 +1112,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     };
     if (parsed.retry) return self.onRetry(msg, parsed, epoch, boundary);
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
+    self.noteConnectionId(parsed.connection_id);
     if (self.options.ech == .config_list and self.scratch.?.ech.status != .rejected) try self.decideEch(msg, parsed);
     if (self.retry_suite) |suite| if (suite != parsed.suite) return error.IllegalParameter;
     // A ticket not taken is spent all the same: it is never offered again.
@@ -1330,6 +1339,18 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
     self.releaseOffer13();
 }
 
+/// DTLS: the server's answer to connection_id, for the carrier's records.
+pub fn noteConnectionId(self: *Client, answer: ?[]const u8) void {
+    const scratch = self.scratch.?;
+    const cid = answer orelse {
+        scratch.cid_agreed = false;
+        return;
+    };
+    @memcpy(scratch.peer_cid[0..cid.len], cid);
+    scratch.peer_cid_len = @intCast(cid.len); // safe: a vector<0..255>
+    scratch.cid_agreed = true;
+}
+
 fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     try self.state.advance(.encrypted_extensions, epoch, .parsed, boundary);
@@ -1346,6 +1367,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
     for (self.options.hello.alpn) |offered| if (std.mem.eql(u8, offered, parsed.alpn)) {
         self.alpn = offered;
     };
+    self.srtp = parsed.srtp;
     if (self.options.hello.transport == .quic) {
         if (parsed.parameters.len > 64 * 1024) return error.HandshakeLimit;
         self.peer_parameters = try self.gpa.dupe(u8, parsed.parameters);
@@ -1614,13 +1636,14 @@ pub fn info(self: *const Client) ?Info {
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external_used,
+        .srtp = self.srtp,
     };
 }
 
 pub const ExportError = @import("Errors.zig").ExportError;
 
 /// RFC 8446 section 7.5 exporter; only after the connection is established.
-pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: []const u8) ExportError!void {
+pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
     @setRuntimeSafety(true);
     // A failed connection has erased its secrets; established stays true for the record.
     if (!self.established or self.state.phase == .failed) return error.WrongPhase;
@@ -1630,7 +1653,8 @@ pub fn exportKeyingMaterial(self: *const Client, out: []u8, label: []const u8, c
     }
     const keys = if (self.keys) |*keys| keys else return error.WrongPhase;
     switch (keys.*) {
-        inline else => |*k| try k.schedule.exportBytes(out, label, context),
+        // TLS 1.3 has one form: no context is the empty one (RFC 8446 section 7.5).
+        inline else => |*k| try k.schedule.exportBytes(out, label, context orelse ""),
     }
 }
 

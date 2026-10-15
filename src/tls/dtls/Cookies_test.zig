@@ -133,3 +133,44 @@ test "C8 the cookie check answers only first-epoch hellos and keeps nothing" {
     var again_buf: [2048]u8 = undefined;
     try std.testing.expect(empty.check(&options, "a", now, try hello(&again_buf, .tls13, "", 0), &out) == .drop);
 }
+
+/// The first fragment of `record`'s hello, its first `keep` bytes of body, as the only record.
+fn firstFragment(record: []u8, keep: usize) []u8 {
+    const body = record[Record.header12..];
+    std.mem.writeInt(u24, body[9..12], @intCast(keep), .big);
+    std.mem.writeInt(u16, record[11..13], @intCast(12 + keep), .big);
+    return record[0 .. Record.header12 + 12 + keep];
+}
+
+test "C8 a first hello in fragments: a DTLS 1.2 server answers its first fragment, a DTLS 1.3 one drops it" {
+    var cookies = try keyed();
+    defer cookies.deinit();
+    const now: std.Io.Timestamp = .fromNanoseconds(1000 * std.time.ns_per_s);
+    var buffer: [2048]u8 = undefined;
+    var out: [2048]u8 = undefined;
+    // As OpenSSL sends a hello longer than the 256-byte minimum MTU it falls back to: the random,
+    // session id, cookie field and suites in the first fragment.
+    const whole = try hello(&buffer, .tls12, "", 0);
+    const fragment = firstFragment(whole, 60);
+    var only12 = options;
+    only12.max_version = .tls12;
+    const answer = switch (cookies.check(&only12, "client:1", now, fragment, &out)) {
+        .respond => |bytes| bytes,
+        else => return error.TestUnexpectedResult,
+    };
+    // The cookie it carries admits the second hello, whole or in fragments.
+    var cookie_buffer: [512]u8 = undefined;
+    const cookie = cookieOf(answer, &cookie_buffer);
+    var second_buffer: [2048]u8 = undefined;
+    const second = try hello(&second_buffer, .tls12, cookie, 1);
+    var copy: [2048]u8 = undefined;
+    @memcpy(copy[0..second.len], second);
+    try std.testing.expect(cookies.check(&only12, "client:1", now, copy[0..second.len], &out) == .admit);
+    try std.testing.expect(cookies.check(&only12, "client:1", now, firstFragment(second, 80), &out) == .admit);
+    // A server that speaks DTLS 1.3 cannot tell the hello's versions from the fragment.
+    const again = try hello(&buffer, .tls12, "", 0);
+    try std.testing.expect(cookies.check(&options, "client:1", now, firstFragment(again, 60), &out) == .drop);
+    // A fragment cut before its suites is dropped.
+    const short = try hello(&buffer, .tls12, "", 0);
+    try std.testing.expect(cookies.check(&only12, "client:1", now, firstFragment(short, 36), &out) == .drop);
+}

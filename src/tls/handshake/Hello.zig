@@ -15,6 +15,34 @@ pub const retry_random = std.crypto.tls.hello_retry_request_sequence;
 /// The last eight bytes of a TLS 1.3 server's random when it negotiates TLS 1.2 (RFC 8446 section 4.1.3).
 pub const downgrade_tls12 = "DOWNGRD\x01";
 pub const Share = struct { group: Group, bytes: []const u8 };
+/// An SRTP protection profile a DTLS association keys for its media (RFC 5764 section 4.1.2,
+/// RFC 7714 section 14.2). The NULL-cipher profiles are not among them.
+pub const Srtp = enum(u16) {
+    aes128_cm_hmac_sha1_80 = 0x0001,
+    aes128_cm_hmac_sha1_32 = 0x0002,
+    aead_aes_128_gcm = 0x0007,
+    aead_aes_256_gcm = 0x0008,
+
+    /// The master key's length.
+    pub fn keyLength(profile: Srtp) usize {
+        return switch (profile) {
+            .aes128_cm_hmac_sha1_80, .aes128_cm_hmac_sha1_32, .aead_aes_128_gcm => 16,
+            .aead_aes_256_gcm => 32,
+        };
+    }
+
+    /// The master salt's length.
+    pub fn saltLength(profile: Srtp) usize {
+        return switch (profile) {
+            .aes128_cm_hmac_sha1_80, .aes128_cm_hmac_sha1_32 => 14,
+            .aead_aes_128_gcm, .aead_aes_256_gcm => 12,
+        };
+    }
+};
+/// The connection_id extension's number (RFC 9146 section 3).
+pub const connection_id_extension = 54;
+/// The use_srtp extension's number (RFC 5764 section 4.1.1).
+pub const srtp_extension = 14;
 pub const Options = struct {
     /// Suites of both versions, in preference order.
     suites: []const Suite = Suite.default,
@@ -31,6 +59,12 @@ pub const Options = struct {
     parameters: []const u8 = "",
     /// Certificate decoders a client offers (RFC 8879), TLS 1.3 only.
     certificate_compression: []const Compression.Codec = &.{},
+    /// DTLS: connection_id (RFC 9146). Null offers or accepts none; otherwise the connection ID
+    /// this end receives records with, borrowed; empty: it sends with the peer's but takes none.
+    connection_id: ?[]const u8 = null,
+    /// DTLS: use_srtp (RFC 5764), the SRTP profiles offered (client) or accepted (server), in
+    /// preference order, borrowed. Empty offers or answers none.
+    srtp: []const Srtp = &.{},
 
     /// Whether TLS 1.2 is offered or accepted: it is allowed, the policy does not need TLS 1.3
     /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
@@ -107,6 +141,11 @@ pub fn validate(options: Options) ValidateError!void {
         alpn_bytes += 1 + protocol.len;
     }
     if (alpn_bytes > 65533 or ((options.require_alpn or options.transport == .quic) and options.alpn.len == 0)) return error.InvalidOptions;
+    if (options.connection_id) |cid| if (options.transport != .datagram or cid.len > 255) return error.InvalidOptions;
+    if (options.srtp.len != 0 and options.transport != .datagram) return error.InvalidOptions;
+    for (options.srtp, 0..) |profile, i| for (options.srtp[0..i]) |old| {
+        if (old == profile) return error.InvalidOptions;
+    };
     if (options.sni.len > 253) return error.InvalidOptions;
     if (options.sni.len != 0) {
         var label: usize = 0;
@@ -247,6 +286,24 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         std.mem.writeInt(u16, alpn[0..2], @intCast(a.pos - 2), .big);
         try extension(&w, 16, alpn[0..a.pos]);
     }
+    if (datagram) {
+        if (options.connection_id) |cid| {
+            try w.int(u16, connection_id_extension);
+            // safe: validate bounds a connection ID at 255 bytes.
+            try w.int(u16, @intCast(cid.len + 1));
+            try w.vector(u8, cid);
+        }
+        if (options.srtp.len != 0) {
+            // UseSRTPData: the profiles in preference order and an empty srtp_mki: cloak keys no
+            // MKI (RFC 5764 section 4.1.1).
+            try w.int(u16, srtp_extension);
+            // safe: at most four distinct profiles.
+            try w.int(u16, @intCast(2 + 2 * options.srtp.len + 1));
+            try w.int(u16, @intCast(2 * options.srtp.len));
+            for (options.srtp) |profile| try w.int(u16, @backingInt(profile));
+            try w.int(u8, 0);
+        }
+    }
     if (cookie.len != 0 and !compress) {
         try w.int(u16, 44);
         // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
@@ -353,12 +410,15 @@ pub const ServerHello = struct {
     psk: bool = false,
     /// A retry request's encrypted_client_hello: the eight bytes that may confirm ECH.
     ech: ?*const [8]u8 = null,
+    /// DTLS: the connection ID the server receives on, when it answered connection_id.
+    connection_id: ?[]const u8 = null,
 };
 /// A TLS 1.2 ServerHello: always a full handshake with extended master secret and secure
 /// renegotiation indicated.
 /// `resumed`: the server echoed the session id sent with a ticket, resuming that session; `ticket`:
 /// a NewSessionTicket follows (RFC 5077 section 3.2).
-pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false };
+/// DTLS: `connection_id` the server's answer to connection_id, `srtp` the profile it chose.
+pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
 /// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
@@ -389,9 +449,22 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var psk = false;
     var ticket = false;
     var ech: ?*const [8]u8 = null;
+    var connection_id: ?[]const u8 = null;
+    var srtp: ?Srtp = null;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
+            connection_id_extension => {
+                // Either version's ServerHello answers it, never a retry request.
+                if (options.connection_id == null) return error.UnsolicitedExtension;
+                if (retry) return error.InvalidHello;
+                connection_id = (try value.vector(u8)).bytes;
+            },
+            srtp_extension => {
+                // DTLS 1.3 answers use_srtp in EncryptedExtensions.
+                only12 = true;
+                srtp = try selectedSrtp(&value, options);
+            },
             43 => {
                 if (try value.int(u16) != options.transport.wire(.tls13)) return error.InvalidHello;
                 version13 = true;
@@ -459,7 +532,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12 }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = connection_id, .srtp = srtp }, options);
     if (only12) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
     const echo = if (options.transport == .datagram) "" else session;
@@ -479,7 +552,20 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     } else {
         if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
-    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech } };
+    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = connection_id } };
+}
+
+/// The one SRTP profile a use_srtp answer selects, which this end offered, with no MKI: cloak
+/// offers none, so a server's MKI differs from it (RFC 5764 section 4.1.3).
+fn selectedSrtp(value: *Reader, options: Options) ParseError!Srtp {
+    @setRuntimeSafety(true);
+    if (options.srtp.len == 0) return error.UnsolicitedExtension;
+    var profiles = try value.vector(u16);
+    const id = try profiles.int(u16);
+    try profiles.finish();
+    if ((try value.vector(u8)).bytes.len != 0) return error.InvalidHello;
+    for (options.srtp) |offered| if (@backingInt(offered) == id) return offered;
+    return error.UnofferedSelection;
 }
 /// The one protocol an ALPN answer selects, which must be one this client offered.
 fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
@@ -491,7 +577,7 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     return error.UnofferedSelection;
 }
 
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool };
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp };
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {
     @setRuntimeSafety(true);
     // A server answering below TLS 1.3 marks its random; this client offered TLS 1.3, so a
@@ -509,7 +595,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp } };
 }
 /// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
 /// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
@@ -538,7 +624,8 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
 }
 
 /// `ech`: an ECHConfigList the server offered for a retry (RFC 9849 section 7.1).
-pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null };
+/// `srtp`: DTLS 1.3, the SRTP profile the server chose.
+pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null, srtp: ?Srtp = null };
 /// `ech_sent`: the hello carried encrypted_client_hello, real or GREASE, so the server may answer it.
 pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseError!EncryptedExtensions {
     @setRuntimeSafety(true);
@@ -550,7 +637,13 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     var parameters: []const u8 = "";
     var has_parameters = false;
     var ech: ?[]const u8 = null;
+    var srtp: ?Srtp = null;
     while (try ext.next()) |item| switch (item.id) {
+        srtp_extension => {
+            var value: Reader = .{ .bytes = item.bytes };
+            srtp = try selectedSrtp(&value, options);
+            try value.finish();
+        },
         Ech.extension_id => {
             if (!ech_sent) return error.UnsolicitedExtension;
             Ech.checkList(item.bytes) catch return error.DecodeError;
@@ -586,12 +679,13 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;
-    return .{ .alpn = alpn, .parameters = parameters, .ech = ech };
+    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp };
 }
 
-/// A ServerHello selecting `suite`, answering the client's share for `group`, and, when `psk`,
-/// selecting the PSK identity at index `psk`.
-pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8, psk: ?u16) Writer.WriteError![]u8 {
+/// A ServerHello selecting `suite`, answering the client's share for `group`, when `psk`
+/// selecting the PSK identity at index `psk`, and in DTLS answering connection_id with the
+/// connection ID the server receives on.
+pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8, session: []const u8, suite: Suite13, group: Group, share: []const u8, psk: ?u16, connection_id: ?[]const u8) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 2, 0, 0, 0 });
@@ -613,7 +707,8 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
         try w.put(&.{ 0, 41, 0, 2 });
         try w.int(u16, index);
     }
-    // safe: the extension block holds three short extensions.
+    if (connection_id) |cid| try connectionIdAnswer(&w, cid);
+    // safe: the extension block holds four short extensions.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
     // safe: the whole message is bounded by the caller's buffer, far below 2^24.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
@@ -622,7 +717,8 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
 
 /// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
 /// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
-pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false };
+/// DTLS: `connection_id` the connection ID the server receives on, `srtp` the profile it chose.
+pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -643,6 +739,8 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     try w.put(&.{ 0, 23, 0, 0 });
     try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
     if (echo.ticket) try w.put(&.{ 0, 35, 0, 0 });
+    if (echo.connection_id) |cid| try connectionIdAnswer(&w, cid);
+    if (echo.srtp) |profile| try srtpAnswer(&w, profile);
     if (alpn.len != 0) {
         try w.int(u16, 16);
         // safe: a protocol name is at most 255 bytes.
@@ -706,7 +804,23 @@ pub const EncryptedParts = struct {
     /// The ECH keys whose configs a client retries with (those marked `retry`), when it offered
     /// ECH that was not accepted; nothing is sent when none is marked.
     ech_retry: []const Ech.Key = &.{},
+    /// DTLS 1.3: the SRTP profile chosen.
+    srtp: ?Srtp = null,
 };
+
+fn connectionIdAnswer(w: *Writer, cid: []const u8) Writer.WriteError!void {
+    if (cid.len > 255) return error.BufferTooSmall;
+    try w.int(u16, connection_id_extension);
+    try w.int(u16, @intCast(cid.len + 1)); // safe: at most 256
+    try w.vector(u8, cid);
+}
+
+/// use_srtp answering with one profile and no MKI (RFC 5764 section 4.1.3).
+fn srtpAnswer(w: *Writer, profile: Srtp) Writer.WriteError!void {
+    try w.put(&.{ 0, srtp_extension, 0, 5, 0, 2 });
+    try w.int(u16, @backingInt(profile));
+    try w.int(u8, 0);
+}
 
 pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
     @setRuntimeSafety(true);
@@ -726,6 +840,7 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
         try w.int(u16, 57);
         try w.vector(u16, parameters);
     }
+    if (parts.srtp) |profile| try srtpAnswer(&w, profile);
     var retry_len: usize = 0;
     for (parts.ech_retry) |key| if (key.retry) {
         retry_len += key.config.len;

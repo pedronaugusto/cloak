@@ -129,7 +129,7 @@ test "C8 a ServerHello of DTLS 1.3 after a HelloVerifyRequest is refused by the 
     // A DTLS 1.3 ServerHello, as a server that never sent the request would answer.
     var buffer: [256]u8 = undefined;
     const share: [32]u8 = @splat(9);
-    const answer = try Hello.buildServer(&buffer, .datagram, &@as([32]u8, @splat(1)), "", .aes_128_gcm_sha256, .x25519, &share, null);
+    const answer = try Hello.buildServer(&buffer, .datagram, &@as([32]u8, @splat(1)), "", .aes_128_gcm_sha256, .x25519, &share, null, null);
     try pair.toClient(answer);
     try std.testing.expectError(error.IllegalParameter, pair.run());
 }
@@ -218,4 +218,78 @@ test "C8 a datagram hello's cookie field is refused on a stream, and a long one 
     try std.testing.expectError(error.InvalidOptions, Hello.client(&buffer, &@as([32]u8, @splat(1)), "", &long, &shares, "", .{ .transport = .datagram }, .{}));
     // A DTLS 1.3-only hello sends no session id.
     try std.testing.expectError(error.InvalidOptions, Hello.client(&buffer, &@as([32]u8, @splat(1)), "s", "", &shares, "", .{ .transport = .datagram, .min_version = .tls13 }, .{}));
+}
+
+/// A ServerHello with `extension` appended to its extension block; `session` is the length of its
+/// legacy session id.
+fn appended(out: []u8, hello: []const u8, session: usize, extension: []const u8) []u8 {
+    @memcpy(out[0..hello.len], hello);
+    @memcpy(out[hello.len..][0..extension.len], extension);
+    const ext_at = 4 + 2 + 32 + 1 + session + 2 + 1;
+    const ext_len = std.mem.readInt(u16, out[ext_at..][0..2], .big);
+    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len + extension.len), .big);
+    std.mem.writeInt(u24, out[1..4], @intCast(hello.len + extension.len - 4), .big);
+    return out[0 .. hello.len + extension.len];
+}
+
+test "C8 connection_id and use_srtp answers: only what was offered, one profile, no MKI" {
+    const only12: []const suites.Suite = &.{.ecdhe_ecdsa_aes_128_gcm_sha256};
+    const bare: Hello.Options = .{ .transport = .datagram, .suites = only12, .groups = &.{.x25519} };
+    var offering = bare;
+    offering.connection_id = "me";
+    offering.srtp = &.{ .aead_aes_128_gcm, .aes128_cm_hmac_sha1_80 };
+    var buffer: [512]u8 = undefined;
+    const random: [32]u8 = @splat(3);
+    const hello = try Hello.buildServer12(&buffer, .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false, .connection_id = "server-id", .srtp = .aes128_cm_hmac_sha1_80 });
+    const answer = (try Hello.server(hello, "", &.{}, offering, .{})).tls12;
+    try std.testing.expectEqualSlices(u8, "server-id", answer.connection_id.?);
+    try std.testing.expectEqual(Hello.Srtp.aes128_cm_hmac_sha1_80, answer.srtp.?);
+    // Neither was offered: both answers are unsolicited.
+    try std.testing.expectError(error.UnsolicitedExtension, Hello.server(hello, "", &.{}, bare, .{}));
+    var cid_only = bare;
+    cid_only.connection_id = "";
+    try std.testing.expectError(error.UnsolicitedExtension, Hello.server(hello, "", &.{}, cid_only, .{}));
+    // A profile the client did not offer.
+    var other = offering;
+    other.srtp = &.{.aead_aes_256_gcm};
+    try std.testing.expectError(error.UnofferedSelection, Hello.server(hello, "", &.{}, other, .{}));
+    // A server MKI differs from the client's (none): illegal_parameter (RFC 5764 section 4.1.3).
+    const plain = try Hello.buildServer12(buffer[256..], .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false });
+    var spliced: [512]u8 = undefined;
+    try std.testing.expectError(error.InvalidHello, Hello.server(appended(&spliced, plain, 0, &.{ 0, 14, 0, 6, 0, 2, 0, 1, 1, 7 }), "", &.{}, offering, .{}));
+    // Two profiles in an answer.
+    try std.testing.expectError(error.InvalidLength, Hello.server(appended(&spliced, plain, 0, &.{ 0, 14, 0, 7, 0, 4, 0, 1, 0, 7, 0 }), "", &.{}, offering, .{}));
+    // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
+    var thirteen = offering;
+    thirteen.suites = suites.Suite.tls13_only;
+    var ee_buffer: [128]u8 = undefined;
+    const ee = try Hello.buildEncrypted(&ee_buffer, .{ .srtp = .aead_aes_128_gcm });
+    try std.testing.expectEqual(Hello.Srtp.aead_aes_128_gcm, (try Hello.encrypted(ee, thirteen, false)).srtp.?);
+    var no_srtp = thirteen;
+    no_srtp.srtp = &.{};
+    try std.testing.expectError(error.UnsolicitedExtension, Hello.encrypted(ee, no_srtp, false));
+    const share: [32]u8 = @splat(9);
+    const server13 = try Hello.buildServer(&buffer, .datagram, &random, "", .aes_128_gcm_sha256, .x25519, &share, null, "s");
+    var shares = [_]Hello.Share{.{ .group = .x25519, .bytes = &share }};
+    try std.testing.expectEqualSlices(u8, "s", (try Hello.server(server13, "", &shares, thirteen, .{})).tls13.connection_id.?);
+    try std.testing.expectError(error.InvalidHello, Hello.server(appended(&spliced, server13, 0, &.{ 0, 14, 0, 5, 0, 2, 0, 7, 0 }), "", &shares, thirteen, .{}));
+    // A retry request carries no connection_id.
+    const retry = try Hello.buildRetry(&buffer, .datagram, "", .aes_128_gcm_sha256, .p256, "", false);
+    try std.testing.expectError(error.InvalidHello, Hello.server(appended(&spliced, retry, 0, &.{ 0, 54, 0, 2, 1, 9 }), "", &shares, thirteen, .{}));
+}
+
+test "C8 connection IDs and SRTP profiles are datagram options, bounded and distinct" {
+    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .connection_id = "x" }));
+    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .srtp = &.{.aead_aes_128_gcm} }));
+    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .transport = .datagram, .connection_id = &@as([256]u8, @splat(1)) }));
+    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .transport = .datagram, .srtp = &.{ .aead_aes_128_gcm, .aead_aes_128_gcm } }));
+    try Hello.validate(.{ .transport = .datagram, .connection_id = &@as([255]u8, @splat(1)), .srtp = &.{ .aead_aes_128_gcm, .aes128_cm_hmac_sha1_80 } });
+    // The hello carries them, and the server's parser reads them back.
+    var buffer: [2048]u8 = undefined;
+    const random: [32]u8 = @splat(5);
+    const share: [32]u8 = @splat(9);
+    const hello = try Hello.client(&buffer, &random, "", "", &.{.{ .group = .x25519, .bytes = &share }}, "", .{ .transport = .datagram, .groups = &.{.x25519}, .connection_id = "cid", .srtp = &.{ .aead_aes_256_gcm, .aes128_cm_hmac_sha1_32 } }, .{});
+    const parsed = try ClientHello.parse(hello, .datagram);
+    try std.testing.expectEqualSlices(u8, "cid", parsed.connection_id.?);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 8, 0, 2 }, parsed.srtp.?);
 }
