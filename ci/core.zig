@@ -32,3 +32,7 @@ export fn cloakCoreVectors() u32 {
     if (tls_result != 0) return 100 + tls_result;
     return 0;
 }
+
+test "the portable vectors" {
+    try std.testing.expectEqual(@as(u32, 0), cloakCoreVectors());
+}

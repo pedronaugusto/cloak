@@ -156,7 +156,7 @@ bay check
 bay bench
 ```
 
-CI plans come from `bay plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `bay check-wasm` executes portable vectors without hosted Io. `bay fuzz` fuzzes the check properties, with corpora and findings kept outside the package. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
+CI plans come from `bay plan`. Benchmarks compile in CI; measurements run by hand in ReleaseFast. `bay check-wasm` checks that the wasm32 core imports nothing from its host and runs its vectors (natively, and as 32-bit x86 on x86_64 Linux). `bay fuzz` fuzzes the check properties, with corpora and findings kept outside the package. Source functions explicitly retain runtime safety in ReleaseFast; optimized parser, credential and service checks are part of lint.
 
 ## Licence
 

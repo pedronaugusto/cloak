@@ -78,9 +78,26 @@ pub fn dev(b: *std.Build, tools: type) void {
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.stack_size = 2 * 1024 * 1024;
-    const wasm_run = b.addSystemCommand(&.{ "node", "-e", "const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[1]), {}).then(({instance}) => { const code = instance.exports.cloakCoreVectors(); if (code !== 0) throw new Error('cloak core vector failure ' + code); });" });
+    // The module must import nothing (no host Io can reach it); a runtime is not needed to see that.
+    const wasm_checker = b.addExecutable(.{ .name = "cloak-wasm-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/wasm.zig"), .target = host, .optimize = .safe }) });
+    const wasm_run = b.addRunArtifact(wasm_checker);
     wasm_run.addFileArg(wasm.getEmittedBin());
-    b.step("check-wasm", "Run portable credential and authenticated path vectors without hosted Io").dependOn(&wasm_run.step);
+    const check_wasm = b.step("check-wasm", "Check the portable core imports nothing on wasm32 and run its vectors");
+    check_wasm.dependOn(&wasm_run.step);
+    check_wasm.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "cloak-wasm-checker", .root_module = wasm_checker.root_module })).step);
+    // The vectors run on the host, and on 32-bit x86 where the host executes it (Linux on x86_64),
+    // so usize-width arithmetic runs at 32 bits there.
+    var vector_targets: [2]std.Build.ResolvedTarget = .{ host, host };
+    var vector_count: usize = 1;
+    if (host.result.os.tag == .linux and host.result.cpu.arch == .x86_64) {
+        vector_targets[1] = b.resolveTargetQuery(.{ .cpu_arch = .x86, .os_tag = .linux, .abi = .musl });
+        vector_count = 2;
+    }
+    for (vector_targets[0..vector_count]) |vector_target| {
+        const vector_module = b.createModule(.{ .root_source_file = p.path("ci/core.zig"), .target = vector_target, .optimize = .safe });
+        vector_module.addImport("probes", createProbes(b, p, vector_target, .safe));
+        check_wasm.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "cloak-core-vectors", .root_module = vector_module })).step);
+    }
     const example_module = b.createModule(.{ .root_source_file = p.path("ci/example.zig"), .target = host, .optimize = .safe });
     example_module.addImport("cloak", package.module("cloak"));
     const example = b.addTest(.{ .name = "cloak-readme-example", .root_module = example_module });
