@@ -62,6 +62,9 @@ pub const Tamper = enum {
     early_data_in_second,
     /// A record no key opens, sent with the client's second flight.
     bad_record_after_second,
+    /// A change_cipher_spec right after the first hello, at its record version, though it sent
+    /// no session id.
+    ccs_after_hello,
     /// A plaintext fatal alert (unknown_ca) in place of the second flight: a client refusing the
     /// server's flight before it writes under its keys.
     plaintext_alert,
@@ -399,6 +402,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 }
             } else try self.plainRecord(22, version, message);
             if (self.config.tamper == .two_hellos and !second) try self.plainRecord(22, version, message);
+            if (self.config.tamper == .ccs_after_hello and !second) try self.plainRecord(20, version, &.{1});
             if (self.config.tamper == .oversize_record and !second) {
                 var big: [(1 << 14) + 1]u8 = @splat(0);
                 try self.plainRecord(22, 0x0303, &big);

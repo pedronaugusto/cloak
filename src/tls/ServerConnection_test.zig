@@ -239,6 +239,19 @@ test "F104 catalogue_retry_hello_extension_order (a second hello with its extens
     try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .reordered_second_hello }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
 }
 
+test "F105 catalogue_ccs_without_compatibility_mode (one change_cipher_spec is dropped whether or not the hello carried a session id)" {
+    // RFC 8446 section 5: one received after the first ClientHello and before the peer's
+    // Finished MUST be dropped; middlebox compatibility mode is the sender's choice, not a
+    // condition (tlsfuzzer's test-tls13-multiple-ccs-messages sends one with no session id). It
+    // comes before the client has seen the ServerHello, at its hello's record version, which is
+    // ignored (section 5.1).
+    for ([_]u16{ 0x0301, 0x0300, 0x0303 }) |version| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .compat = false, .tamper = .ccs_after_hello, .first_record_version = version }, .{});
+        defer pair.deinit();
+        try pair.run();
+    }
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();

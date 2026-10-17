@@ -231,7 +231,6 @@ const Kept = struct {
     resumption: ?Resumption,
     sni: []const u8,
     message_limit: usize,
-    compat: bool,
     allows12: bool,
 };
 
@@ -384,7 +383,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     self.* = .{
         .gpa = gpa,
         .options = &scratch.options,
-        .kept = .{ .auth = null, .resumption = options.resumption, .sni = hello.sni, .message_limit = options.limits.message, .compat = options.compat, .allows12 = hello.allows12() },
+        .kept = .{ .auth = null, .resumption = options.resumption, .sni = hello.sni, .message_limit = options.limits.message, .allows12 = hello.allows12() },
         .state = .init(.client, options.hello.transport),
         .scratch = scratch,
     };
@@ -466,10 +465,6 @@ pub fn receiveCcs(self: *Client) Error!void {
     if (self.version != .tls12) return error.UnexpectedMessage;
     errdefer self.state.fail();
     return Client12.onCcs(self);
-}
-
-pub fn compat(self: *const Client) bool {
-    return self.kept.compat;
 }
 
 /// Whether TLS 1.2 was offered.

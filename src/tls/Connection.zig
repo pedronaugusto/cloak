@@ -1280,14 +1280,16 @@ fn checkHeader(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
     const kind = self.head[0];
     const length = std.mem.readInt(u16, self.head[3..5], .big);
-    // Before any key the record version is legacy and ignored (RFC 8446 section 5.1), any {03,XX}
-    // (RFC 5246 appendix E.1: SSL 3.0-era clients open with 03,00): it must only look like TLS.
-    // Protected records say TLS 1.2.
-    const plaintext = self.rx == null and kind != 23;
-    const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (plaintext and self.head[1] == 3);
-    if (!version_ok) return error.UnexpectedRecord;
     // Under TLS 1.2 keys, alerts and handshake records are encrypted like application data.
     const sealed12 = if (self.rx) |*p| p.tls12() else false;
+    // A plaintext record's version is legacy and ignored (RFC 8446 section 5.1), any {03,XX}
+    // (RFC 5246 appendix E.1: SSL 3.0-era clients open with 03,00): it must only look like TLS.
+    // That holds before any key and for TLS 1.3's plaintext records after them: a
+    // change_cipher_spec or an alert the client sent before it saw the ServerHello carries its
+    // hello's version. Protected records say TLS 1.2.
+    const plaintext = kind != 23 and !sealed12;
+    const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (plaintext and self.head[1] == 3);
+    if (!version_ok) return error.UnexpectedRecord;
     switch (kind) {
         20 => if (length == 0 or length > max_content) return error.RecordOverflow,
         21, 22 => if (sealed12) {
@@ -1323,9 +1325,9 @@ fn openRecord(self: *Connection) Error!void {
                 try self.drain();
                 return;
             }
-            // A single compatibility change_cipher_spec, only before the peer's Finished and
-            // only between messages, is ignored (RFC 8446 appendix D.4).
-            const allowed = self.hs.compat() and !self.seen_ccs and self.phase() == .handshaking and
+            // A single change_cipher_spec after the first hello, only before the peer's Finished
+            // and only between messages, is ignored (RFC 8446 section 5 and appendix D.4).
+            const allowed = self.hs.helloSeen() and !self.seen_ccs and self.phase() == .handshaking and
                 self.message_total == 0 and self.header_have == 0 and wire.len == 6 and wire[5] == 1;
             if (!allowed) return error.UnexpectedRecord;
             self.seen_ccs = true;

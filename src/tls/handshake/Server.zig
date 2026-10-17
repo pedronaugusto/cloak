@@ -432,11 +432,6 @@ pub fn receiveCcs(self: *Server) Client.Error!void {
     return Server12.onCcs(self);
 }
 
-pub fn compat(self: *const Server) bool {
-    const scratch = self.scratch orelse return false;
-    return scratch.session_len != 0;
-}
-
 pub fn need(self: *const Server) Need {
     if (self.need_now == .none) if (self.post_auth) |post| return post.need;
     return self.need_now;

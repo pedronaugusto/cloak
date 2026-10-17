@@ -62,10 +62,13 @@ pub fn need(self: Machine) Need {
     };
 }
 
-/// Whether the peer asked for middlebox compatibility: a legacy session id was sent.
-pub fn compat(self: Machine) bool {
+/// Whether the first ClientHello has been sent or received: from then until the peer's Finished
+/// one change_cipher_spec is dropped (RFC 8446 section 5), whether or not either side asked for
+/// middlebox compatibility.
+pub fn helloSeen(self: Machine) bool {
     return switch (self.state) {
-        inline else => |m| m.compat(),
+        .client => true,
+        .server => |m| m.scratch != null,
     };
 }
 

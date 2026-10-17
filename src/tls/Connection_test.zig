@@ -216,6 +216,14 @@ test "C2 client hello without compatibility mode sends no session id and no chan
     try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.ccs);
 }
 
+test "F105 catalogue_ccs_without_compatibility_mode (a client without a session id drops the server's one change_cipher_spec)" {
+    // RFC 8446 section 5: dropped after the first ClientHello and before the peer's Finished.
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tamper = .ccs_without_session }, .{ .compat = false });
+    defer pair.deinit();
+    try pair.handshake();
+    try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.session_id_len);
+}
+
 test "F18 catalogue_reference_identity_required_and_separate (the reference identity is required for certificate authentication and apart from the server name)" {
     const P = Pair(.aes_128_gcm_sha256);
     // Full verification without a reference identity is refused before any state exists.

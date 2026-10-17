@@ -99,6 +99,8 @@ pub const Tamper = enum {
     key_update_flood,
     certificate_request_late,
     ccs_after_finished,
+    /// The change_cipher_spec after the ServerHello though the client sent no session id.
+    ccs_without_session,
     /// A TLS 1.2 ServerHello: no supported_versions.
     legacy_server_hello,
     /// A TLS 1.2 ServerHello carrying the downgrade sentinel in its random.
@@ -533,7 +535,8 @@ pub fn Peer(comptime suite: Suite13) type {
 
         /// A server sends its one compatibility change_cipher_spec after its first message.
         fn compatCcs(self: *Self) !void {
-            if (!self.config.ccs or self.session_len == 0 or self.sent_ccs) return;
+            if (!self.config.ccs or self.sent_ccs) return;
+            if (self.session_len == 0 and self.config.tamper != .ccs_without_session) return;
             self.sent_ccs = true;
             try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
         }
