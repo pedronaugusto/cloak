@@ -667,26 +667,79 @@ fn plaintext(session: *Session) (ReadError || OpenError)![]const u8 {
     while (true) {
         const view = session.conn.readable();
         if (view.len != 0) return view;
-        if (session.conn.readClosed()) return error.EndOfStream;
-        // About to wait: an idle session holds no record or message buffers.
-        session.conn.trim();
-        const data = session.input.peekGreedy(1) catch |err| switch (err) {
-            error.EndOfStream => {
-                if (session.eof == .allow) return error.EndOfStream;
-                session.conn.receiveEof() catch |eof_err| return session.remember(eof_err);
-                return error.EndOfStream;
-            },
-            error.ReadFailed => return session.remember(error.ReadFailed),
+        try session.readMore();
+    }
+}
+
+/// Waits for the transport's next bytes and takes them into the connection, answering what they
+/// ask and pushing what they owe the peer. A clean close is `EndOfStream`.
+fn readMore(session: *Session) (ReadError || OpenError)!void {
+    @setRuntimeSafety(true);
+    if (session.conn.readClosed()) return error.EndOfStream;
+    // About to wait: an idle session holds no record or message buffers.
+    session.conn.trim();
+    const data = session.input.peekGreedy(1) catch |err| switch (err) {
+        error.EndOfStream => {
+            if (session.eof == .allow) return error.EndOfStream;
+            session.conn.receiveEof() catch |eof_err| return session.remember(eof_err);
+            return error.EndOfStream;
+        },
+        error.ReadFailed => return session.remember(error.ReadFailed),
+    };
+    const n = session.conn.receive(data) catch |err| {
+        // The fatal alert the failure owes the peer.
+        session.pushOwed() catch |push_err| return session.remember(push_err);
+        return session.remember(err);
+    };
+    session.input.toss(n);
+    _ = session.serve() catch |err| return session.remember(err);
+    // A KeyUpdate, a post-handshake answer or a warning the read owes the peer.
+    if (session.conn.owes()) session.pushOwed() catch |err| return session.remember(err);
+}
+
+pub const AwaitError = ReadError || error{
+    /// The session keeps no post-handshake authentication.
+    PostAuthUnavailable,
+    /// Plaintext came ahead of the answer and the reader's buffer is full: read it, then wait
+    /// again.
+    ReadBufferFull,
+};
+
+/// Reads, as the reading task, until the answer to request `number` (`requestCertificate`) is
+/// checked, and returns the outcome: for a server whose peer sends nothing more until it is
+/// answered, as an HTTP/1.1 client waiting for its response. Plaintext that comes first is kept
+/// in the reader's buffer for `reader()`, as far as it holds. A refused answer ends the session
+/// (`ReadFailed`, its cause in `failure`).
+pub fn awaitCertificate(session: *Session, number: u64) AwaitError!Connection.PostAuthOutcome {
+    @setRuntimeSafety(true);
+    session.read_lock.lock(session.io) catch |err| return session.remember(err);
+    defer session.read_lock.unlock(session.io);
+    while (true) {
+        const outcome = session.conn.postAuthentication() orelse {
+            if (session.conn.phase() == .failed) return error.ReadFailed;
+            return error.PostAuthUnavailable;
         };
-        const n = session.conn.receive(data) catch |err| {
-            // The fatal alert the failure owes the peer.
-            session.pushOwed() catch |push_err| return session.remember(push_err);
-            return session.remember(err);
-        };
-        session.input.toss(n);
-        _ = session.serve() catch |err| return session.remember(err);
-        // A KeyUpdate or a warning the read owes the peer.
-        if (session.conn.owes()) session.pushOwed() catch |err| return session.remember(err);
+        if (outcome.generation >= number) return outcome;
+        const view = session.conn.readable();
+        if (view.len == 0) {
+            session.readMore() catch |err| return switch (err) {
+                error.EndOfStream => error.EndOfStream,
+                else => error.ReadFailed,
+            };
+            continue;
+        }
+        const r = &session.reader_interface;
+        if (r.end == r.buffer.len and r.seek != 0) {
+            const kept = r.end - r.seek;
+            @memmove(r.buffer[0..kept], r.buffer[r.seek..r.end]);
+            r.seek = 0;
+            r.end = kept;
+        }
+        const n = @min(view.len, r.buffer.len - r.end);
+        if (n == 0) return error.ReadBufferFull;
+        @memcpy(r.buffer[r.end..][0..n], view[0..n]);
+        r.end += n;
+        session.conn.consume(n);
     }
 }
 

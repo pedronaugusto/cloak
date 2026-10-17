@@ -423,12 +423,23 @@ test "C10 session accept asks for a client certificate after the handshake and g
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     });
     defer session.deinit();
-    const number = try session.requestCertificate();
-    try std.testing.expectEqual(@as(usize, 1), peer.requests.items.len);
-    try peer.answer(.{});
+    // The client sends its request; the server asks for a certificate before it answers, and
+    // the client sends nothing more until then.
     try peer.send("GET /admin");
     var line: [16]u8 = undefined;
     try std.testing.expectEqualSlices(u8, "GET /admin", line[0..try session.reader().readSliceShort(line[0..10])]);
-    const outcome = session.postAuthentication().?;
+    const number = try session.requestCertificate();
+    try std.testing.expectEqual(@as(usize, 1), peer.requests.items.len);
+    try peer.answer(.{});
+    const outcome = try session.awaitCertificate(number);
     try std.testing.expect(outcome.generation == number and outcome.authenticated);
+    // Plaintext ahead of the next answer waits in the reader's buffer.
+    const next = try session.requestCertificate();
+    try peer.send("early");
+    try peer.answer(.{ .present = false });
+    try std.testing.expectEqual(Connection.PostAuthOutcome{ .generation = 2, .authenticated = false }, try session.awaitCertificate(next));
+    try std.testing.expectEqualSlices(u8, "early", line[0..try session.reader().readSliceShort(line[0..5])]);
+    try session.writer().writeAll("HTTP/1.1 200 OK\r\n\r\n");
+    try session.writer().flush();
+    try std.testing.expectEqualSlices(u8, "HTTP/1.1 200 OK\r\n\r\n", peer.received.items);
 }

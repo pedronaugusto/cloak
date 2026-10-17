@@ -932,7 +932,9 @@ proved a certificate the policy authenticates. An empty Certificate counts with 
 false: declining is the client's right and the application's to weigh. A refused chain, a bad
 signature or Finished end the connection. One request is outstanding at a time
 (`RequestOutstanding`). The application gates the action a request was made for on the outcome
-reaching that request's number, as `Session.requestCertificate` documents; the handshake's
+reaching that request's number; `Session.awaitCertificate` reads until it does, for a client that
+sends nothing more until it is answered (an HTTP/1.1 client waiting for its response), keeping any
+plaintext that comes first in the reader's buffer as far as it holds. The handshake's
 `Info.peer_authenticated` stays the handshake's, and tickets carry the handshake's
 authentication, never a later one.
 
