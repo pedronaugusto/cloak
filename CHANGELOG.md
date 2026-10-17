@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-17
+
 ### Added
 
 - TLS 1.2 and DTLS 1.2 PSK (RFC 4279) with TLS_PSK_WITH_AES_128_CCM_8 (0xC0A8) and TLS_PSK_WITH_AES_128_CCM (0xC0A4, RFC 6655), both roles: the PSK mode of the CoAP and LwM2M profiles (RFC 7925). Spoken only when the suites are listed with a TLS 1.2 key; plain PSK has no forward secrecy. Keys are 16 to 64 bytes. An identity the server does not know fails at the client's Finished as a wrong key does, so a prober cannot tell known identities from unknown ones. No tickets on such sessions.
