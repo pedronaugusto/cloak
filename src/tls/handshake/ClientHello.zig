@@ -490,7 +490,7 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     h.update(self.session);
     h.update(self.suites);
     // The block was validated when parsed; a malformed entry cannot occur and would end a pass.
-    var highs: std.StaticBitSet(256) = .empty;
+    var highs: std.bit_set.Static(256) = .empty;
     var all: Reader = .{ .bytes = self.extensions };
     while (all.pos < all.bytes.len) {
         const id = all.int(u16) catch break;

@@ -33,7 +33,7 @@ pub fn next(self: *Self) NextError!?Extension {
 fn uniqueBlock(block: []const u8) error{DuplicateExtension}!void {
     @setRuntimeSafety(true);
     for (0..16) |high| {
-        var ids: std.StaticBitSet(4096) = .empty;
+        var ids: std.bit_set.Static(4096) = .empty;
         var r: R = .{ .bytes = block };
         while (r.pos < block.len) {
             const id = r.int(u16) catch break;
