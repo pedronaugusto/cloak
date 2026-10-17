@@ -1437,3 +1437,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |
 | F96 | `catalogue_legacy_record_version_ignored` | `tls/ServerConnection_test.zig` | plaintext records held to 03,01-03,03 (found by tlsfuzzer: its hellos come as 03,00) |
 | F97 | `catalogue_authenticated_inner_content_unexpected` | `tls/ServerConnection_test.zig`, `tls/record/Epoch_test.zig` | the authenticated refusals answered as a tag failure (bad_record_mac), as before (found by tlsfuzzer's test-tls13-empty-alert) |
+| F98 | `catalogue_obsolete_legacy_hello_version` | `tls/ServerConnection_test.zig` | the check left out: TLS 1.3 negotiated over a hello naming 03,00 (found by tlsfuzzer's test-tls13-legacy-version) |

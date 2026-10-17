@@ -397,6 +397,16 @@ pub fn offers12(self: *const ClientHello) bool {
     };
 }
 
+/// A legacy_version of SSL 3.0 (0x0300) or older, which a hello must not name and a server
+/// refuses with protocol_version whatever supported_versions says (RFC 8446 appendix D.5).
+/// DTLS numbers its versions apart (0xfeXX); its hellos are refused by their versions alone.
+pub fn legacyObsolete(self: *const ClientHello) bool {
+    return switch (self.transport) {
+        .stream, .quic => self.legacy_version <= 0x0300,
+        .datagram => false,
+    };
+}
+
 /// Secure renegotiation is indicated by the extension or TLS_EMPTY_RENEGOTIATION_INFO_SCSV.
 pub fn secureRenegotiation(self: *const ClientHello) bool {
     return self.renegotiation_info or containsU16(self.suites, 0x00ff);

@@ -752,11 +752,14 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     const second = self.retried;
     var msg = wire;
     var hello = try ClientHello.parse(wire, self.options.transport);
+    // RFC 8446 appendix D.5: a hello naming SSL 3.0 or older as its legacy version is refused.
+    if (hello.legacyObsolete()) return error.UnsupportedVersion;
     // An ECH this server decrypts replaces the hello by the inner one from here on.
     if (self.options.ech_keys.len != 0) if (try self.openEch(wire, &hello, second)) |inner| {
         msg = inner;
         hello = ClientHello.parse(inner, self.options.transport) catch return error.IllegalParameter;
         try checkInner(&hello);
+        if (hello.legacyObsolete()) return error.UnsupportedVersion;
     };
     if (!hello.offers13() or !self.allows13()) {
         // A client without TLS 1.3 (or a server without it): TLS 1.2 when both sides allow it,

@@ -81,6 +81,8 @@ pub const Config = struct {
     early_record_size: usize = 600,
     /// The record version of the first record.
     first_record_version: u16 = 0x0301,
+    /// The ClientHello's legacy_version.
+    legacy_version: u16 = 0x0303,
     /// Offer post_handshake_auth (RFC 8446 section 4.2.6).
     post_handshake_auth: bool = false,
 };
@@ -268,7 +270,9 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const t = self.config.tamper;
             var body: std.ArrayList(u8) = .empty;
             defer body.deinit(gpa);
-            try body.appendSlice(gpa, &.{ 3, 3 });
+            var legacy: [2]u8 = undefined;
+            std.mem.writeInt(u16, &legacy, self.config.legacy_version, .big);
+            try body.appendSlice(gpa, &legacy);
             try body.appendSlice(gpa, &self.random);
             try body.append(gpa, @intCast(self.session_len));
             try body.appendSlice(gpa, self.session[0..self.session_len]);

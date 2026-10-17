@@ -142,6 +142,19 @@ test "F97 catalogue_authenticated_inner_content_unexpected (no type, an unknown 
     try std.testing.expectEqualStrings("hello", pair.conn.readable());
 }
 
+test "F98 catalogue_obsolete_legacy_hello_version (a hello naming SSL 3.0 or older ends with protocol_version, TLS 1.3 offered or not)" {
+    // RFC 8446 appendix D.5. tlsfuzzer's test-tls13-legacy-version offers TLS 1.3 beside them.
+    for ([_]u16{ 0x0300, 0x0200, 0x0002, 0x0000, 0x0103 }) |legacy| {
+        try fails(.aes_128_gcm_sha256, .{ .legacy_version = legacy }, .{}, error.UnsupportedVersion, .protocol_version);
+    }
+    // supported_versions decides above it (RFC 8446 section 4.2.1).
+    for ([_]u16{ 0x0301, 0x0302, 0x0303, 0x0304 }) |legacy| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .legacy_version = legacy }, .{});
+        defer pair.deinit();
+        try pair.run();
+    }
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
