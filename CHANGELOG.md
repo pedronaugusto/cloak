@@ -10,6 +10,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Changed
 
+- The 32-bit Montgomery arithmetic for RSA factor validation is gone: nothing has called it since 0.6.0 dropped the primality checks, and its selects had no value barrier.
 - The session cache's byte bound is an aegis budget: each kept ticket holds a reservation of its bytes and returns it as it leaves its slot (taken, expired, displaced or cleared), so the count is never adjusted by hand.
 
 ## [0.11.1] - 2026-10-17

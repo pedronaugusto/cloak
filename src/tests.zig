@@ -24,7 +24,6 @@ test {
     _ = @import("wire.zig");
     _ = @import("types.zig");
     _ = @import("certificate.zig");
-    _ = @import("credentials/Montgomery.zig");
     _ = @import("services/Budget.zig");
     _ = @import("services/Job.zig");
     _ = @import("services/Path.zig");

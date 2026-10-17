@@ -1,7 +1,6 @@
 //! Independent C1 credential review regression. The verifier ship owns only this test.
 const std = @import("std");
 const shakedown = @import("shakedown");
-const Montgomery = @import("../credentials/Montgomery.zig");
 const Rsa = @import("../credentials/Rsa.zig");
 const Sign = @import("../credentials/Sign.zig");
 const signature = @import("signature.zig");
@@ -33,47 +32,6 @@ test "credential review a key with composite factors releases no wrong signature
     }
     // A failed check prints counts only, never prepared private material.
     try std.testing.expect(released <= 32);
-}
-
-test "credential review Montgomery full-width differential arithmetic and carries" {
-    try shakedown.check(std.testing.allocator, {}, montgomery, .{ .cases = 128, .seed = 0xc1a017 });
-}
-fn montgomery(_: void, case: *shakedown.Case) !void {
-    const widths = [_]usize{ 1, 3, 4, 5, 7, 8, 16, 31, 32, 63, 64, 127, 128, 255, 256, 511, 512 };
-    const width = widths[shakedown.gen.intRange(case.source, usize, 0, widths.len - 1)];
-    var encoded: [512]u8 = @splat(255);
-    for (encoded[0..width]) |*byte| byte.* = shakedown.gen.int(case.source, u8);
-    encoded[0] |= 128;
-    encoded[width - 1] |= 3;
-    const F = std.crypto.ff.Modulus(4096);
-    const U = std.crypto.ff.Uint(4096);
-    const reference = try F.fromBytes(encoded[0..width], .big);
-    var m = try Montgomery.init(encoded[0..width]);
-    defer m.deinit();
-    var ax: [512]u8 = @splat(0);
-    var bx: [512]u8 = @splat(0);
-    for (ax[0..width], bx[0..width]) |*a, *b| {
-        a.* = shakedown.gen.int(case.source, u8);
-        b.* = shakedown.gen.int(case.source, u8);
-    }
-    const a = reference.reduce(try U.fromBytes(ax[0..width], .big));
-    const b = reference.reduce(try U.fromBytes(bx[0..width], .big));
-    try a.toBytes(&ax, .big);
-    try b.toBytes(&bx, .big);
-    var x = Montgomery.decode(&ax);
-    var y = Montgomery.decode(&bx);
-    m.convert(&x, &x);
-    m.convert(&y, &y);
-    var result: Montgomery.Number = undefined;
-    m.multiply(&result, &x, &y);
-    var one: Montgomery.Number = @splat(0);
-    one[0] = 1;
-    m.multiply(&result, &result, &one);
-    var expected: [512]u8 = undefined;
-    try reference.mul(a, b).toBytes(&expected, .big);
-    var got: [512]u8 = undefined;
-    for (result, 0..) |word, i| std.mem.writeInt(u32, got[508 - i * 4 ..][0..4], word, .big);
-    try std.testing.expectEqualSlices(u8, &expected, &got);
 }
 
 test "credential review owned Ed expansion matches RFC8032 public key" {
