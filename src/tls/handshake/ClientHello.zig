@@ -242,12 +242,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             if (profiles.len < 2 or profiles.len % 2 != 0) return error.DecodeError;
             self.srtp = profiles;
         },
-        19, 20 => {
-            const types = (try value.vector(u8)).bytes;
-            try value.finish();
-            if (types.len == 0) return error.DecodeError;
-            if (id == 20) self.server_certificate_types = types else self.client_certificate_types = types;
-        },
+        19, 20 => (if (id == 19) &self.client_certificate_types else &self.server_certificate_types).* = try certificateTypes(&value),
         // ech_outer_extensions lives only inside an encrypted inner hello (RFC 9849 section 5.1).
         0xfd00 => return error.IllegalParameter,
         11 => {
@@ -270,6 +265,15 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         else => {},
     }
+}
+
+/// A client_certificate_type or server_certificate_type list (RFC 7250): one or more types.
+fn certificateTypes(value: *Reader) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    const types = (try value.vector(u8)).bytes;
+    try value.finish();
+    if (types.len == 0) return error.DecodeError;
+    return types;
 }
 
 /// Whether a certificate type list (RFC 7250) admits `kind`: an absent list admits X.509 alone.

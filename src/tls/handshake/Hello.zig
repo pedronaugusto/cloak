@@ -342,9 +342,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         try extension(&w, 16, alpn[0..a.pos]);
     }
     if (datagram) try datagramOffer(&w, options);
-    // RFC 7250: one type each, the raw key; X.509 is what a hello without the extension means.
-    if (tls13 and options.raw_client_key) try extension(&w, client_certificate_type, &.{ 1, @backingInt(CertificateType.raw_public_key) });
-    if (tls13 and options.raw_server_key) try extension(&w, server_certificate_type, &.{ 1, @backingInt(CertificateType.raw_public_key) });
+    if (tls13) try certificateTypes(&w, options);
     if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;
@@ -377,6 +375,13 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// RFC 7250: one type each, the raw key; X.509 is what a hello without the extension means.
+fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
+    const raw: []const u8 = &.{ 1, @backingInt(CertificateType.raw_public_key) };
+    if (options.raw_client_key) try extension(w, client_certificate_type, raw);
+    if (options.raw_server_key) try extension(w, server_certificate_type, raw);
+}
+
 /// connection_id and use_srtp as a datagram hello offers them.
 fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
     @setRuntimeSafety(true);
