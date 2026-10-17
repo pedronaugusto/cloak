@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- A plaintext record (a ClientHello, a refusal) is taken with any legacy record version {03,XX}, as RFC 8446 section 5.1 and RFC 5246 appendix E.1 ask; 03,00 (tlsfuzzer's hellos, SSL 3.0-era clients) and 03,04 were refused with unexpected_message. F96.
+
 ## [0.17.1] - 2026-10-17
 
 ### Added

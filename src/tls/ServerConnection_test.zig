@@ -109,15 +109,16 @@ test "C3 server survives fragmented hellos and one-byte delivery" {
     }
 }
 
-test "C3 server ignores a TLS 1.0 to 1.2 legacy record version on plaintext records only" {
-    // RFC 8446 section 5.1: the legacy record version is ignored; it must still look like TLS.
-    for ([_]u16{ 0x0303, 0x0302, 0x0301 }) |version| {
+test "F96 catalogue_legacy_record_version_ignored (any {03,XX} on a plaintext record; tlsfuzzer's hello comes as 03,00)" {
+    // RFC 8446 section 5.1: the legacy record version is ignored; RFC 5246 appendix E.1: a server
+    // accepts any {03,XX} for the ClientHello. It must still look like TLS.
+    for ([_]u16{ 0x0303, 0x0302, 0x0301, 0x0300, 0x0304, 0x03ff }) |version| {
         const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .first_record_version = version }, .{});
         defer pair.deinit();
         try pair.run();
     }
-    try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0304 }, .{}, error.UnexpectedRecord, .unexpected_message);
-    try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0300 }, .{}, error.UnexpectedRecord, .unexpected_message);
+    try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0203 }, .{}, error.UnexpectedRecord, .unexpected_message);
+    try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0403 }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {

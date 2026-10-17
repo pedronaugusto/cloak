@@ -1335,7 +1335,8 @@ source test; a native platform's own policy (F23) is the operating system's. F42
 is absent by construction: options are one immutable value given at creation. F40's lock across
 a wait: `Connection` holds none, it asks and returns; a `Session` signs on the task that reads
 and takes its write lock only to send the answer. Corpus rows (F10–F13, F16, F17, F19, F20, F24)
-name the x509-limbo cases they rest on; the batches run the whole corpus.
+name the x509-limbo cases they rest on; the batches run the whole corpus. Rows from F96 on are
+conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing test first.
 
 | Id | Catalogue test | Files | A mutation its named tests catch |
 |---|---|---|---|
@@ -1434,3 +1435,4 @@ name the x509-limbo cases they rest on; the batches run the whole corpus.
 | F93 | `catalogue_secret_diagnostics_and_release_campaign` | none yet (C7) |  |
 | F94 | `catalogue_roca_fingerprinted_rsa_key_refused` | `Roca_test.zig` |  |
 | F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |
+| F96 | `catalogue_legacy_record_version_ignored` | `tls/ServerConnection_test.zig` | plaintext records held to 03,01-03,03 (found by tlsfuzzer: its hellos come as 03,00) |
