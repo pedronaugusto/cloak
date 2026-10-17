@@ -23,10 +23,22 @@ pub fn init(limits: Limits) Budget {
 /// One admitted job's share: one job and its bytes. Exactly one `release` returns it; moving it
 /// is by `moveInto`, a copy is a second owner.
 pub const Charge = struct {
+    /// Private: the budget the reservations point into, whose guard `release` takes.
+    budget: *Budget,
     jobs: Counter.Reservation,
     bytes: Counter.Reservation,
 
+    /// Returns the charge under its budget's guard.
+    pub fn release(self: *Charge) void {
+        @setRuntimeSafety(true);
+        var guard = self.budget.shared.acquire();
+        defer guard.deinit();
+        self.jobs.release();
+        self.bytes.release();
+    }
+
     pub fn moveInto(self: *Charge, destination: *Charge) void {
+        destination.budget = self.budget;
         self.jobs.moveInto(&destination.jobs);
         self.bytes.moveInto(&destination.bytes);
     }
@@ -47,17 +59,7 @@ pub fn reserve(b: *Budget, amount: usize) ReserveError!Charge {
         jobs.release();
         return error.ServiceBusy;
     };
-    return .{ .jobs = jobs, .bytes = bytes };
-}
-
-/// Returns a charge this budget made, under its guard: the charge's reservations point into the
-/// guarded counters, and are released only while the guard is held.
-pub fn release(b: *Budget, charge: *Charge) void {
-    @setRuntimeSafety(true);
-    var guard = b.shared.acquire();
-    defer guard.deinit();
-    charge.jobs.release();
-    charge.bytes.release();
+    return .{ .budget = b, .jobs = jobs, .bytes = bytes };
 }
 
 pub fn counts(b: *Budget) Counts {

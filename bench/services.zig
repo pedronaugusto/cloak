@@ -9,7 +9,7 @@ const Context = struct {
         @setRuntimeSafety(true);
         for (0..units) |_| {
             var charge = try c.budget.reserve(1024);
-            c.budget.release(&charge);
+            charge.release();
         }
         if (c.budget.counts().bytes != 0) return error.LeakedCharge;
     }

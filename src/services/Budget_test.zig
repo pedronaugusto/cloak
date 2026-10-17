@@ -10,10 +10,10 @@ test "service admission charges abandoned work and rolls back byte rejection" {
     try std.testing.expectEqual(Budget.Counts{ .jobs = 1, .bytes = 8 }, b.counts());
     // The one job is taken, however few bytes the next asks for.
     try std.testing.expectError(error.ServiceBusy, b.reserve(0));
-    b.release(&first);
+    first.release();
     try std.testing.expectEqual(Budget.Counts{}, b.counts());
     var whole = try b.reserve(10);
-    b.release(&whole);
+    whole.release();
 }
 test "service admission: a charge moves to its holder and returns what it took" {
     @setRuntimeSafety(true);
@@ -23,8 +23,8 @@ test "service admission: a charge moves to its holder and returns what it took" 
     charge.moveInto(&held);
     var other = try b.reserve(6);
     try std.testing.expectError(error.ServiceBusy, b.reserve(0));
-    b.release(&held);
+    held.release();
     try std.testing.expectEqual(Budget.Counts{ .jobs = 1, .bytes = 6 }, b.counts());
-    b.release(&other);
+    other.release();
     try std.testing.expectEqual(Budget.Counts{}, b.counts());
 }
