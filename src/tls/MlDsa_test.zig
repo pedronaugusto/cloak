@@ -82,6 +82,12 @@ test "F91 catalogue_pq_group_specific_layout_and_auth_policy: post-quantum authe
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_auth = .optional, .server_require_pq_auth = true }));
 }
 
+test "F108 catalogue_credential_by_client_capability (a server with an ML-DSA and a classical credential answers a client requiring post-quantum authentication with the first, any other with the second)" {
+    try connect(.{ .cert = .p256, .server_also = &.{.mldsa65}, .client_require_pq_auth = true });
+    try connect(.{ .cert = .mldsa65, .server_also = &.{.p256}, .client_require_pq_auth = true });
+    try connect(.{ .cert = .p256, .server_also = &.{.mldsa65} });
+}
+
 test "C10 an ML-DSA-87 handshake's client memory is measured and bounded" {
     var count = @import("shakedown").alloc.Counting.init(gpa);
     const duo = try Duo.init(gpa, .{ .cert = .mldsa87, .client_gpa = count.allocator() });

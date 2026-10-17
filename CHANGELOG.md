@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- A server holding several credentials answers each client with the first, in its order, that answers the client's name and that the client can take (RFC 8446 section 4.4.2.2, RFC 5246 section 7.4.2): in TLS 1.3 a usable delegated credential or a key that signs under a scheme the client lists; in TLS 1.2 a certificate suite both offer, an ECDSA key's curve among the client's groups and a ServerKeyExchange scheme it lists. It took the first credential answering the name, and refused a client that could not take that one though another fit (one listing only ecdsa_secp384r1_sha384 against a P-256 and a P-384 credential, a TLS 1.2 client of ECDSA suites against an RSA credential listed first, a client requiring ML-DSA against a classical credential listed first). A credential of another name is never taken. F108.
+
 ## [0.17.3] - 2026-10-17
 
 ### Fixed

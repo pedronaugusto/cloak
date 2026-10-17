@@ -106,6 +106,10 @@ pub fn postQuantumPath(path: []const []const u8) bool {
     return true;
 }
 
+/// How a server's credential proves possession to a client: the scheme it signs under, and
+/// whether its delegated credential's key signs (RFC 9345, TLS 1.3) rather than the certificate's.
+pub const Fit = struct { scheme: Scheme, delegating: bool = false };
+
 /// The scheme a client uses for a leaf, in preference order, among those the server lists.
 pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);

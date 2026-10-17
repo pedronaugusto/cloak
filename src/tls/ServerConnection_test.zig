@@ -349,6 +349,46 @@ test "C3 server picks the credential for the server name" {
     }
 }
 
+test "F108 catalogue_credential_by_client_capability (TLS 1.3: among the credentials answering the name, the first whose key signs under a scheme the client lists)" {
+    // RFC 8446 section 4.4.2.2: the server's certificate is chosen by what the client lists. A
+    // client listing only ecdsa_secp384r1_sha384 gets the P-384 credential after a P-256 one
+    // (tlsfuzzer's test-tls13-ecdsa-support).
+    {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .schemes = &.{0x0503} }, .{ .cert = .p256, .also = &.{.p384} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(@as(u16, 0x0503), pair.client.certificate_verify_scheme);
+        try std.testing.expect(pair.client.certificate_verify_ok);
+    }
+    // A client taking both: the server's order, the first credential.
+    {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .schemes = &.{ 0x0503, 0x0403 } }, .{ .cert = .p256, .also = &.{.p384} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(@as(u16, 0x0403), pair.client.certificate_verify_scheme);
+    }
+    // Ed25519 only: the third.
+    {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .schemes = &.{0x0807} }, .{ .cert = .p256, .also = &.{ .p384, .ed25519 } });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(@as(u16, 0x0807), pair.client.certificate_verify_scheme);
+        try std.testing.expect(pair.client.certificate_verify_ok);
+    }
+    // A credential of another name is never taken, whatever it signs: the client would refuse it.
+    // The first answers example.com, the Ed25519 one other.example.com.
+    try fails(.aes_128_gcm_sha256, .{ .sni = "example.com", .schemes = &.{0x0807} }, .{ .extra = true, .names = &.{"example.com"} }, error.NoSignatureScheme, .handshake_failure);
+    // An unknown name with `first`: every credential is a candidate, the first that fits answers.
+    {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .sni = "unknown.test", .schemes = &.{0x0807} }, .{ .extra = true, .names = &.{"example.com"} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(@as(u16, 0x0807), pair.client.certificate_verify_scheme);
+    }
+    // None fits: handshake_failure, as with one credential.
+    try fails(.aes_128_gcm_sha256, .{ .schemes = &.{0x0804} }, .{ .cert = .p256, .also = &.{.p384} }, error.NoSignatureScheme, .handshake_failure);
+}
+
 test "C3 client certificates: required, optional and rejected" {
     // Required and presented: verified through the request, possession proven.
     {

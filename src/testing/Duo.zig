@@ -22,6 +22,8 @@ pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mld
 pub const Options = struct {
     seed: u64 = 1,
     cert: Cert = .p256,
+    /// Further server credentials after `cert`'s, each answering any name: at most two.
+    server_also: []const Cert = &.{},
     client_suites: []const Suite = Suite.default,
     server_suites: []const Suite = Suite.default,
     client_min: Version = .tls12,
@@ -131,6 +133,10 @@ trust: certificates.Trust,
 snapshot: certificates.Trust.Snapshot,
 identity: certificates.Identity,
 raw_identity: ?certificates.Identity = null,
+/// The server's further credentials (`server_also`), and the list it is given.
+also: [2]certificates.Identity = undefined,
+also_count: usize = 0,
+credential_list: [3]Server.Credential = undefined,
 auth: ?certificates.ClientAuth = null,
 server_dc: ?Delegation.Credential = null,
 client_dc: ?Delegation.Credential = null,
@@ -157,42 +163,19 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
-    const key = try certificates.PrivateKey.parse(gpa, switch (cert) {
-        .p256, .dc_p256, .dc_no_signature, .ct_leaf, .ct_plain => pki.p256_pem,
-        .p384 => pki.p384_pem,
-        .ed25519 => pki.ed25519_pem,
-        .rsa => pki.rsa_pem,
-        .mldsa44 => pki.mldsa44_pem,
-        .mldsa65 => pki.mldsa65_pem,
-        .mldsa87 => pki.mldsa87_pem,
-        .mldsa44_classical => pki.mldsa44_classical_pem,
-        .p256_pqca => pki.p256_pqca_pem,
-    }, .{});
+    const key = try keyOf(gpa, cert);
     defer key.deinit();
-    const leaf = switch (cert) {
-        .dc_p256 => pki.dc_p256,
-        .dc_no_signature => pki.dc_no_signature,
-        .ct_leaf => pki.ct_leaf,
-        .ct_plain => pki.ct_plain,
-        .p256 => pki.p256,
-        .p384 => pki.p384,
-        .ed25519 => pki.ed25519,
-        .rsa => pki.rsa,
-        .mldsa44 => pki.mldsa44,
-        .mldsa65 => pki.mldsa65,
-        .mldsa87 => pki.mldsa87,
-        .mldsa44_classical => pki.mldsa44_classical,
-        .p256_pqca => pki.p256_pqca,
-    };
-    const root = switch (cert) {
-        .dc_p256, .dc_no_signature => pki.dc_ca,
-        .ct_leaf, .ct_plain => pki.ct_ca,
-        .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
-        .mldsa44_classical => pki.mixed_ca,
-        else => pki.ca,
-    };
-    self.identity = try certificates.Identity.init(gpa, &.{ leaf, root }, key, .{});
+    const leaf = leafOf(cert);
+    self.identity = try certificates.Identity.init(gpa, &.{ leaf, rootOf(cert) }, key, .{});
     errdefer self.identity.deinit();
+    self.also_count = 0;
+    errdefer for (self.also[0..self.also_count]) |identity| identity.deinit();
+    for (options.server_also) |also| {
+        const also_key = try keyOf(gpa, also);
+        defer also_key.deinit();
+        self.also[self.also_count] = try certificates.Identity.init(gpa, &.{ leafOf(also), rootOf(also) }, also_key, .{});
+        self.also_count += 1;
+    }
     self.raw_identity = if (options.server_raw != .none) try certificates.Identity.initRawKey(gpa, (try certificates.certificate.parse(leaf, .{})).spki, key, .{}) else null;
     errdefer if (self.raw_identity) |raw| raw.deinit();
     self.auth = null;
@@ -234,7 +217,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
         .credentials = if (options.server_psk_only) &.{} else switch (options.server_raw) {
-            .none => &.{.{ .identity = self.identity, .delegated = self.server_dc, .scts = options.server_scts }},
+            .none => self.credentials(),
             .only => &.{.{ .identity = self.raw_identity.?, .scts = options.server_scts }},
             .both => &.{ .{ .identity = self.raw_identity.? }, .{ .identity = self.identity } },
         },
@@ -266,10 +249,60 @@ pub fn deinit(self: *Duo) void {
     if (self.server_dc) |dc| dc.deinit();
     if (self.client_dc) |dc| dc.deinit();
     if (self.raw_identity) |raw| raw.deinit();
+    for (self.also[0..self.also_count]) |identity| identity.deinit();
     self.identity.deinit();
     self.snapshot.deinit();
     self.trust.deinit();
     gpa.destroy(self);
+}
+
+/// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
+fn credentials(self: *Duo) []const Server.Credential {
+    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts };
+    for (self.also[0..self.also_count], 1..) |identity, i| self.credential_list[i] = .{ .identity = identity };
+    return self.credential_list[0 .. 1 + self.also_count];
+}
+
+fn keyOf(gpa: std.mem.Allocator, cert: Cert) !certificates.PrivateKey {
+    return certificates.PrivateKey.parse(gpa, switch (cert) {
+        .p256, .dc_p256, .dc_no_signature, .ct_leaf, .ct_plain => pki.p256_pem,
+        .p384 => pki.p384_pem,
+        .ed25519 => pki.ed25519_pem,
+        .rsa => pki.rsa_pem,
+        .mldsa44 => pki.mldsa44_pem,
+        .mldsa65 => pki.mldsa65_pem,
+        .mldsa87 => pki.mldsa87_pem,
+        .mldsa44_classical => pki.mldsa44_classical_pem,
+        .p256_pqca => pki.p256_pqca_pem,
+    }, .{});
+}
+
+fn leafOf(cert: Cert) []const u8 {
+    return switch (cert) {
+        .dc_p256 => pki.dc_p256,
+        .dc_no_signature => pki.dc_no_signature,
+        .ct_leaf => pki.ct_leaf,
+        .ct_plain => pki.ct_plain,
+        .p256 => pki.p256,
+        .p384 => pki.p384,
+        .ed25519 => pki.ed25519,
+        .rsa => pki.rsa,
+        .mldsa44 => pki.mldsa44,
+        .mldsa65 => pki.mldsa65,
+        .mldsa87 => pki.mldsa87,
+        .mldsa44_classical => pki.mldsa44_classical,
+        .p256_pqca => pki.p256_pqca,
+    };
+}
+
+fn rootOf(cert: Cert) []const u8 {
+    return switch (cert) {
+        .dc_p256, .dc_no_signature => pki.dc_ca,
+        .ct_leaf, .ct_plain => pki.ct_ca,
+        .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
+        .mldsa44_classical => pki.mixed_ca,
+        else => pki.ca,
+    };
 }
 
 /// A delegated credential of `identity`'s certificate with the P-384 key, as `options` say.

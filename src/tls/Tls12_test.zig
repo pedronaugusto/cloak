@@ -170,6 +170,42 @@ test "C4 an ECDSA certificate on a curve the client does not list is not served 
     try std.testing.expectEqual(.tls12, duo.client.info().?.version);
 }
 
+test "F108 catalogue_credential_by_client_capability (TLS 1.2: the first credential with a suite the client offers, a curve it lists and a scheme it takes)" {
+    // An RSA credential first and a P-256 one after: a client of ECDSA suites alone gets the second.
+    {
+        const duo = try connect(.{ .cert = .rsa, .server_also = &.{.p256}, .client_max = .tls12, .client_suites = &ecdsa_suites });
+        defer duo.deinit();
+        try std.testing.expectEqual(Suite.ecdhe_ecdsa_aes_128_gcm_sha256, duo.client.info().?.suite);
+        try std.testing.expect(duo.client.info().?.peer_authenticated);
+    }
+    // A P-384 credential first: a client listing P-256 but not P-384 gets the P-256 one (RFC 8422
+    // section 5.1 binds the certificate's curve to the client's list).
+    {
+        const duo = try connect(.{ .cert = .p384, .server_also = &.{.p256}, .client_max = .tls12, .client_suites = &ecdsa_suites, .client_groups = &.{ .x25519, .p256 } });
+        defer duo.deinit();
+        try std.testing.expect(duo.client.info().?.peer_authenticated);
+    }
+    // Both kinds offered: the server's order of credentials, then its order of suites.
+    {
+        const duo = try connect(.{ .cert = .p256, .server_also = &.{.rsa}, .client_max = .tls12 });
+        defer duo.deinit();
+        try std.testing.expectEqual(.ecdsa, duo.client.info().?.suite.tls12().?.authentication());
+    }
+    {
+        const duo = try connect(.{ .cert = .rsa, .server_also = &.{.p256}, .client_max = .tls12 });
+        defer duo.deinit();
+        try std.testing.expectEqual(.rsa, duo.client.info().?.suite.tls12().?.authentication());
+    }
+    // An ML-DSA credential first (TLS 1.3's only): a TLS 1.2 client gets the next.
+    {
+        const duo = try connect(.{ .cert = .mldsa65, .server_also = &.{.p256}, .client_max = .tls12 });
+        defer duo.deinit();
+        try std.testing.expectEqual(.ecdsa, duo.client.info().?.suite.tls12().?.authentication());
+    }
+    // None fits: the refusal is the one a single credential gets.
+    try std.testing.expectError(error.NoSharedSuite, connect(.{ .cert = .p384, .server_also = &.{.rsa}, .client_max = .tls12, .client_suites = &ecdsa_suites, .client_groups = &.{ .x25519, .p256 } }));
+}
+
 test "C4 a refusal in a TLS 1.0 record reaches the client as the peer's alert" {
     const duo = try Duo.init(std.testing.allocator, .{ .client_min = .tls13, .client_suites = Suite.tls13_only });
     defer duo.deinit();

@@ -441,10 +441,21 @@ trimming have one implementation.
 
 A `Credential` is a certificate chain (a `certificates.Identity`) plus the names it
 answers for: exact, or `*.` plus a domain for exactly one label, matched without case.
-A credential without names answers for any name. The first matching credential
-answers; when none matches, the first answers, or with `unknown_name = .reject` the
-connection ends with unrecognized_name. The signature scheme is the first the client
-accepts that the leaf's key type and curve can make.
+A credential without names answers for any name. The candidates are the credentials
+answering the client's name; when none does, every credential is one, or with
+`unknown_name = .reject` the connection ends with unrecognized_name. The first candidate,
+in the server's order, that the client can take answers (RFC 8446 section 4.4.2.2): a form
+it takes (RFC 7250), and in TLS 1.3 a usable delegated credential or a scheme it lists that
+the leaf's key type and curve can make; in TLS 1.2 a certificate suite of the key's kind
+both offer, an ECDSA key's curve among its groups (RFC 8422 section 5.1) and a
+ServerKeyExchange scheme it lists. One server can so hold an ECDSA and an RSA credential, a
+P-256 and a P-384 one, or an ML-DSA and a classical one, and answer each client with one it
+takes. A credential of another name is never taken, since the client would refuse it. With
+no candidate fitting, the refusal is the furthest one got: unsupported_certificate when none
+is of a form the client takes, handshake_failure otherwise. The chain's own signatures
+(signature_algorithms_cert) do not rank credentials: RFC 8446 lets a server send a chain the
+client may not verify, and the client's verifier decides. The signature scheme is the first
+the client accepts that the leaf's key type and curve can make.
 
 Cloak signs the CertificateVerify itself with the key its identity holds (`Sign.zig`):
 ECDSA on P-256 and P-384, Ed25519, and RSA (rsa_pss_rsae with SHA-256, SHA-384 or
@@ -775,8 +786,9 @@ empty Certificate.
 An `Identity` has a form: certificates, or a raw key (`initRawKey`, `initRawKeyExternal`), whose
 `chain()` is empty and whose `entries()` is the one SubjectPublicKeyInfo a Certificate carries;
 `publicKey()` is the key either form signs with, so no step reads a raw key as a certificate. A
-server picks the first credential whose names match and whose form the client takes (X.509
-unless its server_certificate_type lists only other types; the raw key when it lists one), and
+server picks the first credential answering the name whose form the client takes (X.509
+unless its server_certificate_type lists only other types; the raw key when it lists one) and
+whose key it can take, and
 answers server_certificate_type when the client sent it; with no credential of a form the client
 takes, the handshake ends with unsupported_certificate. A server asking for a client certificate
 answers client_certificate_type with the type its `client_verify` takes when the client listed
@@ -1451,3 +1463,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F105 | `catalogue_ccs_without_compatibility_mode` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig` | the change_cipher_spec held to a hello with a session id, and its record version to 03,03 after the keys, as before (found by tlsfuzzer's test-tls13-multiple-ccs-messages) |
 | F106 | `catalogue_psk_hello_without_signature_algorithms` | `tls/Psk_test.zig` | signature_algorithms required of every TLS 1.3 hello, as before (found by tlsfuzzer's test-tls13-psk_dhe_ke) |
 | F107 | `catalogue_key_share_count_unbounded_unique` | `tls/handshake/ClientHello_test.zig` | the 32-share table, as before (found by tlsfuzzer's test-tls13-unrecognised-groups) |
+| F108 | `catalogue_credential_by_client_capability` | `tls/ServerConnection_test.zig`, `tls/Tls12_test.zig`, `tls/MlDsa_test.zig` | the name boundary dropped; the first unfit candidate's refusal returned; the suite or curve check of TLS 1.2 loosened (found by tlsfuzzer's test-tls13-ecdsa-support and C4's review: a server chose by name alone) |

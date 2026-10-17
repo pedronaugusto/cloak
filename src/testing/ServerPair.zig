@@ -23,6 +23,8 @@ pub const Options = struct {
     cert: Cert = .p256,
     /// Several credentials: the first answers unknown names.
     extra: bool = false,
+    /// Credentials after those, answering any name: at most two.
+    also: []const Cert = &.{},
     names: []const []const u8 = &.{},
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
     alpn: []const []const u8 = &.{},
@@ -88,13 +90,18 @@ pub fn ServerPair(comptime suite: Suite13) type {
             errdefer self.client.deinit();
             errdefer self.dropIdentities();
             self.identities[0] = try identityFor(gpa, options.cert, options.external or options.bad_signature);
-            var credentials: [2]Server.Credential = undefined;
+            var credentials: [3]Server.Credential = undefined;
             credentials[0] = .{ .identity = self.identities[0].?, .names = options.names };
             var count: usize = 1;
             if (options.extra) {
                 self.identities[1] = try identityFor(gpa, .ed25519, options.external or options.bad_signature);
                 credentials[1] = .{ .identity = self.identities[1].?, .names = &.{"other.example.com"} };
                 count = 2;
+            }
+            for (options.also) |cert| {
+                self.identities[count] = try identityFor(gpa, cert, options.external or options.bad_signature);
+                credentials[count] = .{ .identity = self.identities[count].? };
+                count += 1;
             }
             self.conn = try Connection.server(options.conn_gpa orelse gpa, .{
                 .credentials = credentials[0..count],

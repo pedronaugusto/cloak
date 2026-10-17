@@ -86,8 +86,9 @@ pub const Options = struct {
     transport: suites.Transport = .stream,
     /// The server's QUIC transport parameters.
     parameters: []const u8 = "",
-    /// The first answers when no name matches or none was sent. None only with `external_psk`:
-    /// such a server authenticates by provisioned keys alone.
+    /// In the server's order: a client is answered by the first answering its name that it can
+    /// take (`chooseCredential`), any credential answering a name none matches. None only with
+    /// `external_psk`: such a server authenticates by provisioned keys alone.
     credentials: []const Credential,
     /// What to do with a server name no credential answers for.
     unknown_name: enum { first, reject } = .first,
@@ -696,35 +697,60 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
     }
 }
 
-/// The forms of credential a client takes (RFC 7250's server_certificate_type).
-pub const Forms = struct { x509: bool, raw_public_key: bool };
-
-/// The first credential of a form the client takes that answers for `name`.
-pub fn credentialFor(self: *const Server, name: []const u8, forms: Forms) ?usize {
-    @setRuntimeSafety(true);
-    for (self.options.credentials, 0..) |credential, i| {
-        if (!admits(forms, credential.identity)) continue;
-        if (credential.names.len == 0) return i;
-        for (credential.names) |pattern| if (nameMatches(pattern, name)) return i;
-    }
-    return null;
-}
-
-fn admits(forms: Forms, identity: certificates.Identity) bool {
-    return switch (identity.form()) {
-        .x509 => forms.x509,
-        .raw_public_key => forms.raw_public_key,
+/// Whether a client takes a credential of `identity`'s form (RFC 7250's server_certificate_type):
+/// X.509 unless it lists only other types, a raw key when it lists one.
+fn takesForm(hello: *const ClientHello, identity: certificates.Identity) bool {
+    const kind: Hello.CertificateType = switch (identity.form()) {
+        .x509 => .x509,
+        .raw_public_key => .raw_public_key,
     };
+    return ClientHello.admitsType(hello.server_certificate_types, @backingInt(kind));
 }
 
-/// The credential answering `name`; without one, the first of a form the client takes, or
-/// unrecognized_name when the server says so. None of a form it takes is unsupported_certificate.
-pub fn chooseCredential(self: *const Server, name: []const u8, forms: Forms) Client.Error!usize {
+/// The credential a client is answered with (RFC 8446 section 4.4.2.2, RFC 5246 section 7.4.2),
+/// in `self.credential` and `self.scheme`: among the credentials answering its name (each, when
+/// none does and `unknown_name` is `.first`), the first in the server's order of a form the
+/// client takes that the version's `fit` (`fits13`, `Server12.fits12`) takes. A credential of
+/// another name is never taken: the client would refuse it. Without one, the refusal is the
+/// furthest a candidate got: unsupported_certificate only when none is of a form the client
+/// takes, `fit`'s refusal otherwise.
+pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: anytype) Client.Error!Possession.Fit {
     @setRuntimeSafety(true);
-    if (self.credentialFor(name, forms)) |index| return index;
-    if (self.options.unknown_name == .reject) return error.UnrecognizedName;
-    for (self.options.credentials, 0..) |credential, i| if (admits(forms, credential.identity)) return i;
-    return error.UnsupportedCertificate;
+    const named = for (self.options.credentials) |credential| {
+        if (answers(credential, hello.server_name)) break true;
+    } else false;
+    if (!named and self.options.unknown_name == .reject) return error.UnrecognizedName;
+    var refusal: Client.Error = error.UnsupportedCertificate;
+    for (self.options.credentials, 0..) |credential, i| {
+        if (named and !answers(credential, hello.server_name)) continue;
+        if (!takesForm(hello, credential.identity)) continue;
+        const found = fit(self, credential, hello) catch |err| {
+            if (refusal == error.UnsupportedCertificate) refusal = err;
+            continue;
+        };
+        self.credential = i;
+        self.scheme = found.scheme;
+        return found;
+    }
+    return refusal;
+}
+
+/// Whether `credential` answers for `name`: it has no names, or one matches.
+fn answers(credential: Credential, name: []const u8) bool {
+    if (credential.names.len == 0) return true;
+    for (credential.names) |pattern| if (nameMatches(pattern, name)) return true;
+    return false;
+}
+
+/// TLS 1.3: the credential's delegated credential while the client takes it (RFC 9345 section
+/// 4.1.1), or else a scheme the client lists for the certificate's key.
+fn fits13(self: *const Server, credential: Credential, hello: *const ClientHello) Client.Error!Possession.Fit {
+    @setRuntimeSafety(true);
+    // The clock is known: `mayDelegate` held the hello for it.
+    if (credential.delegated) |delegated| if (hello.delegated) |list| {
+        if (delegated.usable(types.seconds(self.now.?), list, hello)) return .{ .scheme = delegated.keyScheme(), .delegating = true };
+    };
+    return .{ .scheme = Possession.choose(credential.identity.publicKey(), hello) orelse return error.NoSignatureScheme };
 }
 
 /// Exact, ASCII case-insensitive, or `*.` plus a domain standing for exactly one leftmost label.
@@ -878,17 +904,8 @@ fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!v
     if (self.options.credentials.len == 0) return error.PskRequired;
     // A server authenticating by certificate needs the client's schemes (RFC 8446 section 4.2.3).
     if (!hello.has_schemes) return error.MissingExtension;
-    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
-    self.credential = try self.chooseCredential(hello.server_name, .{
-        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
-        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
-    });
+    self.delegating = (try self.chooseCredential(hello, fits13)).delegating;
     const credential = self.options.credentials[self.credential];
-    // RFC 9345 section 4.1.1: the credential's scheme listed by the client for credentials, its
-    // delegation's in signature_algorithms, and valid by the clock; the certificate's key otherwise.
-    // The clock is known: `mayDelegate` held the hello for it.
-    self.delegating = if (credential.delegated) |delegated| if (hello.delegated) |list| delegated.usable(types.seconds(self.now.?), list, hello) else false else false;
-    self.scheme = if (self.delegating) credential.delegated.?.keyScheme() else Possession.choose(credential.identity.publicKey(), hello) orelse return error.NoSignatureScheme;
     self.sends_scts = hello.scts and credential.scts.len != 0;
     self.negotiateTypes(hello);
 }

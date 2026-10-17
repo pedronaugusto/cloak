@@ -59,7 +59,6 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
         self.group = for (self.options.groups) |group| {
             if (group.classical() and hello.offersGroup(group)) break group;
         } else return error.NoSharedGroup;
-        self.scheme = Possession.chooseServer12(self.options.credentials[self.credential].identity.publicKey(), hello) orelse return error.NoSignatureScheme;
     }
     self.alpn = "";
     if (self.options.alpn.len != 0) {
@@ -107,18 +106,19 @@ fn chooseSuite(self: anytype, hello: *const ClientHello) Error!suites.Suite12 {
     return refusal;
 }
 
-/// The credential for the client's name and certificate types, and the kind of suite its key
-/// authenticates.
+/// The credential for the client's name and what it takes (`Server.chooseCredential`), and the
+/// kind of suite its key authenticates.
 fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.Authentication {
     @setRuntimeSafety(true);
-    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
-    self.credential = try self.chooseCredential(hello.server_name, .{
-        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
-        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
-    });
+    _ = try self.chooseCredential(hello, fits12);
     // RFC 6962 section 3.3.1: the credential's SCTs, in the ServerHello, for a client that asks.
     self.sends_scts = hello.scts and self.options.credentials[self.credential].scts.len != 0;
-    return switch (self.options.credentials[self.credential].identity.publicKey()) {
+    return authenticationOf(self.options.credentials[self.credential].identity.publicKey(), hello) catch unreachable; // unreachable: fits12 took it
+}
+
+/// The kind of suite a key authenticates for this client.
+fn authenticationOf(key: certificates.certificate.Algorithm.PublicKey, hello: *const ClientHello) Error!suites.Suite12.Authentication {
+    return switch (key) {
         .rsa => .rsa,
         // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
         .ec => |ec| if (hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) .ecdsa else error.NoSharedSuite,
@@ -126,6 +126,19 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
         // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
         .mldsa => error.NoSharedSuite,
     };
+}
+
+/// TLS 1.2: a certificate suite of the key's kind both offer, and a ServerKeyExchange scheme the
+/// client lists.
+fn fits12(self: anytype, credential: anytype, hello: *const ClientHello) Error!Possession.Fit {
+    @setRuntimeSafety(true);
+    const key = credential.identity.publicKey();
+    const kind = try authenticationOf(key, hello);
+    for (self.options.suites) |suite| {
+        const candidate = suite.tls12() orelse continue;
+        if (candidate.authentication() == kind and hello.offersSuite(@backingInt(candidate))) break;
+    } else return error.NoSharedSuite;
+    return .{ .scheme = Possession.chooseServer12(key, hello) orelse return error.NoSignatureScheme };
 }
 
 /// The bytes of the key an unknown identity is answered with: random, so its Finished fails as a
