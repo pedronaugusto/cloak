@@ -23,6 +23,16 @@ pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, op
     @setRuntimeSafety(true);
     return .{ .identity = try Identity.initExternal(gpa, certificates, options) };
 }
+/// A raw public key (RFC 7250, TLS 1.3) for a server that asks for one; see `Identity.initRawKey`.
+pub fn initRawKey(gpa: std.mem.Allocator, spki: []const u8, key: PrivateKey, options: Options) InitError!ClientAuth {
+    @setRuntimeSafety(true);
+    return .{ .identity = try Identity.initRawKey(gpa, spki, key, options) };
+}
+/// A raw public key whose private key is held elsewhere; see `Identity.initRawKeyExternal`.
+pub fn initRawKeyExternal(gpa: std.mem.Allocator, spki: []const u8, options: Options) InitError!ClientAuth {
+    @setRuntimeSafety(true);
+    return .{ .identity = try Identity.initRawKeyExternal(gpa, spki, options) };
+}
 pub fn retain(auth: ClientAuth) ClientAuth {
     @setRuntimeSafety(true);
     return .{ .identity = auth.identity.retain() };
@@ -34,6 +44,11 @@ pub fn deinit(auth: ClientAuth) void {
 pub fn chain(auth: ClientAuth) []const []const u8 {
     @setRuntimeSafety(true);
     return auth.identity.chain();
+}
+/// What a Certificate message carries: the chain, or the one raw key.
+pub fn entries(auth: ClientAuth) []const []const u8 {
+    @setRuntimeSafety(true);
+    return auth.identity.entries();
 }
 pub fn generation(auth: ClientAuth) types.IdentityGeneration {
     @setRuntimeSafety(true);

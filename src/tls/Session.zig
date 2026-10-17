@@ -37,6 +37,9 @@ pub const Trust = union(enum) {
     snapshot: certificates.Trust.Snapshot,
     /// The caller's verifier, for native or custom policy.
     custom: Custom,
+    /// A raw public key (RFC 7250, TLS 1.3) trusted by its pin, the SHA-256 of its
+    /// SubjectPublicKeyInfo; no certificate is taken. `Info.raw_key_pin` names the one proved.
+    raw_keys: []const [32]u8,
 };
 
 pub const Custom = struct {
@@ -189,6 +192,7 @@ pub fn open(
         .none => .none,
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
         .custom => |custom| .{ .full = .{ .trust_generation = custom.generation, .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
+        .raw_keys => |pins| .{ .raw_key = .{ .pins = pins } },
     };
     const conn = try Connection.client(gpa, .{
         .identity = options.identity,
@@ -312,6 +316,7 @@ pub fn accept(
         .none => .none,
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.client_policy } },
         .custom => |custom| .{ .full = .{ .trust_generation = custom.generation, .policy = options.client_policy } },
+        .raw_keys => |pins| .{ .raw_key = .{ .pins = pins } },
     };
     const conn = try Connection.server(gpa, .{
         .credentials = options.credentials,
@@ -504,7 +509,8 @@ fn serve(session: *Session) OpenError!bool {
 fn verify(session: *Session, token: certificates.types.Token, request: certificates.types.Request) OpenError!void {
     @setRuntimeSafety(true);
     const result: VerifyError!certificates.types.Verification = switch (session.trust) {
-        .none => error.Failed,
+        // A pinned raw key is checked by the engine and never asks.
+        .none, .raw_keys => error.Failed,
         .snapshot => |snapshot| switch (snapshot.systemPolicy()) {
             .portable => certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
             .macos, .windows => session.verifyNative(request, snapshot),

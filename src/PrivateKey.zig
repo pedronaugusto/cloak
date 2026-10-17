@@ -45,24 +45,29 @@ pub fn isEncrypted(bytes: []const u8) bool {
 pub fn matches(key: PrivateKey, der: []const u8) bool {
     @setRuntimeSafety(true);
     const cert = certificate.parse(der, .{}) catch return false;
+    return key.matchesKey(cert.public_key);
+}
+/// Whether `public_key` is this key's public half.
+pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
+    @setRuntimeSafety(true);
     return switch (key.state.material.expose().*) {
-        .rsa => |*k| switch (cert.public_key) {
+        .rsa => |*k| switch (public_key) {
             .rsa => |p| std.mem.eql(u8, k.n[0..k.size], p.modulus) and std.mem.eql(u8, k.e[0..k.exponent_size], p.exponent),
             else => false,
         },
-        .p256 => |*k| switch (cert.public_key) {
+        .p256 => |*k| switch (public_key) {
             .ec => |p| p.curve == .p256 and std.mem.eql(u8, p.bytes, &k.public_key.toUncompressedSec1()),
             else => false,
         },
-        .p384 => |*k| switch (cert.public_key) {
+        .p384 => |*k| switch (public_key) {
             .ec => |p| p.curve == .p384 and std.mem.eql(u8, p.bytes, &k.public_key.toUncompressedSec1()),
             else => false,
         },
-        .ed25519 => |*k| switch (cert.public_key) {
+        .ed25519 => |*k| switch (public_key) {
             .ed25519 => |p| std.mem.eql(u8, p, &k.public_key.toBytes()),
             else => false,
         },
-        .mldsa => |*k| switch (cert.public_key) {
+        .mldsa => |*k| switch (public_key) {
             .mldsa => |p| p.level == k.level and std.mem.eql(u8, p.bytes, k.publicKey()),
             else => false,
         },

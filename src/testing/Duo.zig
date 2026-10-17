@@ -79,7 +79,23 @@ pub const Options = struct {
     server_psk: ?Psk.Lookup = null,
     /// What the client connection allocates from, to measure it; the harness's own otherwise.
     client_gpa: ?std.mem.Allocator = null,
+    /// Raw public keys (RFC 7250): the server's credentials (its certificate's, or the raw key of
+    /// the same key alone, or the raw key first and the certificate after), the pins the client
+    /// trusts the server's key by, the client's credential as a raw key, and the pins the server
+    /// trusts the client's key by.
+    server_raw: enum { none, only, both } = .none,
+    client_raw_pins: ?[]const [32]u8 = null,
+    client_raw: bool = false,
+    server_raw_pins: ?[]const [32]u8 = null,
 };
+
+/// The SHA-256 of a certificate's SubjectPublicKeyInfo: the pin of its key as a raw public key.
+pub fn pinOf(der: []const u8) [32]u8 {
+    const cert = certificates.certificate.parse(der, .{}) catch unreachable; // unreachable: test PKI
+    var pin: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(cert.spki, &pin, .{});
+    return pin;
+}
 
 const Duo = @This();
 
@@ -89,6 +105,7 @@ server: Connection,
 trust: certificates.Trust,
 snapshot: certificates.Trust.Snapshot,
 identity: certificates.Identity,
+raw_identity: ?certificates.Identity = null,
 auth: ?certificates.ClientAuth = null,
 rng: std.Random.DefaultPrng,
 options: Options,
@@ -137,17 +154,24 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     };
     self.identity = try certificates.Identity.init(gpa, &.{ leaf, root }, key, .{});
     errdefer self.identity.deinit();
+    self.raw_identity = if (options.server_raw != .none) try certificates.Identity.initRawKey(gpa, (try certificates.certificate.parse(leaf, .{})).spki, key, .{}) else null;
+    errdefer if (self.raw_identity) |raw| raw.deinit();
     self.auth = null;
     if (options.client_cert) {
         const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
         const chain: []const []const u8 = if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
-        self.auth = if (options.client_external) try certificates.ClientAuth.initExternal(gpa, chain, .{}) else try certificates.ClientAuth.init(gpa, chain, client_key, .{});
+        self.auth = if (options.client_raw)
+            try certificates.ClientAuth.initRawKey(gpa, (try certificates.certificate.parse(chain[0], .{})).spki, client_key, .{})
+        else if (options.client_external)
+            try certificates.ClientAuth.initExternal(gpa, chain, .{})
+        else
+            try certificates.ClientAuth.init(gpa, chain, client_key, .{});
     }
     errdefer if (self.auth) |auth| auth.deinit();
     self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
-        .verify = if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
+        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .external_psk = options.client_psk,
@@ -163,7 +187,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
-        .credentials = &.{.{ .identity = self.identity }},
+        .credentials = switch (options.server_raw) {
+            .none => &.{.{ .identity = self.identity }},
+            .only => &.{.{ .identity = self.raw_identity.? }},
+            .both => &.{ .{ .identity = self.raw_identity.? }, .{ .identity = self.identity } },
+        },
         .suites = options.server_suites,
         .min_version = options.server_min,
         .max_version = options.server_max,
@@ -172,7 +200,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .require_pq_auth = options.server_require_pq_auth,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
-        .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
+        .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
         .tls12_tickets = options.server_tls12_tickets,
         .ech_keys = options.server_ech,
@@ -187,6 +215,7 @@ pub fn deinit(self: *Duo) void {
     self.client.deinit();
     self.server.deinit();
     if (self.auth) |auth| auth.deinit();
+    if (self.raw_identity) |raw| raw.deinit();
     self.identity.deinit();
     self.snapshot.deinit();
     self.trust.deinit();

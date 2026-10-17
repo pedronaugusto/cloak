@@ -7,7 +7,8 @@
 //! over the salt, used for this one ticket with a zero nonce; the header is the associated data.
 //! The plaintext is the session's suite, its secret, the times that bound it, the age obfuscator
 //! (TLS 1.3), the ALPN protocol and server name it was made for, the client's authentication
-//! and its expiry, and the digest of the policy it was made under.
+//! (none, a certificate, or a raw public key with its pin's index) and its expiry, and the digest
+//! of the policy it was made under.
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
@@ -49,6 +50,8 @@ pub const State = struct {
     server_name_len: u8 = 0,
     /// The client was authenticated by a certificate under `policy`, until `auth_expires`.
     client_authenticated: bool = false,
+    /// The client proved a raw public key (RFC 7250): its index in the policy's pins.
+    client_raw_pin: ?u16 = null,
     auth_expires: i64 = 0,
     policy: [32]u8,
 
@@ -78,7 +81,7 @@ pub const State = struct {
 };
 
 /// The longest plaintext: suite, PSK, times, age obfuscator, names, authentication, policy.
-const max_plain = 2 + 1 + 48 + 2 + 8 + 8 + 4 + 1 + 255 + 1 + 253 + 1 + 8 + 32;
+const max_plain = 2 + 1 + 48 + 2 + 8 + 8 + 4 + 1 + 255 + 1 + 253 + 1 + 2 + 8 + 32;
 pub const max_length = header_length + max_plain + Aead.tag_length;
 
 pub const SealError = error{BufferTooSmall};
@@ -164,8 +167,13 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
         @memcpy(out[at + 1 ..][0..name.len], name);
         at += 1 + name.len;
     }
-    out[at] = @intFromBool(state.client_authenticated);
+    // 0: no client authentication; 1: a certificate; 2: a raw key, then its pin's index.
+    out[at] = if (!state.client_authenticated) 0 else if (state.client_raw_pin == null) 1 else 2;
     at += 1;
+    if (state.client_authenticated) if (state.client_raw_pin) |pin| {
+        std.mem.writeInt(u16, out[at..][0..2], pin, .big);
+        at += 2;
+    };
     std.mem.writeInt(i64, out[at..][0..8], state.auth_expires, .big);
     at += 8;
     out[at..][0..32].* = state.policy;
@@ -204,8 +212,9 @@ fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid
     @memcpy(out.server_name[0..name_len], try take(plain, &at, name_len));
     out.server_name_len = name_len;
     const auth = (try take(plain, &at, 1))[0];
-    if (auth > 1) return error.Invalid;
-    out.client_authenticated = auth == 1;
+    if (auth > 2) return error.Invalid;
+    out.client_authenticated = auth != 0;
+    if (auth == 2) out.client_raw_pin = std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big);
     out.auth_expires = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     out.policy = (try take(plain, &at, 32))[0..32].*;
     if (at != plain.len) return error.Invalid;

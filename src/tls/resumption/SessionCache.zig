@@ -44,6 +44,8 @@ pub const Entry = struct {
     auth_expires: i64,
     /// The server was authenticated under the key's verification policy.
     authenticated: bool,
+    /// The index, in the policy's pins, of the raw public key (RFC 7250) the server proved.
+    raw_key_pin: ?u16 = null,
     /// Private: the entry's bytes in the cache's byte budget, held while a slot holds it.
     charge: Bytes.Reservation = undefined,
 
@@ -202,6 +204,7 @@ pub const Fields = struct {
     origin: i64,
     auth_expires: i64,
     authenticated: bool,
+    raw_key_pin: ?u16 = null,
 };
 
 /// Keeps a ticket, displacing the key's oldest past `per_key` and the cache's oldest past
@@ -225,6 +228,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
         .origin = fields.origin,
         .auth_expires = fields.auth_expires,
         .authenticated = fields.authenticated,
+        .raw_key_pin = fields.raw_key_pin,
     };
     @memcpy(entry.secret.exposeMut()[0..fields.secret.len], fields.secret);
     if (cost(entry) > self.options.max_bytes) {

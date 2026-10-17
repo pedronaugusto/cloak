@@ -1,4 +1,5 @@
-//! Shared immutable identity: owned DER chain, encoded certificate list and key.
+//! Shared immutable identity: owned DER chain, encoded certificate list and key; or a raw
+//! public key (RFC 7250) and its key, with no certificate at all.
 const std = @import("std");
 const aegis = @import("aegis");
 const types = @import("types.zig");
@@ -20,7 +21,10 @@ pub const Options = struct {
 };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
 pub const InitPemError = InitError || Pem.Error || error{NotCertificate};
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds };
+const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds, raw: ?[]const u8 = null, public_key: certificate.PublicKey };
+/// What an identity presents: certificates (X.509), or a raw public key (RFC 7250), which a
+/// peer trusts by its pin and never as a certificate.
+pub const Form = enum { x509, raw_public_key };
 /// A chain and the key that signs for its leaf; the key is retained and must match the leaf.
 pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
@@ -58,6 +62,39 @@ pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, o
         try ders.append(gpa, owned.der);
     }
     return init(gpa, ders.items, key, options);
+}
+
+/// A raw public key (RFC 7250, TLS 1.3): `spki`, a DER SubjectPublicKeyInfo, and the key that
+/// signs for it, which must match. There is no certificate: no name, no issuer, no expiry; a
+/// peer trusts the key by its pin (the SHA-256 of `spki`) and nothing else.
+pub fn initRawKey(gpa: std.mem.Allocator, spki: []const u8, key: PrivateKey, options: Options) InitError!Identity {
+    @setRuntimeSafety(true);
+    return buildRaw(gpa, spki, key, options);
+}
+
+/// A raw public key whose private key is held elsewhere; see `initExternal`.
+pub fn initRawKeyExternal(gpa: std.mem.Allocator, spki: []const u8, options: Options) InitError!Identity {
+    @setRuntimeSafety(true);
+    return buildRaw(gpa, spki, null, options);
+}
+
+fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options: Options) InitError!Identity {
+    @setRuntimeSafety(true);
+    if (spki.len == 0) return error.EmptyChain;
+    if (spki.len > options.chain_bytes or spki.len > 0xffffff) return error.IdentityLimit;
+    const public_key = try certificate.parsePublicKey(spki);
+    if (key) |owned| if (!owned.matchesKey(public_key)) return error.KeyMismatch;
+    const state = try gpa.create(State);
+    errdefer gpa.destroy(state);
+    const storage = try gpa.dupe(u8, spki);
+    errdefer gpa.free(storage);
+    const flight = try gpa.alloc(u8, 3 + spki.len);
+    errdefer gpa.free(flight);
+    std.mem.writeInt(u24, flight[0..3], @intCast(spki.len), .big); // safe: bounded to u24 above
+    @memcpy(flight[3..], spki);
+    // The key parsed above borrows the caller's bytes: parse it again from the owned copy.
+    state.* = .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }; // unreachable: the same bytes parsed above
+    return .{ .state = state };
 }
 
 /// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
@@ -103,7 +140,9 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry) };
+    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = undefined };
+    // The leaf's key borrows the owned copy, not the caller's bytes.
+    state.public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // unreachable: the same bytes parsed above
     return .{ .state = state };
 }
 pub fn retain(identity: Identity) Identity {
@@ -126,9 +165,28 @@ pub fn deinit(identity: Identity) void {
     gpa.free(state.flight);
     gpa.destroy(state);
 }
+/// The certificates, leaf first; empty for a raw public key.
 pub fn chain(identity: Identity) []const []const u8 {
     @setRuntimeSafety(true);
     return identity.state.chain;
+}
+pub fn form(identity: Identity) Form {
+    return if (identity.state.raw != null) .raw_public_key else .x509;
+}
+/// The raw public key's SubjectPublicKeyInfo; null for certificates.
+pub fn rawKey(identity: Identity) ?[]const u8 {
+    return identity.state.raw;
+}
+/// What a TLS Certificate message carries for this identity: the chain, or the one raw key.
+pub fn entries(identity: Identity) []const []const u8 {
+    @setRuntimeSafety(true);
+    const state = identity.state;
+    return if (state.raw) |*raw| raw[0..1] else state.chain;
+}
+/// The public key that signs for this identity: the leaf's, or the raw one. It borrows the
+/// identity's storage.
+pub fn publicKey(identity: Identity) certificate.PublicKey {
+    return identity.state.public_key;
 }
 /// TLS CertificateList entries: three-byte DER length followed by DER.
 /// Version-specific message headers and extensions remain handshake work.
@@ -159,7 +217,8 @@ pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);
     return identity.state.generation;
 }
-/// The start of the last second every certificate in the chain is valid for.
+/// The start of the last second every certificate in the chain is valid for; a raw public key
+/// has no expiry of its own.
 pub fn expires(identity: Identity) std.Io.Timestamp {
     @setRuntimeSafety(true);
     return types.instant(identity.state.expires.raw());

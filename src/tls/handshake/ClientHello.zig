@@ -76,6 +76,10 @@ compress_certificate: ?[]const u8,
 connection_id: ?[]const u8,
 /// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
 srtp: ?[]const u8,
+/// RFC 7250: the certificate types the client takes from the server, and those it can present,
+/// one byte each in its order, when sent. Absent means X.509 alone.
+server_certificate_types: ?[]const u8,
+client_certificate_types: ?[]const u8,
 
 pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
@@ -125,6 +129,8 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.compress_certificate = null;
     self.connection_id = null;
     self.srtp = null;
+    self.server_certificate_types = null;
+    self.client_certificate_types = null;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -236,6 +242,12 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             if (profiles.len < 2 or profiles.len % 2 != 0) return error.DecodeError;
             self.srtp = profiles;
         },
+        19, 20 => {
+            const types = (try value.vector(u8)).bytes;
+            try value.finish();
+            if (types.len == 0) return error.DecodeError;
+            if (id == 20) self.server_certificate_types = types else self.client_certificate_types = types;
+        },
         // ech_outer_extensions lives only inside an encrypted inner hello (RFC 9849 section 5.1).
         0xfd00 => return error.IllegalParameter,
         11 => {
@@ -258,6 +270,12 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         else => {},
     }
+}
+
+/// Whether a certificate type list (RFC 7250) admits `kind`: an absent list admits X.509 alone.
+pub fn admitsType(list: ?[]const u8, kind: u8) bool {
+    const types = list orelse return kind == 0;
+    return std.mem.findScalar(u8, types, kind) != null;
 }
 
 /// OfferedPsks (RFC 8446 section 4.2.11): identities, then one binder of 32 bytes or more for each.

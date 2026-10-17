@@ -184,7 +184,8 @@ pub fn provideParameters(self: Machine, accept: bool) Error!void {
 /// The largest handshake message either role accepts, in bytes.
 pub fn messageLimit(self: Machine) usize {
     return switch (self.state) {
-        inline else => |m| m.options.limits.message,
+        .client => |m| m.kept.message_limit,
+        .server => |m| m.options.limits.message,
     };
 }
 
@@ -200,7 +201,7 @@ pub fn peerParameters(self: Machine) []const u8 {
 /// but close_notify and user_canceled as fatal (RFC 8446 section 6.2).
 pub fn warningsAllowed(self: Machine) bool {
     return switch (self.state) {
-        .client => |m| m.version == .tls12 or (m.group == null and m.options.hello.allows12()),
+        .client => |m| m.version == .tls12 or (m.group == null and m.allows12()),
         .server => |m| m.version == .tls12,
     };
 }

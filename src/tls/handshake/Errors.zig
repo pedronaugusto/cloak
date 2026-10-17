@@ -37,6 +37,11 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     /// The peer's authentication is not post-quantum where the policy requires it
     /// (`require_pq_auth`): a classical signature on its path.
     PqAuthenticationRequired,
+    /// A certificate of a type the policy does not take (RFC 7250): an X.509 chain where only a
+    /// pinned raw public key is, or a raw key where certificates are.
+    UnsupportedCertificate,
+    /// A raw public key that no pin names.
+    PinMismatch,
     /// The server did not accept Encrypted Client Hello: the connection ends with ech_required.
     EchRejected,
     /// A second ClientHelloOuter's payload does not open under the first one's HPKE context.

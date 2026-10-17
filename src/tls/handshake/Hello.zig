@@ -48,6 +48,11 @@ pub const Srtp = enum(u16) {
         };
     }
 };
+/// client_certificate_type and server_certificate_type (RFC 7250 section 3), and the two types
+/// cloak names in them: X.509 and a raw public key.
+pub const client_certificate_type = 19;
+pub const server_certificate_type = 20;
+pub const CertificateType = enum(u8) { x509 = 0, raw_public_key = 2, _ };
 /// The connection_id extension's number (RFC 9146 section 3).
 pub const connection_id_extension = 54;
 /// The use_srtp extension's number (RFC 5764 section 4.1.1).
@@ -67,6 +72,11 @@ pub const Options = struct {
     /// every certificate signature on its verified path up to the trust anchor. A hybrid key
     /// exchange does not meet it; a provisioned PSK, a symmetric key, does. TLS 1.3 only.
     require_pq_auth: bool = false,
+    /// The server presents a raw public key (RFC 7250), which this client trusts by its pin:
+    /// server_certificate_type offers that type alone. TLS 1.3 only.
+    raw_server_key: bool = false,
+    /// This client's credential is a raw public key: client_certificate_type offers that type alone.
+    raw_client_key: bool = false,
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     parameters: []const u8 = "",
@@ -83,7 +93,7 @@ pub const Options = struct {
     /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
     /// TLS 1.2 has. The version follows from the suites and groups.
     pub fn allows12(options: Options) bool {
-        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid or options.require_pq_auth) return false;
+        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid or options.require_pq_auth or options.raw_server_key) return false;
         for (options.groups) |group| {
             if (group.classical()) break;
         } else return false;
@@ -169,7 +179,7 @@ pub fn validate(options: Options) ValidateError!void {
     if (@backingInt(options.min_version) > @backingInt(options.max_version)) return error.InvalidOptions;
     // Some version must be left, and QUIC and a hybrid-only policy need TLS 1.3.
     if (!options.allows13() and !options.allows12()) return error.InvalidOptions;
-    if ((options.transport == .quic or options.require_hybrid or options.require_pq_auth) and !options.allows13()) return error.InvalidOptions;
+    if ((options.transport == .quic or options.require_hybrid or options.require_pq_auth or options.raw_server_key) and !options.allows13()) return error.InvalidOptions;
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
@@ -332,6 +342,9 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         try extension(&w, 16, alpn[0..a.pos]);
     }
     if (datagram) try datagramOffer(&w, options);
+    // RFC 7250: one type each, the raw key; X.509 is what a hello without the extension means.
+    if (tls13 and options.raw_client_key) try extension(&w, client_certificate_type, &.{ 1, @backingInt(CertificateType.raw_public_key) });
+    if (tls13 and options.raw_server_key) try extension(&w, server_certificate_type, &.{ 1, @backingInt(CertificateType.raw_public_key) });
     if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;
@@ -685,7 +698,9 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
 
 /// `ech`: an ECHConfigList the server offered for a retry (RFC 9849 section 7.1).
 /// `srtp`: DTLS 1.3, the SRTP profile the server chose.
-pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null, srtp: ?Srtp = null };
+/// `raw_server_key`, `raw_client_key`: the server selected the raw public key type (RFC 7250)
+/// for its own Certificate, and for the client's.
+pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null, srtp: ?Srtp = null, raw_server_key: bool = false, raw_client_key: bool = false };
 /// `ech_sent`: the hello carried encrypted_client_hello, real or GREASE, so the server may answer it.
 pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseError!EncryptedExtensions {
     @setRuntimeSafety(true);
@@ -698,7 +713,17 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     var has_parameters = false;
     var ech: ?[]const u8 = null;
     var srtp: ?Srtp = null;
+    var raw_server_key = false;
+    var raw_client_key = false;
     while (try ext.next()) |item| switch (item.id) {
+        client_certificate_type, server_certificate_type => {
+            // The one type selected, among those offered: the raw key alone.
+            const offered = if (item.id == server_certificate_type) options.raw_server_key else options.raw_client_key;
+            if (!offered) return error.UnsolicitedExtension;
+            if (item.bytes.len != 1) return error.DecodeError;
+            if (item.bytes[0] != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
+            if (item.id == server_certificate_type) raw_server_key = true else raw_client_key = true;
+        },
         srtp_extension => {
             var value: Reader = .{ .bytes = item.bytes };
             srtp = try selectedSrtp(&value, options);
@@ -739,7 +764,7 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;
-    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp };
+    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp, .raw_server_key = raw_server_key, .raw_client_key = raw_client_key };
 }
 
 /// A ServerHello selecting `suite`, answering the client's share for `group`, when `psk`
@@ -866,6 +891,9 @@ pub const EncryptedParts = struct {
     ech_retry: []const Ech.Key = &.{},
     /// DTLS 1.3: the SRTP profile chosen.
     srtp: ?Srtp = null,
+    /// RFC 7250: the certificate types selected, answering the client's lists.
+    server_certificate_type: ?CertificateType = null,
+    client_certificate_type: ?CertificateType = null,
 };
 
 fn connectionIdAnswer(w: *Writer, cid: []const u8) Writer.WriteError!void {
@@ -901,6 +929,8 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
         try w.vector(u16, parameters);
     }
     if (parts.srtp) |profile| try srtpAnswer(&w, profile);
+    if (parts.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
+    if (parts.server_certificate_type) |kind| try extension(&w, server_certificate_type, &.{@backingInt(kind)});
     var retry_len: usize = 0;
     for (parts.ech_retry) |key| if (key.retry) {
         retry_len += key.config.len;

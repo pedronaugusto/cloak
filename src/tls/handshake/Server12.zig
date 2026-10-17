@@ -46,21 +46,19 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     // safe: parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
     scratch.point_formats = hello.point_formats;
-    self.credential = self.credentialFor(hello.server_name) orelse switch (self.options.unknown_name) {
-        .first => 0,
-        .reject => return error.UnrecognizedName,
-    };
+    // Certificates only: a raw public key (RFC 7250) is TLS 1.3's here.
+    self.credential = try self.chooseCredential(hello.server_name, .{ .x509 = true, .raw_public_key = false });
     const identity = self.options.credentials[self.credential].identity;
-    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.InvalidCertificate;
+    const public_key = identity.publicKey();
     // The suite must authenticate with the credential's key type, in the server's order.
-    const wanted: @TypeOf(suites.Suite12.authentication(.ecdhe_rsa_aes_128_gcm_sha256)) = switch (leaf.public_key) {
+    const wanted: @TypeOf(suites.Suite12.authentication(.ecdhe_rsa_aes_128_gcm_sha256)) = switch (public_key) {
         .rsa => .rsa,
         .ec, .ed25519 => .ecdsa,
         // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
         .mldsa => return error.NoSharedSuite,
     };
     // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
-    switch (leaf.public_key) {
+    switch (public_key) {
         .ec => |ec| if (!hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) return error.NoSharedSuite,
         else => {},
     }
@@ -71,7 +69,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     self.group = for (self.options.groups) |group| {
         if (group.classical() and hello.offersGroup(group)) break group;
     } else return error.NoSharedGroup;
-    self.scheme = Possession.chooseServer12(leaf.public_key, hello) orelse return error.NoSignatureScheme;
+    self.scheme = Possession.chooseServer12(public_key, hello) orelse return error.NoSignatureScheme;
     self.alpn = "";
     if (self.options.alpn.len != 0) {
         if (hello.alpn.len == 0) {
@@ -349,6 +347,8 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     switch (self.options.client_verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        // A pinned raw key is a TLS 1.3 certificate type; a TLS 1.2 chain is not one.
+        .raw_key => return error.UnsupportedCertificate,
     }
 }
 

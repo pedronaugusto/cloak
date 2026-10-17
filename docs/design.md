@@ -676,6 +676,46 @@ Reflection (an endpoint that is both client and server answering its own hello) 
 key provisioned for both roles, which is the caller's to avoid (RFC 9257 section 4.1). Live peer:
 OpenSSL's `-psk` both roles; Go has no provisioned PSKs.
 
+## Raw public keys
+
+A raw public key (RFC 7250) is a key trusted for itself, by a pin the caller provisioned, with
+no certificate, issuer, name or expiry. It is its own trust, separate from X.509: a client's
+`verify` is `.raw_key` (the SHA-256 of each SubjectPublicKeyInfo it accepts) instead of `.full`,
+and a server's `client_verify` the same, so one connection trusts one kind of evidence and a
+certificate is never accepted where a key is pinned, nor a key where a chain is verified. TLS
+1.3 only, every carrier: a client pinning the server's key offers TLS 1.3 alone, and a TLS 1.2
+server has no raw-key credential to choose.
+
+A client pinning keys sends server_certificate_type listing the raw key alone. A server that
+does not answer it would send X.509, which the client refuses at EncryptedExtensions with
+unsupported_certificate, before anything is verified. The Certificate must carry exactly one
+entry, a SubjectPublicKeyInfo that parses and whose SHA-256 one pin names (every pin compared;
+which one matched is released, as `Info.raw_key_pin`); the CertificateVerify is then checked
+against that key under the schemes offered, as for a leaf. No service is asked: there is no
+time, chain or trust store in it. A client whose own credential is a raw key
+(`ClientAuth.initRawKey`) sends client_certificate_type with the raw key alone and presents it
+only when the server selected that type; otherwise it answers a CertificateRequest with an
+empty Certificate.
+
+An `Identity` has a form: certificates, or a raw key (`initRawKey`, `initRawKeyExternal`), whose
+`chain()` is empty and whose `entries()` is the one SubjectPublicKeyInfo a Certificate carries;
+`publicKey()` is the key either form signs with, so no step reads a raw key as a certificate. A
+server picks the first credential whose names match and whose form the client takes (X.509
+unless its server_certificate_type lists only other types; the raw key when it lists one), and
+answers server_certificate_type when the client sent it; with no credential of a form the client
+takes, the handshake ends with unsupported_certificate. A server asking for a client certificate
+answers client_certificate_type with the type its `client_verify` takes when the client listed
+it, and otherwise says nothing, so the client sends X.509 or nothing; a chain where a key is
+pinned ends with unsupported_certificate.
+
+Resumption keeps the trust apart: the client's cache key holds the pins (or the verification
+policy) and the server's ticket policy digest holds them too, so a session from one kind of
+trust never resumes under the other, and a ticket keeps which pin the client proved. A rejected
+ECH attempt authenticates the public name's certificate, which a client pinning a key cannot,
+so ECH with a config list is refused with `.raw_key`. Post-quantum authentication with a pinned
+key is an ML-DSA key: the CertificateVerify schemes offered are ML-DSA's alone. RFC 7250 also
+defines raw keys for TLS 1.2 and DTLS 1.2 (where CoAP profiles use them); they are not built.
+
 ## TLS 1.2
 
 TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)

@@ -4,6 +4,15 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- Raw public keys (RFC 7250), TLS 1.3, both roles: `Verify.raw_key` (and Session's `Trust.raw_keys`) trusts a peer's key by its pin, the SHA-256 of its SubjectPublicKeyInfo, and nothing else: no certificate, name or trust store, and a peer presenting certificates is refused with unsupported_certificate. `Identity.initRawKey` and `ClientAuth.initRawKey` (and their `External` forms) make a credential of a key alone; a server holding both forms presents what each client asks for. `Info.raw_key_pin` names the pin the peer proved, also on a resumed connection; tickets and the session cache key hold the raw-key policy, so a session never resumes under the other trust.
+- `Identity.form`, `Identity.entries` (what a Certificate message carries), `Identity.publicKey`, `Identity.rawKey`, `ClientAuth.entries`, `PrivateKey.matchesKey`.
+
+### Changed
+
+- Breaking: `Verify` gains `.raw_key`, Session's `Trust` gains `.raw_keys`, `Server.credentialFor` takes the forms the client accepts, and `SessionCache.Entry` and `Fields` gain `raw_key_pin`. A ticket issued before this release does not open (its authentication field grew), so its client does a full handshake.
+
 ## [0.12.0] - 2026-10-17
 
 ### Added

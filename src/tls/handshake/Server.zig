@@ -43,7 +43,8 @@ pub const KeyLog = Client.KeyLog;
 pub const Auth = State.Auth;
 pub const TicketKeys = @import("../resumption/TicketKeys.zig");
 
-/// A certificate chain the server can present, and the names it answers for.
+/// A certificate chain the server can present, or a raw public key (RFC 7250, TLS 1.3, for a
+/// client that asks for one), and the names it answers for.
 pub const Credential = struct {
     identity: certificates.Identity,
     /// Server names this identity answers for: exact, or `*.` plus a domain for one label.
@@ -148,6 +149,8 @@ keys: ?Keys = null,
 peer_parameters: []u8 = &.{},
 now: ?std.Io.Timestamp = null,
 authenticated: bool = false,
+/// The index of the pin the client's raw public key matched (RFC 7250).
+raw_pin: ?u16 = null,
 peer_certificate: bool = false,
 established: bool = false,
 retried: bool = false,
@@ -229,6 +232,11 @@ const Scratch = struct {
     peer_cid: [255]u8 = undefined,
     peer_cid_len: u8 = 0,
     cid_agreed: bool = false,
+    /// RFC 7250: the certificate types EncryptedExtensions answers, and whether the client's
+    /// Certificate is a raw key.
+    server_type: ?Hello.CertificateType = null,
+    client_type: ?Hello.CertificateType = null,
+    peer_raw: bool = false,
 };
 
 /// Encrypted Client Hello on the server: whether the first hello's ECH decrypted, the HPKE
@@ -259,7 +267,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
     try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
     if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
-    if (options.require_pq_auth and (options.client_auth != .required or options.client_verify != .full)) return error.InvalidOptions;
+    if (options.require_pq_auth and (options.client_auth != .required or options.client_verify == .none)) return error.InvalidOptions;
+    switch (options.client_verify) {
+        .raw_key => |raw| if (raw.pins.len == 0 or raw.pins.len > Verify.RawKey.max_pins or options.client_auth == .none) return error.InvalidOptions,
+        else => {},
+    }
     for (options.credentials) |credential| for (credential.names) |name| {
         if (name.len == 0 or name.len > 253) return error.InvalidOptions;
     };
@@ -471,8 +483,8 @@ pub fn provideSignature(self: *Server, signature: []const u8) Client.Error!void 
     @setRuntimeSafety(true);
     if (self.need_now != .sign) return error.UnexpectedService;
     if (self.version == .tls12) return Server12.onSignature(self, signature);
-    const leaf = self.options.credentials[self.credential].identity.chain()[0];
-    Possession.verify(@backingInt(self.scheme), &.{self.scheme}, leaf, self.signRequest().content, signature) catch return error.BadSignature;
+    const key = self.options.credentials[self.credential].identity.publicKey();
+    Possession.verifyKey(@backingInt(self.scheme), &.{self.scheme}, key, self.signRequest().content, signature) catch return error.BadSignature;
     try self.sendCertificateVerify(signature);
     self.need_now = .none;
 }
@@ -614,13 +626,35 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
     }
 }
 
-pub fn credentialFor(self: *const Server, name: []const u8) ?usize {
+/// The forms of credential a client takes (RFC 7250's server_certificate_type).
+pub const Forms = struct { x509: bool, raw_public_key: bool };
+
+/// The first credential of a form the client takes that answers for `name`.
+pub fn credentialFor(self: *const Server, name: []const u8, forms: Forms) ?usize {
     @setRuntimeSafety(true);
     for (self.options.credentials, 0..) |credential, i| {
+        if (!admits(forms, credential.identity)) continue;
         if (credential.names.len == 0) return i;
         for (credential.names) |pattern| if (nameMatches(pattern, name)) return i;
     }
     return null;
+}
+
+fn admits(forms: Forms, identity: certificates.Identity) bool {
+    return switch (identity.form()) {
+        .x509 => forms.x509,
+        .raw_public_key => forms.raw_public_key,
+    };
+}
+
+/// The credential answering `name`; without one, the first of a form the client takes, or
+/// unrecognized_name when the server says so. None of a form it takes is unsupported_certificate.
+pub fn chooseCredential(self: *const Server, name: []const u8, forms: Forms) Client.Error!usize {
+    @setRuntimeSafety(true);
+    if (self.credentialFor(name, forms)) |index| return index;
+    if (self.options.unknown_name == .reject) return error.UnrecognizedName;
+    for (self.options.credentials, 0..) |credential, i| if (admits(forms, credential.identity)) return i;
+    return error.UnsupportedCertificate;
 }
 
 /// Exact, ASCII case-insensitive, or `*.` plus a domain standing for exactly one leftmost label.
@@ -844,6 +878,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
         self.scratch.?.psk_index = index;
         self.scratch.?.session_expires = state.expires;
         self.authenticated = state.client_authenticated;
+        self.raw_pin = state.client_raw_pin;
         self.scratch.?.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
         return;
     }
@@ -855,9 +890,15 @@ pub fn policyDigest(self: *const Server) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update("cloak ticket policy v1");
-    h.update(&.{ @backingInt(self.options.client_auth), @intFromBool(self.options.client_verify == .full) });
+    h.update(&.{ @backingInt(self.options.client_auth), @backingInt(std.meta.activeTag(self.options.client_verify)) });
     switch (self.options.client_verify) {
         .none => {},
+        .raw_key => |raw| {
+            var count: [8]u8 = undefined;
+            std.mem.writeInt(u64, &count, raw.pins.len, .big);
+            h.update(&count);
+            for (raw.pins) |*pin| h.update(pin);
+        },
         .full => |full| {
             const request: types.Request = .{
                 .chain = &.{},
@@ -914,14 +955,15 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     }
     if (self.options.require_hybrid and !self.group.?.hybrid()) return error.HybridRequired;
     if (!second or self.stateless_retry) {
-        self.credential = self.credentialFor(hello.server_name) orelse switch (self.options.unknown_name) {
-            .first => 0,
-            .reject => return error.UnrecognizedName,
-        };
+        // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
+        self.credential = try self.chooseCredential(hello.server_name, .{
+            .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
+            .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
+        });
     }
     const identity = self.options.credentials[self.credential].identity;
-    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.InvalidCertificate;
-    self.scheme = Possession.choose(leaf.public_key, hello) orelse return error.NoSignatureScheme;
+    self.scheme = Possession.choose(identity.publicKey(), hello) orelse return error.NoSignatureScheme;
+    self.negotiateTypes(hello);
     self.alpn = "";
     if (self.options.alpn.len != 0) {
         if (hello.alpn.len == 0) {
@@ -940,6 +982,28 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     @memcpy(scratch.schemes[0..keep], hello.schemes[0..keep]);
     // safe: at most 256 bytes are kept.
     scratch.schemes_len = @intCast(keep);
+}
+
+/// RFC 7250: the type of each Certificate, answered when the client listed types. The server's is
+/// its credential's form; the client's, asked only when a certificate is requested, is the one
+/// the client verification takes (a pinned raw key, or X.509), when the client lists it, and
+/// otherwise unanswered: the client then sends X.509 or nothing.
+fn negotiateTypes(self: *Server, hello: *const ClientHello) void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    const own: Hello.CertificateType = switch (self.options.credentials[self.credential].identity.form()) {
+        .x509 => .x509,
+        .raw_public_key => .raw_public_key,
+    };
+    scratch.server_type = if (hello.server_certificate_types != null) own else null;
+    scratch.client_type = null;
+    scratch.peer_raw = false;
+    if (self.options.client_auth == .none) return;
+    const want: Hello.CertificateType = if (self.options.client_verify == .raw_key) .raw_public_key else .x509;
+    if (hello.client_certificate_types) |list| if (ClientHello.admitsType(list, @backingInt(want))) {
+        scratch.client_type = want;
+        scratch.peer_raw = want == .raw_public_key;
+    };
 }
 
 /// DTLS: connection IDs when the client offers them and this server answers them, and the
@@ -1094,6 +1158,9 @@ fn sendEncrypted(self: *Server) Client.Error!void {
         // A client whose ECH did not decrypt (or was GREASE) learns the current configs.
         .ech_retry = if (scratch.ech.status == .rejected) self.options.ech_keys else &.{},
         .srtp = self.srtp,
+        // A PSK handshake sends no certificate either way: no type to answer.
+        .server_certificate_type = if (self.pskMode()) null else scratch.server_type,
+        .client_certificate_type = if (self.pskMode()) null else scratch.client_type,
     });
     try self.state.advance(.encrypted_extensions, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
@@ -1115,7 +1182,7 @@ fn sendCertificate(self: *Server) Client.Error!void {
     const scratch = self.scratch.?;
     const identity = self.options.credentials[self.credential].identity;
     var total: usize = 64;
-    for (identity.chain()) |der| total += der.len + 5;
+    for (identity.entries()) |der| total += der.len + 5;
     const offered = scratch.compression[0..scratch.compression_len];
     const codec = if (offered.len != 0) Compression.choose(self.options.certificate_compression, offered) else null;
     try self.state.advance(.certificate, .handshake, .parsed, true);
@@ -1123,14 +1190,14 @@ fn sendCertificate(self: *Server) Client.Error!void {
         // RFC 8879: the CompressedCertificate takes the Certificate's place, in the transcript too.
         const plain_buf = try self.gpa.alloc(u8, total);
         defer self.gpa.free(plain_buf);
-        const plain = try Messages.buildCertificate(plain_buf, "", identity.chain());
+        const plain = try Messages.buildCertificate(plain_buf, "", identity.entries());
         const dst = try self.reserve(plain.len);
         const message = Compression.build(dst, chosen, plain) orelse break :compressed;
         try self.queueMessage(.handshake, message);
         return self.signCertificate(identity);
     }
     const dst = try self.reserve(total);
-    const message = try Messages.buildCertificate(dst, "", identity.chain());
+    const message = try Messages.buildCertificate(dst, "", identity.entries());
     try self.queueMessage(.handshake, message);
     return self.signCertificate(identity);
 }
@@ -1289,10 +1356,22 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     self.held = try self.gpa.dupe(u8, msg);
     const reparsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &scratch.chain);
     scratch.chain_len = reparsed.count;
+    if (scratch.peer_raw) {
+        // The raw key this server selected for the client (RFC 7250), one its policy pins.
+        self.raw_pin = try Client.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);
+        try scratch.transcripts.commit(msg);
+        try self.state.advance(.verify_chain, .handshake, .chain, true);
+        self.authenticated = true;
+        return;
+    }
+    // A chain where only a pinned raw key is trusted: the client did not take that type.
+    if (self.options.client_verify == .raw_key) return error.UnsupportedCertificate;
     try scratch.transcripts.commit(msg);
     switch (self.options.client_verify) {
         .none => try self.state.advance(.verify_chain, .handshake, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        // unreachable: a pinned-key policy took the raw key above or refused the chain.
+        .raw_key => unreachable,
     }
 }
 
@@ -1304,7 +1383,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, false, scratch.transcripts.digest(&digest_buf));
-    try Possession.verify(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), scratch.chain[0], content, parsed.signature);
+    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), try Client.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;
@@ -1333,7 +1412,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
     self.app_read = null;
     self.established = true;
     // A provisioned key authenticates the client; otherwise only a fully verified certificate does.
-    self.authenticated = self.external or (self.authenticated and self.options.client_verify == .full);
+    self.authenticated = self.external or (self.authenticated and self.options.client_verify != .none);
     try self.issueTickets();
     try self.push(.complete);
 }
@@ -1365,6 +1444,7 @@ fn issueTickets(self: *Server) Client.Error!void {
             .expires = expires,
             .age_add = std.mem.readInt(u32, drawn[Ticket.salt_length..][0..4], .big),
             .client_authenticated = self.authenticated,
+            .client_raw_pin = self.raw_pin,
             .auth_expires = if (self.authenticated) self.scratch.?.client_auth_expires else 0,
             .policy = self.policyDigest(),
         };
@@ -1432,6 +1512,7 @@ pub fn info(self: *const Server) ?Info {
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external,
         .srtp = self.srtp,
+        .raw_key_pin = self.raw_pin,
     };
 }
 

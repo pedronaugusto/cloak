@@ -42,9 +42,18 @@ pub const Limits = struct {
 };
 
 /// Peer verification. `none` is an explicit choice and yields an unauthenticated connection.
+/// `raw_key` trusts a raw public key (RFC 7250, TLS 1.3) by its pin and nothing else: no
+/// certificate, name or trust store is involved, and a peer presenting certificates is refused.
 pub const Verify = union(enum) {
     none,
     full: Full,
+    raw_key: RawKey,
+    pub const RawKey = struct {
+        /// The SHA-256 of each SubjectPublicKeyInfo the peer may hold, at least one and at most
+        /// `max_pins`; `Info.raw_key_pin` names the one it proved.
+        pins: []const [32]u8,
+        pub const max_pins = 1024;
+    };
     pub const Full = struct {
         trust_generation: types.TrustGeneration,
         policy_generation: types.PolicyGeneration = .fromRaw(1),
@@ -138,6 +147,9 @@ pub const Info = struct {
     /// DTLS: the SRTP profile use_srtp agreed (RFC 5764), keyed by the "EXTRACTOR-dtls_srtp"
     /// exporter; null when none was offered or none agreed.
     srtp: ?Hello.Srtp = null,
+    /// The peer proved a raw public key (RFC 7250): its index in the policy's pins. Null when it
+    /// presented certificates or nothing.
+    raw_key_pin: ?u16 = null,
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
@@ -160,6 +172,8 @@ pub fn alertFor(err: anyerror) Alert {
         error.MissingExtension => .missing_extension,
         error.HybridRequired, error.PqAuthenticationRequired => .insufficient_security,
         error.UnsupportedVersion => .protocol_version,
+        error.UnsupportedCertificate => .unsupported_certificate,
+        error.PinMismatch => .bad_certificate,
         error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate => .handshake_failure,
         error.InappropriateFallback => .inappropriate_fallback,
         error.Downgrade => .illegal_parameter,
@@ -175,7 +189,12 @@ pub fn alertFor(err: anyerror) Alert {
 const Client = @This();
 
 gpa: std.mem.Allocator,
-options: Options,
+/// The options, kept in the handshake scratch and gone with it once the connection is
+/// established: an idle connection holds only `kept`.
+options: *Options,
+/// What outlives the handshake: tickets that arrive later, the message bound, the name `info`
+/// reports and the client certificate's retained identity.
+kept: Kept,
 state: State.State,
 need_now: Need = .{ .entropy = .{ .len = 0 } },
 /// A post-handshake output (ticket, key update), once the queue is released.
@@ -199,6 +218,8 @@ now: ?std.Io.Timestamp = null,
 request_id: u64 = 0,
 authenticated: bool = false,
 requested_certificate: bool = false,
+/// The index of the pin the server's raw public key matched (RFC 7250).
+raw_pin: ?u16 = null,
 sign_scheme: Hello.SignatureScheme = .ed25519,
 established: bool = false,
 /// The client's application write secret, queued after its Finished.
@@ -233,7 +254,17 @@ ech_retry: ?[]u8 = null,
 origin: i64 = 0,
 auth_expires: i64 = std.math.maxInt(i64),
 
+const Kept = struct {
+    auth: ?certificates.ClientAuth,
+    resumption: ?Resumption,
+    sni: []const u8,
+    message_limit: usize,
+    compat: bool,
+    allows12: bool,
+};
+
 const Scratch = struct {
+    options: Options = undefined,
     flight: Flight = .{},
     transcripts: Transcripts = .{},
     random: [32]u8 = @splat(0),
@@ -251,6 +282,9 @@ const Scratch = struct {
     cid_agreed: bool = false,
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
+    /// RFC 7250: the server selected the raw key type for its Certificate, and for the client's.
+    peer_raw: bool = false,
+    client_raw: bool = false,
     cr_schemes: [1024]u8 = undefined,
     cr_len: u16 = 0,
     /// TLS 1.2: the certificate types a CertificateRequest named (Client12.rsa_sign, ecdsa_sign).
@@ -305,8 +339,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     try Hello.validate(options.hello);
     switch (options.verify) {
         .full => if (options.identity == .none) return error.InvalidOptions,
-        // Post-quantum authentication is of a verified path.
+        // Post-quantum authentication is of a verified path or a pinned ML-DSA key.
         .none => if (options.hello.require_pq_auth) return error.InvalidOptions,
+        .raw_key => |raw| if (raw.pins.len == 0 or raw.pins.len > Verify.RawKey.max_pins) return error.InvalidOptions,
     }
     // Middlebox compatibility is a stream's: QUIC and DTLS have neither its session id nor its
     // ChangeCipherSpec.
@@ -314,6 +349,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     if (options.resumption) |resumption| if (resumption.namespace.len > 1024 or resumption.max_age.nanoseconds <= 0) return error.InvalidOptions;
     var hello = options.hello;
+    // RFC 7250: the types this client asks for and can present.
+    hello.raw_server_key = options.verify == .raw_key;
+    hello.raw_client_key = if (options.auth) |auth| auth.identity.form() == .raw_public_key else false;
+    Hello.validate(hello) catch return error.InvalidOptions;
     // ECH over datagrams (RFC 9849 with DTLS 1.3) is not built: refused rather than ignored.
     if (options.ech != .off and options.hello.transport == .datagram) return error.InvalidOptions;
     switch (options.ech) {
@@ -321,6 +360,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         // GREASE needs a TLS 1.3 offer to ride on.
         .grease => if (!hello.allows13()) return error.InvalidOptions,
         .config_list => |list| {
+            // A rejected attempt authenticates the public name's certificate, which a client
+            // trusting a raw key alone cannot (RFC 9849 section 6.1.7).
+            if (options.verify == .raw_key) return error.InvalidOptions;
             // A list with no config this client can use is a configuration error, never a
             // reason to send the true name in clear.
             _ = (Ech.choose(list) catch return error.InvalidOptions) orelse return error.InvalidOptions;
@@ -341,9 +383,15 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     errdefer gpa.destroy(self);
     const scratch = try gpa.create(Scratch);
     errdefer gpa.destroy(scratch);
-    scratch.* = .{};
-    self.* = .{ .gpa = gpa, .options = options, .state = .init(.client, options.hello.transport), .scratch = scratch };
-    self.options.hello = hello;
+    scratch.* = .{ .options = options };
+    scratch.options.hello = hello;
+    self.* = .{
+        .gpa = gpa,
+        .options = &scratch.options,
+        .kept = .{ .auth = null, .resumption = options.resumption, .sni = hello.sni, .message_limit = options.limits.message, .compat = options.compat, .allows12 = hello.allows12() },
+        .state = .init(.client, options.hello.transport),
+        .scratch = scratch,
+    };
     self.external_offered = options.external_psk != null;
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
     // A datagram hello that may be answered in DTLS 1.2 is hashed in its DTLS form too.
@@ -354,11 +402,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         self.cache_key = cacheKey(options, resumption.namespace);
     }
     if (options.auth) |auth| {
-        self.options.auth = auth.retain();
+        self.kept.auth = auth.retain();
         // A TLS 1.2 CertificateVerify by Ed25519 signs the handshake messages themselves.
-        if (options.hello.allows12()) if (certificates.certificate.parse(auth.chain()[0], .{})) |leaf| {
-            if (leaf.public_key == .ed25519) scratch.transcripts.keep(gpa);
-        } else |_| {};
+        if (hello.allows12() and auth.identity.form() == .x509 and auth.identity.publicKey() == .ed25519) scratch.transcripts.keep(gpa);
     }
     return self;
 }
@@ -367,7 +413,7 @@ pub fn deinit(self: *Client) void {
     @setRuntimeSafety(true);
     const gpa = self.gpa;
     self.wipe();
-    if (self.options.auth) |auth| auth.deinit();
+    if (self.kept.auth) |auth| auth.deinit();
     if (self.ech_retry) |list| gpa.free(list);
     self.* = undefined;
     gpa.destroy(self);
@@ -414,7 +460,12 @@ pub fn receiveCcs(self: *Client) Error!void {
 }
 
 pub fn compat(self: *const Client) bool {
-    return self.options.compat;
+    return self.kept.compat;
+}
+
+/// Whether TLS 1.2 was offered.
+pub fn allows12(self: *const Client) bool {
+    return self.kept.allows12;
 }
 
 pub fn need(self: *const Client) Need {
@@ -555,6 +606,7 @@ fn releaseScratch(self: *Client) void {
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
+    self.options = undefined;
 }
 
 fn releaseEch(self: *Client) void {
@@ -626,6 +678,10 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
     // a request with no chain, time or token.
     switch (options.verify) {
         .none => part(&h, "verify none"),
+        .raw_key => |raw| {
+            part(&h, "verify raw keys");
+            for (raw.pins) |*pin| part(&h, pin);
+        },
         .full => |full| {
             const request: types.Request = .{
                 .chain = &.{},
@@ -654,8 +710,11 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
     }
     // The client certificate a server may have authenticated, by its whole chain.
     if (options.auth) |auth| {
-        part(&h, "client certificate");
-        for (auth.chain()) |der| part(&h, der);
+        part(&h, switch (auth.identity.form()) {
+            .x509 => "client certificate",
+            .raw_public_key => "client raw key",
+        });
+        for (auth.entries()) |der| part(&h, der);
     } else part(&h, "no client certificate");
     return h.finalResult();
 }
@@ -778,7 +837,7 @@ pub fn provideSignature(self: *Client, signature: []const u8) Error!void {
     if (self.need_now != .sign) return error.UnexpectedService;
     if (self.version == .tls12) return Client12.onSignature(self, signature);
     const auth = self.options.auth.?;
-    Possession.verify(@backingInt(self.sign_scheme), &.{self.sign_scheme}, auth.chain()[0], self.signRequest().content, signature) catch return error.BadSignature;
+    Possession.verifyKey(@backingInt(self.sign_scheme), &.{self.sign_scheme}, auth.identity.publicKey(), self.signRequest().content, signature) catch return error.BadSignature;
     self.need_now = .none;
     try self.sendCertificateVerify(signature);
 }
@@ -1064,7 +1123,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
     if (self.state.phase() == .failed) return error.Closed;
     if (self.need_now != .none) return error.Pending;
     errdefer self.state.fail();
-    if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
+    if (bytes_in.len > self.kept.message_limit) return error.HandshakeLimit;
     if (!self.established) {
         const total = (aegis.int.Checked(usize).init(self.total_bytes).add(bytes_in.len) catch return error.HandshakeLimit).raw();
         if (total > self.options.limits.handshake) return error.HandshakeLimit;
@@ -1133,6 +1192,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
                 self.authenticated = entry.authenticated;
                 self.origin = entry.origin;
                 self.auth_expires = entry.auth_expires;
+                self.raw_pin = entry.raw_key_pin;
             },
             // The holder of the provisioned key is the peer: authenticated by it, with no X.509
             // identity and nothing to expire but the key itself, which is the caller's.
@@ -1370,6 +1430,13 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
         self.alpn = offered;
     };
     self.srtp = parsed.srtp;
+    // RFC 7250: a client that asked for the raw key alone takes no certificate (a server that
+    // does not answer the extension means X.509); the types answered say what each side sends.
+    // A PSK handshake has no Certificate, and so no type to answer.
+    const psk = self.resumed or self.external_used;
+    if (self.options.hello.raw_server_key and !parsed.raw_server_key and !psk) return error.UnsupportedCertificate;
+    self.scratch.?.peer_raw = parsed.raw_server_key;
+    self.scratch.?.client_raw = parsed.raw_client_key;
     if (self.options.hello.transport == .quic) {
         if (parsed.parameters.len > 64 * 1024) return error.HandshakeLimit;
         self.peer_parameters = try self.gpa.dupe(u8, parsed.parameters);
@@ -1432,11 +1499,41 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     if (parsed.context.len != 0) return error.IllegalParameter;
     if (parsed.count == 0) return error.EmptyCertificate;
     self.scratch.?.chain_len = parsed.count;
+    if (self.scratch.?.peer_raw) {
+        // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
+        self.raw_pin = try pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
+        try self.scratch.?.transcripts.commit(msg);
+        try self.state.advance(.verify_chain, .handshake, .chain, true);
+        self.authenticated = true;
+        return;
+    }
     try self.scratch.?.transcripts.commit(msg);
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .handshake, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        // unreachable: EncryptedExtensions refused a server that did not select the raw key.
+        .raw_key => unreachable,
     }
+}
+
+/// The index of the pin naming the one raw public key a Certificate carries; shared by both roles.
+pub fn pinnedKey(entries: []const []const u8, pins: []const [32]u8) Error!u16 {
+    @setRuntimeSafety(true);
+    if (entries.len != 1) return error.IllegalParameter;
+    _ = certificates.certificate.parsePublicKey(entries[0]) catch return error.InvalidCertificate;
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(entries[0], &hash, .{});
+    for (pins, 0..) |*pin, i| {
+        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
+    }
+    return error.PinMismatch;
+}
+
+/// The public key a peer's CertificateVerify is checked against: its raw key, or its leaf's.
+pub fn peerKey(entry: []const u8, raw: bool) Error!certificates.certificate.PublicKey {
+    @setRuntimeSafety(true);
+    if (raw) return certificates.certificate.parsePublicKey(entry) catch error.InvalidCertificate;
+    return (try certificates.certificate.parse(entry, .{})).public_key;
 }
 
 fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -1446,7 +1543,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, true, self.scratch.?.transcripts.digest(&digest_buf));
-    try Possession.verify(parsed.scheme, Hello.verifySchemes(self.options.hello), self.scratch.?.chain[0], content, parsed.signature);
+    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
 }
@@ -1499,13 +1596,14 @@ fn continueFlight(self: *Client) Error!void {
     try self.sendCompatCcs();
     if (!self.requested_certificate) return self.finishFlight();
     const auth = self.options.auth orelse return self.sendEmptyCertificate();
-    const cert = certificates.certificate.parse(auth.chain()[0], .{}) catch return self.sendEmptyCertificate();
+    // The type the server selected (RFC 7250) must be the one this credential is.
+    if ((auth.identity.form() == .raw_public_key) != self.scratch.?.client_raw) return self.sendEmptyCertificate();
     const request: Messages.CertificateRequest = .{ .context = "", .schemes = self.scratch.?.cr_schemes[0..self.scratch.?.cr_len] };
-    const scheme = Possession.choose(cert.public_key, request) orelse return self.sendEmptyCertificate();
+    const scheme = Possession.choose(auth.identity.publicKey(), request) orelse return self.sendEmptyCertificate();
     var total: usize = 64;
-    for (auth.chain()) |der| total += der.len + 5;
+    for (auth.entries()) |der| total += der.len + 5;
     const dst = try self.reserve(total);
-    const message_bytes = try Messages.buildCertificate(dst, "", auth.chain());
+    const message_bytes = try Messages.buildCertificate(dst, "", auth.entries());
     try self.state.advance(.local_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1555,7 +1653,7 @@ fn finishFlight(self: *Client) Error!void {
     self.established = true;
     // A provisioned key authenticates whatever the certificate policy; otherwise only a full
     // verification does.
-    self.authenticated = self.external_used or (self.authenticated and self.options.verify == .full);
+    self.authenticated = self.external_used or (self.authenticated and self.options.verify != .none);
     try self.push(.complete);
 }
 
@@ -1573,7 +1671,7 @@ fn onTicket(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!
 /// is dropped: it never fails the connection.
 fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
     @setRuntimeSafety(true);
-    const resumption = self.options.resumption orelse return;
+    const resumption = self.kept.resumption orelse return;
     const now = self.now orelse return;
     // A session on a provisioned key is resumed by offering the key again, not by tickets.
     if (self.version != .tls13 or ticket.lifetime == 0 or self.external_used) return;
@@ -1599,6 +1697,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .origin = self.origin,
                 .auth_expires = self.auth_expires,
                 .authenticated = self.authenticated,
+                .raw_key_pin = self.raw_pin,
             }) catch return;
         },
     }
@@ -1632,13 +1731,14 @@ pub fn info(self: *const Client) ?Info {
         .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
         .group = self.group.?,
         .alpn = self.alpn,
-        .server_name = self.options.hello.sni,
+        .server_name = self.kept.sni,
         .peer_authenticated = self.authenticated,
         .peer_parameters = self.peer_parameters,
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external_used,
         .srtp = self.srtp,
+        .raw_key_pin = self.raw_pin,
     };
 }
 

@@ -17,8 +17,17 @@ pub fn verify(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, con
     if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
     const cert = try certificates.certificate.parse(leaf_der, .{});
-    const algorithm = try bind(scheme, cert.public_key);
-    certificates.signature.verify(cert.public_key, algorithm, content, signature) catch |err| return switch (err) {
+    return verifyKey(scheme_id, offered, cert.public_key, content, signature);
+}
+
+/// `verify` with the key itself: a raw public key (RFC 7250), or one an identity holds.
+pub fn verifyKey(scheme_id: u16, offered: []const Scheme, key: Algorithm.PublicKey, content: []const u8, signature: []const u8) Error!void {
+    @setRuntimeSafety(true);
+    const scheme: Scheme = @fromBackingInt(scheme_id);
+    if (!scheme.supported()) return error.UnofferedScheme;
+    if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
+    const algorithm = try bind(scheme, key);
+    certificates.signature.verify(key, algorithm, content, signature) catch |err| return switch (err) {
         error.InvalidSignature => error.BadSignature,
         error.UnsupportedAlgorithm, error.InvalidPublicKey => error.UnsupportedKey,
     };
@@ -28,8 +37,7 @@ pub fn verify(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, con
 /// `identity.noiseLength()` fresh bytes.
 pub fn sign(identity: certificates.Identity, scheme: Scheme, content: []const u8, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
-    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.SigningFailed;
-    const algorithm = bind(scheme, leaf.public_key) catch return error.SigningFailed;
+    const algorithm = bind(scheme, identity.publicKey()) catch return error.SigningFailed;
     return identity.sign(algorithm, content, noise, out) catch error.SigningFailed;
 }
 
@@ -171,16 +179,14 @@ pub fn verifyDigest12(scheme_id: u16, offered: []const Scheme, leaf_der: []const
 /// Signs TLS 1.2 ServerKeyExchange content with a key cloak holds.
 pub fn sign12(identity: certificates.Identity, scheme: Scheme, content: []const u8, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
-    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.SigningFailed;
-    const algorithm = bind12(scheme, leaf.public_key) catch return error.SigningFailed;
+    const algorithm = bind12(scheme, identity.publicKey()) catch return error.SigningFailed;
     return identity.sign(algorithm, content, noise, out) catch error.SigningFailed;
 }
 
 /// Signs a TLS 1.2 CertificateVerify transcript digest with a key cloak holds.
 pub fn signDigest12(identity: certificates.Identity, scheme: Scheme, digest: []const u8, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
-    const leaf = certificates.certificate.parse(identity.chain()[0], .{}) catch return error.SigningFailed;
-    const algorithm = bind12(scheme, leaf.public_key) catch return error.SigningFailed;
+    const algorithm = bind12(scheme, identity.publicKey()) catch return error.SigningFailed;
     return identity.signDigest(algorithm, digest, noise, out) catch error.SigningFailed;
 }
 

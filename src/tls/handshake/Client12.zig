@@ -106,6 +106,8 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        // unreachable: a raw-key policy offers TLS 1.3 alone, and a TLS 1.2 answer was refused.
+        .raw_key => unreachable,
     }
 }
 
@@ -182,8 +184,10 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const auth = self.options.auth orelse return null;
-    const cert = certificates.certificate.parse(auth.chain()[0], .{}) catch return null;
-    const wanted: u8 = switch (cert.public_key) {
+    // A raw public key (RFC 7250) is TLS 1.3's here.
+    if (auth.identity.form() != .x509) return null;
+    const public_key = auth.identity.publicKey();
+    const wanted: u8 = switch (public_key) {
         .rsa => rsa_sign,
         // ecdsa_sign stands for EdDSA keys too (RFC 8422 section 5.5); an Ed25519 signature
         // needs the messages the transcript kept from the start.
@@ -194,7 +198,7 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     };
     if (scratch.cr_types & wanted == 0) return null;
     const request: Messages12.CertificateRequest = .{ .types = "", .schemes = scratch.cr_schemes[0..scratch.cr_len] };
-    return Possession.chooseClient12(cert.public_key, request);
+    return Possession.chooseClient12(public_key, request);
 }
 
 fn sendFlight(self: anytype) Error!void {
