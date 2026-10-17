@@ -103,13 +103,15 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.suites = (try r.vector(u16)).bytes;
     if (self.suites.len < 2 or self.suites.len % 2 != 0) return error.DecodeError;
     const compression = (try r.vector(u8)).bytes;
-    // The null method must be offered; a server never compresses (CRIME).
-    if (std.mem.findScalar(u8, compression, 0) == null) return error.IllegalParameter;
+    if (compression.len == 0) return error.DecodeError;
     self.null_compression_only = compression.len == 1;
     // A TLS 1.2 hello may carry no extensions at all; the caller refuses it by its versions.
     const block: Reader = if (r.pos == r.bytes.len) .{ .bytes = "" } else try r.vector(u16);
     self.extensions = block.bytes;
     try r.finish();
+    // The null method must be offered; a server never compresses (CRIME). Judged once the
+    // message decodes: a length that does not fit it is decode_error first.
+    if (std.mem.findScalar(u8, compression, 0) == null) return error.IllegalParameter;
     self.groups = "";
     self.shares = "";
     self.schemes = "";

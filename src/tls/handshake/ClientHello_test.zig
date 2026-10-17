@@ -250,3 +250,30 @@ test "F107 catalogue_key_share_count_unbounded_unique (any number of key shares,
         }
     }
 }
+
+test "F109 catalogue_hello_decoded_before_judged (a hello whose lengths do not add up is decode_error, even when its misread compression methods lack null)" {
+    // tlsfuzzer's test-invalid-client-hello-w-record-overflow: one TLS 1.2 hello with its
+    // compression methods' length, its cipher suites' length or its session id's length changed.
+    // RFC 8446 section 6 (and RFC 5246 section 7.2.2): a field out of its range, or a length that
+    // does not fit the message, is decode_error; illegal_parameter is for a hello that decodes.
+    const tail = "\x00\x3f\x00\x17\x00\x00\x00\x0a\x00\x06\x00\x04\x00\x17\x01\x00\x00\x0d\x00\x12\x00\x10\x02\x03\x02\x01\x04\x03\x04\x01\x05\x03\x05\x01\x06\x03\x06\x01\x00\x32\x00\x12\x00\x10\x02\x03\x02\x01\x04\x03\x04\x01\x05\x03\x05\x01\x06\x03\x06\x01\xff\x01\x00\x01\x00";
+    const head = "\x01\x00\x00\x6a\x03\x03" ++ @as([32]u8, @splat(0));
+    // An empty compression list is out of compression_methods<1..2^8-1>.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(head ++ "\x00\x00\x02\xc0\x2f\x00\x00" ++ tail, .stream));
+    // 32 bytes of suites: the compression list read from the extensions has no null, and the
+    // extensions' length then passes the message's end.
+    try undecodable(head ++ "\x00\x00\x20\xc0\x2f\x01\x00" ++ tail);
+    // A session id of 26 bytes swallows the suites.
+    try undecodable(head ++ "\x1a\x00\x02\xc0\x2f\x01\x00" ++ tail);
+    // The same hello, well formed, decodes; without the null method it is illegal_parameter.
+    _ = try ClientHello.parse(head ++ "\x00\x00\x02\xc0\x2f\x01\x00" ++ tail, .stream);
+    try std.testing.expectError(error.IllegalParameter, ClientHello.parse(head ++ "\x00\x00\x02\xc0\x2f\x01\x01" ++ tail, .stream));
+}
+
+/// Refused as undecodable: a field out of range or a length past its container, both decode_error.
+fn undecodable(wire: []const u8) !void {
+    if (ClientHello.parse(wire, .stream)) |_| return error.TestUnexpectedResult else |err| switch (err) {
+        error.DecodeError, error.InvalidLength => {},
+        else => return err,
+    }
+}
