@@ -4,6 +4,15 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- A TLS 1.3 record whose inner plaintext (content, type and padding) would pass 2^14 + 1 bytes ends the connection with record_overflow (RFC 8446 sections 5.2, 5.4 and 6.2), decided by its length before any decryption; it was answered with bad_record_mac. F102.
+- A server takes a plaintext alert as the client's own until a record opens under the client's handshake keys: a client that refuses the ServerHello has no keys to write under (RFC 8446 section 6). It was refused with unexpected_message and the client's reason lost. F103.
+- The retry fingerprint keeps the extensions' order: a second ClientHello that reorders them is refused with illegal_parameter (RFC 8446 section 4.1.2); it was taken. F104.
+- One change_cipher_spec after the first ClientHello is dropped whether or not either side asked for middlebox compatibility (RFC 8446 section 5), and a TLS 1.3 plaintext record's legacy version is ignored after the keys as before them; one sent by a client without a session id, or at its hello's record version, was refused with unexpected_message. F105.
+- A ClientHello with pre_shared_key needs signature_algorithms only when the server authenticates by certificate (RFC 8446 sections 9.2 and 4.2.3); a PSK-DHE hello without it was refused with missing_extension. F106.
+- A hello may offer any number of key shares, each group once (checked in bounded memory, like extensions), and the check that each share's group is listed is linear in both lists; past 32 shares a hello was refused with illegal_parameter. F107.
+
 ## [0.17.2] - 2026-10-17
 
 ### Fixed
