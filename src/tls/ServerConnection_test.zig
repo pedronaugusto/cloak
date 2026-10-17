@@ -213,6 +213,26 @@ test "F102 catalogue_inner_plaintext_overflow (an inner plaintext past 2^14 + 1 
     try std.testing.expectEqual(@as(usize, 1 << 14), pair.conn.readable().len);
 }
 
+test "F103 catalogue_plaintext_alert_answering_server_hello (the client's plaintext alert before its first protected record is its alert)" {
+    // A client that refuses the ServerHello has no keys to write under: its alert comes in
+    // plaintext (RFC 8446 section 6: alerts go under the current state, the client's own). The
+    // server takes it as the client's until a record opens under the client's handshake keys,
+    // and answers none (tlsfuzzer's test-tls13-unencrypted-alert).
+    {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tamper = .plaintext_alert }, .{});
+        defer pair.deinit();
+        try std.testing.expectError(error.PeerAlert, pair.run());
+        try std.testing.expectEqual(Alert.unknown_ca, pair.conn.diagnostics().alert_received.?);
+        try std.testing.expectEqual(@as(?Alert, null), pair.conn.diagnostics().alert_sent);
+    }
+    // Once the client writes under its keys, a plaintext alert is an unexpected record.
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+    defer pair.deinit();
+    try pair.run();
+    try std.testing.expectError(error.UnexpectedRecord, pair.conn.receive("\x15\x03\x03\x00\x02\x02\x30"));
+    try std.testing.expectEqual(Alert.unexpected_message, pair.conn.diagnostics().alert_sent.?);
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();

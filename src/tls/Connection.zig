@@ -1333,7 +1333,18 @@ fn openRecord(self: *Connection) Error!void {
         },
         21, 22 => {
             if (self.rx) |*protection| {
-                if (!protection.tls12()) return error.UnexpectedRecord;
+                if (!protection.tls12()) {
+                    // A client refusing the ServerHello writes its alert before it has keys: until
+                    // a record opens under its handshake keys, a plaintext alert is its own (RFC
+                    // 8446 section 6: alerts go under the sender's current state).
+                    const before_keys = wire[0] == 21 and self.hs.role() == .server and
+                        self.rx_epoch == .handshake and protection.records() == 0;
+                    if (!before_keys) return error.UnexpectedRecord;
+                    self.plain_kind = .alert;
+                    self.plain_pos = 5;
+                    self.plain_end = wire.len;
+                    return;
+                }
                 const plain = try protection.open(wire, self.record[5..]);
                 self.plain_kind = plain.content;
                 self.plain_pos = self.offsetOf(plain.bytes);

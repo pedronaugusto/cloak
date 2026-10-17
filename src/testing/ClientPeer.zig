@@ -60,6 +60,9 @@ pub const Tamper = enum {
     early_data_in_second,
     /// A record no key opens, sent with the client's second flight.
     bad_record_after_second,
+    /// A plaintext fatal alert (unknown_ca) in place of the second flight: a client refusing the
+    /// server's flight before it writes under its keys.
+    plaintext_alert,
 };
 
 pub const Config = struct {
@@ -660,6 +663,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             if (self.config.compat and self.session_len != 0) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
             if (t == .double_ccs) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
             if (t == .bad_record_after_second) try self.plainRecord(23, 0x0303, &@as([64]u8, @splat(0x5c)));
+            if (t == .plaintext_alert) return self.plainRecord(21, 0x0303, &.{ 2, 48 });
             if (self.tx == null) self.tx = try epochFrom(&self.client_hs);
             var flight: std.ArrayList(u8) = .empty;
             defer flight.deinit(self.gpa);
