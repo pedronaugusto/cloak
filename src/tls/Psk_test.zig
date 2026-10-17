@@ -7,6 +7,8 @@ const Suite = @import("crypto/Suite.zig").Suite;
 const SessionCache = @import("resumption/SessionCache.zig");
 const TicketKeys = @import("resumption/TicketKeys.zig");
 const types = @import("../certificates.zig").types;
+const Alert = @import("wire/Alert.zig").Alert;
+const Schedule = @import("handshake/Schedule.zig").Schedule;
 const gpa = std.testing.allocator;
 
 const key256: [32]u8 = @splat(0x42);
@@ -215,4 +217,44 @@ test "C10 a PSK-only server needs no credential, and a key decides before any cr
     }
     // No credential and no lookup is no server at all.
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_psk_only = true }));
+}
+
+/// The client's hello with signature_algorithms (13) renamed to an unassigned ID (0x4242) and its
+/// one SHA-256 binder, the hello's last 32 bytes, made again under `key256` for the edited bytes.
+fn dropSchemes(bytes: []u8) void {
+    const message = bytes[5..][0..std.mem.readInt(u16, bytes[3..5], .big)];
+    var at: usize = 4 + 2 + 32;
+    at += 1 + message[at];
+    at += 2 + std.mem.readInt(u16, message[at..][0..2], .big);
+    at += 1 + message[at];
+    const end = at + 2 + std.mem.readInt(u16, message[at..][0..2], .big);
+    at += 2;
+    while (at < end) {
+        const id = std.mem.readInt(u16, message[at..][0..2], .big);
+        if (id == 13) std.mem.writeInt(u16, message[at..][0..2], 0x4242, .big);
+        at += 4 + std.mem.readInt(u16, message[at + 2 ..][0..2], .big);
+    }
+    var truncated: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(message[0 .. message.len - 35], &truncated, .{});
+    Schedule(.aes_128_gcm_sha256).binderOf(.tls13, .external, &key256, &truncated, message[message.len - 32 ..][0..32]);
+}
+
+test "F106 catalogue_psk_hello_without_signature_algorithms (a hello with a provisioned key needs no signature_algorithms unless the server signs)" {
+    // RFC 8446 section 9.2: only a hello without pre_shared_key must carry signature_algorithms;
+    // section 4.2.3: a server authenticating by certificate without them ends with
+    // missing_extension (tlsfuzzer's test-tls13-psk_dhe_ke sends none).
+    var table: Table = .{ .entries = &.{.{ .psk = .{ .identity = "device-7", .secret = &key256 } }} };
+    {
+        const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psk = .{ .identity = "device-7", .secret = &key256 }, .server_psk = table.lookup() });
+        defer duo.deinit();
+        try duo.deliverEdited(dropSchemes);
+        try std.testing.expect(duo.server.output().len != 0);
+        try std.testing.expectEqual(@as(?Alert, null), duo.server.diagnostics().alert_sent);
+    }
+    // A key the server does not know leaves certificates, which need the schemes.
+    var empty: Table = .{ .entries = &.{} };
+    const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psk = .{ .identity = "device-7", .secret = &key256 }, .server_psk = empty.lookup() });
+    defer duo.deinit();
+    try std.testing.expectError(error.MissingExtension, duo.deliverEdited(dropSchemes));
+    try std.testing.expectEqual(Alert.missing_extension, duo.server.diagnostics().alert_sent.?);
 }

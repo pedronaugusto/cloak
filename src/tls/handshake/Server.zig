@@ -784,7 +784,9 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
         scratch.server_name_len = @intCast(hello.server_name.len);
     }
     if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
-    if (!hello.has_schemes) return error.MissingExtension;
+    // A hello without pre_shared_key carries signature_algorithms (RFC 8446 section 9.2); one
+    // with it needs them only if the server ends up signing (chooseAuthentication).
+    if (!hello.has_schemes and !hello.has_psk) return error.MissingExtension;
     if (!hello.has_groups) return error.MissingExtension;
     // Each of supported_groups and key_share requires the other (RFC 8446 section 9.2); an empty
     // share list is allowed and gets a retry request.
@@ -874,6 +876,8 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
 fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!void {
     @setRuntimeSafety(true);
     if (self.options.credentials.len == 0) return error.PskRequired;
+    // A server authenticating by certificate needs the client's schemes (RFC 8446 section 4.2.3).
+    if (!hello.has_schemes) return error.MissingExtension;
     // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
     self.credential = try self.chooseCredential(hello.server_name, .{
         .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
