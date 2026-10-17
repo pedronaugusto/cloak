@@ -1363,7 +1363,8 @@ fn openRecord(self: *Connection) Error!void {
                 break :trial opened;
             } else try protection.open(wire, self.record[5..]);
             if (plain.content == .application) {
-                if (self.phase() != .connected or self.midAuth()) return error.UnexpectedRecord;
+                // Nothing comes between a handshake message's fragments (RFC 8446 section 5.1).
+                if (self.phase() != .connected or self.midAuth() or self.message_total != 0 or self.header_have != 0) return error.UnexpectedRecord;
                 self.control_run = 0;
             }
             self.plain_kind = plain.content;

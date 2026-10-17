@@ -155,6 +155,29 @@ test "F98 catalogue_obsolete_legacy_hello_version (a hello naming SSL 3.0 or old
     }
 }
 
+test "F100 catalogue_no_record_between_handshake_fragments (application data inside a fragmented KeyUpdate ends with unexpected_message)" {
+    // RFC 8446 section 5.1: a handshake message split over records has nothing between them.
+    // tlsfuzzer's test-tls13-keyupdate sends one in fragments with data between.
+    for ([_][]const u8{ "\x18\x16", "\x18\x00\x16", "\x18\x00\x00\x01\x16" }) |first| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+        defer pair.deinit();
+        try pair.run();
+        var wire: [64]u8 = undefined;
+        _ = try pair.conn.receive(pair.client.forge(first, &wire));
+        try std.testing.expectError(error.UnexpectedRecord, pair.conn.receive(pair.client.forge("data\x17", &wire)));
+        try std.testing.expectEqual(Alert.unexpected_message, pair.conn.diagnostics().alert_sent.?);
+        try std.testing.expectEqual(@as(usize, 0), pair.conn.readable().len);
+    }
+    // The fragments alone make a KeyUpdate the server takes.
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+    defer pair.deinit();
+    try pair.run();
+    var wire: [64]u8 = undefined;
+    _ = try pair.conn.receive(pair.client.forge("\x18\x00\x16", &wire));
+    _ = try pair.conn.receive(pair.client.forge("\x00\x01\x00\x16", &wire));
+    try std.testing.expect(pair.conn.phase() == .connected);
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();

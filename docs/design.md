@@ -1439,3 +1439,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F97 | `catalogue_authenticated_inner_content_unexpected` | `tls/ServerConnection_test.zig`, `tls/record/Epoch_test.zig` | the authenticated refusals answered as a tag failure (bad_record_mac), as before (found by tlsfuzzer's test-tls13-empty-alert) |
 | F98 | `catalogue_obsolete_legacy_hello_version` | `tls/ServerConnection_test.zig` | the check left out: TLS 1.3 negotiated over a hello naming 03,00 (found by tlsfuzzer's test-tls13-legacy-version) |
 | F99 | `catalogue_groups_without_key_share` | `tls/ServerConnection_test.zig` | the check left out: a retry request answered a hello with no key_share (found by tlsfuzzer's test-tls13-keyshare-omitted) |
+| F100 | `catalogue_no_record_between_handshake_fragments` | `tls/ServerConnection_test.zig` | the check left out: data between a KeyUpdate's fragments read (found by tlsfuzzer's test-tls13-keyupdate) |
