@@ -13,7 +13,10 @@ const leak = @import("shakedown").leak;
 
 const slots = 1 << 10;
 
-/// The 32-byte comparison every Finished, binder, tag and confirmation check goes through.
+/// The 32-byte comparison every Finished, binder, tag and confirmation check goes through. Both
+/// classes mismatch, so the verdict (public once declassified) is the same: the fixed class
+/// differs only in its last byte, where an early exit would read every byte, the random one
+/// almost always in its first.
 pub const Equal = struct {
     reference: [32]u8 = @splat(0x6b),
     inputs: [slots][32]u8 = undefined,
@@ -21,8 +24,14 @@ pub const Equal = struct {
     failures: usize = 0,
     pub fn prepare(self: *Equal, slot: usize, class: leak.Class, random: std.Random) void {
         switch (class) {
-            .fixed => self.inputs[slot] = self.reference,
-            .random => random.bytes(&self.inputs[slot]),
+            .fixed => {
+                self.inputs[slot] = self.reference;
+                self.inputs[slot][31] ^= 1;
+            },
+            .random => {
+                random.bytes(&self.inputs[slot]);
+                if (std.mem.eql(u8, &self.inputs[slot], &self.reference)) self.inputs[slot][0] ^= 1;
+            },
         }
     }
     pub fn call(self: *Equal, slot: usize) void {
