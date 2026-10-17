@@ -97,8 +97,8 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     const offered = [_]tls.SignatureScheme{ sha1, @fromBackingInt(@intCast(grease)), .ecdsa_p256_sha256 };
     for ([_]u16{ @backingInt(sha1), grease }) |scheme| {
         try std.testing.expectError(error.UnofferedScheme, Possession.verify(scheme, &offered, pki.p256, "content", "signature"));
-        try std.testing.expectError(error.UnofferedScheme, Possession.verifyMessage12(scheme, &offered, pki.p256, "content", "signature"));
-        try std.testing.expectError(error.UnofferedScheme, Possession.verifyDigest12(scheme, &offered, pki.p256, &@as([32]u8, @splat(0)), "signature"));
+        try std.testing.expectError(error.UnofferedScheme, Possession.verifyMessage12(scheme, &offered, (try certificates.certificate.parse(pki.p256, .{})).public_key, "content", "signature"));
+        try std.testing.expectError(error.UnofferedScheme, Possession.verifyDigest12(scheme, &offered, (try certificates.certificate.parse(pki.p256, .{})).public_key, &@as([32]u8, @splat(0)), "signature"));
         const leaf = try certificates.certificate.parse(pki.p256, .{});
         try std.testing.expectError(error.UnofferedScheme, Possession.bind(@fromBackingInt(@intCast(scheme)), leaf.public_key));
     }

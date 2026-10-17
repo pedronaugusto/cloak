@@ -988,7 +988,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
 /// its credential's form; the client's, asked only when a certificate is requested, is the one
 /// the client verification takes (a pinned raw key, or X.509), when the client lists it, and
 /// otherwise unanswered: the client then sends X.509 or nothing.
-fn negotiateTypes(self: *Server, hello: *const ClientHello) void {
+pub fn negotiateTypes(self: *Server, hello: *const ClientHello) void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const own: Hello.CertificateType = switch (self.options.credentials[self.credential].identity.form()) {

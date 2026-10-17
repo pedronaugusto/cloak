@@ -73,7 +73,7 @@ pub const Options = struct {
     /// exchange does not meet it; a provisioned PSK, a symmetric key, does. TLS 1.3 only.
     require_pq_auth: bool = false,
     /// The server presents a raw public key (RFC 7250), which this client trusts by its pin:
-    /// server_certificate_type offers that type alone. TLS 1.3 only.
+    /// server_certificate_type offers that type alone. Either version.
     raw_server_key: bool = false,
     /// This client's credential is a raw public key: client_certificate_type offers that type alone.
     raw_client_key: bool = false,
@@ -93,7 +93,7 @@ pub const Options = struct {
     /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
     /// TLS 1.2 has. The version follows from the suites and groups.
     pub fn allows12(options: Options) bool {
-        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid or options.require_pq_auth or options.raw_server_key) return false;
+        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid or options.require_pq_auth) return false;
         for (options.groups) |group| {
             if (group.classical()) break;
         } else return false;
@@ -179,7 +179,7 @@ pub fn validate(options: Options) ValidateError!void {
     if (@backingInt(options.min_version) > @backingInt(options.max_version)) return error.InvalidOptions;
     // Some version must be left, and QUIC and a hybrid-only policy need TLS 1.3.
     if (!options.allows13() and !options.allows12()) return error.InvalidOptions;
-    if ((options.transport == .quic or options.require_hybrid or options.require_pq_auth or options.raw_server_key) and !options.allows13()) return error.InvalidOptions;
+    if ((options.transport == .quic or options.require_hybrid or options.require_pq_auth) and !options.allows13()) return error.InvalidOptions;
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
@@ -342,7 +342,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         try extension(&w, 16, alpn[0..a.pos]);
     }
     if (datagram) try datagramOffer(&w, options);
-    if (tls13) try certificateTypes(&w, options);
+    try certificateTypes(&w, options);
     if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;
@@ -487,7 +487,9 @@ pub const ServerHello = struct {
 /// `resumed`: the server echoed the session id sent with a ticket, resuming that session; `ticket`:
 /// a NewSessionTicket follows (RFC 5077 section 3.2).
 /// DTLS: `connection_id` the server's answer to connection_id, `srtp` the profile it chose.
-pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null };
+/// `raw_server_key`, `raw_client_key`: the server selected the raw public key type (RFC 7250) for
+/// its own Certificate or the client's, which TLS 1.2 answers in its ServerHello.
+pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, raw_server_key: bool = false, raw_client_key: bool = false };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
 /// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
@@ -519,6 +521,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var ticket = false;
     var ech: ?*const [8]u8 = null;
     var answered: DatagramAnswer = .{};
+    var types: CertificateTypes = .{};
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         switch (item.id) {
@@ -552,6 +555,11 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 if (cookie.len == 0 or cookie.len > 4096) return error.InvalidHello;
             },
             // The rest belong to a TLS 1.2 ServerHello.
+            client_certificate_type, server_certificate_type => {
+                only12 = true;
+                try types.read(item.id, item.bytes, options);
+                value.pos = item.bytes.len;
+            },
             0 => {
                 only12 = true;
                 if (options.sni.len == 0) return error.UnsolicitedExtension;
@@ -591,7 +599,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
     if (only12 or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
@@ -655,7 +663,23 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     return error.UnofferedSelection;
 }
 
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp };
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes };
+
+/// A server's answers to client_certificate_type and server_certificate_type (RFC 7250 section
+/// 4.2): one type each, among those offered, which is the raw key alone.
+const CertificateTypes = struct {
+    raw_server_key: bool = false,
+    raw_client_key: bool = false,
+
+    fn read(self: *CertificateTypes, id: u16, bytes: []const u8, options: Options) ParseError!void {
+        @setRuntimeSafety(true);
+        const offered = if (id == server_certificate_type) options.raw_server_key else options.raw_client_key;
+        if (!offered) return error.UnsolicitedExtension;
+        if (bytes.len != 1) return error.DecodeError;
+        if (bytes[0] != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
+        if (id == server_certificate_type) self.raw_server_key = true else self.raw_client_key = true;
+    }
+};
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {
     @setRuntimeSafety(true);
     // A server answering below TLS 1.3 marks its random; this client offered TLS 1.3, so a
@@ -673,7 +697,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key } };
 }
 /// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
 /// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
@@ -718,17 +742,9 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     var has_parameters = false;
     var ech: ?[]const u8 = null;
     var srtp: ?Srtp = null;
-    var raw_server_key = false;
-    var raw_client_key = false;
+    var types: CertificateTypes = .{};
     while (try ext.next()) |item| switch (item.id) {
-        client_certificate_type, server_certificate_type => {
-            // The one type selected, among those offered: the raw key alone.
-            const offered = if (item.id == server_certificate_type) options.raw_server_key else options.raw_client_key;
-            if (!offered) return error.UnsolicitedExtension;
-            if (item.bytes.len != 1) return error.DecodeError;
-            if (item.bytes[0] != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
-            if (item.id == server_certificate_type) raw_server_key = true else raw_client_key = true;
-        },
+        client_certificate_type, server_certificate_type => try types.read(item.id, item.bytes, options),
         srtp_extension => {
             var value: Reader = .{ .bytes = item.bytes };
             srtp = try selectedSrtp(&value, options);
@@ -769,7 +785,7 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;
-    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp, .raw_server_key = raw_server_key, .raw_client_key = raw_client_key };
+    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp, .raw_server_key = types.raw_server_key, .raw_client_key = types.raw_client_key };
 }
 
 /// A ServerHello selecting `suite`, answering the client's share for `group`, when `psk`
@@ -808,7 +824,9 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
 /// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
 /// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
 /// DTLS: `connection_id` the connection ID the server receives on, `srtp` the profile it chose.
-pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null };
+/// `client_certificate_type`, `server_certificate_type`: the types selected (RFC 7250), answered
+/// when the client sent the extension.
+pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -831,6 +849,8 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     if (echo.ticket) try w.put(&.{ 0, 35, 0, 0 });
     if (echo.connection_id) |cid| try connectionIdAnswer(&w, cid);
     if (echo.srtp) |profile| try srtpAnswer(&w, profile);
+    if (echo.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
+    if (echo.server_certificate_type) |kind| try extension(&w, server_certificate_type, &.{@backingInt(kind)});
     if (alpn.len != 0) {
         try w.int(u16, 16);
         // safe: a protocol name is at most 255 bytes.

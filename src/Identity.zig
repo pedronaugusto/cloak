@@ -64,7 +64,7 @@ pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, o
     return init(gpa, ders.items, key, options);
 }
 
-/// A raw public key (RFC 7250, TLS 1.3): `spki`, a DER SubjectPublicKeyInfo, and the key that
+/// A raw public key (RFC 7250, TLS 1.3 and 1.2): `spki`, a DER SubjectPublicKeyInfo, and the key that
 /// signs for it, which must match. There is no certificate: no name, no issuer, no expiry; a
 /// peer trusts the key by its pin (the SHA-256 of `spki`) and nothing else.
 pub fn initRawKey(gpa: std.mem.Allocator, spki: []const u8, key: PrivateKey, options: Options) InitError!Identity {

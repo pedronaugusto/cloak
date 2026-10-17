@@ -47,6 +47,29 @@ test "C8 DTLS 1.2 completes between cloak ends for every ECDSA suite and carries
     }
 }
 
+test "C10 raw public keys over DTLS, both versions, and CoAP's raw-key profile: DTLS 1.2, ECDHE_ECDSA_WITH_AES_128_CCM_8, P-256, both ends by their keys" {
+    const cases = [_]struct { suite: suites.Suite, version: suites.Version, max: suites.Version }{
+        .{ .suite = .ecdhe_ecdsa_aes_128_ccm_8, .version = .tls12, .max = .tls12 },
+        .{ .suite = .ecdhe_ecdsa_aes_128_gcm_sha256, .version = .tls12, .max = .tls12 },
+        .{ .suite = .aes_128_gcm_sha256, .version = .tls13, .max = .tls13 },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |mutual| {
+        const pair = try Pair.init(gpa, .{ .client_suites = &.{case.suite}, .server_suites = &.{case.suite}, .client_max = case.max, .groups = &.{.p256}, .raw_keys = true, .mutual = mutual });
+        defer pair.deinit();
+        try pair.run();
+        const client = pair.client.dtls.info().?;
+        try std.testing.expectEqual(case.version, client.version);
+        try std.testing.expectEqual(case.suite, client.suite);
+        try std.testing.expect(client.peer_authenticated);
+        try std.testing.expectEqual(@as(?u16, 0), client.raw_key_pin);
+        const server = pair.server.dtls.info().?;
+        try std.testing.expectEqual(mutual, server.peer_authenticated);
+        try std.testing.expectEqual(if (mutual) @as(?u16, 0) else null, server.raw_key_pin);
+        try exportersAgree(pair);
+        try carriesData(pair);
+    };
+}
+
 test "C8 a client offering both DTLS versions meets a DTLS 1.2 server" {
     const pair = try Pair.init(gpa, .{ .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256} });
     defer pair.deinit();

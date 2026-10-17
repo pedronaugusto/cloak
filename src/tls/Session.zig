@@ -37,7 +37,7 @@ pub const Trust = union(enum) {
     snapshot: certificates.Trust.Snapshot,
     /// The caller's verifier, for native or custom policy.
     custom: Custom,
-    /// A raw public key (RFC 7250, TLS 1.3) trusted by its pin, the SHA-256 of its
+    /// A raw public key (RFC 7250, TLS 1.3 and 1.2) trusted by its pin, the SHA-256 of its
     /// SubjectPublicKeyInfo; no certificate is taken. `Info.raw_key_pin` names the one proved.
     raw_keys: []const [32]u8,
 };

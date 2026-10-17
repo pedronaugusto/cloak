@@ -34,6 +34,29 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
     return count;
 }
 
+/// A TLS 1.2 Certificate of the raw public key type (RFC 7250 section 3): the one
+/// SubjectPublicKeyInfo, with no list around it. Empty when the sender has no key, the same bytes
+/// as an empty X.509 list (the type's own form is at least one byte).
+pub fn rawKey(message: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    const parsed = try Messages.body(message);
+    if (parsed.kind != .certificate) return error.InvalidMessage;
+    var r: Reader = .{ .bytes = parsed.bytes };
+    const spki = (try r.vector(u24)).bytes;
+    try r.finish();
+    return spki;
+}
+
+/// A raw-key Certificate carrying `spki`, or none (empty).
+pub fn buildRawKey(out: []u8, spki: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try Messages.header(&w, .certificate);
+    if (spki.len > 0xffffff) return error.BufferTooSmall;
+    try w.vector(u24, spki);
+    return Messages.seal(&w);
+}
+
 pub fn buildCertificate(out: []u8, chain: []const []const u8) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };

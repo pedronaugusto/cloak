@@ -684,13 +684,14 @@ A raw public key (RFC 7250) is a key trusted for itself, by a pin the caller pro
 no certificate, issuer, name or expiry. It is its own trust, separate from X.509: a client's
 `verify` is `.raw_key` (the SHA-256 of each SubjectPublicKeyInfo it accepts) instead of `.full`,
 and a server's `client_verify` the same, so one connection trusts one kind of evidence and a
-certificate is never accepted where a key is pinned, nor a key where a chain is verified. TLS
-1.3 only, every carrier: a client pinning the server's key offers TLS 1.3 alone, and a TLS 1.2
-server has no raw-key credential to choose.
+certificate is never accepted where a key is pinned, nor a key where a chain is verified. Both
+versions, every carrier (TLS 1.2 and DTLS 1.2 since the CoAP and LwM2M profiles need them; RFC
+7925 section 4.3).
 
 A client pinning keys sends server_certificate_type listing the raw key alone. A server that
-does not answer it would send X.509, which the client refuses at EncryptedExtensions with
-unsupported_certificate, before anything is verified. The Certificate must carry exactly one
+does not answer it would send X.509, which the client refuses at EncryptedExtensions (TLS 1.2:
+at the ServerHello, which carries the answers there) with unsupported_certificate, before
+anything is verified. The Certificate must carry exactly one
 entry, a SubjectPublicKeyInfo that parses and whose SHA-256 one pin names (every pin compared;
 which one matched is released, as `Info.raw_key_pin`); the CertificateVerify is then checked
 against that key under the schemes offered, as for a leaf. No service is asked: there is no
@@ -715,8 +716,17 @@ policy) and the server's ticket policy digest holds them too, so a session from 
 trust never resumes under the other, and a ticket keeps which pin the client proved. A rejected
 ECH attempt authenticates the public name's certificate, which a client pinning a key cannot,
 so ECH with a config list is refused with `.raw_key`. Post-quantum authentication with a pinned
-key is an ML-DSA key: the CertificateVerify schemes offered are ML-DSA's alone. RFC 7250 also
-defines raw keys for TLS 1.2 and DTLS 1.2 (where CoAP profiles use them); they are not built.
+key is an ML-DSA key: the CertificateVerify schemes offered are ML-DSA's alone.
+
+In TLS 1.2 and DTLS 1.2 the ServerHello answers both types, and a Certificate of the raw key
+type is the SubjectPublicKeyInfo alone, one 24-bit length and the key, with no list around it
+(RFC 7250 section 3). The key signs the ServerKeyExchange and the client's CertificateVerify as a
+leaf's would, and picks the suite family the same way (ECDSA suites for EC and Ed25519 keys, RSA
+suites for RSA keys); an ML-DSA key has no TLS 1.2 suite. A client the server asked for a key
+but that has none to present sends the empty form, the same three zero bytes as an empty X.509
+list (the raw form itself is at least one byte), which the server takes as no certificate. A
+TLS 1.2 session ticket carries the client's proved pin as a TLS 1.3 one does, and the client's
+cache entry the server's.
 
 ## TLS 1.2
 

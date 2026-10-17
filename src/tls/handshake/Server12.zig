@@ -24,6 +24,8 @@ const Ticket = @import("../resumption/Ticket.zig");
 const types = certificates.types;
 
 const Error = @import("Errors.zig").Error;
+const pinnedKey = @import("Client.zig").pinnedKey;
+const peerKey = @import("Client.zig").peerKey;
 const Epoch = Flight.Epoch;
 
 pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, epoch: Epoch, boundary: bool) Error!void {
@@ -46,8 +48,12 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     // safe: parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
     scratch.point_formats = hello.point_formats;
-    // Certificates only: a raw public key (RFC 7250) is TLS 1.3's here.
-    self.credential = try self.chooseCredential(hello.server_name, .{ .x509 = true, .raw_public_key = false });
+    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
+    self.credential = try self.chooseCredential(hello.server_name, .{
+        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
+        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
+    });
+    self.negotiateTypes(hello);
     const identity = self.options.credentials[self.credential].identity;
     const public_key = identity.publicKey();
     // The suite must authenticate with the credential's key type, in the server's order.
@@ -145,6 +151,7 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     @memcpy(self.tls12.?.master.exposeMut(), state.secretBytes());
     scratch.session_expires = state.expires;
     self.authenticated = state.client_authenticated;
+    self.raw_pin = state.client_raw_pin;
     scratch.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
 }
 
@@ -171,13 +178,17 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
-    var total: usize = 16;
-    for (identity.chain()) |der| total += der.len + 3;
-    const certificate = try Messages12.buildCertificate(try self.reserve(total), identity.chain());
+    const certificate = if (identity.rawKey()) |spki|
+        try Messages12.buildRawKey(try self.reserve(8 + spki.len), spki)
+    else chain: {
+        var total: usize = 16;
+        for (identity.chain()) |der| total += der.len + 3;
+        break :chain try Messages12.buildCertificate(try self.reserve(total), identity.chain());
+    };
     try self.state.advance(.certificate, .initial, .parsed, true);
     try self.queueMessage(.initial, certificate);
     const share = &scratch.share12.?;
@@ -251,6 +262,7 @@ fn sendTicket(self: anytype) Error!void {
                 .expires = expires,
                 .age_add = 0,
                 .client_authenticated = self.authenticated,
+                .client_raw_pin = self.raw_pin,
                 .auth_expires = if (self.authenticated) scratch.client_auth_expires else 0,
                 .policy = self.policyDigest(),
             };
@@ -279,8 +291,8 @@ fn queue(self: anytype, message: []const u8) Error!void {
 pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const leaf = self.options.credentials[self.credential].identity.chain()[0];
-    Possession.verifyMessage12(@backingInt(self.scheme), &.{self.scheme}, leaf, scratch.params12[0..scratch.params12_len], signature) catch return error.BadSignature;
+    const own = self.options.credentials[self.credential].identity.publicKey();
+    Possession.verifyMessage12(@backingInt(self.scheme), &.{self.scheme}, own, scratch.params12[0..scratch.params12_len], signature) catch return error.BadSignature;
     self.need_now = .none;
     try sendKeyExchange(self, signature);
 }
@@ -326,6 +338,7 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     @setRuntimeSafety(true);
     if (self.state.phase() != .c_certificate12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
+    if (scratch.peer_raw) return onRawKey(self, msg, epoch, boundary);
     const limits = self.options.limits;
     var probe: [Messages12.max_certificates][]const u8 = undefined;
     const count = try Messages12.certificate(msg, limits.certificates, limits.chain_bytes, &probe);
@@ -347,9 +360,33 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     switch (self.options.client_verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
-        // A pinned raw key is a TLS 1.3 certificate type; a TLS 1.2 chain is not one.
+        // A chain where a key is pinned: the client did not list the raw key type.
         .raw_key => return error.UnsupportedCertificate,
     }
+}
+
+/// The client's Certificate of the raw key type this server selected (RFC 7250 section 3): one
+/// SubjectPublicKeyInfo a pin names, or none.
+fn onRawKey(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    const spki = try Messages12.rawKey(msg);
+    if (spki.len == 0) {
+        if (self.options.client_auth == .required) return error.NoClientCertificate;
+        try self.state.advance(.empty_certificate, epoch, .parsed, boundary);
+        try scratch.transcripts.commit(msg);
+        return;
+    }
+    try self.state.advance(.certificate, epoch, .parsed, boundary);
+    if (self.held.len != 0) self.gpa.free(self.held);
+    self.held = &.{};
+    self.held = try self.gpa.dupe(u8, spki);
+    scratch.chain[0] = self.held;
+    scratch.chain_len = 1;
+    self.raw_pin = try pinnedKey(scratch.chain[0..1], self.options.client_verify.raw_key.pins);
+    try scratch.transcripts.commit(msg);
+    try self.state.advance(.verify_chain, .initial, .chain, true);
+    self.authenticated = true;
 }
 
 fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -382,15 +419,16 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     const parsed = try Messages.certificateVerify(msg);
     const scheme: Hello.SignatureScheme = @fromBackingInt(parsed.scheme);
     if (!scheme.supported()) return error.UnofferedScheme;
+    const key = try peerKey(scratch.chain[0], scratch.peer_raw);
     if (scheme == .ed25519) {
         // Ed25519 signs the handshake messages, which the transcript kept whole.
         if (scratch.transcripts.keeper == null) return error.UnofferedScheme;
-        try Possession.verifyMessage12(parsed.scheme, &Hello.schemes12_verify, scratch.chain[0], scratch.transcripts.keptBytes(), parsed.signature);
+        try Possession.verifyMessage12(parsed.scheme, &Hello.schemes12_verify, key, scratch.transcripts.keptBytes(), parsed.signature);
     } else {
         const length = Possession.transcriptHash12(scheme) orelse return error.UnofferedScheme;
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         const digest = scratch.transcripts.digestOf(&digest_buf, length);
-        try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, scratch.chain[0], digest, parsed.signature);
+        try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, key, digest, parsed.signature);
     }
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
@@ -431,6 +469,6 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
         },
     }
     self.established = true;
-    self.authenticated = self.authenticated and self.options.client_verify == .full;
+    self.authenticated = self.authenticated and self.options.client_verify != .none;
     try self.push(.complete);
 }

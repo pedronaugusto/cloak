@@ -49,6 +49,9 @@ pub const Options = struct {
     /// use_srtp profiles each end offers or accepts.
     client_srtp: []const Datagram.Srtp = &.{},
     server_srtp: []const Datagram.Srtp = &.{},
+    /// Raw public keys (RFC 7250): the server presents its key, which the client pins; with
+    /// `mutual`, the client presents its key too, which the server pins.
+    raw_keys: bool = false,
 };
 
 const Packet = struct { bytes: []u8 };
@@ -83,6 +86,8 @@ credential: [1]Datagram.Credential = undefined,
 client_auth: ?certificates.ClientAuth = null,
 client: Side,
 server: Side,
+server_pin: [1][32]u8 = undefined,
+client_pin: [1][32]u8 = undefined,
 /// The server association exists: a cookie admitted the client, or none was asked for.
 server_ready: bool = false,
 cookies: Cookies = .{},
@@ -102,17 +107,21 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
     errdefer self.snapshot.deinit();
     const key = try certificates.PrivateKey.parse(gpa, pki.p256_pem, .{});
     defer key.deinit();
-    self.identity = try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
+    const server_spki = (try certificates.certificate.parse(pki.p256, .{})).spki;
+    const client_spki = (try certificates.certificate.parse(pki.client, .{})).spki;
+    std.crypto.hash.sha2.Sha256.hash(server_spki, &self.server_pin[0], .{});
+    std.crypto.hash.sha2.Sha256.hash(client_spki, &self.client_pin[0], .{});
+    self.identity = if (options.raw_keys) try certificates.Identity.initRawKey(gpa, server_spki, key, .{}) else try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
     errdefer self.identity.deinit();
     if (options.mutual) {
         const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
         defer client_key.deinit();
-        self.client_auth = try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
+        self.client_auth = if (options.raw_keys) try certificates.ClientAuth.initRawKey(gpa, client_spki, client_key, .{}) else try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
     }
     errdefer if (self.client_auth) |auth| auth.deinit();
     self.client = .{ .dtls = try Datagram.client(gpa, .{
         .identity = .{ .dns = "example.com" },
-        .verify = .{ .full = .{ .trust_generation = self.snapshot.generation() } },
+        .verify = if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
         .suites = options.client_suites,
         .min_version = options.client_min,
         .max_version = options.client_max,
@@ -139,7 +148,7 @@ pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
         .suites = self.options.server_suites,
         .groups = self.options.server_groups orelse self.options.groups,
         .client_auth = if (self.options.mutual) .required else .none,
-        .client_verify = if (self.options.mutual) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
+        .client_verify = if (!self.options.mutual) .none else if (self.options.raw_keys) .{ .raw_key = .{ .pins = &self.client_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
         .tickets = self.options.tickets,
         .mtu = self.options.mtu,
         .generation = .fromRaw(23),

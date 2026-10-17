@@ -42,7 +42,7 @@ pub const Limits = struct {
 };
 
 /// Peer verification. `none` is an explicit choice and yields an unauthenticated connection.
-/// `raw_key` trusts a raw public key (RFC 7250, TLS 1.3) by its pin and nothing else: no
+/// `raw_key` trusts a raw public key (RFC 7250, TLS 1.3 and 1.2) by its pin and nothing else: no
 /// certificate, name or trust store is involved, and a peer presenting certificates is refused.
 pub const Verify = union(enum) {
     none,
@@ -404,7 +404,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     if (options.auth) |auth| {
         self.kept.auth = auth.retain();
         // A TLS 1.2 CertificateVerify by Ed25519 signs the handshake messages themselves.
-        if (hello.allows12() and auth.identity.form() == .x509 and auth.identity.publicKey() == .ed25519) scratch.transcripts.keep(gpa);
+        if (hello.allows12() and auth.identity.publicKey() == .ed25519) scratch.transcripts.keep(gpa);
     }
     return self;
 }

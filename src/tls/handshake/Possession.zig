@@ -147,30 +147,29 @@ pub fn transcriptHash12(scheme: Scheme) ?usize {
     };
 }
 
-/// Checks a TLS 1.2 ServerKeyExchange signature over `content` (the randoms and parameters).
-pub fn verifyMessage12(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, content: []const u8, signature: []const u8) Error!void {
+/// Checks a TLS 1.2 ServerKeyExchange signature over `content` (the randoms and parameters), or
+/// an Ed25519 CertificateVerify over the messages, by the peer's key: its leaf's or its raw key.
+pub fn verifyMessage12(scheme_id: u16, offered: []const Scheme, key: Algorithm.PublicKey, content: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scheme: Scheme = @fromBackingInt(scheme_id);
     if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
-    const cert = try certificates.certificate.parse(leaf_der, .{});
-    const algorithm = try bind12(scheme, cert.public_key);
-    certificates.signature.verify(cert.public_key, algorithm, content, signature) catch |err| return switch (err) {
+    const algorithm = try bind12(scheme, key);
+    certificates.signature.verify(key, algorithm, content, signature) catch |err| return switch (err) {
         error.InvalidSignature => error.BadSignature,
         error.UnsupportedAlgorithm, error.InvalidPublicKey => error.UnsupportedKey,
     };
 }
 
 /// Checks a TLS 1.2 CertificateVerify signature over a transcript `digest` of the scheme's hash.
-pub fn verifyDigest12(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, digest: []const u8, signature: []const u8) Error!void {
+pub fn verifyDigest12(scheme_id: u16, offered: []const Scheme, key: Algorithm.PublicKey, digest: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scheme: Scheme = @fromBackingInt(scheme_id);
     if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
     if (transcriptHash12(scheme) != digest.len) return error.UnofferedScheme;
-    const cert = try certificates.certificate.parse(leaf_der, .{});
-    const algorithm = try bind12(scheme, cert.public_key);
-    certificates.signature.verifyDigest(cert.public_key, algorithm, digest, signature) catch |err| return switch (err) {
+    const algorithm = try bind12(scheme, key);
+    certificates.signature.verifyDigest(key, algorithm, digest, signature) catch |err| return switch (err) {
         error.InvalidSignature => error.BadSignature,
         error.UnsupportedAlgorithm, error.InvalidPublicKey => error.UnsupportedKey,
     };

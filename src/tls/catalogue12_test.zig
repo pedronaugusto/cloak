@@ -239,7 +239,7 @@ test "F60 catalogue_sloth_signature_hash_and_context_downgrade" {
     const ske = try Messages12.buildServerKeyExchange(&buffer, try Messages12.buildParams(&params, .x25519, &key), 0x0201, "sig");
     const parsed = try Messages12.serverKeyExchange(ske);
     const Possession = @import("handshake/Possession.zig");
-    try std.testing.expectError(error.UnofferedScheme, Possession.verifyMessage12(parsed.scheme, &Hello.schemes12, @import("../testing/Peer.zig").pki.p256, "content", parsed.signature));
+    try std.testing.expectError(error.UnofferedScheme, Possession.verifyMessage12(parsed.scheme, &Hello.schemes12, (try @import("../certificates.zig").certificate.parse(@import("../testing/Peer.zig").pki.p256, .{})).public_key, "content", parsed.signature));
 }
 
 test "F61 catalogue_kci_static_dh_and_role_reflection" {
