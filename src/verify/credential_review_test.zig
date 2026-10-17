@@ -1,6 +1,5 @@
 //! Independent C1 credential review regression. The verifier ship owns only this test.
 const std = @import("std");
-const shakedown = @import("shakedown");
 const Rsa = @import("../credentials/Rsa.zig");
 const Sign = @import("../credentials/Sign.zig");
 const signature = @import("signature.zig");
