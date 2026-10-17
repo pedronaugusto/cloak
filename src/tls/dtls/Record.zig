@@ -20,6 +20,7 @@ pub const tls12_cid: u8 = 25;
 pub const max_content = 1 << 14;
 /// The longest connection ID a record carries (RFC 9146: an opaque<0..2^8-1>).
 pub const max_cid = 255;
+/// The tag of every DTLS 1.3 suite; DTLS 1.2's is its cipher's (`Cipher.tagLength`: CCM_8's is 8).
 pub const tag_length = 16;
 /// DTLS 1.2's record header: type, version, epoch, 48-bit sequence, length.
 pub const header12 = 13;
@@ -30,7 +31,7 @@ pub fn overhead13(cid: usize) usize {
 }
 /// What a DTLS 1.2 record adds: header, a CID and its inner type, explicit nonce and tag.
 pub fn overhead12(cipher: Cipher, cid: usize) usize {
-    return header12 + cid + @as(usize, if (cid != 0) 1 else 0) + cipher.explicitNonceLength12() + tag_length;
+    return header12 + cid + @as(usize, if (cid != 0) 1 else 0) + cipher.explicitNonceLength12() + cipher.tagLength();
 }
 
 pub const SealError = error{ BufferTooSmall, InvalidLength, RecordLimit };
@@ -39,11 +40,15 @@ pub const OpenError = error{Drop};
 
 pub const Version = enum { dtls12, dtls13 };
 
-/// The forgery limits of RFC 9147 section 4.5.3: failed openings tolerated per key.
+/// The forgery limits of RFC 9147 section 4.5.3: failed openings tolerated per key. CCM_8's
+/// keeps the same 2^-57 margin as every other cipher (RFC 9147 appendix B.3): with a 64-bit tag
+/// that is 2^7 failures, after which the association ends. The price is availability: whoever can
+/// put 128 datagrams on the association's path ends it, which is why CCM_8 is never a default.
 pub fn failureLimit(cipher: Cipher) u64 {
     return switch (cipher) {
         // 2^23.5, rounded down.
         .aes_128_ccm, .aes_256_ccm => 11_863_283,
+        .aes_128_ccm_8 => 1 << 7,
         else => 1 << 36,
     };
 }
@@ -107,7 +112,7 @@ pub const Epoch = struct {
 
     fn derive(self: *Epoch) void {
         @setRuntimeSafety(true);
-        const key_len = keyLength(self.cipher);
+        const key_len = self.cipher.keyLength();
         switch (self.suite.?) {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
@@ -192,7 +197,7 @@ pub const Epoch = struct {
     fn mask(self: *const Epoch, sample: *const [16]u8) [16]u8 {
         var out: [16]u8 = undefined;
         switch (self.cipher) {
-            .aes_128_gcm, .aes_128_ccm => {
+            .aes_128_gcm, .aes_128_ccm, .aes_128_ccm_8 => {
                 var ctx = std.crypto.core.aes.Aes128.initEnc(self.sn.expose()[0..16].*);
                 defer std.crypto.secureZero(u8, std.mem.asBytes(&ctx));
                 ctx.encrypt(&out, sample);
@@ -210,20 +215,21 @@ pub const Epoch = struct {
         return out;
     }
 
-    fn encrypt(self: *const Epoch, out: []u8, tag: *[tag_length]u8, plain: []const u8, ad: []const u8, nonce: [12]u8) void {
+    /// `tag` is the cipher's tag length.
+    fn encrypt(self: *const Epoch, out: []u8, tag: []u8, plain: []const u8, ad: []const u8, nonce: [12]u8) void {
         switch (self.cipher) {
             inline else => |cipher| {
                 const A = suites.AeadOf(cipher);
-                A.encrypt(out, tag, plain, ad, nonce, self.key.expose()[0..A.key_length].*);
+                A.encrypt(out, tag[0..A.tag_length], plain, ad, nonce, self.key.expose()[0..A.key_length].*);
             },
         }
     }
 
-    fn decrypt(self: *const Epoch, out: []u8, cipher_bytes: []const u8, tag: [tag_length]u8, ad: []const u8, nonce: [12]u8) error{AuthenticationFailed}!void {
+    fn decrypt(self: *const Epoch, out: []u8, cipher_bytes: []const u8, tag: []const u8, ad: []const u8, nonce: [12]u8) error{AuthenticationFailed}!void {
         switch (self.cipher) {
             inline else => |cipher| {
                 const A = suites.AeadOf(cipher);
-                return A.decrypt(out, cipher_bytes, tag, ad, nonce, self.key.expose()[0..A.key_length].*);
+                return A.decrypt(out, cipher_bytes, tag[0..A.tag_length].*, ad, nonce, self.key.expose()[0..A.key_length].*);
             },
         }
     }
@@ -277,7 +283,7 @@ pub const Epoch = struct {
         const sequence = self.window.reconstruct(low, if (header.sequence_bytes == 2) 16 else 8);
         if (!self.window.fresh(sequence)) return error.Drop;
         const sealed_len = ciphertext.len - tag_length;
-        const tag = ciphertext[sealed_len..][0..tag_length].*;
+        const tag = ciphertext[sealed_len..][0..tag_length];
         self.decrypt(ciphertext[0..sealed_len], ciphertext[0..sealed_len], tag, record[0..header.length], self.nonce13(sequence)) catch {
             self.failures +|= 1;
             return error.Drop;
@@ -297,10 +303,11 @@ pub const Epoch = struct {
         if (plain.len > max_content or cid.len > max_cid) return error.InvalidLength;
         if (self.sequence >= self.record_limit or self.sequence >= 1 << 48) return error.RecordLimit;
         const explicit = self.cipher.explicitNonceLength12();
+        const tag_len = self.cipher.tagLength();
         const with_cid = cid.len != 0;
         const head = header12 + cid.len;
         const inner = plain.len + @as(usize, if (with_cid) 1 else 0);
-        const total = head + explicit + inner + tag_length;
+        const total = head + explicit + inner + tag_len;
         if (out.len < total) return error.BufferTooSmall;
         const record = out[0..total];
         const number = (self.number << 48) | self.sequence;
@@ -309,14 +316,14 @@ pub const Epoch = struct {
         std.mem.writeInt(u64, record[3..11], number, .big);
         @memcpy(record[11..][0..cid.len], cid);
         // safe: at most 2^14 + 25 bytes.
-        std.mem.writeInt(u16, record[11 + cid.len ..][0..2], @intCast(explicit + inner + tag_length), .big);
+        std.mem.writeInt(u16, record[11 + cid.len ..][0..2], @intCast(explicit + inner + tag_len), .big);
         if (explicit != 0) std.mem.writeInt(u64, record[head..][0..8], number, .big);
         const body = record[head + explicit ..][0..inner];
         if (plain.ptr != body.ptr) @memmove(body[0..plain.len], plain);
         if (with_cid) body[plain.len] = @backingInt(content);
         var ad: [23 + max_cid]u8 = undefined;
         const additional = additional12(&ad, @backingInt(content), .{ 0xfe, 0xfd }, number, cid, inner);
-        self.encrypt(body, record[head + explicit + inner ..][0..tag_length], body, additional, self.nonce12(number));
+        self.encrypt(body, record[head + explicit + inner ..][0..tag_len], body, additional, self.nonce12(number));
         self.sequence += 1;
         return record;
     }
@@ -326,16 +333,17 @@ pub const Epoch = struct {
         @setRuntimeSafety(true);
         aegis.assert.invariant(self.version == .dtls12, "a DTLS 1.2 record");
         const explicit = self.cipher.explicitNonceLength12();
+        const tag_len = self.cipher.tagLength();
         const payload = record[header.length..];
-        if (payload.len < explicit + tag_length + @as(usize, if (header.cid_len != 0) 1 else 0)) return error.Drop;
+        if (payload.len < explicit + tag_len + @as(usize, if (header.cid_len != 0) 1 else 0)) return error.Drop;
         if (!self.window.fresh(header.sequence)) return error.Drop;
         const number = (self.number << 48) | header.sequence;
         // GCM and CCM carry the nonce's explicit part on the wire: any value the sender never
         // repeats (RFC 5288 section 3), not necessarily the record number, which the additional
         // data binds anyway.
         const nonce = if (explicit != 0) self.nonce12(std.mem.readInt(u64, payload[0..8], .big)) else self.nonce12(number);
-        const sealed = payload[explicit .. payload.len - tag_length];
-        const tag = payload[payload.len - tag_length ..][0..tag_length].*;
+        const sealed = payload[explicit .. payload.len - tag_len];
+        const tag = payload[payload.len - tag_len ..];
         const outer: u8 = if (header.cid_len != 0) tls12_cid else record[0];
         var ad: [23 + max_cid]u8 = undefined;
         // The additional data names the record's own type and version as they came.
@@ -399,13 +407,6 @@ pub const Header12 = struct {
     sequence: u64,
     cid_len: usize,
 };
-
-pub fn keyLength(cipher: Cipher) usize {
-    return switch (cipher) {
-        .aes_128_gcm, .aes_128_ccm => 16,
-        .aes_256_gcm, .aes_256_ccm, .chacha20_poly1305 => 32,
-    };
-}
 
 /// What the first byte of a record says it is (RFC 9147 section 4.1, figure 5).
 pub const Kind = union(enum) {

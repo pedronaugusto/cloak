@@ -1,5 +1,6 @@
-//! AES-CCM with a 12-byte nonce and a 16-byte tag (NIST SP 800-38C, RFC 3610): the AEAD of
-//! TLS_AES_128_CCM_SHA256 (RFC 8446) and of the ECDHE_ECDSA CCM suites (RFC 7251). std's CCM fixes a
+//! AES-CCM with a 12-byte nonce and a 16- or 8-byte tag (NIST SP 800-38C, RFC 3610): the AEAD of
+//! TLS_AES_128_CCM_SHA256 (RFC 8446), of the ECDHE_ECDSA CCM suites (RFC 7251) and, with the short
+//! tag, of the CCM_8 suites the CoAP and LwM2M profiles require (RFC 6655, RFC 7925). std's CCM fixes a
 //! 13-byte nonce, so this is cloak's: one AES key schedule for the CBC-MAC and the counter, the
 //! tag compared in constant time, plaintext released only after it, and every intermediate
 //! (key schedule, MAC state, keystream block) erased. It has the shape of std's AEADs, so the
@@ -8,13 +9,16 @@ const std = @import("std");
 const aegis = @import("aegis");
 const crypto = std.crypto;
 
-pub const Aes128Ccm = AesCcm(crypto.core.aes.Aes128);
-pub const Aes256Ccm = AesCcm(crypto.core.aes.Aes256);
+pub const Aes128Ccm = AesCcm(crypto.core.aes.Aes128, 16);
+pub const Aes256Ccm = AesCcm(crypto.core.aes.Aes256, 16);
+/// AEAD_AES_128_CCM_8 (RFC 6655 section 3): the tag is the first eight bytes of CCM's.
+pub const Aes128Ccm8 = AesCcm(crypto.core.aes.Aes128, 8);
 
-fn AesCcm(comptime Aes: type) type {
+fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
+    comptime std.debug.assert(tag_bytes == 16 or tag_bytes == 8);
     return struct {
         pub const key_length = Aes.key_bits / 8;
-        pub const tag_length = 16;
+        pub const tag_length = tag_bytes;
         pub const nonce_length = 12;
         const block_length = 16;
         /// Bytes of the counter and of the message length: 15 minus the nonce.
@@ -36,7 +40,7 @@ fn AesCcm(comptime Aes: type) type {
             var s0: [block_length]u8 = undefined;
             defer crypto.secureZero(u8, &s0);
             ctx.encrypt(&s0, &counterBlock(npub, 0));
-            for (tag, mac, s0) |*t, a, b| t.* = a ^ b;
+            for (tag, mac[0..tag_length], s0[0..tag_length]) |*t, a, b| t.* = a ^ b;
             ctr(&ctx, c, m, npub);
         }
 

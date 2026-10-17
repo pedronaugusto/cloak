@@ -126,11 +126,13 @@ pub const Context = struct {
         if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
         var n = self.nonce();
         defer std.crypto.secureZero(u8, &n);
-        switch (self.aead.cipher()) {
-            inline else => |c| {
-                const A = suites.AeadOf(c);
+        switch (self.aead) {
+            inline .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 => |a| {
+                const A = suites.AeadOf(comptime a.cipher());
                 A.encrypt(out[0..plaintext.len], out[plaintext.len..][0..tag_length], plaintext, aad, n, self.key.expose()[0..A.key_length].*);
             },
+            // unreachable: contexts are made only for supported AEADs
+            _ => unreachable,
         }
         self.seq += 1;
     }
@@ -146,14 +148,16 @@ pub const Context = struct {
         defer std.crypto.secureZero(u8, &n);
         const body = ciphertext[0 .. ciphertext.len - tag_length];
         const tag = ciphertext[body.len..][0..tag_length].*;
-        switch (self.aead.cipher()) {
-            inline else => |c| {
-                const A = suites.AeadOf(c);
+        switch (self.aead) {
+            inline .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 => |a| {
+                const A = suites.AeadOf(comptime a.cipher());
                 A.decrypt(out, body, tag, aad, n, self.key.expose()[0..A.key_length].*) catch {
                     std.crypto.secureZero(u8, out);
                     return error.AuthenticationFailed;
                 };
             },
+            // unreachable: contexts are made only for supported AEADs
+            _ => unreachable,
         }
         self.seq += 1;
     }

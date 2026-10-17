@@ -23,6 +23,8 @@ pub const Cipher = enum {
             .chacha20_poly1305 => .chacha20_poly1305,
             .aes_128_ccm => .aes_128_ccm,
             .aes_256_ccm => null,
+            // Linux has no CCM with an 8-byte tag: it stays in software.
+            .aes_128_ccm_8 => null,
         };
     }
 

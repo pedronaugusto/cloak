@@ -186,8 +186,12 @@ test "C9 catalogue_ktls_partial_handoff_sequence_owner: a direction moves only a
     try setup.clientToKernel("kernel too");
 }
 
-test "C9 a direction moves only once the handshake completes, and AES-256-CCM stays in software" {
-    var duo = try Duo.init(gpa, .{ .client_suites = &.{.ecdhe_ecdsa_aes_256_ccm}, .server_suites = &.{.ecdhe_ecdsa_aes_256_ccm} });
+test "C9 a direction moves only once the handshake completes, and AES-256-CCM and CCM_8 stay in software" {
+    for ([_]Suite{ .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8 }) |suite| try staysInSoftware(suite);
+}
+
+fn staysInSoftware(suite: Suite) !void {
+    var duo = try Duo.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite} });
     defer duo.deinit();
     var kernel: Kernel = .{};
     defer kernel.deinit();

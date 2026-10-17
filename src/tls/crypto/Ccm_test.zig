@@ -28,13 +28,13 @@ fn run(comptime A: type, gpa: std.mem.Allocator, v: Vector) !void {
     // is released.
     const opened = try gpa.alloc(u8, ct.len);
     defer gpa.free(opened);
-    const result = A.decrypt(opened, ct, tag[0..16].*, aad, iv[0..12].*, key[0..A.key_length].*);
+    const result = A.decrypt(opened, ct, tag[0..A.tag_length].*, aad, iv[0..12].*, key[0..A.key_length].*);
     if (valid) {
         try result;
         try std.testing.expectEqualSlices(u8, msg, opened);
         const sealed = try gpa.alloc(u8, msg.len);
         defer gpa.free(sealed);
-        var got: [16]u8 = undefined;
+        var got: [A.tag_length]u8 = undefined;
         A.encrypt(sealed, &got, msg, aad, iv[0..12].*, key[0..A.key_length].*);
         try std.testing.expectEqualSlices(u8, ct, sealed);
         try std.testing.expectEqualSlices(u8, tag, &got);
@@ -61,6 +61,44 @@ test "C8 AES-CCM with a 12-byte nonce and 16-byte tag passes Wycheproof" {
         }
     }
     try std.testing.expectEqual(parsed.value.numberOfTests, count);
+}
+
+test "AES-CCM_8 (an 8-byte tag, RFC 6655) with a 12-byte nonce passes Wycheproof" {
+    const gpa = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(struct { numberOfTests: usize, testGroups: []Group }, gpa, @embedFile("testdata/aes_ccm8_test.json"), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var count: usize = 0;
+    for (parsed.value.testGroups) |group| {
+        try std.testing.expect(group.keySize == 128 and group.ivSize == 96 and group.tagSize == 64);
+        for (group.tests) |v| {
+            try run(ccm.Aes128Ccm8, gpa, v);
+            count += 1;
+        }
+    }
+    try std.testing.expectEqual(parsed.value.numberOfTests, count);
+}
+
+test "AES-CCM_8 is not a truncated CCM tag: the tag length is in the first block, and every tag bit counts" {
+    const key: [16]u8 = @splat(0x11);
+    const nonce: [12]u8 = @splat(0x22);
+    var long: [16]u8 = undefined;
+    var short: [8]u8 = undefined;
+    var c1: [5]u8 = undefined;
+    var c2: [5]u8 = undefined;
+    ccm.Aes128Ccm.encrypt(&c1, &long, "hello", "ad", nonce, key);
+    ccm.Aes128Ccm8.encrypt(&c2, &short, "hello", "ad", nonce, key);
+    try std.testing.expectEqualSlices(u8, &c1, &c2);
+    try std.testing.expect(!std.mem.eql(u8, long[0..8], &short));
+    var out: [5]u8 = undefined;
+    try ccm.Aes128Ccm8.decrypt(&out, &c2, short, "ad", nonce, key);
+    try std.testing.expectEqualSlices(u8, "hello", &out);
+    // A 16-byte tag's first half does not open as CCM_8.
+    try std.testing.expectError(error.AuthenticationFailed, ccm.Aes128Ccm8.decrypt(&out, &c1, long[0..8].*, "ad", nonce, key));
+    for (0..64) |bit| {
+        var bad = short;
+        bad[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
+        try std.testing.expectError(error.AuthenticationFailed, ccm.Aes128Ccm8.decrypt(&out, &c2, bad, "ad", nonce, key));
+    }
 }
 
 test "C8 AES-CCM seals and opens in place, and a flipped bit anywhere fails and erases" {

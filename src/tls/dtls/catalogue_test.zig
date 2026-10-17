@@ -210,6 +210,43 @@ test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival at the association: forg
     }
 }
 
+test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival: a CCM_8 key ends its association at 2^7 failed records, the margin of every other cipher" {
+    // F81 for the 8-byte tag (RFC 9147 appendix B.3): 127 forgeries are dropped and the
+    // association reads on; the 128th ends it with ForgeryLimit, before a 2^-57 forgery margin is
+    // spent. A 16-byte-tag key takes the same 128 and lives on.
+    for ([_]suites.Suite{ .ecdhe_ecdsa_aes_128_ccm_8, .ecdhe_ecdsa_aes_128_ccm }) |suite| {
+        const pair = try Pair.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(suite, pair.server.dtls.info().?.suite);
+        var out: [256]u8 = undefined;
+        const record = try pair.client.dtls.write("genuine", &out);
+        var keep: [256]u8 = undefined;
+        @memcpy(keep[0..record.len], record);
+        var forged: [256]u8 = undefined;
+        for (0..127) |i| {
+            @memcpy(forged[0..record.len], keep[0..record.len]);
+            forged[record.len - 1 - i % 8] ^= 0x01;
+            try pair.server.dtls.receive(forged[0..record.len], pair.now);
+        }
+        try std.testing.expect(pair.server.dtls.failure() == null);
+        @memcpy(out[0..record.len], keep[0..record.len]);
+        try pair.server.dtls.receive(out[0..record.len], pair.now);
+        try std.testing.expectEqualSlices(u8, "genuine", pair.server.dtls.read().?);
+        // The next record, forged: its sequence is fresh, so the forgery reaches the tag.
+        const second = try pair.client.dtls.write("genuine", &out);
+        @memcpy(forged[0..second.len], second);
+        forged[second.len - 1] ^= 0x80;
+        if (suite == .ecdhe_ecdsa_aes_128_ccm_8) {
+            try std.testing.expectError(error.ForgeryLimit, pair.server.dtls.receive(forged[0..record.len], pair.now));
+            try std.testing.expectEqual(error.ForgeryLimit, pair.server.dtls.failure().?);
+        } else {
+            try pair.server.dtls.receive(forged[0..record.len], pair.now);
+            try std.testing.expect(pair.server.dtls.failure() == null);
+        }
+    }
+}
+
 test "C8 catalogue_dtls_corruption_renegotiation_and_reset" {
     // F82: a corrupted record, then a new hello on the established association: no renegotiation,
     // no reset; and a new association takes nothing of the old one's records.

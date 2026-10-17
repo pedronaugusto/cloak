@@ -956,12 +956,32 @@ reassembly 16 messages / 256 KiB, flight cache 256 KiB, pre-validation output 3x
 
 AES-128-CCM (16-byte tag) is a suite of TLS 1.3 and DTLS 1.3 (TLS_AES_128_CCM_SHA256), and
 ECDHE_ECDSA with AES-128-CCM and AES-256-CCM of TLS 1.2 and DTLS 1.2 (RFC 7251), offered
-only when listed, never by default. CCM_8's 8-byte tag is refused: RFC 9147 section 4.5.3
-forbids it in DTLS without other forgery protection, and TLS gains nothing from it. std's
-CCM fixes a 13-byte nonce, so cloak's CCM is its own (12-byte nonce, 16-byte tag) in
-`src/crypto/`, pinned by Wycheproof's and RFC 3610's vectors, its tag compared in constant
-time. CCM's confidentiality limit is 2^23 records per key (RFC 9147 Appendix B), below
-the GCM limit, and its records fail authentication at most 2^23.5 times per key.
+only when listed, never by default. std's CCM fixes a 13-byte nonce, so cloak's CCM is its
+own (12-byte nonce, 16- or 8-byte tag) in `src/tls/crypto/`, pinned by Wycheproof's vectors,
+its tag compared in constant time. CCM's confidentiality limit is 2^23 records per key (RFC 9147
+Appendix B), below the GCM limit, and its records fail authentication at most 2^23.5 times per
+key.
+
+CCM_8 (AEAD_AES_128_CCM_8, RFC 6655: CCM with an 8-byte tag) is in for one suite,
+ECDHE_ECDSA_WITH_AES_128_CCM_8 (0xC0AE, RFC 7251), over TLS 1.2 and DTLS 1.2, listed only by a
+caller who needs it: it is the mandatory suite of the CoAP and LwM2M profiles for raw keys and
+certificates (RFC 7252 section 9, RFC 7925 section 4.3, LwM2M 1.1/1.2 transport section 5.2.9),
+and constrained peers often speak nothing else. The security judgement is the forgery bound. A
+64-bit tag lets one forged record pass with probability 2^-64. On a stream that is all an
+attacker gets: a record that fails ends the connection. In a datagram association a failed
+record is dropped and the next tried, so RFC 9147 section 4.5.3 asks for a limit on failures
+(appendix B.3). cloak keeps the margin every other cipher has, 2^-57 per key: a CCM_8 key ends
+its association after 2^7 records fail to open (`ForgeryLimit`). That trades integrity for
+availability, not the reverse: whoever can put 128 forged datagrams on the association's path
+can end it (the application then makes a new handshake). A deployment that cannot accept that
+lists a 16-byte-tag suite first, which CoAP peers that implement RFC 7251 also speak. Out:
+AES-256-CCM_8 (no profile asks for it), TLS 1.3's TLS_AES_128_CCM_8_SHA256 (the profiles in
+scope are (D)TLS 1.2; IANA marks it not recommended, and RFC 9147 forbids it in DTLS 1.3
+without safeguards: the same limit would apply if a profile needed it), and the CBC suites
+LwM2M servers must also offer (TLS_*_WITH_AES_128_CBC_SHA256: RFC 7457's attacks; LwM2M
+itself tells clients not to use them), so a cloak LwM2M server meets the client side of the
+profile, not that server line. Linux's kernel TLS has no CCM_8: such a connection stays in
+software.
 
 ## Kernel record layer (C9)
 

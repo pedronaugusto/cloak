@@ -32,6 +32,7 @@ state: union(enum) {
     tls12_chacha20_poly1305: Epoch12(.chacha20_poly1305),
     tls12_aes_128_ccm: Epoch12(.aes_128_ccm),
     tls12_aes_256_ccm: Epoch12(.aes_256_ccm),
+    tls12_aes_128_ccm_8: Epoch12(.aes_128_ccm_8),
 },
 
 /// TLS 1.3 keys derived from a traffic secret of the suite's hash length; the copy is erased.
@@ -63,7 +64,7 @@ pub fn init12(cipher: suites.Cipher, key: []const u8, iv: []const u8, limits: Li
 /// Whether this protects TLS 1.2 records.
 pub fn tls12(self: *const Protection) bool {
     return switch (self.state) {
-        .tls12_aes_128_gcm, .tls12_aes_256_gcm, .tls12_chacha20_poly1305, .tls12_aes_128_ccm, .tls12_aes_256_ccm => true,
+        .tls12_aes_128_gcm, .tls12_aes_256_gcm, .tls12_chacha20_poly1305, .tls12_aes_128_ccm, .tls12_aes_256_ccm, .tls12_aes_128_ccm_8 => true,
         else => false,
     };
 }

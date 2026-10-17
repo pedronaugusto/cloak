@@ -27,18 +27,11 @@ pub const Keys12 = struct {
     iv: aegis.Secret([12]u8),
 
     pub fn keyBytes(self: *const Keys12) []const u8 {
-        return self.key.expose()[0..keyLength(self.cipher)];
+        return self.key.expose()[0..self.cipher.keyLength()];
     }
 
     pub fn ivBytes(self: *const Keys12) []const u8 {
         return self.iv.expose()[0..self.cipher.fixedIvLength12()];
-    }
-
-    pub fn keyLength(cipher: suites.Cipher) usize {
-        return switch (cipher) {
-            .aes_128_gcm, .aes_128_ccm => 16,
-            .aes_256_gcm, .aes_256_ccm, .chacha20_poly1305 => 32,
-        };
     }
 
     pub fn deinit(self: *Keys12) void {
@@ -70,7 +63,7 @@ pub const Secrets12 = struct {
     pub fn deriveKeys(self: *Secrets12, comptime Hash: type, comptime suite: suites.Suite12, role: enum { client, server }) void {
         @setRuntimeSafety(true);
         const cipher = comptime suite.cipher();
-        const key_len = comptime Keys12.keyLength(cipher);
+        const key_len = comptime cipher.keyLength();
         const iv_len = comptime cipher.fixedIvLength12();
         var block = aegis.Secret([2 * (key_len + iv_len)]u8).init(undefined);
         defer block.deinit();

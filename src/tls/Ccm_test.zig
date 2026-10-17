@@ -18,6 +18,7 @@ test "C8 the AES-CCM suites complete in TLS 1.3 and TLS 1.2 and carry data both 
         .{ .suite = .aes_128_ccm_sha256, .version = .tls13 },
         .{ .suite = .ecdhe_ecdsa_aes_128_ccm, .version = .tls12 },
         .{ .suite = .ecdhe_ecdsa_aes_256_ccm, .version = .tls12 },
+        .{ .suite = .ecdhe_ecdsa_aes_128_ccm_8, .version = .tls12 },
     };
     for (cases) |case| for ([_]usize{ 1 << 20, 1 }) |chunk| {
         const duo = try connect(.{ .client_suites = &.{case.suite}, .server_suites = &.{case.suite}, .chunk = chunk });
@@ -34,11 +35,12 @@ test "C8 the AES-CCM suites complete in TLS 1.3 and TLS 1.2 and carry data both 
 
 test "C8 the AES-CCM suites are spoken only when listed: the default offer leaves them out" {
     for (Suite.default) |suite| {
-        try std.testing.expect(suite != .aes_128_ccm_sha256 and suite != .ecdhe_ecdsa_aes_128_ccm and suite != .ecdhe_ecdsa_aes_256_ccm);
+        try std.testing.expect(suite != .aes_128_ccm_sha256 and suite != .ecdhe_ecdsa_aes_128_ccm and suite != .ecdhe_ecdsa_aes_256_ccm and suite != .ecdhe_ecdsa_aes_128_ccm_8);
     }
     // A client offering only CCM meets a server on the default list: no shared suite.
     try std.testing.expectError(error.NoSharedSuite, connect(.{ .client_suites = &.{.aes_128_ccm_sha256} }));
     try std.testing.expectError(error.NoSharedSuite, connect(.{ .client_suites = &.{.ecdhe_ecdsa_aes_128_ccm}, .client_max = .tls12 }));
+    try std.testing.expectError(error.NoSharedSuite, connect(.{ .client_suites = &.{.ecdhe_ecdsa_aes_128_ccm_8}, .client_max = .tls12 }));
     // Nor is CCM a suite for an RSA certificate.
     try std.testing.expectError(error.NoSharedSuite, connect(.{ .cert = .rsa, .client_suites = &.{.ecdhe_ecdsa_aes_256_ccm}, .server_suites = &.{.ecdhe_ecdsa_aes_256_ccm}, .client_max = .tls12 }));
 }

@@ -1,7 +1,9 @@
 //! The suites cloak speaks: the TLS 1.3 suites and the modern TLS 1.2 ECDHE suites with AEAD
 //! ciphers. The AES-CCM ones (RFC 8446, RFC 7251) are spoken only when listed: they are for
-//! devices whose AES has no fast GHASH, and the default offer leaves them out. CCM_8's short tag
-//! is not a suite here. Availability is not policy permission.
+//! devices whose AES has no fast GHASH, and the default offer leaves them out. CCM_8, the 8-byte
+//! tag the CoAP and LwM2M profiles require (RFC 7925), is TLS 1.2's only and spoken only when
+//! listed; a datagram key under it ends its association after 2^7 records fail to open (RFC 9147
+//! appendix B.3). Availability is not policy permission.
 const std = @import("std");
 const ccm = @import("Ccm.zig");
 
@@ -58,6 +60,7 @@ pub const Suite = enum(u16) {
     ecdhe_ecdsa_chacha20_poly1305_sha256 = 0xcca9,
     ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
     ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
+    ecdhe_ecdsa_aes_128_ccm_8 = 0xc0ae,
     _,
 
     /// The default offer and preference: TLS 1.3 first, AES-128-GCM first within each version.
@@ -123,6 +126,8 @@ pub const Suite12 = enum(u16) {
     ecdhe_ecdsa_chacha20_poly1305_sha256 = 0xcca9,
     ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
     ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
+    /// RFC 7251: CoAP's and LwM2M's mandatory suite for raw keys and certificates (RFC 7925).
+    ecdhe_ecdsa_aes_128_ccm_8 = 0xc0ae,
 
     pub fn cipher(suite: Suite12) Cipher {
         return switch (suite) {
@@ -131,6 +136,7 @@ pub const Suite12 = enum(u16) {
             .ecdhe_rsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_chacha20_poly1305_sha256 => .chacha20_poly1305,
             .ecdhe_ecdsa_aes_128_ccm => .aes_128_ccm,
             .ecdhe_ecdsa_aes_256_ccm => .aes_256_ccm,
+            .ecdhe_ecdsa_aes_128_ccm_8 => .aes_128_ccm_8,
         };
     }
 
@@ -144,7 +150,7 @@ pub const Suite12 = enum(u16) {
     /// (RFC 8422 section 5.1).
     pub fn authentication(suite: Suite12) enum { ecdsa, rsa } {
         return switch (suite) {
-            .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm => .ecdsa,
+            .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8 => .ecdsa,
             .ecdhe_rsa_aes_128_gcm_sha256, .ecdhe_rsa_aes_256_gcm_sha384, .ecdhe_rsa_chacha20_poly1305_sha256 => .rsa,
         };
     }
@@ -157,14 +163,29 @@ pub const Cipher = enum {
     chacha20_poly1305,
     aes_128_ccm,
     aes_256_ccm,
+    /// AEAD_AES_128_CCM_8: CCM with an 8-byte tag (RFC 6655), TLS 1.2's only.
+    aes_128_ccm_8,
 
     /// The most records one key may protect: TLS's 2^24 below RFC 8446's GCM bound, and 2^23 for
     /// CCM, which keeps CCM's confidentiality margin at GCM's (RFC 9147 appendix B).
     pub fn recordLimit(cipher: Cipher) u64 {
         return switch (cipher) {
-            .aes_128_ccm, .aes_256_ccm => 1 << 23,
+            .aes_128_ccm, .aes_256_ccm, .aes_128_ccm_8 => 1 << 23,
             else => 1 << 24,
         };
+    }
+
+    /// Bytes of the cipher's key.
+    pub fn keyLength(cipher: Cipher) usize {
+        return switch (cipher) {
+            .aes_128_gcm, .aes_128_ccm, .aes_128_ccm_8 => 16,
+            .aes_256_gcm, .aes_256_ccm, .chacha20_poly1305 => 32,
+        };
+    }
+
+    /// Bytes of the authentication tag a record carries.
+    pub fn tagLength(cipher: Cipher) usize {
+        return if (cipher == .aes_128_ccm_8) 8 else 16;
     }
 
     /// Bytes of the fixed IV a TLS 1.2 key block supplies: GCM and CCM keep a four-byte salt and
@@ -205,6 +226,7 @@ pub fn AeadOf(comptime cipher: Cipher) type {
         .chacha20_poly1305 => std.crypto.aead.chacha_poly.ChaCha20Poly1305,
         .aes_128_ccm => ccm.Aes128Ccm,
         .aes_256_ccm => ccm.Aes256Ccm,
+        .aes_128_ccm_8 => ccm.Aes128Ccm8,
     };
 }
 
@@ -223,7 +245,8 @@ pub fn Hash12(comptime suite: Suite12) type {
 
 comptime {
     for (std.enums.values(Cipher)) |cipher| {
-        std.debug.assert(AeadOf(cipher).tag_length == 16);
+        std.debug.assert(AeadOf(cipher).tag_length == cipher.tagLength());
+        std.debug.assert(AeadOf(cipher).key_length == cipher.keyLength());
         std.debug.assert(AeadOf(cipher).nonce_length == 12);
     }
     for (std.enums.values(Suite)) |suite| std.debug.assert((suite.tls13() == null) != (suite.tls12() == null));

@@ -3,7 +3,7 @@ const Record = @import("Record.zig");
 const suites = @import("../crypto/Suite.zig");
 
 const all13 = [_]suites.Suite13{ .aes_128_gcm_sha256, .aes_256_gcm_sha384, .chacha20_poly1305_sha256, .aes_128_ccm_sha256 };
-const all12 = [_]suites.Cipher{ .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305, .aes_128_ccm, .aes_256_ccm };
+const all12 = [_]suites.Cipher{ .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305, .aes_128_ccm, .aes_256_ccm, .aes_128_ccm_8 };
 
 fn pair13(suite: suites.Suite13) [2]Record.Epoch {
     const secret: [48]u8 = @splat(0x5a);
@@ -99,7 +99,7 @@ test "C8 a DTLS 1.3 key update moves both ends to the same next epoch" {
 fn pair12(cipher: suites.Cipher) [2]Record.Epoch {
     const key: [32]u8 = @splat(0x33);
     const iv: [12]u8 = @splat(0x44);
-    const key_len = Record.keyLength(cipher);
+    const key_len = cipher.keyLength();
     const iv_len = cipher.fixedIvLength12();
     return .{ Record.Epoch.init12(cipher, key[0..key_len], iv[0..iv_len]), Record.Epoch.init12(cipher, key[0..key_len], iv[0..iv_len]) };
 }
@@ -120,6 +120,27 @@ test "C8 DTLS 1.2 records seal and open under every cipher, with and without a c
             try std.testing.expectEqualSlices(u8, "hello 1.2", opened.bytes);
         }
     };
+}
+
+test "C8 a DTLS 1.2 CCM_8 record carries an 8-byte tag, and its key tolerates 2^7 failed openings" {
+    var ends = pair12(.aes_128_ccm_8);
+    defer for (&ends) |*e| e.deinit();
+    var out: [128]u8 = undefined;
+    const record = try ends[0].seal12(.application, "tiny", "", &out);
+    // Header, explicit nonce, the content and an 8-byte tag.
+    try std.testing.expectEqual(Record.header12 + 8 + 4 + 8, record.len);
+    try std.testing.expectEqual(Record.overhead12(.aes_128_ccm_8, 0) + 4, record.len);
+    try std.testing.expectEqual(@as(u64, 1 << 7), Record.failureLimit(.aes_128_ccm_8));
+    var keep: [128]u8 = undefined;
+    @memcpy(keep[0..record.len], record);
+    for (0..128) |i| {
+        try std.testing.expect(!ends[1].exhausted());
+        @memcpy(out[0..record.len], keep[0..record.len]);
+        out[record.len - 1 - i % 8] ^= 0x10;
+        const parsed = Record.split(out[0..record.len], 0).?;
+        try std.testing.expectError(error.Drop, ends[1].open12(parsed.record, parsed.kind.classic));
+    }
+    try std.testing.expect(ends[1].exhausted());
 }
 
 test "C8 a DTLS 1.2 record is dropped when replayed or tampered" {

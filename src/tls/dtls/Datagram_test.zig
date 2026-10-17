@@ -35,7 +35,7 @@ test "C8 DTLS 1.3 completes between cloak ends for every suite and carries data"
 }
 
 test "C8 DTLS 1.2 completes between cloak ends for every ECDSA suite and carries data" {
-    for ([_]suites.Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm }) |suite| {
+    for ([_]suites.Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8 }) |suite| {
         const pair = try Pair.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite} });
         defer pair.deinit();
         try pair.run();
