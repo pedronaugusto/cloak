@@ -178,6 +178,14 @@ test "F100 catalogue_no_record_between_handshake_fragments (application data ins
     try std.testing.expect(pair.conn.phase() == .connected);
 }
 
+test "F101 catalogue_extension_count_unbounded_unique (a hello with a thousand unknown extensions is served)" {
+    for ([_]usize{ 60, 1024 }) |n| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .unknown_extensions = n }, .{});
+        defer pair.deinit();
+        try pair.run();
+    }
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();

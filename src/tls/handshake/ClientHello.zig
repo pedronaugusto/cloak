@@ -479,7 +479,9 @@ fn containsU16(list: []const u8, id: u16) bool {
 /// A digest of everything a retry's second ClientHello may not change: the random, session id,
 /// suites and every extension except the key share, cookie, early data, PSK and padding
 /// (RFC 8446 section 4.1.2), and encrypted_client_hello, whose second payload is a new
-/// encryption (RFC 9849 section 6.1.5). Extension order is not part of it.
+/// encryption (RFC 9849 section 6.1.5). Extension order is not part of it: the extensions go in
+/// ascending ID order (IDs are unique, checked at parsing), one high byte of IDs at a time
+/// with 512 bytes of starts, so a block of any size needs no more (a pass per high byte in use).
 pub fn fingerprint(self: *const ClientHello) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -487,24 +489,37 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     h.update(&.{@intCast(self.session.len)}); // safe: parsing bounds the session id at 32 bytes
     h.update(self.session);
     h.update(self.suites);
-    const Entry = struct { id: u16, bytes: []const u8 };
-    var entries: [64]Entry = undefined;
-    var count: usize = 0;
-    var ext: Extensions = .{ .reader = .{ .bytes = self.extensions } };
-    // The block was validated when parsed; an iteration error cannot occur.
-    while (ext.next() catch null) |item| {
-        if (exempt(item.id)) continue;
-        var at = count;
-        while (at > 0 and entries[at - 1].id > item.id) : (at -= 1) entries[at] = entries[at - 1];
-        entries[at] = .{ .id = item.id, .bytes = item.bytes };
-        count += 1;
+    // The block was validated when parsed; a malformed entry cannot occur and would end a pass.
+    var highs: std.StaticBitSet(256) = .empty;
+    var all: Reader = .{ .bytes = self.extensions };
+    while (all.pos < all.bytes.len) {
+        const id = all.int(u16) catch break;
+        _ = all.vector(u16) catch break;
+        if (!exempt(id)) highs.set(id >> 8);
     }
-    for (entries[0..count]) |entry| {
-        var head: [6]u8 = undefined;
-        std.mem.writeInt(u16, head[0..2], entry.id, .big);
-        std.mem.writeInt(u32, head[2..6], @intCast(entry.bytes.len), .big); // safe: an extension is at most 65,535 bytes
-        h.update(&head);
-        h.update(entry.bytes);
+    var high_ids = highs.iterator(.{});
+    while (high_ids.next()) |high| {
+        const none = std.math.maxInt(u16);
+        var starts: [256]u16 = @splat(none);
+        var pass: Reader = .{ .bytes = self.extensions };
+        while (pass.pos < pass.bytes.len) {
+            const start = pass.pos;
+            const id = pass.int(u16) catch break;
+            _ = pass.vector(u16) catch break;
+            // safe: an extension block is at most 65,535 bytes, so an entry starts below that.
+            if (id >> 8 == high and !exempt(id)) starts[id & 0xff] = @intCast(start);
+        }
+        for (starts) |start| {
+            if (start == none) continue;
+            var entry: Reader = .{ .bytes = self.extensions[start..] };
+            const id = entry.int(u16) catch break;
+            const bytes = (entry.vector(u16) catch break).bytes;
+            var head: [6]u8 = undefined;
+            std.mem.writeInt(u16, head[0..2], id, .big);
+            std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // safe: an extension is at most 65,535 bytes
+            h.update(&head);
+            h.update(bytes);
+        }
     }
     return h.finalResult();
 }

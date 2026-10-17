@@ -36,7 +36,7 @@ fn check(bytes: []const u8) !void {
     var steps: usize = 0;
     while (ext.next() catch return) |item| {
         steps += 1;
-        try std.testing.expect(steps <= 64 and ext.reader.pos <= bytes.len);
+        try std.testing.expect(steps <= bytes.len / 4 and ext.reader.pos <= bytes.len);
         try std.testing.expect(item.bytes.len <= bytes.len);
     }
 }
@@ -50,4 +50,36 @@ test "C2 TLS extension blocks take the odd examples" {
 fn fuzz(_: void, case: *shakedown.Case) !void {
     var bytes: [4096]u8 = undefined;
     try check(inputs.draw(case, &bytes, &examples, 48));
+}
+
+/// A block of `n` empty extensions with distinct IDs from `first` up, in `out`.
+fn block(out: []u8, n: usize, first: u16) []u8 {
+    for (0..n) |i| {
+        std.mem.writeInt(u16, out[i * 4 ..][0..2], first +% @as(u16, @intCast(i)), .big);
+        std.mem.writeInt(u16, out[i * 4 + 2 ..][0..2], 0, .big);
+    }
+    return out[0 .. n * 4];
+}
+
+fn count(bytes: []const u8) !usize {
+    var ext: E = .{ .reader = .{ .bytes = bytes } };
+    var n: usize = 0;
+    while (try ext.next()) |_| n += 1;
+    return n;
+}
+
+test "F101 catalogue_extension_count_unbounded_unique (any number of extensions is read; a repeat anywhere is refused)" {
+    var bytes: [65532]u8 = undefined;
+    // tlsfuzzer's test-tls13-large-number-of-extensions sends up to 4,096 more; a block holds 16,383.
+    for ([_]usize{ 63, 64, 65, 1024, 4096, 16383 }) |n| try std.testing.expectEqual(n, try count(block(&bytes, n, 0x8000)));
+    // A repeat of an early ID late, of a late ID later, across the bit set's passes, and of IDs
+    // a pass's 12 low bits share but whose high bits differ (not repeats).
+    for ([_][2]usize{ .{ 3, 70 }, .{ 10, 5000 }, .{ 100, 16000 }, .{ 0, 63 }, .{ 0, 64 } }) |pair| {
+        const b = block(&bytes, 16383, 0);
+        std.mem.writeInt(u16, b[pair[1] * 4 ..][0..2], @intCast(pair[0]), .big);
+        try std.testing.expectError(error.DuplicateExtension, count(b));
+    }
+    const spread = block(&bytes, 100, 0);
+    for (0..100) |i| std.mem.writeInt(u16, spread[i * 4 ..][0..2], @intCast((i % 16) << 12 | 0x123 + i / 16), .big);
+    try std.testing.expectEqual(@as(usize, 100), try count(spread));
 }

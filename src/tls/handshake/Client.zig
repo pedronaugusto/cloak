@@ -132,7 +132,7 @@ pub fn alertFor(err: anyerror) Alert {
         error.CertificateRequired => .certificate_required,
         error.DecodeError => .decode_error,
         error.UnexpectedCookie => .illegal_parameter,
-        error.DuplicateExtension, error.ExtensionLimit, error.InvalidHello, error.IllegalParameter, error.UnofferedSelection, error.InvalidShare, error.WeakKey, error.InvalidRetry => .illegal_parameter,
+        error.DuplicateExtension, error.InvalidHello, error.IllegalParameter, error.UnofferedSelection, error.InvalidShare, error.WeakKey, error.InvalidRetry => .illegal_parameter,
         error.UnsolicitedExtension => .unsupported_extension,
         error.EchRejected => .ech_required,
         error.EchDecryptFailed => .decrypt_error,

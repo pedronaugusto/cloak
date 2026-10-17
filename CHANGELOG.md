@@ -11,6 +11,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - A server refuses a ClientHello whose legacy_version is SSL 3.0 (0x0300) or older with protocol_version, even when it offers TLS 1.3 (RFC 8446 appendix D.5). F98.
 - A server refuses a TLS 1.3 ClientHello that has supported_groups but no key_share extension with missing_extension (RFC 8446 section 9.2); it answered with a retry request. An empty share list still gets one. F99.
 - Application data between the fragments of a post-handshake message (a KeyUpdate, a NewSessionTicket split over records) ends the connection with unexpected_message (RFC 8446 section 5.1); it was read. F100.
+- A hello may carry any number of extensions: past 64 they were refused with illegal_parameter. Duplicates are still refused among all of them (the first 64 against a table, a longer block whole in sixteen passes over a 512-byte bit set), and the retry fingerprint orders any number by ID a high byte at a time. F101.
 
 ## [0.17.1] - 2026-10-17
 

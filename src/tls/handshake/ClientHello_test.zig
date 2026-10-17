@@ -144,3 +144,42 @@ test "C3 client hello without an extension block parses and offers no version" {
     try std.testing.expect(hello.offersSuite(0xc02b));
     try std.testing.expectEqual(@as(usize, 0), hello.extensions.len);
 }
+
+/// A ClientHello whose extension block is supported_versions and `n` one-byte extensions with
+/// IDs spread over every high byte, in the order `order` gives (0: ascending, 1: descending),
+/// the extension of index `changed` (if any) holding another byte.
+fn spreadHello(out: []u8, n: usize, order: u1, changed: ?usize) ![]const u8 {
+    const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";
+    const versions = "\x00\x2b\x00\x03\x02\x03\x04";
+    var at: usize = 4 + prefix.len + 2;
+    @memcpy(out[at..][0..versions.len], versions);
+    at += versions.len;
+    for (0..n) |k| {
+        const i = if (order == 0) k else n - 1 - k;
+        // IDs 0x0100 + 0x0101*i wrap over every high byte; none is a known extension's.
+        const id: u16 = @truncate(0x0100 + 0x0101 * i);
+        std.mem.writeInt(u16, out[at..][0..2], id, .big);
+        std.mem.writeInt(u16, out[at + 2 ..][0..2], 1, .big);
+        out[at + 4] = if (changed == i) 'y' else 'x';
+        at += 5;
+    }
+    out[0] = 1;
+    std.mem.writeInt(u24, out[1..4], @intCast(at - 4), .big);
+    @memcpy(out[4..][0..prefix.len], prefix);
+    std.mem.writeInt(u16, out[4 + prefix.len ..][0..2], @intCast(at - 6 - prefix.len), .big);
+    return out[0..at];
+}
+
+test "F101 catalogue_extension_count_unbounded_unique (the retry fingerprint covers every extension of a large hello, in any order)" {
+    var a: [8192]u8 = undefined;
+    var b: [8192]u8 = undefined;
+    for ([_]usize{ 3, 64, 200, 1000 }) |n| {
+        const ascending = try ClientHello.parse(try spreadHello(&a, n, 0, null), .stream);
+        const descending = try ClientHello.parse(try spreadHello(&b, n, 1, null), .stream);
+        try std.testing.expectEqual(ascending.fingerprint(), descending.fingerprint());
+        for ([_]usize{ 0, n / 2, n - 1 }) |i| {
+            const other = try ClientHello.parse(try spreadHello(&b, n, 1, i), .stream);
+            try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &other.fingerprint()));
+        }
+    }
+}

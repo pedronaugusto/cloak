@@ -85,6 +85,8 @@ pub const Config = struct {
     first_record_version: u16 = 0x0301,
     /// The ClientHello's legacy_version.
     legacy_version: u16 = 0x0303,
+    /// Empty extensions of unassigned IDs (from 0x8000 up) the hello carries.
+    unknown_extensions: usize = 0,
     /// Offer post_handshake_auth (RFC 8446 section 4.2.6).
     post_handshake_auth: bool = false,
 };
@@ -342,6 +344,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             std.mem.writeInt(u16, share_body.items[0..2], @intCast(share_body.items.len - 2), .big);
             if (!(t == .second_without_share and second) and t != .no_key_share) try Ext.put(&ext, gpa, 51, share_body.items);
             if (t == .changed_second_hello and second) try Ext.put(&ext, gpa, 16, &.{ 0, 3, 2, 'z', 'z' });
+            for (0..self.config.unknown_extensions) |i| try Ext.put(&ext, gpa, 0x8000 + @as(u16, @intCast(i)), "");
             if (t == .psk_not_last) {
                 try Ext.put(&ext, gpa, 41, &([_]u8{ 0, 7, 0, 1, 'x', 0, 0, 0, 0, 0, 33, 32 } ++ @as([32]u8, @splat(0))));
                 try Ext.put(&ext, gpa, 45, &.{ 1, 1 });
