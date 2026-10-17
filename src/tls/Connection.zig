@@ -206,6 +206,8 @@ const owe_teardown: u8 = 16;
 
 pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connection {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     // A fully qualified name's trailing dot names the same host; neither the server name
     // sent (RFC 6066 section 3) nor a certificate's names carry it.
     const identity: types.Identity = switch (options.identity) {
@@ -283,6 +285,8 @@ pub const ServerOptions = struct {
 /// A server connection: the same record, request and key handling around the server handshake.
 pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connection {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     const hs = try Server.init(gpa, .{
         .suites = options.suites,
         .min_version = options.min_version,
@@ -382,6 +386,8 @@ pub const ExportError = Client.ExportError;
 /// an empty one, enters with its length and null leaves it out, which RFC 5705 tells apart; in
 /// TLS 1.3 null and empty are the same.
 pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase() == .failed) return error.WrongPhase;
     return self.hs.exportKeyingMaterial(out, label, context);
 }
@@ -421,6 +427,8 @@ pub fn request(self: *Connection) ?Request {
 
 pub fn provide(self: *Connection, token: types.Token, answer: Answer) ProvideError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase() == .failed) return error.Closed;
     self.services.answer(self.hs, token, answer) catch |err| switch (err) {
         // These leave the request open: a wrong token or a rejected scalar draw is not fatal.
@@ -717,6 +725,8 @@ fn budgetWrite(self: *Connection) Error!void {
 pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     @setRuntimeSafety(true);
     aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys seals application data");
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
@@ -746,6 +756,8 @@ fn readFailed(self: *Connection, err: Error) Error {
 /// Asks for new keys in one direction or both (`request_peer`).
 pub fn keyUpdate(self: *Connection, request_peer: bool) SendError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     self.writeOwed();
     if (self.phase() != .connected) return error.NotConnected;
     if (self.write_done.load(.acquire)) return error.WriteClosed;
@@ -757,6 +769,8 @@ pub fn keyUpdate(self: *Connection, request_peer: bool) SendError!void {
 /// Queues close_notify. The write side is finished; reading continues until the peer's own.
 pub fn finish(self: *Connection) FinishError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.write_done.load(.acquire)) return;
@@ -808,6 +822,8 @@ pub const OffloadError = Keys.InstallError || error{
 /// peer or forged by anyone reusing them.
 pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installer) OffloadError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase() == .failed) return error.Closed;
     if (!self.split) return error.NotConnected;
     const slot = switch (direction) {
@@ -898,6 +914,8 @@ fn failRekey(self: *Connection, direction: Direction) void {
 /// the next. Only with the read direction offloaded.
 pub fn receiveControl(self: *Connection, record_type: u8, plaintext: []const u8) ReceiveError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     aegis.assert.pre(self.rx_kernel, "control records come from a kernel that holds the read keys");
     aegis.assert.pre(self.plain_kind == null and self.hs.need() == .none, "a control record waits until the last one's request is answered");
     if (self.phase() == .failed) {
@@ -966,6 +984,8 @@ pub fn control(self: *Connection) ?Control {
 /// The record `control` handed out is sent.
 pub fn acknowledgeControl(self: *Connection) void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
     const pending = self.outbox.pending();
     aegis.assert.pre(pending.len != 0 and self.rekey_at != 0, "the caller acknowledges a record control handed out");
@@ -991,6 +1011,8 @@ pub fn offloadInterval(self: *const Connection, direction: Direction) u64 {
 /// connection there, before the limit.
 pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     switch (direction) {
         .read => {
             aegis.assert.pre(self.rx_kernel, "records are counted by a kernel that holds the read keys");
@@ -1062,6 +1084,8 @@ fn blocked(self: *const Connection) bool {
 pub fn receive(self: *Connection, input: []const u8) ReceiveError!usize {
     @setRuntimeSafety(true);
     aegis.assert.pre(!self.rx_kernel, "a kernel that holds the read keys opens the records");
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase() == .failed) {
         // The write half failed: the read keys go too.
         if (self.rx) |*p| p.deinit();
@@ -1309,6 +1333,8 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
 /// The transport ended. A close_notify must have arrived; anything else is truncation.
 pub fn receiveEof(self: *Connection) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.read_done.load(.acquire)) return;
     if (self.phase() != .failed) {
         self.failRead(error.Truncated);

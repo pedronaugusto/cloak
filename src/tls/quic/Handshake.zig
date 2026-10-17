@@ -138,6 +138,8 @@ parameters_offered: bool = false,
 
 pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (options.alpn.len == 0) return error.InvalidOptions;
     const sni: []const u8 = switch (options.server_name) {
         .identity => switch (options.identity) {
@@ -176,6 +178,8 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
 /// A server handshake. The client's transport parameters arrive as a `peer_parameters` event.
 pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshake {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (options.alpn.len == 0) return error.InvalidOptions;
     const hs = try Server.init(gpa, .{
         .suites = options.suites,
@@ -229,6 +233,8 @@ pub fn echRetryConfigs(self: *const Handshake) ?[]const u8 {
 
 pub const ExportError = Client.ExportError;
 pub fn exportKeyingMaterial(self: *const Handshake, out: []u8, label: []const u8, context: ?[]const u8) ExportError!void {
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     return self.hs.exportKeyingMaterial(out, label, context);
 }
 
@@ -241,6 +247,8 @@ pub fn request(self: *Handshake) ?Request {
 
 pub fn provide(self: *Handshake, token: types.Token, answer: Answer) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.failed) return error.Closed;
     self.services.answer(self.hs, token, answer) catch |err| switch (err) {
         error.InvalidEntropy, error.StaleToken, error.NoRequest => |open| return open,
@@ -251,6 +259,8 @@ pub fn provide(self: *Handshake, token: types.Token, answer: Answer) Error!void 
 /// The peer's transport parameters are acceptable; the handshake may continue.
 pub fn acceptParameters(self: *Handshake) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.failed) return error.Closed;
     self.hs.provideParameters(true) catch |err| return self.abort(err);
 }
@@ -258,6 +268,8 @@ pub fn acceptParameters(self: *Handshake) Error!void {
 /// The peer's transport parameters are not: the handshake ends with `alert`.
 pub fn rejectParameters(self: *Handshake, alert: Alert) void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     self.fail(alert);
 }
 
@@ -295,6 +307,8 @@ fn blocked(self: *const Handshake) bool {
 /// when events or a request are outstanding; drain them and call again with the rest.
 pub fn receive(self: *Handshake, level: Level, bytes: []const u8) Error!usize {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.failed) return error.Closed;
     return self.receiveChecked(level, bytes) catch |err| return self.abort(err);
 }
@@ -358,6 +372,8 @@ fn take(self: *Handshake, slot: *Partial, bytes: []const u8) Error!usize {
 /// The next event, or null when there is none. The same event is returned until `ack`.
 pub fn next(self: *Handshake) ?Event {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.current == null) self.advance();
     const current = &(self.current orelse return null);
     return switch (current.*) {

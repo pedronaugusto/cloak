@@ -64,6 +64,13 @@ pub fn dev(b: *std.Build, tools: type) void {
     b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
     const failstop = b.addExecutable(.{ .name = "cloak-failstop", .root_module = b.createModule(.{ .root_source_file = p.path("ci/failstop.zig"), .target = host, .optimize = .fast, .imports = &.{.{ .name = "cloak", .module = createCloak(b, p, host, .fast) }} }) });
     b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
+    // Timing evidence on the build that ships: a statistical test, run by hand, never a gate.
+    const timing_module = b.createModule(.{ .root_source_file = p.path("bench/timing.zig"), .target = host, .optimize = .fast, .imports = benchImports(b, host, .fast) });
+    timing_module.addImport("aegis", p.dependency("aegis", .{ .target = host, .optimize = .fast }).module("aegis"));
+    timing_module.addImport("shakedown", b.dependency("shakedown", .{ .target = host, .optimize = .fast }).module("shakedown"));
+    const timing = b.addRunArtifact(b.addExecutable(.{ .name = "cloak-timing", .root_module = timing_module }));
+    timing.addPassthruArgs();
+    b.step("timing", "Test the secret kernels' time against their secret on the ReleaseFast build (dudect)").dependOn(&timing.step);
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     const wasm_module = b.createModule(.{ .root_source_file = p.path("ci/core.zig"), .target = wasm_target, .optimize = .safe });
     wasm_module.addImport("probes", createProbes(b, p, wasm_target, .safe));

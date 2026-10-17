@@ -61,6 +61,21 @@ comptime {
 }
 
 pub const InitError = error{ InvalidEntropy, WeakKey };
+
+/// The stack one group's kernels reach, which `aegis.secret.scrubbed` erases after each (and runs
+/// them under data-independent timing). Each group is its own instance, so X25519 erases what
+/// X25519 used, not what ML-KEM-1024 would; the ML-KEM key generations are the deepest. A test
+/// holds every bound.
+fn depth(comptime group: Group) usize {
+    const debug = @import("builtin").mode == .debug;
+    return switch (group) {
+        .x25519 => if (debug) 64 * 1024 else 32 * 1024,
+        .p256, .p384 => if (debug) 128 * 1024 else 64 * 1024,
+        .x25519_mlkem768, .secp256r1_mlkem768, .mlkem768 => if (debug) 384 * 1024 else 144 * 1024,
+        .secp384r1_mlkem1024, .mlkem1024 => if (debug) 480 * 1024 else 192 * 1024,
+        _ => unsupported(),
+    };
+}
 pub const AgreeError = error{ InvalidShare, WeakKey };
 
 /// Fresh CSPRNG bytes `Share.init` needs for a group.
@@ -127,6 +142,13 @@ pub const Share = struct {
     /// (`InvalidEntropy`) is public: the draw fell outside the group's scalar range, and
     /// the driver supplies a new draw. The caller's entropy is not modified.
     pub fn init(group: Group, entropy: []const u8) InitError!Share {
+        return switch (group) {
+            inline .x25519, .p256, .p384, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), initShare, .{ g, entropy }),
+            _ => unsupported(),
+        };
+    }
+
+    fn initShare(comptime group: Group, entropy: []const u8) InitError!Share {
         @setRuntimeSafety(true);
         if (entropy.len != entropyLength(group)) return error.InvalidEntropy;
         var self: Share = .{ .group = group, .private = undefined, .public = @splat(0) };
@@ -195,24 +217,30 @@ pub const Share = struct {
 
     /// Combines the private half with the server's `key_exchange` bytes.
     pub fn agree(self: *const Share, peer: []const u8) AgreeError!Agreed {
-        @setRuntimeSafety(true);
         if (peer.len != shareLength(self.group.serverShareLength())) return error.InvalidShare;
+        return switch (self.private) {
+            inline else => |*key, tag| aegis.secret.scrubbed(depth(@field(Group, @tagName(tag))), agreeShare, .{ tag, key, peer }),
+        };
+    }
+
+    fn agreeShare(comptime tag: @typeInfo(Private).@"union".tag_type.?, key: *const @FieldType(Private, @tagName(tag)), peer: []const u8) AgreeError!Agreed {
+        @setRuntimeSafety(true);
         var out: Agreed = .{ .secret = .init(@splat(0)), .len = 0 };
         errdefer out.deinit();
         const into = out.secret.exposeMut();
-        switch (self.private) {
-            .x25519 => |*key| {
+        switch (tag) {
+            .x25519 => {
                 out.len = try x25519(key, peer[0..32], into[0..32]);
             },
-            .p256 => |*key| {
+            .p256 => {
                 ecdh.P256.agree(key.expose(), peer, into[0..ecdh.P256.scalar_length]) catch |err| return mapCurve(err);
                 out.len = ecdh.P256.scalar_length;
             },
-            .p384 => |*key| {
+            .p384 => {
                 ecdh.P384.agree(key.expose(), peer, into[0..ecdh.P384.scalar_length]) catch |err| return mapCurve(err);
                 out.len = ecdh.P384.scalar_length;
             },
-            .x25519_mlkem768 => |*key| {
+            .x25519_mlkem768 => {
                 // ML-KEM decapsulation never signals an invalid ciphertext: FIPS 203 implicit
                 // rejection returns a pseudorandom key, so validity is not an oracle.
                 var kem = key.kem.expose().decaps(peer[0..MlKem.ciphertext_length]) catch return error.InvalidShare;
@@ -221,10 +249,10 @@ pub const Share = struct {
                 _ = try x25519(&key.x25519, peer[MlKem.ciphertext_length..][0..32], into[kem.len..][0..32]);
                 out.len = kem.len + 32;
             },
-            .secp256r1_mlkem768 => |*key| out.len = try agreeNist(P256MlKem768, key, peer, into),
-            .secp384r1_mlkem1024 => |*key| out.len = try agreeNist(P384MlKem1024, key, peer, into),
-            .mlkem768 => |*key| out.len = try agreePure(PureMlKem768, key, peer, into),
-            .mlkem1024 => |*key| out.len = try agreePure(PureMlKem1024, key, peer, into),
+            .secp256r1_mlkem768 => out.len = try agreeNist(P256MlKem768, key, peer, into),
+            .secp384r1_mlkem1024 => out.len = try agreeNist(P384MlKem1024, key, peer, into),
+            .mlkem768 => out.len = try agreePure(PureMlKem768, key, peer, into),
+            .mlkem1024 => out.len = try agreePure(PureMlKem1024, key, peer, into),
         }
         return out;
     }
@@ -331,6 +359,13 @@ pub const Response = struct {
 /// is public and the caller draws again. A malformed or small-order client share is `InvalidShare`
 /// or `WeakKey`, never an agreed secret.
 pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!Response {
+    return switch (group) {
+        inline .x25519, .p256, .p384, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), respondShare, .{ g, client_share, entropy }),
+        _ => unsupported(),
+    };
+}
+
+fn respondShare(comptime group: Group, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!Response {
     @setRuntimeSafety(true);
     if (entropy.len != respondEntropyLength(group)) return error.InvalidEntropy;
     if (client_share.len != shareLength(group.clientShareLength())) return error.InvalidShare;
@@ -417,4 +452,27 @@ fn respondCurve(comptime G: type, out: *Response, client_share: []const u8, entr
 
 test {
     _ = @import("Exchange_test.zig");
+}
+
+test "the exchange kernels reach less stack than the depth that erases them" {
+    var entropy: [128]u8 = @splat(0x35);
+    var respond_entropy: [128]u8 = @splat(0x36);
+    inline for (comptime std.enums.values(Group)) |group| {
+        const init_entropy = entropy[0..entropyLength(group)];
+        const respond_with = respond_entropy[0..respondEntropyLength(group)];
+        var share = try Share.initShare(group, init_entropy);
+        defer share.deinit();
+        var response = try respondShare(group, share.wire(), respond_with);
+        defer response.deinit();
+        const key = &@field(share.private, @tagName(group));
+        const reach = [3]usize{
+            aegis.secret.stackReach(4 * depth(group), Share.initShare, .{ group, init_entropy }),
+            aegis.secret.stackReach(4 * depth(group), respondShare, .{ group, share.wire(), respond_with }),
+            aegis.secret.stackReach(4 * depth(group), Share.agreeShare, .{ @field(@typeInfo(Private).@"union".tag_type.?, @tagName(group)), key, response.wire() }),
+        };
+        std.testing.expect(@max(reach[0], reach[1], reach[2]) < depth(group)) catch |err| {
+            std.debug.print("{s}: init {d}, respond {d}, agree {d} of {d}\n", .{ @tagName(group), reach[0], reach[1], reach[2], depth(group) });
+            return err;
+        };
+    }
 }

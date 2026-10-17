@@ -71,6 +71,10 @@ pub const KeyPair = struct {
 /// DeriveKeyPair (RFC 9180 section 7.1.3) for X25519: the secret key from `ikm`, which must hold
 /// at least 32 bytes of entropy.
 pub fn deriveKeyPair(ikm: []const u8) KeyPair {
+    return aegis.secret.scrubbed(secret_stack, derivePair, .{ikm});
+}
+
+fn derivePair(ikm: []const u8) KeyPair {
     @setRuntimeSafety(true);
     var prk = aegis.Secret([32]u8).init(undefined);
     defer prk.deinit();
@@ -83,8 +87,16 @@ pub fn deriveKeyPair(ikm: []const u8) KeyPair {
 
 /// The public key of an X25519 secret key.
 pub fn publicKey(secret: *const [secret_length]u8) [public_length]u8 {
+    return aegis.secret.scrubbed(secret_stack, recoverPublic, .{secret});
+}
+
+fn recoverPublic(secret: *const [secret_length]u8) [public_length]u8 {
     return X25519.recoverPublicKey(secret.*);
 }
+
+/// The stack the key derivations and encapsulations reach (X25519 and the labeled HKDF), which
+/// `aegis.secret.scrubbed` erases after each and runs under data-independent timing. A test holds it.
+const secret_stack: usize = if (@import("builtin").mode == .debug) 32 * 1024 else 16 * 1024;
 
 /// One direction of an HPKE context: the AEAD key, the base nonce and the sequence number.
 pub const Context = struct {
@@ -150,9 +162,13 @@ pub const Context = struct {
 /// SetupBaseS: encapsulates to `public` with the ephemeral key derived from `ikm_e`, writing the
 /// encapsulated key to `enc`.
 pub fn setupSender(suite: Suite, public: *const [public_length]u8, info: []const u8, ikm_e: []const u8, enc: *[enc_length]u8) Error!Context {
+    return aegis.secret.scrubbed(secret_stack, encapsulate, .{ suite, public, info, ikm_e, enc });
+}
+
+fn encapsulate(suite: Suite, public: *const [public_length]u8, info: []const u8, ikm_e: []const u8, enc: *[enc_length]u8) Error!Context {
     @setRuntimeSafety(true);
     try check(suite);
-    var ephemeral = deriveKeyPair(ikm_e);
+    var ephemeral = derivePair(ikm_e);
     defer ephemeral.deinit();
     var dh = aegis.Secret([32]u8).init(X25519.scalarmult(ephemeral.secret.expose().*, public.*) catch return error.InvalidKey);
     defer dh.deinit();
@@ -165,10 +181,14 @@ pub fn setupSender(suite: Suite, public: *const [public_length]u8, info: []const
 
 /// SetupBaseR: decapsulates `enc` with the recipient's secret key.
 pub fn setupRecipient(suite: Suite, enc: []const u8, secret: *const [secret_length]u8, info: []const u8) Error!Context {
+    return aegis.secret.scrubbed(secret_stack, decapsulate, .{ suite, enc, secret, info });
+}
+
+fn decapsulate(suite: Suite, enc: []const u8, secret: *const [secret_length]u8, info: []const u8) Error!Context {
     @setRuntimeSafety(true);
     try check(suite);
     if (enc.len != enc_length) return error.InvalidKey;
-    const public = publicKey(secret);
+    const public = recoverPublic(secret);
     var dh = aegis.Secret([32]u8).init(X25519.scalarmult(secret.*, enc[0..32].*) catch return error.InvalidKey);
     defer dh.deinit();
     var shared = aegis.Secret([32]u8).init(undefined);
@@ -248,4 +268,22 @@ fn labeledExpand(out: []u8, prk: *const [32]u8, suite_id: []const u8, label: []c
 
 test {
     _ = @import("Hpke_test.zig");
+}
+
+test "the HPKE key derivations and encapsulations reach less stack than the depth that erases them" {
+    const suite: Suite = .{ .kdf = .hkdf_sha256, .aead = .aes_256_gcm };
+    const ikm: [32]u8 = @splat(0x35);
+    var pair = derivePair(&ikm);
+    defer pair.deinit();
+    var enc: [enc_length]u8 = undefined;
+    const reach = [4]usize{
+        aegis.secret.stackReach(4 * secret_stack, derivePair, .{&ikm}),
+        aegis.secret.stackReach(4 * secret_stack, recoverPublic, .{pair.secret.expose()}),
+        aegis.secret.stackReach(4 * secret_stack, encapsulate, .{ suite, &pair.public, "info", &ikm, &enc }),
+        aegis.secret.stackReach(4 * secret_stack, decapsulate, .{ suite, &pair.public, pair.secret.expose(), "info" }),
+    };
+    std.testing.expect(@max(@max(reach[0], reach[1]), @max(reach[2], reach[3])) < secret_stack) catch |err| {
+        std.debug.print("HPKE stack: derive {d}, public {d}, encapsulate {d}, decapsulate {d} of {d}\n", .{ reach[0], reach[1], reach[2], reach[3], secret_stack });
+        return err;
+    };
 }

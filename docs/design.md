@@ -203,7 +203,18 @@ range), each releasing only its completed verdict through a named `declassify`. 
 compile for every target cloak builds for; `aegis.secret.Choice.audited` says whether a
 build is one whose lowering aegis inspects (the hosted targets at their baseline and
 common CPU models, the BSDs, wasm32), and cloak's timing checks on the built binary cover
-the rest. AEAD selects std's kernels and rejects `.none` mitigations
+the rest. Every call that computes with a secret runs under the processor's
+data-independent timing mode (aegis `Timing`: Arm FEAT_DIT, which on Apple's M3 and later
+also stops the data memory-dependent prefetcher), set at the carriers' entry points and
+the cookie and ticket-key rotations, and restored as found. The kernels with secret
+temporaries (key shares, HPKE, the P-curve agreements, signing, key parsing) also run as
+`aegis.secret.scrubbed` computations, which erase the stack they reached; each key-exchange
+group is its own instance with its own depth. `zig build timing` is the evidence on the
+ReleaseFast build: shakedown's leak test (dudect: a fixed and a random class of the
+secret, interleaved, Welch's t) per kernel. On an Apple M3 without the mode std's X25519
+was told apart by its secret (|t| 16 to 37) and the P-curves, ML-KEM, AES-GCM,
+ChaCha20-Poly1305, HMAC, the Choice comparison and the signatures were not; with the mode
+none was. A run finds a leak with some confidence and never proves there is none. AEAD selects std's kernels and rejects `.none` mitigations
 independently of caller options. Generated-code/timing campaigns remain required
 before a complete TLS security claim. Named wipes cover owned storage, not all
 compiler-created argument copies, register spills or std AEAD local schedules.

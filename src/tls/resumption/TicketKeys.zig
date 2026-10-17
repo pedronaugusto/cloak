@@ -115,6 +115,8 @@ pub const RotateError = std.mem.Allocator.Error || error{ InvalidKey, DuplicateK
 /// key's usual stand-in, is refused, and so is material the ring already holds.
 pub fn rotate(self: *TicketKeys, material: *const [32]u8, now: std.Io.Timestamp) RotateError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (std.mem.allEqual(u8, material, 0)) return error.InvalidKey;
     const at = types.seconds(now);
     var digest: [32]u8 = undefined;

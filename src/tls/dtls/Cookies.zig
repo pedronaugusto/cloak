@@ -42,6 +42,8 @@ pub const RotateError = error{InvalidKey};
 /// stay valid for their lifetime, older ones no longer.
 pub fn rotate(self: *Cookies, material: [32]u8) RotateError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (std.mem.allEqual(u8, &material, 0)) return error.InvalidKey;
     if (self.keys[1]) |*old| old.material.deinit();
     self.keys[1] = self.keys[0];
@@ -74,6 +76,8 @@ const v13: u8 = 0x13;
 /// hold the datagram.
 pub fn check(self: *const Cookies, options: *const Datagram.ServerOptions, address: []const u8, now: std.Io.Timestamp, datagram: []u8, out: []u8) Verdict {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.keys[0] == null or address.len > 64) return .drop;
     const first = Record.split(datagram, 0) orelse return .drop;
     const header = switch (first.kind) {

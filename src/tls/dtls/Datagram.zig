@@ -319,6 +319,8 @@ cid_request_open: bool = false,
 
 pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     try checkCommon(options.mtu, options.timing);
     const sni: []const u8 = switch (options.server_name) {
         .identity => switch (options.identity) {
@@ -369,6 +371,8 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
 /// three times the bytes it received until the client's handshake keys prove it.
 pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admission) InitError!Datagram {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     try checkCommon(options.mtu, options.timing);
     const hs = try Server.init(gpa, .{
         .transport = .datagram,
@@ -456,6 +460,8 @@ pub fn info(self: *const Datagram) ?Info {
 }
 
 pub fn exportKeyingMaterial(self: *const Datagram, out: []u8, label: []const u8, context: ?[]const u8) Client.ExportError!void {
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now == .failed) return error.WrongPhase;
     return self.hs.exportKeyingMaterial(out, label, context);
 }
@@ -508,6 +514,8 @@ pub fn receivedNewest(self: *const Datagram) bool {
 /// `deinit`.
 pub fn srtpKeys(self: *const Datagram) SrtpError!SrtpKeys {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now != .connected) return error.NotConnected;
     const profile = (self.negotiated orelse return error.NotConnected).srtp orelse return error.NoSrtp;
     var keys: SrtpKeys = .{ .profile = profile, .material = .init(@splat(0)), .client = self.role == .client };
@@ -581,6 +589,8 @@ pub fn request(self: *Datagram) ?Request {
 
 pub fn provide(self: *Datagram, token: types.Token, answer: Answer) ProvideError!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now == .failed) return error.Closed;
     self.services.answer(self.hs, token, answer) catch |err| switch (err) {
         error.InvalidEntropy, error.StaleToken, error.NoRequest => |open| return open,
@@ -905,6 +915,8 @@ fn freePartial(self: *Datagram, p: Partial) void {
 /// application data `read` returns points into it until the next `receive`.
 pub fn receive(self: *Datagram, datagram: []u8, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now == .failed or self.phase_now == .closed) return error.Closed;
     self.readable_len = 0;
     self.readable_at = 0;
@@ -1363,6 +1375,8 @@ fn onCidMessage(self: *Datagram, kind: u8, body: []const u8, epoch: u64) Error!v
 /// it also answers the peer's request (`connectionIdsRequested`).
 pub fn newConnectionIds(self: *Datagram, cids: []const []const u8, usage: Usage) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now != .connected) return error.NotConnected;
     if (!self.dtls13()) return error.UnexpectedMessage;
     if (!self.cids_agreed or self.own_cid_len == 0) return error.NoConnectionIds;
@@ -1389,6 +1403,8 @@ pub fn newConnectionIds(self: *Datagram, cids: []const []const u8, usage: Usage)
 /// arrive as spares (`useSpareConnectionId`). One request at a time, until the peer answers.
 pub fn requestConnectionIds(self: *Datagram, count: u8) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now != .connected) return error.NotConnected;
     if (!self.dtls13()) return error.UnexpectedMessage;
     // Never while sending with an empty connection ID.
@@ -1412,6 +1428,8 @@ pub fn spareConnectionIds(self: *const Datagram) usize {
 /// keeps the paths unlinkable (RFC 9147 section 9). False when none is held.
 pub fn useSpareConnectionId(self: *Datagram) bool {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.spare_cid_count == 0) return false;
     const len = self.spare_cid_lens[0];
     @memcpy(self.peer_cid[0..len], self.spare_cids[0][0..len]);
@@ -1447,6 +1465,8 @@ pub fn timeout(self: *const Datagram) ?std.Io.Timestamp {
 /// is due. A passed `timeout` makes its flight due again, with the wait doubled.
 pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (out.len < self.mtu) return error.BufferTooSmall;
     if (self.fatal_due) |alert| {
         self.fatal_due = null;
@@ -1714,6 +1734,8 @@ fn alertDatagram(self: *Datagram, level: u8, alert: Alert, out: []u8) Error!?[]u
 /// Seals `plaintext` as one application record, the whole of a datagram, into `out`.
 pub fn write(self: *Datagram, plaintext: []const u8, out: []u8) Error![]u8 {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now != .connected) return if (self.phase_now == .handshaking) error.NotConnected else error.Closed;
     // DTLS 1.3 updates its keys while an eighth of their records is left; DTLS 1.2 has no update
     // and its association ends at the limit.
@@ -1737,6 +1759,8 @@ pub fn setMtu(self: *Datagram, mtu: u16) InitError!void {
 
 /// Ends the association with close_notify, which the next `send` writes.
 pub fn close(self: *Datagram) void {
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now == .connected) self.close_due = true;
 }
 
@@ -1745,6 +1769,8 @@ pub fn close(self: *Datagram) void {
 /// peer acknowledges it.
 pub fn keyUpdate(self: *Datagram, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     if (self.phase_now != .connected) return error.NotConnected;
     if (!self.dtls13()) return error.UnexpectedMessage;
     // One at a time: the next waits for the last one's ACK (RFC 9147 section 8).
