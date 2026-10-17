@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-17
+
 ### Added
 
 - Delegated credentials (RFC 9345), TLS 1.3 on every carrier, both roles. A server's goes in its `Credential` (`delegated`), a client's beside its certificate (`auth_delegated`); either end takes the peer's with `accept_delegated`, which needs full verification. A taken credential is checked once the chain is verified: the certificate carries DelegationUsage and digitalSignature, the credential has not expired, runs at most seven days and ends before the certificate, the certificate's key signed it under a scheme this end listed, and its key then signs CertificateVerify under the scheme it names. A sender offers it only while a peer would take it and falls back to the certificate's key. Tickets of a session a credential authenticated end with the credential. `delegated_credentials.issue` makes one with a certificate's key, `Credential.init` takes one made elsewhere and checks it against its certificate. `Info.delegated_credential` says the peer proved possession with one.
