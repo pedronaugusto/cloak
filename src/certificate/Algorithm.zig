@@ -6,7 +6,10 @@ pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
 /// ML-DSA's parameter sets (FIPS 204): pure ML-DSA, an empty context, for keys and signatures.
 pub const MlDsa = mldsa.Level;
-pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
+/// A signature algorithm. `ecdsa` signatures are DER, as X.509 and TLS write them; `ecdsa_p1363` is the
+/// same algorithm with the signature as r || s, each at the curve's width (IEEE P1363), as JOSE
+/// (RFC 7518 3.4), COSE and WebAuthn write them. Certificates never carry it.
+pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ecdsa_p1363: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
 pub const Curve = enum { p256, p384 };
 pub const PublicKey = union(enum) {
     rsa: struct { modulus: []const u8, exponent: []const u8, pss: ?Pss = null, pss_only: bool = false },

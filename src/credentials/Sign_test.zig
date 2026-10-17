@@ -25,7 +25,7 @@ fn ecdsaDifferential(_: void, case: *shakedown.Case) !void {
         for (&noise) |*byte| byte.* = shakedown.gen.int(case.source, u8);
         var out: [Sign.max_signature]u8 = undefined;
         for ([_]?*const [Ours.noise_length]u8{ null, &noise }) |hedge| {
-            const ours = try Ours.sign(&key.secret_key.bytes, message[0..length], hedge, &out);
+            const ours = try Ours.sign(&key.secret_key.bytes, message[0..length], hedge, .der, &out);
             var expected_der: [Std.Signature.der_encoded_length_max]u8 = undefined;
             const expected = (try key.sign(message[0..length], if (hedge) |bytes| bytes.* else null)).toDer(&expected_der);
             try std.testing.expectEqualSlices(u8, expected, ours);
@@ -41,8 +41,8 @@ test "ecdsa hedged signatures differ with the noise and both verify" {
     defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
     var first: [Sign.max_signature]u8 = undefined;
     var second: [Sign.max_signature]u8 = undefined;
-    const a = try Sign.P256.sign(&key.secret_key.bytes, "hello", &@as([32]u8, @splat(1)), &first);
-    const b = try Sign.P256.sign(&key.secret_key.bytes, "hello", &@as([32]u8, @splat(2)), &second);
+    const a = try Sign.P256.sign(&key.secret_key.bytes, "hello", &@as([32]u8, @splat(1)), .der, &first);
+    const b = try Sign.P256.sign(&key.secret_key.bytes, "hello", &@as([32]u8, @splat(2)), .der, &second);
     try std.testing.expect(!std.mem.eql(u8, a, b));
     try (try Std.Signature.fromDer(a)).verify("hello", key.public_key);
     try (try Std.Signature.fromDer(b)).verify("hello", key.public_key);
@@ -51,9 +51,9 @@ test "ecdsa hedged signatures differ with the noise and both verify" {
 test "ecdsa rejects a secret scalar outside the group order" {
     var out: [Sign.max_signature]u8 = undefined;
     const too_big: [32]u8 = @splat(0xff);
-    try std.testing.expectError(error.SigningFailed, Sign.P256.sign(&too_big, "x", null, &out));
+    try std.testing.expectError(error.SigningFailed, Sign.P256.sign(&too_big, "x", null, .der, &out));
     const zero: [48]u8 = @splat(0);
-    try std.testing.expectError(error.SigningFailed, Sign.P384.sign(&zero, "x", null, &out));
+    try std.testing.expectError(error.SigningFailed, Sign.P384.sign(&zero, "x", null, .der, &out));
 }
 
 const Vector = struct { seed: []const u8, message: []const u8, signature: []const u8 };

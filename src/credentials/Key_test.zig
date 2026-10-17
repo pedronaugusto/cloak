@@ -140,3 +140,48 @@ test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a messag
     defer ed.deinit();
     try std.testing.expectError(error.UnsupportedAlgorithm, ed.signDigest(.ed25519, &@as([64]u8, @splat(0)), "", &out));
 }
+
+test "ECDSA keys sign as DER or as r || s (P1363), each verified in its own form only" {
+    @setRuntimeSafety(true);
+    const signature = @import("../verify/signature.zig");
+    const certificate = @import("../certificate.zig");
+    const gpa = std.testing.allocator;
+    inline for (.{ .{ "testdata/p256.pkcs8.pem", certificate.Algorithm.Hash.sha256, certificate.Algorithm.Curve.p256, 32 }, .{ "testdata/p384.pkcs8.pem", .sha384, .p384, 48 } }) |row| {
+        const file, const hash, const curve, const width = row;
+        const key = try PrivateKey.parse(gpa, @embedFile(file), .{});
+        defer key.deinit();
+        const pair = key.state.material.expose().*;
+        var point: [97]u8 = undefined;
+        const encoded: []const u8 = switch (pair) {
+            .p256 => |*p| blk: {
+                point[0..65].* = p.public_key.toUncompressedSec1();
+                break :blk point[0..65];
+            },
+            .p384 => |*p| blk: {
+                point = p.public_key.toUncompressedSec1();
+                break :blk point[0..97];
+            },
+            else => unreachable,
+        };
+        const public: certificate.Algorithm.PublicKey = .{ .ec = .{ .curve = curve, .bytes = encoded } };
+        const noise: [PrivateKey.max_noise]u8 = @splat(0x5a);
+        var der: [PrivateKey.max_signature]u8 = undefined;
+        var fixed: [PrivateKey.max_signature]u8 = undefined;
+        const made_der = try key.sign(.{ .ecdsa = hash }, "content", noise[0..key.noiseLength()], &der);
+        const made_fixed = try key.sign(.{ .ecdsa_p1363 = hash }, "content", noise[0..key.noiseLength()], &fixed);
+        try std.testing.expectEqual(@as(usize, 2 * width), made_fixed.len);
+        try signature.verify(public, .{ .ecdsa = hash }, "content", made_der);
+        try signature.verify(public, .{ .ecdsa_p1363 = hash }, "content", made_fixed);
+        // One signature, one encoding: neither form is read as the other.
+        try std.testing.expectError(error.InvalidSignature, signature.verify(public, .{ .ecdsa_p1363 = hash }, "content", made_der));
+        try std.testing.expectError(error.InvalidSignature, signature.verify(public, .{ .ecdsa = hash }, "content", made_fixed));
+        try std.testing.expectError(error.InvalidSignature, signature.verify(public, .{ .ecdsa_p1363 = hash }, "other", made_fixed));
+        try std.testing.expectError(error.InvalidSignature, signature.verify(public, .{ .ecdsa_p1363 = hash }, "content", made_fixed[0 .. made_fixed.len - 1]));
+        // The same nonce draw gives the same r and s in both forms.
+        var digest_out: [PrivateKey.max_signature]u8 = undefined;
+        var digest: [width]u8 = undefined;
+        if (width == 32) std.crypto.hash.sha2.Sha256.hash("content", digest[0..32], .{}) else std.crypto.hash.sha2.Sha384.hash("content", digest[0..48], .{});
+        try std.testing.expectEqualSlices(u8, made_fixed, try key.signDigest(.{ .ecdsa_p1363 = hash }, &digest, noise[0..key.noiseLength()], &digest_out));
+        try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .ecdsa_p1363 = if (hash == .sha256) .sha384 else .sha256 }, "content", noise[0..key.noiseLength()], &fixed));
+    }
+}

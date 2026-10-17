@@ -18,6 +18,9 @@ pub const Error = error{SigningFailed};
 
 /// The longest ECDSA signature: a DER SEQUENCE of two INTEGERs of 48 bytes.
 pub const max_ecdsa_signature = 2 + 2 * (2 + 1 + 48);
+/// How an ECDSA signature is written: DER, as X.509 and TLS have it, or r || s at the scalar width
+/// (IEEE P1363), as JOSE, COSE and WebAuthn have it.
+pub const Form = enum { der, p1363 };
 /// The longest signature any scheme here writes: RSA's, as long as a 4096-bit modulus.
 pub const max_signature = @max(max_ecdsa_signature, rsa.max_length);
 
@@ -34,21 +37,21 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
 
         /// DER-encodes the signature over `message` by the big-endian secret scalar
         /// into `out` and returns it. `noise` null makes the signature deterministic.
-        pub fn sign(secret: *const [secret_length]u8, message: []const u8, noise: ?*const [noise_length]u8, out: *[max_signature]u8) Error![]const u8 {
+        pub fn sign(secret: *const [secret_length]u8, message: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
             var digest: [Hash.digest_length]u8 = undefined;
             Hash.hash(message, &digest, .{});
-            return signDigest(secret, &digest, noise, out);
+            return signDigest(secret, &digest, noise, form, out);
         }
 
         /// The same signature over an already computed digest of the scheme's hash.
-        pub fn signDigest(secret: *const [secret_length]u8, digest: *const [Hash.digest_length]u8, noise: ?*const [noise_length]u8, out: *[max_signature]u8) Error![]const u8 {
+        pub fn signDigest(secret: *const [secret_length]u8, digest: *const [Hash.digest_length]u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
             var k = nonce(digest, secret, noise);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
             var k_bytes = k.toBytes(.big);
             defer std.crypto.secureZero(u8, &k_bytes);
-            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, digest, &k_bytes, out);
+            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, digest, &k_bytes, form, out);
             var point = Curve.base(Point, .big, &k_bytes) catch return error.SigningFailed;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
             const r = reduce(Point.Fe.encoded_length, point.affineCoordinates().x.toBytes(.big));
@@ -65,15 +68,12 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;
             const signature: Scheme.Signature = .{ .r = r.toBytes(.big), .s = s.toBytes(.big) };
-            var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
-            const encoded = signature.toDer(&der);
-            @memcpy(out[0..encoded.len], encoded);
-            return out[0..encoded.len];
+            return write(signature, form, out);
         }
 
         /// P-256 through cloak's own kernel: comb multiplication by the nonce, Montgomery
         /// scalars with a fixed-exponent inversion. Every secret scalar is erased.
-        fn signP256(secret: *const [32]u8, digest: *const [32]u8, k_bytes: *const [32]u8, out: *[max_signature]u8) Error![]const u8 {
+        fn signP256(secret: *const [32]u8, digest: *const [32]u8, k_bytes: *const [32]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
             const r = p256.signR(k_bytes) orelse return error.SigningFailed;
             // r is part of the signature: public.
@@ -93,10 +93,24 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;
             const signature: Scheme.Signature = .{ .r = r.toBytes(), .s = s.toBytes() };
-            var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
-            const encoded = signature.toDer(&der);
-            @memcpy(out[0..encoded.len], encoded);
-            return out[0..encoded.len];
+            return write(signature, form, out);
+        }
+
+        /// The signature in `out`, in the form asked for.
+        fn write(signature: Scheme.Signature, form: Form, out: *[max_signature]u8) []const u8 {
+            switch (form) {
+                .p1363 => {
+                    const encoded = signature.toBytes();
+                    @memcpy(out[0..encoded.len], &encoded);
+                    return out[0..encoded.len];
+                },
+                .der => {
+                    var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
+                    const encoded = signature.toDer(&der);
+                    @memcpy(out[0..encoded.len], encoded);
+                    return out[0..encoded.len];
+                },
+            }
         }
 
         fn reduce(comptime length: usize, bytes: [length]u8) Scalar {

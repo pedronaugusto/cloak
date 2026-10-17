@@ -4,6 +4,14 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- ECDSA signatures as r || s at the curve's width (IEEE P1363), as JOSE, COSE and WebAuthn write them: `certificates.signature.verify` with `.{ .ecdsa_p1363 = hash }` takes exactly two scalars' width and nothing else (so a signature has one encoding), and `PrivateKey.sign` and `signDigest` write it for P-256 and P-384 keys. Wycheproof's four P1363 files for P-256 and P-384 pass (1192 vectors). A certificate never carries it: no algorithm identifier names it.
+
+### Changed
+
+- Breaking: `certificates.certificate.Algorithm.Signature` gains `.ecdsa_p1363`: code that switches on it exhaustively names the new arm.
+
 ## [0.13.0] - 2026-10-17
 
 ### Added

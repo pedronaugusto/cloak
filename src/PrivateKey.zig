@@ -111,12 +111,10 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
     switch (key.state.material.expose().*) {
         .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
-            if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
-            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
+            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], try ecdsaForm(algorithm, .sha256), out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .p384 => |*pair| {
-            if (algorithm != .ecdsa or algorithm.ecdsa != .sha384) return error.UnsupportedAlgorithm;
-            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
+            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], try ecdsaForm(algorithm, .sha384), out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .ed25519 => |*pair| {
             if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
@@ -152,16 +150,24 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
     return switch (key.state.material.expose().*) {
         .rsa => |*rsa| rsaSign(SignDigestError, &rsa.crt, algorithm, digest, true, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
-            if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
             if (digest.len != 32) return error.InvalidDigest;
-            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
+            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], try ecdsaForm(algorithm, .sha256), out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .p384 => |*pair| {
-            if (algorithm != .ecdsa or algorithm.ecdsa != .sha384) return error.UnsupportedAlgorithm;
             if (digest.len != 48) return error.InvalidDigest;
-            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
+            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], try ecdsaForm(algorithm, .sha384), out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .ed25519, .mldsa => error.UnsupportedAlgorithm,
+    };
+}
+
+/// The form an ECDSA algorithm writes its signature in, when it is ECDSA with `hash`, the hash of the
+/// key's curve.
+fn ecdsaForm(algorithm: certificate.Algorithm.Signature, hash: certificate.Algorithm.Hash) error{UnsupportedAlgorithm}!Sign.Form {
+    return switch (algorithm) {
+        .ecdsa => |h| if (h == hash) .der else error.UnsupportedAlgorithm,
+        .ecdsa_p1363 => |h| if (h == hash) .p1363 else error.UnsupportedAlgorithm,
+        else => error.UnsupportedAlgorithm,
     };
 }
 
@@ -248,8 +254,8 @@ test "a parse and a signature reach less stack than the depths that erase it" {
         var out: [max_signature]u8 = undefined;
         const algorithms: []const certificate.Algorithm.Signature = switch (key.state.material.expose().*) {
             .rsa => &.{ .{ .pss = .{ .hash = .sha512, .mgf_hash = .sha512, .salt_length = 64 } }, .{ .rsa = .sha256 } },
-            .p256 => &.{.{ .ecdsa = .sha256 }},
-            .p384 => &.{.{ .ecdsa = .sha384 }},
+            .p256 => &.{ .{ .ecdsa = .sha256 }, .{ .ecdsa_p1363 = .sha256 } },
+            .p384 => &.{ .{ .ecdsa = .sha384 }, .{ .ecdsa_p1363 = .sha384 } },
             .ed25519 => &.{.ed25519},
             .mldsa => |*k| &.{.{ .mldsa = k.level }},
         };
@@ -260,7 +266,7 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             const length: usize = switch (algorithm) {
                 .pss => 64,
                 .rsa => 32,
-                .ecdsa => |hash| if (hash == .sha256) 32 else 48,
+                .ecdsa, .ecdsa_p1363 => |hash| if (hash == .sha256) 32 else 48,
                 else => unreachable,
             };
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signPrehashed, .{ key, algorithm, digest[0..length], noise[0..key.noiseLength()], &out }));

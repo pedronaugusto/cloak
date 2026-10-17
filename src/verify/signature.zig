@@ -45,7 +45,7 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
 pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u8) []const u8 {
     @setRuntimeSafety(true);
     const hash: A.Hash = switch (algorithm) {
-        .rsa, .ecdsa => |h| h,
+        .rsa, .ecdsa, .ecdsa_p1363 => |h| h,
         .pss => |p| p.hash,
         .ed25519, .mldsa, .unsupported => unreachable, // callers route these elsewhere
     };
@@ -90,6 +90,17 @@ pub fn verifyDigest(key: A.PublicKey, algorithm: A.Signature, digest: []const u8
                 },
                 .p384 => switch (h) {
                     inline else => |hash| ecdsa(std.crypto.ecc.P384, Hash(hash), k.bytes, digest, signature),
+                },
+            },
+            else => return error.InvalidPublicKey,
+        },
+        .ecdsa_p1363 => |h| switch (key) {
+            .ec => |k| return switch (k.curve) {
+                .p256 => switch (h) {
+                    inline else => |hash| ecdsaP1363(std.crypto.ecc.P256, Hash(hash), k.bytes, digest, signature),
+                },
+                .p384 => switch (h) {
+                    inline else => |hash| ecdsaP1363(std.crypto.ecc.P384, Hash(hash), k.bytes, digest, signature),
                 },
             },
             else => return error.InvalidPublicKey,
@@ -187,6 +198,23 @@ fn rsaPss(comptime H: type, comptime M: type, key: rsa_key, salt_length: usize, 
     final.update(digest);
     final.update(db[db_len - salt_length ..][0..salt_length]);
     if (!std.mem.eql(u8, h, &final.finalResult())) return error.InvalidSignature;
+}
+/// An ECDSA signature as r || s, each exactly the curve's scalar width (IEEE P1363): any other length
+/// is refused, so one signature has one encoding.
+fn ecdsaP1363(comptime Curve: type, comptime H: type, bytes: []const u8, digest: []const u8, signature: []const u8) Error!void {
+    @setRuntimeSafety(true);
+    const width = Curve.scalar.encoded_length;
+    if (digest.len != H.digest_length or signature.len != 2 * width) return error.InvalidSignature;
+    if (Curve == std.crypto.ecc.P256) {
+        const key = p256.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
+        const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest[0..32]));
+        if (!p256.verify(key, e, signature[0..32], signature[32..64])) return error.InvalidSignature;
+        return;
+    }
+    const E = std.crypto.sign.ecdsa.Ecdsa(Curve, H);
+    const key = E.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
+    const sig = E.Signature.fromBytes(signature[0 .. 2 * width].*);
+    sig.verifyPrehashed(digest[0..H.digest_length].*, key) catch return error.InvalidSignature;
 }
 /// P-256 through cloak's kernel: the base comb plus a width-5 NAF over the key, public inputs only.
 fn ecdsaP256(bytes: []const u8, digest: []const u8, signature: []const u8) Error!void {
