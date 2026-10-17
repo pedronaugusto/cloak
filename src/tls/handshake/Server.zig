@@ -784,7 +784,9 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     };
     if (!hello.offers13() or !self.allows13()) {
         // A client without TLS 1.3 (or a server without it): TLS 1.2 when both sides allow it,
-        // never after a retry.
+        // never after a retry. A fallback retry below this server's highest version is refused
+        // as such first, whatever version it names (RFC 7507 section 3).
+        if (hello.fallback() and (self.allows13() or !hello.offers12())) return error.InappropriateFallback;
         if (second or !self.allows12() or !hello.offers12()) return error.UnsupportedVersion;
         return Server12.onClientHello(self, msg, &hello, epoch, boundary);
     }

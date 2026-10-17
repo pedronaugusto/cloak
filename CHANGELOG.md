@@ -11,6 +11,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - A handshake message or handshake past the receiver's bounds (`Limits`) ends with decode_error, the peer's length being out of the range taken; it was internal_error, which RFC 8446 section 6.2 keeps for failures unrelated to the peer. A flight of this end's own past its bound stays an internal error. F110.
 - A stream ClientHello without supported_versions whose legacy_version is above TLS 1.2 negotiates TLS 1.2 whatever the number, 0xfefe and 0xffff included (RFC 5246 appendix E.1, RFC 8446 section 4.2.1); versions from 0xfe00 up were refused with protocol_version. F111.
 - An empty server_name list, or an empty host name in it, ends with decode_error (RFC 6066 section 3's ranges); it was illegal_parameter, which stays for a name that decodes but is no host name. F112.
+- A ClientHello carrying TLS_FALLBACK_SCSV whose version is below the server's highest ends with inappropriate_fallback whatever version it names (RFC 7507 section 3), a server of TLS 1.2 alone included; one naming TLS 1.1 was refused with protocol_version. F113.
 
 ## [0.17.3] - 2026-10-17
 

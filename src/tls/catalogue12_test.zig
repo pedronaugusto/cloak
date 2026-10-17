@@ -289,3 +289,35 @@ test "F64 catalogue_starttls_strip_and_plaintext_fallback" {
     if (duo.client.send("plaintext")) |_| return error.TestUnexpectedResult else |err| try std.testing.expect(err == error.NotConnected or err == error.Closed);
     try std.testing.expectEqual(@as(usize, 0), duo.client.readable().len);
 }
+
+/// Like `serverRefuses`, with the server's options.
+fn serverRefusesWith(options: Duo.Options, message: []const u8) anyerror {
+    const duo = Duo.init(std.testing.allocator, options) catch |err| return err;
+    defer duo.deinit();
+    var record: [1024]u8 = undefined;
+    record[0..5].* = .{ 22, 3, 3, 0, 0 };
+    std.mem.writeInt(u16, record[3..5], @intCast(message.len), .big);
+    @memcpy(record[5..][0..message.len], message);
+    _ = duo.server.receive(record[0 .. 5 + message.len]) catch |err| return err;
+    return duo.server.diagnostics().reason orelse error.NoFailure;
+}
+
+test "F113 catalogue_fallback_scsv_before_version (a fallback hello below the server's highest version is inappropriate_fallback, even of a version the server does not speak)" {
+    // tlsfuzzer's test-fallback-scsv: RFC 7507 section 3, TLS_FALLBACK_SCSV with a client_version
+    // below the server's highest MUST get inappropriate_fallback; protocol_version is for a hello
+    // without it.
+    var hello: [512]u8 = undefined;
+    const tls11 = clientHello12(&hello, &.{ 0xc02b, 0x5600 }, &.{0}, modern);
+    hello[4..6].* = .{ 3, 2 };
+    try std.testing.expectEqual(error.InappropriateFallback, serverRefuses(tls11));
+    try std.testing.expectEqual(error.InappropriateFallback, serverRefusesWith(.{ .server_max = .tls12 }, tls11));
+    var plain: [512]u8 = undefined;
+    const tls11_plain = clientHello12(&plain, &.{0xc02b}, &.{0}, modern);
+    plain[4..6].* = .{ 3, 2 };
+    try std.testing.expectEqual(error.UnsupportedVersion, serverRefuses(tls11_plain));
+    // A TLS 1.2 fallback hello at a server of TLS 1.2 alone is no fallback: it goes on.
+    var at_max: [512]u8 = undefined;
+    // (P-256 listed: the server's certificate is on it.)
+    const with_p256 = "\x00\x0a\x00\x06\x00\x04\x00\x1d\x00\x17" ++ modern[8..];
+    try std.testing.expectEqual(error.NoFailure, serverRefusesWith(.{ .server_max = .tls12 }, clientHello12(&at_max, &.{ 0xc02b, 0x5600 }, &.{0}, with_p256)));
+}

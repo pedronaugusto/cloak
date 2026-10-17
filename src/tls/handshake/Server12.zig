@@ -36,8 +36,6 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     self.version = .tls12;
     self.state.version = .tls12;
     const scratch = self.scratch.?;
-    // A client that supports more than TLS 1.2 retried with less: a downgrade (RFC 7507).
-    if (hello.fallback() and self.allows13()) return error.InappropriateFallback;
     if (!hello.extended_master_secret) return error.NoExtendedMasterSecret;
     if (!hello.secureRenegotiation()) return error.NoSecureRenegotiation;
     if (!hello.uncompressed_points) return error.IllegalParameter;
