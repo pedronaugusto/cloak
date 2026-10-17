@@ -9,6 +9,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - A plaintext record (a ClientHello, a refusal) is taken with any legacy record version {03,XX}, as RFC 8446 section 5.1 and RFC 5246 appendix E.1 ask; 03,00 (tlsfuzzer's hellos, SSL 3.0-era clients) and 03,04 were refused with unexpected_message. F96.
 - A TLS 1.3 record that opens but whose inner plaintext names no content type, an unknown one, or is an empty alert or handshake fragment ends the connection with unexpected_message (RFC 8446 sections 5, 5.1 and 5.4), not bad_record_mac: its tag held. F97.
 - A server refuses a ClientHello whose legacy_version is SSL 3.0 (0x0300) or older with protocol_version, even when it offers TLS 1.3 (RFC 8446 appendix D.5). F98.
+- A server refuses a TLS 1.3 ClientHello that has supported_groups but no key_share extension with missing_extension (RFC 8446 section 9.2); it answered with a retry request. An empty share list still gets one. F99.
 
 ## [0.17.1] - 2026-10-17
 

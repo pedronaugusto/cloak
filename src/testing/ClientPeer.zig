@@ -22,6 +22,8 @@ pub const Tamper = enum {
     no_versions,
     /// key_share without supported_groups.
     no_groups,
+    /// supported_groups without key_share.
+    no_key_share,
     no_signature_algorithms,
     duplicate_extension,
     bad_compression,
@@ -338,7 +340,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             };
             if (t == .share_outside_groups) try share_body.appendSlice(gpa, &.{ 0x01, 0x00, 0, 1, 0x55 });
             std.mem.writeInt(u16, share_body.items[0..2], @intCast(share_body.items.len - 2), .big);
-            if (!(t == .second_without_share and second)) try Ext.put(&ext, gpa, 51, share_body.items);
+            if (!(t == .second_without_share and second) and t != .no_key_share) try Ext.put(&ext, gpa, 51, share_body.items);
             if (t == .changed_second_hello and second) try Ext.put(&ext, gpa, 16, &.{ 0, 3, 2, 'z', 'z' });
             if (t == .psk_not_last) {
                 try Ext.put(&ext, gpa, 41, &([_]u8{ 0, 7, 0, 1, 'x', 0, 0, 0, 0, 0, 33, 32 } ++ @as([32]u8, @splat(0))));

@@ -182,6 +182,17 @@ test "C3 server names what a hello is missing" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .no_signature_algorithms }, .{}, error.MissingExtension, .missing_extension);
 }
 
+test "F99 catalogue_groups_without_key_share (supported_groups with no key_share extension ends with missing_extension, not a retry request)" {
+    // RFC 8446 section 9.2: each of supported_groups and key_share requires the other; an empty
+    // share list is allowed and is answered with a retry request.
+    try fails(.aes_128_gcm_sha256, .{ .tamper = .no_key_share }, .{}, error.MissingExtension, .missing_extension);
+    try fails(.aes_128_gcm_sha256, .{ .tamper = .no_key_share, .groups = &.{.p256} }, .{ .groups = &.{.p256} }, error.MissingExtension, .missing_extension);
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .groups = &.{.p256}, .shares = &.{} }, .{});
+    defer pair.deinit();
+    try pair.run();
+    try std.testing.expect(pair.client.got_retry);
+}
+
 test "C3 server refuses what it cannot serve" {
     // No shared group, no scheme the certificate can sign, no shared protocol.
     try fails(.aes_128_gcm_sha256, .{ .groups = &.{.x25519}, .shares = &.{.x25519} }, .{ .groups = &.{ .p256, .p384 } }, error.NoSharedGroup, .handshake_failure);
@@ -296,7 +307,8 @@ test "F30 catalogue_key_change_record_alignment" {
 test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     // The second hello must repeat the first except for the key share.
     try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .changed_second_hello }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
-    try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .second_without_share }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
+    // A second hello with no key_share at all is refused for that first (RFC 8446 section 9.2, F99).
+    try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .second_without_share }, .{ .groups = &.{.p256} }, error.MissingExtension, .missing_extension);
 }
 
 test "C3 oversized records are refused before they are buffered" {

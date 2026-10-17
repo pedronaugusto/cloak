@@ -791,6 +791,9 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
     if (!hello.has_schemes) return error.MissingExtension;
     if (!hello.has_groups) return error.MissingExtension;
+    // Each of supported_groups and key_share requires the other (RFC 8446 section 9.2); an empty
+    // share list is allowed and gets a retry request.
+    if (!hello.has_shares) return error.MissingExtension;
     if (hello.sharesOutsideGroups()) return error.IllegalParameter;
     // A second hello may not offer early data (RFC 8446 section 4.2.10).
     if (second and hello.early_data) return error.IllegalParameter;
