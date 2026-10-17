@@ -362,10 +362,14 @@ has no branch on secret data. P-384 agreement runs the masked fixed-window walk
 ML-KEM and refusal of an all-zero X25519 secret; their generated code is not yet
 reviewed here.
 
-Hostile input. A record is accepted only with a 0x0303 legacy version; protected
+Hostile input. A protected record is accepted only with a 0x0303 legacy version, a
+plaintext one with any {03,XX} (the field is ignored, RFC 8446 section 5.1); protected
 records authenticate before any plaintext leaves the record buffer, and the first
-failed authentication ends the connection. One compatibility change_cipher_spec is
-ignored, only between messages before the server Finished. Handshake messages are
+failed authentication ends the connection. One change_cipher_spec is ignored after the
+first ClientHello, only between messages before the peer's Finished, whether or not
+either side asked for middlebox compatibility; a server takes a plaintext alert as the
+client's own until a record opens under the client's handshake keys (a client refusing
+the ServerHello has none to write under). Handshake messages are
 bounded before they are buffered. A message that changes keys (ServerHello,
 Finished) must end its record, or in QUIC its level, with nothing after it; QUIC
 refuses a message that straddles levels. Extensions are unique, unsolicited ones
@@ -1440,4 +1444,10 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F98 | `catalogue_obsolete_legacy_hello_version` | `tls/ServerConnection_test.zig` | the check left out: TLS 1.3 negotiated over a hello naming 03,00 (found by tlsfuzzer's test-tls13-legacy-version) |
 | F99 | `catalogue_groups_without_key_share` | `tls/ServerConnection_test.zig` | the check left out: a retry request answered a hello with no key_share (found by tlsfuzzer's test-tls13-keyshare-omitted) |
 | F100 | `catalogue_no_record_between_handshake_fragments` | `tls/ServerConnection_test.zig` | the check left out: data between a KeyUpdate's fragments read (found by tlsfuzzer's test-tls13-keyupdate) |
-| F101 | `catalogue_extension_count_unbounded_unique` | `wire/Extensions_test.zig`, `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the whole-block check skipped; its passes keyed by 13 bits; the fingerprint passing over half the low bytes (found by tlsfuzzer's test-tls13-large-number-of-extensions: hellos past 64 extensions were refused) |
+| F101 | `catalogue_extension_count_unbounded_unique` | `wire/Extensions_test.zig`, `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the whole-block check skipped; its passes keyed by 13 bits (found by tlsfuzzer's test-tls13-large-number-of-extensions: hellos past 64 extensions were refused) |
+| F102 | `catalogue_inner_plaintext_overflow` | `tls/ServerConnection_test.zig` | the overflow answered as a tag failure (bad_record_mac), as before (found by tlsfuzzer's test-tls13-record-layer-limits) |
+| F103 | `catalogue_plaintext_alert_answering_server_hello` | `tls/ServerConnection_test.zig` | the check left out: the client's plaintext alert refused as an unexpected record (found by tlsfuzzer's test-tls13-unencrypted-alert) |
+| F104 | `catalogue_retry_hello_extension_order` | `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the fingerprint taking the extensions in ID order, as before (found by tlsfuzzer's test-tls13-shuffled-extentions) |
+| F105 | `catalogue_ccs_without_compatibility_mode` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig` | the change_cipher_spec held to a hello with a session id, and its record version to 03,03 after the keys, as before (found by tlsfuzzer's test-tls13-multiple-ccs-messages) |
+| F106 | `catalogue_psk_hello_without_signature_algorithms` | `tls/Psk_test.zig` | signature_algorithms required of every TLS 1.3 hello, as before (found by tlsfuzzer's test-tls13-psk_dhe_ke) |
+| F107 | `catalogue_key_share_count_unbounded_unique` | `tls/handshake/ClientHello_test.zig` | the 32-share table, as before (found by tlsfuzzer's test-tls13-unrecognised-groups) |
