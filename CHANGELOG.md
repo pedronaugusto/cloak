@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-17
+
 ### Added
 
 - TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 (0xC0AE, RFC 7251) over TLS 1.2 and DTLS 1.2, spoken only when listed: the mandatory suite of the CoAP and LwM2M profiles (RFC 7925). A DTLS key under it ends its association after 2^7 records fail to open (`ForgeryLimit`), the 2^-57 forgery margin of every other cipher (RFC 9147 appendix B.3). Kernel TLS has no CCM_8: it stays in software.
