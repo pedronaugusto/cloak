@@ -1436,3 +1436,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F94 | `catalogue_roca_fingerprinted_rsa_key_refused` | `Roca_test.zig` |  |
 | F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |
 | F96 | `catalogue_legacy_record_version_ignored` | `tls/ServerConnection_test.zig` | plaintext records held to 03,01-03,03 (found by tlsfuzzer: its hellos come as 03,00) |
+| F97 | `catalogue_authenticated_inner_content_unexpected` | `tls/ServerConnection_test.zig`, `tls/record/Epoch_test.zig` | the authenticated refusals answered as a tag failure (bad_record_mac), as before (found by tlsfuzzer's test-tls13-empty-alert) |

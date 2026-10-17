@@ -80,7 +80,7 @@ test "C2 record padding empty application and authenticated inner rejection" {
         A.encrypt(invalid[5..6], invalid[6..][0..16], &.{24}, invalid[0..5], rx.iv.expose().*, rx.key.expose().*);
         var bad = try E.init(@splat(1), @splat(2), .{});
         defer bad.deinit();
-        try std.testing.expectError(error.BadRecord, bad.open(&invalid, &out));
+        try std.testing.expectError(error.UnexpectedRecord, bad.open(&invalid, &out));
     }
 }
 test "C2 record property roundtrip all suite boundaries" {

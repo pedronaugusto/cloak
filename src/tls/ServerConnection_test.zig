@@ -121,6 +121,27 @@ test "F96 catalogue_legacy_record_version_ignored (any {03,XX} on a plaintext re
     try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0403 }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
+test "F97 catalogue_authenticated_inner_content_unexpected (no type, an unknown one, an empty alert or handshake: unexpected_message, not bad_record_mac)" {
+    // RFC 8446 section 5.4: no non-zero octet in the inner plaintext; section 5: an unknown record
+    // type; section 5.1: an empty alert or handshake fragment. The tag held, so it is no MAC failure.
+    for ([_][]const u8{ "\x00", "\x00\x00\x00\x00\x00", "\x15", "\x15\x00\x00", "\x16", "hello\x18", "\x17\x00\x19\x00" }) |inner| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+        defer pair.deinit();
+        try pair.run();
+        var wire: [64]u8 = undefined;
+        try std.testing.expectError(error.UnexpectedRecord, pair.conn.receive(pair.client.forge(inner, &wire)));
+        try std.testing.expectEqual(Alert.unexpected_message, pair.conn.diagnostics().alert_sent.?);
+        try std.testing.expectEqual(@as(usize, 0), pair.conn.readable().len);
+    }
+    // The same forger's well-formed record is read: the refusals are the content's alone.
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+    defer pair.deinit();
+    try pair.run();
+    var wire: [64]u8 = undefined;
+    _ = try pair.conn.receive(pair.client.forge("hello\x17\x00", &wire));
+    try std.testing.expectEqualStrings("hello", pair.conn.readable());
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();

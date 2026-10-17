@@ -217,6 +217,24 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             try self.out.appendSlice(self.gpa, body);
         }
 
+        /// A record whose inner plaintext (content, type octet and padding) is `inner` as given,
+        /// sealed under the client's current write keys at their next number: what `seal`
+        /// refuses to make (no type, an unknown one, an empty alert or handshake fragment).
+        pub fn forge(self: *Self, inner: []const u8, out: []u8) []const u8 {
+            const A = suites.Aead(suite);
+            const tx = &self.tx.?;
+            const wire = out[0 .. 5 + inner.len + A.tag_length];
+            wire[0..5].* = .{ 23, 3, 3, 0, 0 };
+            std.mem.writeInt(u16, wire[3..5], @intCast(inner.len + A.tag_length), .big);
+            var nonce = tx.iv.expose().*;
+            var counter: [8]u8 = undefined;
+            std.mem.writeInt(u64, &counter, tx.sequence.raw(), .big);
+            for (nonce[4..], counter) |*byte, n| byte.* ^= n;
+            A.encrypt(wire[5..][0..inner.len], wire[5 + inner.len ..][0..A.tag_length], inner, wire[0..5], nonce, tx.key.expose().*);
+            tx.sequence = .fromRaw(tx.sequence.raw() + 1);
+            return wire;
+        }
+
         fn sealOne(self: *Self, content: Epoch.Content, bytes: []const u8) !void {
             var wire: [5 + (1 << 14) + 256]u8 = undefined;
             const sealed = try self.tx.?.seal(content, bytes, 0, &wire);

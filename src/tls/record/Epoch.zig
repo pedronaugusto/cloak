@@ -13,7 +13,10 @@ pub const max_ciphertext = max_content + 256;
 pub const Limits = struct { records: u64 = 1 << 24, bytes: u64 = 1 << 38 };
 pub const InitError = error{InvalidLimits};
 pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength, PartialOverlap };
-pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap, RecordOverflow };
+/// `BadRecord` is a record that fails its tag (or is no TLS 1.3 ciphertext); `UnexpectedRecord` an
+/// authenticated one whose inner plaintext names no content type or an unknown one, or is an empty
+/// alert or handshake fragment (RFC 8446 sections 5.1, 5.4: unexpected_message, not bad_record_mac).
+pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, UnexpectedRecord, PartialOverlap, RecordOverflow };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
 pub const TrialError = OpenError || error{Undecryptable};
 /// Who seals or opens an epoch's records: the epoch itself, or a kernel record layer that holds
@@ -204,18 +207,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             };
             var end = len;
             while (end > 0 and plain[end - 1] == 0) end -= 1;
-            if (end == 0) {
-                std.crypto.secureZero(u8, plain);
-                return self.bad();
-            }
-            const content = std.enums.fromInt(Content, plain[end - 1]) orelse {
-                std.crypto.secureZero(u8, plain);
-                return self.bad();
-            };
-            if (content != .application and end == 1) {
-                std.crypto.secureZero(u8, plain);
-                return self.bad();
-            }
+            if (end == 0) return self.unexpected(plain);
+            const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected(plain);
+            if (content != .application and end == 1) return self.unexpected(plain);
             self.sequence = .fromRaw(self.sequence.raw() + 1);
             self.bytes = .fromRaw(self.bytes.raw() + len);
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
@@ -223,6 +217,12 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         fn bad(self: *Self) error{BadRecord} {
             self.deinit();
             return error.BadRecord;
+        }
+        /// An authenticated record the protocol forbids: its plaintext is erased with the epoch.
+        fn unexpected(self: *Self, plain: []u8) error{UnexpectedRecord} {
+            std.crypto.secureZero(u8, plain);
+            self.deinit();
+            return error.UnexpectedRecord;
         }
     };
 }
