@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-17
+
 ### Added
 
 - Certificate Transparency (RFC 6962 v1 SCTs) as a verification policy: `types.Policy.transparency` names a `TransparencyPolicy`, borrowed: the caller's logs (key, operator, when retired), the counts and when the log list stops being current. A certificate is compliant by SCTs embedded in it (checked over its precertificate) from enough distinct logs, one of them not retired, or by SCTs delivered beside it from enough logs none retired, from enough distinct operators; the defaults are Chrome's and Apple's counts. Typed failures (`MissingTransparency`, `InvalidTransparency`, `StaleTransparency`, `InvalidTransparencyPolicy`); the receipt reports `transparency` and holds no longer than the list. `types.Evidence.scts` carries delivered lists.
