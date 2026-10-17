@@ -485,8 +485,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             },
             51 => {
                 const named: Group = @fromBackingInt(try value.int(u16));
-                if (!named.supported()) return error.UnofferedSelection;
-                group = named;
+                group = if (named.supported()) named else return error.UnofferedSelection;
                 if (!retry) share = (try value.vector(u16)).bytes;
             },
             41 => {

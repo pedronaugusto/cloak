@@ -8,8 +8,8 @@ const Context = struct {
     fn admission(c: *Context, units: u64) !void {
         @setRuntimeSafety(true);
         for (0..units) |_| {
-            try c.budget.reserve(1024);
-            c.budget.release(1024);
+            var charge = try c.budget.reserve(1024);
+            c.budget.release(&charge);
         }
         if (c.budget.counts().bytes != 0) return error.LeakedCharge;
     }
