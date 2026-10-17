@@ -1,45 +1,72 @@
 //! Caller-owned shared admission. Abandoned work remains charged until reaped.
-const Guarded = @import("aegis").Guarded;
-const Budget = @This();
 const aegis = @import("aegis");
-const Bytes = aegis.units.Bytes(usize);
-const Jobs = aegis.units.Count(struct {}, usize);
-/// Configure before publishing this owner; limits are immutable during use.
-max_jobs: usize = 64,
-max_bytes: usize = 16 * 1024 * 1024,
-shared: Guarded(Active) = .init(.{}),
-const Active = struct { jobs: Jobs = .fromRaw(0), bytes: Bytes = .fromRaw(0) };
+const Guarded = aegis.Guarded;
+const Budget = @This();
+const Counter = aegis.bounded.Budget(usize);
+/// Private: the two counters, changed only under the guard. Their ceilings are set by `init` and
+/// never change.
+shared: Guarded(Active),
+const Active = struct { jobs: Counter, bytes: Counter };
+
+pub const Limits = struct {
+    /// Jobs admitted and not yet reaped.
+    max_jobs: usize = 64,
+    /// Bytes those jobs own.
+    max_bytes: usize = 16 * 1024 * 1024,
+};
+
+/// A budget with these limits. It must not move once a job holds a charge of it.
+pub fn init(limits: Limits) Budget {
+    return .{ .shared = .init(.{ .jobs = .init(limits.max_jobs), .bytes = .init(limits.max_bytes) }) };
+}
+
+/// One admitted job's share: one job and its bytes. Exactly one `release` returns it; moving it
+/// is by `moveInto`, a copy is a second owner.
+pub const Charge = struct {
+    jobs: Counter.Reservation,
+    bytes: Counter.Reservation,
+
+    pub fn moveInto(self: *Charge, destination: *Charge) void {
+        self.jobs.moveInto(&destination.jobs);
+        self.bytes.moveInto(&destination.bytes);
+    }
+};
+
 /// Scalar snapshot for observers; no live borrow leaves the guard.
 pub const Counts = struct { jobs: usize = 0, bytes: usize = 0 };
 pub const ReserveError = error{ServiceBusy};
-pub fn reserve(b: *Budget, amount: usize) ReserveError!void {
-    @setRuntimeSafety(true);
-    var guard = b.shared.acquire();
-    defer guard.deinit();
-    const active = guard.value();
-    if (active.jobs.raw() >= b.max_jobs or active.bytes.raw() > b.max_bytes) return error.ServiceBusy;
-    const available = Bytes.fromRaw(b.max_bytes).sub(active.bytes) catch unreachable; // unreachable: active bytes fit the configured ceiling
-    if (amount > available.raw()) return error.ServiceBusy;
-    // Each addition is bounded before mutation; no failing publication or rollback.
-    active.jobs = active.jobs.add(.fromRaw(1)) catch unreachable; // unreachable: jobs are strictly below their usize ceiling
-    active.bytes = active.bytes.add(.fromRaw(amount)) catch unreachable; // unreachable: amount fits the checked remaining byte budget
 
-}
-pub fn release(b: *Budget, amount: usize) void {
+/// Admits one job owning `amount` bytes, or none: a refusal leaves both counts as they were.
+pub fn reserve(b: *Budget, amount: usize) ReserveError!Charge {
     @setRuntimeSafety(true);
     var guard = b.shared.acquire();
     defer guard.deinit();
     const active = guard.value();
-    aegis.assert.pre(active.bytes.raw() >= amount and active.jobs.raw() != 0, "service release owns its charge");
-    active.bytes = active.bytes.sub(.fromRaw(amount)) catch unreachable; // unreachable: ownership invariant checked above
-    active.jobs = active.jobs.sub(.fromRaw(1)) catch unreachable; // unreachable: ownership invariant checked above
+    var jobs = active.jobs.reserve(1) catch return error.ServiceBusy;
+    const bytes = active.bytes.reserve(amount) catch {
+        jobs.release();
+        return error.ServiceBusy;
+    };
+    return .{ .jobs = jobs, .bytes = bytes };
 }
+
+/// Returns a charge this budget made, under its guard: the charge's reservations point into the
+/// guarded counters, and are released only while the guard is held.
+pub fn release(b: *Budget, charge: *Charge) void {
+    @setRuntimeSafety(true);
+    var guard = b.shared.acquire();
+    defer guard.deinit();
+    charge.jobs.release();
+    charge.bytes.release();
+}
+
 pub fn counts(b: *Budget) Counts {
     @setRuntimeSafety(true);
     var guard = b.shared.acquire();
     defer guard.deinit();
-    return .{ .jobs = guard.value().jobs.raw(), .bytes = guard.value().bytes.raw() };
+    return .{ .jobs = guard.value().jobs.charged(), .bytes = guard.value().bytes.charged() };
 }
+
 test {
     @setRuntimeSafety(true);
     _ = @import("Budget_test.zig");

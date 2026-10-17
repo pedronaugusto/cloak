@@ -13,7 +13,7 @@ state: *State,
 const State = struct {
     gpa: std.mem.Allocator,
     budget: *Budget,
-    charge: usize,
+    charge: Budget.Charge,
     inputs: OwnedRequest,
     refs: std.atomic.Value(usize) = .init(1),
     shared: Guarded(Completion) = .init(.{}),
@@ -32,9 +32,8 @@ pub const InitError = OwnedRequest.InitError || Budget.ReserveError || SubmitErr
 pub fn init(gpa: std.mem.Allocator, budget: *Budget, request: types.Request, options: Options) InitError!Job {
     @setRuntimeSafety(true);
     if (options.timeout != .none and options.executor == null) return error.ServiceExecutorRequired;
-    const charge = try inputSize(request, options.anchors);
-    try budget.reserve(charge);
-    errdefer budget.release(charge);
+    var charge = try budget.reserve(try inputSize(request, options.anchors));
+    errdefer budget.release(&charge);
     var inputs = try OwnedRequest.init(gpa, request, options.anchors);
     errdefer inputs.deinit();
     const state = try gpa.create(State);
@@ -129,7 +128,7 @@ pub fn deinit(job: Job) void {
         if (result.*) |*path| path.deinit() else |_| {}
     }
     job.state.inputs.deinit();
-    job.state.budget.release(job.state.charge);
+    job.state.budget.release(&job.state.charge);
     const gpa = job.state.gpa;
     gpa.destroy(job.state);
 }

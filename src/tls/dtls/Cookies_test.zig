@@ -180,7 +180,7 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     // offering it (in place of P-256) without a share: the retry request asks for P-384.
     var cookies = try keyed();
     defer cookies.deinit();
-    const ffdhe2048: Hello.Group = @enumFromInt(0x0100);
+    const ffdhe2048: Hello.Group = @fromBackingInt(@intCast(0x0100));
     const listing: Datagram.ServerOptions = .{ .credentials = &.{}, .groups = &.{ ffdhe2048, .p384 } };
     var first_buf: [2048]u8 = undefined;
     const first = try hello(&first_buf, .tls13, "", 0);

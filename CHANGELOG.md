@@ -7,6 +7,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Changed
 
 - Breaking: `tls.Group`, `tls.Suite`, `tls.SignatureScheme` and the SRTP profiles (`tls.dtls.Datagram.Srtp`) are open enums, as `tls.Alert`, the HPKE identifiers and the certificate-compression algorithms already were: any IANA number is a value, so a group, suite, scheme or profile cloak names later is no break for a caller's `switch` (one over these now needs a `_` or `else` prong), and a number read off the wire is representable. `supported()` says whether cloak speaks one. `Group.clientShareLength`/`serverShareLength`, `Suite.version` and `Srtp.keyLength`/`saltLength` return null for one it does not. `tls.Version` stays closed: TLS versions are no registry, and their order is the min/max policy.
+- Breaking: `services.Budget` is made with `Budget.init(.{ .max_jobs, .max_bytes })` and keeps its counts as two aegis budgets; `reserve` returns the `Charge` a job holds and `release` takes it back, so a release returns exactly what its admission took (a second release of one charge stops a Debug build).
 - Options naming a group, suite or SRTP profile cloak does not speak are refused (`InvalidOptions`); before, such a value could not be written. A peer's selection of one, a ticket or a DTLS cookie naming one, is refused as before, now by an explicit check at each place a number becomes one of these types.
 
 ## [0.10.5] - 2026-10-15

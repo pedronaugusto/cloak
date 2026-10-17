@@ -4,7 +4,7 @@ const cloak = @import("cloak");
 const shakedown = @import("shakedown");
 const Context = struct {
     gpa: std.mem.Allocator,
-    budget: cloak.services.Budget = .{},
+    budget: cloak.services.Budget = .init(.{}),
     fn admission(c: *Context, units: u64) !void {
         @setRuntimeSafety(true);
         for (0..units) |_| {

@@ -115,8 +115,11 @@ validation time, a receipt's times, `Identity.expires`, the time a handshake ask
 age); inside, certificates and revocation evidence count whole seconds, rounded down
 from the request's time once. Identity expiry is stored as a real-clock seconds
 Instant; certificate encodings and native scalar calls use explicit raw values.
-Service admission keeps jobs and Bytes counts under one spin guard; observational
-counts are raw scalar snapshots. Checked integers cover DER numeric decoding,
+Service admission is two aegis budgets, jobs and bytes, under one spin guard, their
+ceilings fixed by `Budget.init`. A job holds its `Charge` (one reservation of each)
+and returns it under the guard, so a release returns exactly what was reserved, and
+Debug builds catch a second release; a refused admission leaves both counts as they
+were. Observational counts are raw scalar snapshots. Checked integers cover DER numeric decoding,
 identity/receipt/service allocation sizes and KDF narrowing; ranged integers
 reject zero rounds. Required admission invariants remain active in every mode.
 

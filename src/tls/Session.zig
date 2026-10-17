@@ -540,7 +540,7 @@ fn verifyNative(session: *Session, request: certificates.types.Request, snapshot
 fn systemVerdict(session: *Session, request: certificates.types.Request) (certificates.NativeVerification.InitError || certificates.NativeVerification.TakeError)!certificates.types.Verification {
     @setRuntimeSafety(true);
     // One job at a time, run here: no executor means the system is asked on this task.
-    var budget: certificates.services.Budget = .{ .max_jobs = 1 };
+    var budget: certificates.services.Budget = .init(.{ .max_jobs = 1 });
     const job = try certificates.NativeVerification.init(session.gpa, &budget, request, .{});
     defer job.deinit();
     const now = switch (session.clock) {

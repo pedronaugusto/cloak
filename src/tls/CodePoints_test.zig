@@ -19,10 +19,10 @@ const gpa = std.testing.allocator;
 /// Numbers no type here names: GREASE, and registered values cloak does not speak (ffdhe2048,
 /// TLS_NULL_WITH_NULL_NULL, TLS_AES_128_CCM_8_SHA256, rsa_pkcs1_sha1, SRTP_NULL_HMAC_SHA1_80).
 const grease: u16 = 0x0a0a;
-const ffdhe2048: tls.Group = @enumFromInt(0x0100);
-const ccm8: tls.Suite = @enumFromInt(0x1305);
-const sha1: tls.SignatureScheme = @enumFromInt(0x0201);
-const srtp_null: tls.dtls.Datagram.Srtp = @enumFromInt(0x0005);
+const ffdhe2048: tls.Group = @fromBackingInt(@intCast(0x0100));
+const ccm8: tls.Suite = @fromBackingInt(@intCast(0x1305));
+const sha1: tls.SignatureScheme = @fromBackingInt(@intCast(0x0201));
+const srtp_null: tls.dtls.Datagram.Srtp = @fromBackingInt(@intCast(0x0005));
 
 test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code points: what cloak speaks)" {
     for (std.enums.values(tls.Group)) |group| {
@@ -33,14 +33,14 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     for (std.enums.values(tls.Suite)) |suite| try std.testing.expect(suite.supported() and suite.version() != null);
     for (std.enums.values(tls.SignatureScheme)) |scheme| try std.testing.expect(scheme.supported());
     for (std.enums.values(tls.dtls.Datagram.Srtp)) |profile| try std.testing.expect(profile.supported() and profile.keyLength() != null and profile.saltLength() != null);
-    for ([_]tls.Group{ @enumFromInt(grease), ffdhe2048, @enumFromInt(0) }) |group| {
+    for ([_]tls.Group{ @fromBackingInt(@intCast(grease)), ffdhe2048, @fromBackingInt(@intCast(0)) }) |group| {
         try std.testing.expect(!group.supported() and !group.hybrid() and !group.classical());
         try std.testing.expect(group.clientShareLength() == null and group.serverShareLength() == null);
     }
-    for ([_]tls.Suite{ @enumFromInt(grease), ccm8, @enumFromInt(0), @enumFromInt(0x00ff) }) |suite| {
+    for ([_]tls.Suite{ @fromBackingInt(@intCast(grease)), ccm8, @fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(0x00ff)) }) |suite| {
         try std.testing.expect(!suite.supported() and suite.version() == null and suite.tls13() == null and suite.tls12() == null);
     }
-    for ([_]tls.SignatureScheme{ @enumFromInt(grease), sha1 }) |scheme| try std.testing.expect(!scheme.supported());
+    for ([_]tls.SignatureScheme{ @fromBackingInt(@intCast(grease)), sha1 }) |scheme| try std.testing.expect(!scheme.supported());
     try std.testing.expect(!srtp_null.supported() and srtp_null.keyLength() == null);
     // The defaults name only what cloak speaks.
     for (tls.Group.default) |group| try std.testing.expect(group.supported());
@@ -52,9 +52,9 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_groups = &.{ .x25519, ffdhe2048 } }));
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_groups = &.{ ffdhe2048, .x25519 } }));
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_suites = &.{ .aes_128_gcm_sha256, ccm8 } }));
-    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_suites = &.{ @enumFromInt(grease), .aes_128_gcm_sha256 } }));
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_suites = &.{ @fromBackingInt(@intCast(grease)), .aes_128_gcm_sha256 } }));
     // Not even as the only TLS 1.2 or TLS 1.3 suite, where it would count toward a version.
-    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .suites = &.{ .aes_128_gcm_sha256, @enumFromInt(0xc009) } }));
+    try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .suites = &.{ .aes_128_gcm_sha256, @fromBackingInt(@intCast(0xc009)) } }));
     try std.testing.expectError(error.InvalidOptions, Hello.validate(.{ .transport = .datagram, .srtp = &.{ .aes128_cm_hmac_sha1_80, srtp_null } }));
     try Hello.validate(.{ .transport = .datagram, .srtp = &.{.aes128_cm_hmac_sha1_80} });
 }
@@ -87,20 +87,20 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     // A TLS 1.2 ServerKeyExchange on a group cloak does not speak.
     var params_buf: [64]u8 = undefined;
     var ske_buf: [128]u8 = undefined;
-    for ([_]tls.Group{ ffdhe2048, @enumFromInt(grease) }) |group| {
+    for ([_]tls.Group{ ffdhe2048, @fromBackingInt(@intCast(grease)) }) |group| {
         const params = try Messages12.buildParams(&params_buf, group, &share);
         const ske = try Messages12.buildServerKeyExchange(&ske_buf, params, 0x0403, "sig");
         try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange(ske));
     }
     // A CertificateVerify or ServerKeyExchange signed under a scheme cloak does not speak, even
     // when a caller's list names it.
-    const offered = [_]tls.SignatureScheme{ sha1, @enumFromInt(grease), .ecdsa_p256_sha256 };
+    const offered = [_]tls.SignatureScheme{ sha1, @fromBackingInt(@intCast(grease)), .ecdsa_p256_sha256 };
     for ([_]u16{ @backingInt(sha1), grease }) |scheme| {
         try std.testing.expectError(error.UnofferedScheme, Possession.verify(scheme, &offered, pki.p256, "content", "signature"));
         try std.testing.expectError(error.UnofferedScheme, Possession.verifyMessage12(scheme, &offered, pki.p256, "content", "signature"));
         try std.testing.expectError(error.UnofferedScheme, Possession.verifyDigest12(scheme, &offered, pki.p256, &@as([32]u8, @splat(0)), "signature"));
         const leaf = try certificates.certificate.parse(pki.p256, .{});
-        try std.testing.expectError(error.UnofferedScheme, Possession.bind(@enumFromInt(scheme), leaf.public_key));
+        try std.testing.expectError(error.UnofferedScheme, Possession.bind(@fromBackingInt(@intCast(scheme)), leaf.public_key));
     }
 }
 
@@ -108,7 +108,7 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     // A client listing GREASE and ffdhe2048 among its groups and GREASE among its schemes is
     // answered with what both speak.
     const pair = try ServerPair(.aes_128_gcm_sha256).init(gpa, .{
-        .groups = &.{ @enumFromInt(grease), ffdhe2048, .x25519, .p256 },
+        .groups = &.{ @fromBackingInt(@intCast(grease)), ffdhe2048, .x25519, .p256 },
         .shares = &.{.x25519},
         .schemes = &.{ grease, 0x0201, 0x0403 },
     }, .{});

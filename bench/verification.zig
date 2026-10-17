@@ -16,7 +16,7 @@ const Context = struct {
     }
     fn native(context: *Context, units: u64) !void {
         @setRuntimeSafety(true);
-        var budget: cloak.services.Budget = .{};
+        var budget: cloak.services.Budget = .init(.{});
         for (0..units) |_| {
             const job = try cloak.NativeVerification.init(context.gpa, &budget, context.request, .{ .anchors = &.{@embedFile("data/anchor.der")} });
             defer job.deinit();

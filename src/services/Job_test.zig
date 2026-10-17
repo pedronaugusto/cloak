@@ -26,13 +26,13 @@ fn request() types.Request {
 }
 test "service finite deadline rejects missing executor before copying" {
     @setRuntimeSafety(true);
-    var budget: Budget = .{};
+    var budget: Budget = .init(.{});
     try std.testing.expectError(error.ServiceExecutorRequired, Job.init(std.testing.failing_allocator, &budget, request(), .{ .timeout = .{ .duration = .{ .raw = .fromNanoseconds(1), .clock = .awake } } }));
     try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
 }
 test "service timeout late completion reaps only executor owned memory" {
     @setRuntimeSafety(true);
-    var budget: Budget = .{ .max_jobs = 1 };
+    var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
     const job = try Job.init(std.testing.allocator, &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
     try std.testing.expectError(error.ServicePending, job.take(request()));
@@ -52,7 +52,7 @@ test "service queued job every allocation failure without resize" {
 }
 fn allocations(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
-    var budget: Budget = .{};
+    var budget: Budget = .init(.{});
     defer std.debug.assert(budget.counts().jobs == 0);
     var q: Queue = .{};
     const job = try Job.init(gpa, &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
@@ -63,7 +63,7 @@ fn allocations(gpa: std.mem.Allocator) !void {
 
 test "service public budget arithmetic cannot wrap before admission" {
     @setRuntimeSafety(true);
-    var budget: Budget = .{};
+    var budget: Budget = .init(.{});
     var req = request();
     req.limits.receipt_bytes = std.math.maxInt(usize);
     try std.testing.expectError(error.ServiceLimit, Job.init(std.testing.failing_allocator, &budget, req, .{}));
@@ -73,7 +73,7 @@ test "service public budget arithmetic cannot wrap before admission" {
 test "service admission covers owned state and input allocation with a zero receipt limit" {
     @setRuntimeSafety(true);
     var counting = shakedown.alloc.Counting.init(std.testing.allocator);
-    var budget: Budget = .{};
+    var budget: Budget = .init(.{});
     var q: Queue = .{};
     var req = request();
     req.limits.receipt_bytes = 0;
@@ -147,7 +147,7 @@ test "catalogue_verify_job_path_cleanup_releases_spin_guard" {
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     inline for (.{ true, false }) |abandon| {
-        var budget: Budget = .{};
+        var budget: Budget = .init(.{});
         var q: Queue = .{};
         const job = try Job.init(cleanup.allocator(), &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
         // Inject owned public native evidence, keeping the executor handle live.
@@ -182,7 +182,7 @@ test "catalogue_verify_job_native_abandon_during_evaluation_reaps_outside_guard"
     const req: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
-    var budget: Budget = .{};
+    var budget: Budget = .init(.{});
     var q: Queue = .{};
     const job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{root} });
     defer job.deinit();
@@ -212,7 +212,7 @@ test "catalogue_verify_job_native_concurrent_abandon_retains_charge_until_reap" 
     var pause: Pause = .{ .io = io };
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
-    var budget: Budget = .{ .max_jobs = 1 };
+    var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
     const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
