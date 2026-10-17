@@ -973,6 +973,8 @@ pub const Control = struct {
 /// order, and `acknowledgeControl` it.
 pub fn control(self: *Connection) ?Control {
     @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
     aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
     if (self.owes()) self.writeOwed();
     const pending = self.outbox.pending();
