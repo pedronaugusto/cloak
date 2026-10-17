@@ -170,16 +170,27 @@ fn spreadHello(out: []u8, n: usize, order: u1, changed: ?usize) ![]const u8 {
     return out[0..at];
 }
 
-test "F101 catalogue_extension_count_unbounded_unique (the retry fingerprint covers every extension of a large hello, in any order)" {
+test "F101 catalogue_extension_count_unbounded_unique (the retry fingerprint covers every extension of a large hello)" {
     var a: [8192]u8 = undefined;
     var b: [8192]u8 = undefined;
     for ([_]usize{ 3, 64, 200, 1000 }) |n| {
+        const first = try ClientHello.parse(try spreadHello(&a, n, 0, null), .stream);
+        const same = try ClientHello.parse(try spreadHello(&b, n, 0, null), .stream);
+        try std.testing.expectEqual(first.fingerprint(), same.fingerprint());
+        for ([_]usize{ 0, n / 2, n - 1 }) |i| {
+            const other = try ClientHello.parse(try spreadHello(&b, n, 0, i), .stream);
+            try std.testing.expect(!std.mem.eql(u8, &first.fingerprint(), &other.fingerprint()));
+        }
+    }
+}
+
+test "F104 catalogue_retry_hello_extension_order (the retry fingerprint covers the extensions' order)" {
+    // RFC 8446 section 4.1.2: reordering is a modification the second hello may not make.
+    var a: [8192]u8 = undefined;
+    var b: [8192]u8 = undefined;
+    for ([_]usize{ 3, 64, 1000 }) |n| {
         const ascending = try ClientHello.parse(try spreadHello(&a, n, 0, null), .stream);
         const descending = try ClientHello.parse(try spreadHello(&b, n, 1, null), .stream);
-        try std.testing.expectEqual(ascending.fingerprint(), descending.fingerprint());
-        for ([_]usize{ 0, n / 2, n - 1 }) |i| {
-            const other = try ClientHello.parse(try spreadHello(&b, n, 1, i), .stream);
-            try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &other.fingerprint()));
-        }
+        try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &descending.fingerprint()));
     }
 }

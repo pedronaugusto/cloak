@@ -31,6 +31,8 @@ pub const Tamper = enum {
     share_outside_groups,
     /// A second ClientHello that differs from the first.
     changed_second_hello,
+    /// A second ClientHello with its extensions in another order (signature_algorithms moved).
+    reordered_second_hello,
     /// A second ClientHello without the requested share.
     second_without_share,
     cookie_in_first,
@@ -310,13 +312,13 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 try u16s(&groups, gpa, ids[0..self.config.groups.len]);
                 try Ext.put(&ext, gpa, 10, groups.items);
             }
-            if (t != .no_signature_algorithms) {
-                var sigs: std.ArrayList(u8) = .empty;
-                defer sigs.deinit(gpa);
-                try u16s(&sigs, gpa, self.config.schemes);
-                try Ext.put(&ext, gpa, 13, sigs.items);
-            }
+            var sigs: std.ArrayList(u8) = .empty;
+            defer sigs.deinit(gpa);
+            try u16s(&sigs, gpa, self.config.schemes);
+            const reordered = t == .reordered_second_hello and second;
+            if (t != .no_signature_algorithms and !reordered) try Ext.put(&ext, gpa, 13, sigs.items);
             if (t == .no_versions) {} else try Ext.put(&ext, gpa, 43, &.{ 2, 3, 4 });
+            if (reordered) try Ext.put(&ext, gpa, 13, sigs.items);
             if (self.config.alpn.len != 0) {
                 var alpn: std.ArrayList(u8) = .empty;
                 defer alpn.deinit(gpa);

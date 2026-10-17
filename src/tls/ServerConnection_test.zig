@@ -233,6 +233,12 @@ test "F103 catalogue_plaintext_alert_answering_server_hello (the client's plaint
     try std.testing.expectEqual(Alert.unexpected_message, pair.conn.diagnostics().alert_sent.?);
 }
 
+test "F104 catalogue_retry_hello_extension_order (a second hello with its extensions reordered ends with illegal_parameter)" {
+    // RFC 8446 section 4.1.2: the second ClientHello is the first without modification but for
+    // the listed changes; reordering is none of them (tlsfuzzer's test-tls13-shuffled-extentions).
+    try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .reordered_second_hello }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
