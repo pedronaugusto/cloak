@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-17
+
 ### Added
 
 - `types.Token.eql`: a request token's generation and number, compared once where a receipt, a native path or an answer is matched to its request.
