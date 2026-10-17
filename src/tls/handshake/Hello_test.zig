@@ -2,7 +2,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const inputs = @import("../../testing/inputs.zig");
 const H = @import("Hello.zig");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const x: [32]u8 = @splat(1);
 const shares = [_]H.Share{.{ .group = .x25519, .bytes = &x }};

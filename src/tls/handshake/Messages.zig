@@ -1,7 +1,7 @@
 //! TLS 1.3 handshake messages after the hello family. Parsed fields borrow their message.
 const std = @import("std");
 const aegis = @import("aegis");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 
@@ -49,20 +49,31 @@ pub const Certificates = struct {
     context: []const u8,
     count: usize,
     total_bytes: usize,
-    /// The leaf's delegated_credential body (RFC 9345), when this end offered the extension.
+    /// The leaf's extensions this end asked for.
+    leaf: Leaf = .{},
+};
+
+/// What the leaf's CertificateEntry carries beside its certificate.
+pub const Leaf = struct {
+    /// delegated_credential's body (RFC 9345).
     delegated: ?[]const u8 = null,
+    /// signed_certificate_timestamp's body (RFC 6962 section 3.3.1): a
+    /// SignedCertificateTimestampList, which certificate verification reads.
+    scts: ?[]const u8 = null,
 };
 
 /// The CertificateEntry extensions this end solicited.
 pub const Accept = struct {
     /// delegated_credential (RFC 9345), on the leaf only.
     delegated: bool = false,
+    /// signed_certificate_timestamp (RFC 6962, RFC 8446 section 4.4.2), on the leaf only.
+    scts: bool = false,
 };
 
 /// Parses a Certificate message into `out`. An entry extension is accepted only where `accept`
-/// solicited it: a delegated credential on the leaf alone (RFC 9345 section 4.1.1: unsolicited is
-/// unexpected_message, on another entry illegal_parameter, two on the leaf illegal_parameter).
-/// Every other extension is unsolicited: this end offers none (no status_request, no SCT).
+/// solicited it, and on the leaf alone (on another entry it is illegal_parameter): a delegated
+/// credential (RFC 9345 section 4.1.1: unsolicited is unexpected_message) and SCTs (not empty).
+/// Every other extension is unsolicited: this end offers no status_request.
 pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out: *[max_certificates][]const u8, accept: Accept) ParseError!Certificates {
     @setRuntimeSafety(true);
     const parsed = try body(message);
@@ -73,17 +84,23 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
     try r.finish();
     var count: usize = 0;
     var total: usize = 0;
-    var delegated: ?[]const u8 = null;
+    var leaf: Leaf = .{};
     while (list.pos != list.bytes.len) {
         const der = (try list.vector(u24)).bytes;
         if (der.len == 0) return error.InvalidMessage;
         var ext: Extensions = .{ .reader = try list.vector(u16) };
         // Where nothing was solicited any extension block is unsolicited, well formed or not.
-        while (ext.next() catch |err| return if (accept.delegated) err else error.UnsolicitedExtension) |item| {
-            if (item.id != delegated_credential) return error.UnsolicitedExtension;
-            if (!accept.delegated) return error.UnexpectedMessage;
+        while (ext.next() catch |err| return if (accept.delegated or accept.scts) err else error.UnsolicitedExtension) |item| {
+            switch (item.id) {
+                delegated_credential => if (!accept.delegated) return error.UnexpectedMessage,
+                signed_certificate_timestamp => if (!accept.scts) return error.UnsolicitedExtension,
+                else => return error.UnsolicitedExtension,
+            }
             if (count != 0) return error.IllegalParameter;
-            delegated = item.bytes;
+            if (item.id == delegated_credential) leaf.delegated = item.bytes else {
+                if (item.bytes.len == 0) return error.InvalidMessage;
+                leaf.scts = item.bytes;
+            }
         }
         if (count == @min(max_count, max_certificates)) return error.CertificateLimit;
         total = (aegis.int.Checked(usize).init(total).add(der.len) catch return error.CertificateLimit).raw();
@@ -91,11 +108,13 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
         out[count] = der;
         count += 1;
     }
-    return .{ .context = context, .count = count, .total_bytes = total, .delegated = delegated };
+    return .{ .context = context, .count = count, .total_bytes = total, .leaf = leaf };
 }
 
 /// The delegated_credential extension's number (RFC 9345 section 4.1).
 pub const delegated_credential = 34;
+/// The signed_certificate_timestamp extension's number (RFC 6962 section 3.3.1).
+pub const signed_certificate_timestamp = 18;
 
 /// Borrowed view of a CertificateRequest.
 pub const CertificateRequest = struct {
@@ -236,9 +255,9 @@ pub fn buildKeyUpdate(out: []u8, request_peer: bool) BuildError![]u8 {
     return seal(&w);
 }
 
-/// A Certificate with an empty context and one entry per DER; the leaf's entry carries a
-/// delegated credential when one is given, every other entry no extension.
-pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u8, delegated: ?[]const u8) BuildError![]u8 {
+/// A Certificate with an empty context and one entry per DER; the leaf's entry carries the
+/// extensions `leaf` gives, every other entry none.
+pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u8, leaf: Leaf) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try header(&w, .certificate);
@@ -250,14 +269,20 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
         // safe: certificate length was just bounded by the u24 maximum.
         try w.int(u24, @intCast(der.len));
         try w.put(der);
-        const extension = if (i == 0) delegated else null;
-        if (extension) |credential| {
-            if (credential.len > 0xffff - 4) return error.BufferTooSmall;
-            // safe: the credential was just bounded below the u16 maximum.
-            try w.int(u16, @intCast(credential.len + 4));
+        const extensions: Leaf = if (i == 0) leaf else .{};
+        const delegated_len = if (extensions.delegated) |bytes| bytes.len + 4 else 0;
+        const scts_len = if (extensions.scts) |bytes| bytes.len + 4 else 0;
+        if (delegated_len + scts_len > 0xffff) return error.BufferTooSmall;
+        // safe: the extensions were just bounded below the u16 maximum.
+        try w.int(u16, @intCast(delegated_len + scts_len));
+        if (extensions.delegated) |credential| {
             try w.int(u16, delegated_credential);
             try w.vector(u16, credential);
-        } else try w.int(u16, 0);
+        }
+        if (extensions.scts) |list| {
+            try w.int(u16, signed_certificate_timestamp);
+            try w.vector(u16, list);
+        }
     }
     const list_len = w.pos - list_at - 3;
     if (list_len > 0xffffff) return error.BufferTooSmall;

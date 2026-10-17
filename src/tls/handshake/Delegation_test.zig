@@ -191,16 +191,16 @@ test "C10 delegated credentials: the Certificate takes one on the leaf, once, an
     var out: [Messages.max_certificates][]const u8 = undefined;
     var buf: [2048]u8 = undefined;
     const credential = "\x00\x00\x00\x01\x05\x03\x00\x00\x01\x30\x04\x03\x00\x01\x00";
-    const with = try Messages.buildCertificate(&buf, "", &.{ pki.dc_p256, pki.dc_ca }, credential);
+    const with = try Messages.buildCertificate(&buf, "", &.{ pki.dc_p256, pki.dc_ca }, .{ .delegated = credential });
     const parsed = try Messages.certificate(with, 16, 65536, &out, .{ .delegated = true });
-    try std.testing.expectEqualSlices(u8, credential, parsed.delegated.?);
+    try std.testing.expectEqualSlices(u8, credential, parsed.leaf.delegated.?);
     try std.testing.expectEqual(@as(usize, 2), parsed.count);
     // Not offered: unexpected_message (RFC 9345 section 4.1.1).
     try std.testing.expectError(error.UnexpectedMessage, Messages.certificate(with, 16, 65536, &out, .{}));
     // Absent when offered: none.
     var plain_buf: [2048]u8 = undefined;
-    const plain = try Messages.buildCertificate(&plain_buf, "", &.{ pki.dc_p256, pki.dc_ca }, null);
-    try std.testing.expectEqual(@as(?[]const u8, null), (try Messages.certificate(plain, 16, 65536, &out, .{ .delegated = true })).delegated);
+    const plain = try Messages.buildCertificate(&plain_buf, "", &.{ pki.dc_p256, pki.dc_ca }, .{});
+    try std.testing.expectEqual(@as(?[]const u8, null), (try Messages.certificate(plain, 16, 65536, &out, .{ .delegated = true })).leaf.delegated);
     // On another entry, twice on the leaf, or another extension beside it.
     var w: Writer = .{ .bytes = &buf };
     try entryMessage(&w, &.{ .{ pki.dc_p256, "" }, .{ pki.dc_ca, "\x00\x22\x00\x01\x00" } });

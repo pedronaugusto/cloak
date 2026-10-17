@@ -4,6 +4,15 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- Certificate Transparency (RFC 6962 v1 SCTs) as a verification policy: `types.Policy.transparency` names a `TransparencyPolicy`, borrowed: the caller's logs (key, operator, when retired), the counts and when the log list stops being current. A certificate is compliant by SCTs embedded in it (checked over its precertificate) from enough distinct logs, one of them not retired, or by SCTs delivered beside it from enough logs none retired, from enough distinct operators; the defaults are Chrome's and Apple's counts. Typed failures (`MissingTransparency`, `InvalidTransparency`, `StaleTransparency`, `InvalidTransparencyPolicy`); the receipt reports `transparency` and holds no longer than the list. `types.Evidence.scts` carries delivered lists.
+- TLS: a client whose verification names a transparency policy asks for SCTs in both versions and checks the server's (TLS 1.3 in the leaf's entry, TLS 1.2 in the ServerHello); a server's `Credential.scts` is sent to a client that asks.
+
+### Changed
+
+- Breaking: `types.Policy` gains `transparency`, `types.Evidence` gains `scts`, `types.Verification` gains `transparency`, and `Credential` gains `scts` (struct literals that name every field must add them); the verification request digest is v3, so receipts and client cache keys of 0.16.0 do not carry over and a full handshake follows.
+
 ## [0.16.0] - 2026-10-17
 
 ### Added

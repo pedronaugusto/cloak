@@ -138,6 +138,8 @@ fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceL
     for ([_][]const []const u8{ request.chain, anchors, request.policy.required_policies, request.evidence.crls, request.evidence.ocsp }) |list| {
         if (list.len > 4096) return error.ServiceLimit;
     }
+    if (request.evidence.scts.len > types.TransparencyPolicy.max_lists) return error.ServiceLimit;
+    if (request.policy.transparency) |policy| if (policy.logs.len > types.TransparencyPolicy.max_logs) return error.ServiceLimit;
     if (request.identity == .dns and request.identity.dns.len > 253) return error.ServiceLimit;
     for (request.anchor_policies) |policy| if (policy.required_policies.len > 256) return error.ServiceLimit;
     var total = (aegis.int.Checked(usize).init(@sizeOf(State)).add(try OwnedRequest.byteSize(request, anchors)) catch return error.ServiceLimit).raw();

@@ -43,7 +43,51 @@ pub const RevocationPolicy = struct {
     /// How long evidence without a next-update time stays fresh; at most a year.
     max_age: std.Io.Duration = .fromSeconds(86400),
 };
-pub const Evidence = struct { crls: []const []const u8 = &.{}, ocsp: []const []const u8 = &.{} };
+pub const Evidence = struct {
+    crls: []const []const u8 = &.{},
+    ocsp: []const []const u8 = &.{},
+    /// SignedCertificateTimestampLists delivered beside the certificate (RFC 6962 section 3.3: a
+    /// TLS extension, an OCSP response's), each over the leaf itself; at most
+    /// `TransparencyPolicy.max_lists`. A TLS client adds the one its peer sent.
+    scts: []const []const u8 = &.{},
+};
+pub const TransparencyStatus = enum { unchecked, compliant };
+/// A log a certificate's SCTs may come from, as the caller's log list names it.
+pub const TransparencyLog = struct {
+    /// The log's SubjectPublicKeyInfo, DER: an ECDSA P-256 or an RSA key (RFC 6962 section 2.1.4).
+    /// Its log ID is the SHA-256 of these bytes, so an ID never names another key.
+    key: []const u8,
+    /// Who runs the log: logs of one operator count once toward `TransparencyPolicy.operators`.
+    operator: []const u8,
+    /// When the log stopped being trusted: its SCTs count only when timestamped before this, and
+    /// only when embedded in the certificate; a certificate needs one SCT from a log not retired.
+    retired: ?std.Io.Timestamp = null,
+};
+/// Certificate Transparency (RFC 6962): which SCTs make a certificate compliant; a policy that
+/// names one fails a certificate without them. The defaults are the counts Chrome's and Apple's
+/// policies ask of public certificates; the logs, their states and the list's freshness are the
+/// caller's to distribute (inclusion proofs and gossip are not checked here).
+pub const TransparencyPolicy = struct {
+    /// At least one and at most `max_logs`.
+    logs: []const TransparencyLog = &.{},
+    /// Distinct logs whose SCTs embedded in the certificate (over its precertificate) make it
+    /// compliant: `embedded` for a certificate valid at most `long_lifetime`, `embedded_long`
+    /// beyond.
+    embedded: u8 = 2,
+    embedded_long: u8 = 3,
+    long_lifetime: std.Io.Duration = .fromSeconds(180 * 86400),
+    /// Distinct logs, none retired, whose SCTs delivered beside the certificate make it compliant.
+    delivered: u8 = 2,
+    /// Distinct operators among the logs counted, either way.
+    operators: u8 = 2,
+    /// When the log list stops being current: from then on no certificate is compliant, and no
+    /// receipt (nor a session resumed from one) holds past it. Null: the caller keeps it current.
+    expires: ?std.Io.Timestamp = null,
+    pub const max_logs = 256;
+    /// The most SCT lists `Evidence.scts` carries, and the highest count a policy asks for.
+    pub const max_lists = 4;
+    pub const max_count = 16;
+};
 pub const Policy = struct {
     /// Empty initial set means anyPolicy; otherwise DER OID contents.
     required_policies: []const []const u8 = &.{},
@@ -51,6 +95,8 @@ pub const Policy = struct {
     inhibit_mapping: bool = false,
     inhibit_any: bool = false,
     revocation: RevocationPolicy = .{},
+    /// Certificate Transparency, borrowed for as long as requests name it; null checks none.
+    transparency: ?*const TransparencyPolicy = null,
 };
 pub const Limits = struct {
     chain_bytes: usize = 65536,
@@ -100,7 +146,7 @@ pub const Request = struct {
     pub fn digest(self: Request) [32]u8 {
         @setRuntimeSafety(true);
         var h = std.crypto.hash.sha2.Sha256.init(.{});
-        part(&h, "cloak verification request v2");
+        part(&h, "cloak verification request v3");
         uint(&h, self.token.generation.raw());
         uint(&h, self.token.id.raw());
         uint(&h, self.trust_generation.raw());
@@ -128,6 +174,24 @@ pub const Request = struct {
         wide(&h, self.policy.revocation.max_age.nanoseconds);
         parts(&h, self.evidence.crls);
         parts(&h, self.evidence.ocsp);
+        parts(&h, self.evidence.scts);
+        uint(&h, @intFromBool(self.policy.transparency != null));
+        if (self.policy.transparency) |ct| {
+            uint(&h, ct.logs.len);
+            for (ct.logs) |log| {
+                part(&h, log.key);
+                part(&h, log.operator);
+                uint(&h, @intFromBool(log.retired != null));
+                wide(&h, if (log.retired) |t| t.nanoseconds else 0);
+            }
+            uint(&h, ct.embedded);
+            uint(&h, ct.embedded_long);
+            wide(&h, ct.long_lifetime.nanoseconds);
+            uint(&h, ct.delivered);
+            uint(&h, ct.operators);
+            uint(&h, @intFromBool(ct.expires != null));
+            wide(&h, if (ct.expires) |t| t.nanoseconds else 0);
+        }
         inline for (@typeInfo(Limits).@"struct".field_names) |f| uint(&h, @field(self.limits, f));
         uint(&h, self.anchor_policies.len);
         for (self.anchor_policies) |p| {
@@ -180,6 +244,8 @@ pub const Verification = struct {
     expires: std.Io.Timestamp,
     revocation: RevocationStatus = .unchecked,
     revocation_expires: ?std.Io.Timestamp = null,
+    /// Certificate Transparency's verdict; a compliant one holds no longer than `expires`.
+    transparency: TransparencyStatus = .unchecked,
     authenticated: bool,
     request_digest: [32]u8,
     token: Token,

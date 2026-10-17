@@ -27,6 +27,7 @@ const Compression = @import("Compression.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 const Psk = @import("Psk.zig");
 const Delegation = @import("Delegation.zig");
+const transparency = @import("../../verify/transparency.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Direction = Flight.Direction;
@@ -299,6 +300,10 @@ const Scratch = struct {
     /// RFC 7250: the server selected the raw key type for its Certificate, and for the client's.
     peer_raw: bool = false,
     client_raw: bool = false,
+    /// RFC 6962: the server's SignedCertificateTimestampList, owned, and the request's lists
+    /// with it after the caller's.
+    scts: []u8 = &.{},
+    sct_lists: [types.TransparencyPolicy.max_lists][]const u8 = undefined,
     /// RFC 9345: the server's delegated credential (in `held`) and, once checked, its key.
     delegated: ?[]const u8 = null,
     delegated_key: ?Delegation.Checked = null,
@@ -371,6 +376,14 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     var hello = options.hello;
     // RFC 7250: the types this client asks for and can present.
     hello.raw_server_key = options.verify == .raw_key;
+    // RFC 6962 section 3.3.1: a client requiring Certificate Transparency asks for the server's
+    // SCTs, which join the verification request beside the caller's lists.
+    if (options.verify == .full) {
+        const full = options.verify.full;
+        if (full.policy.transparency) |policy| transparency.validate(policy.*) catch return error.InvalidOptions;
+        hello.request_scts = full.policy.transparency != null;
+        if (hello.request_scts and full.evidence.scts.len >= types.TransparencyPolicy.max_lists) return error.InvalidOptions;
+    } else hello.request_scts = false;
     hello.raw_client_key = if (options.auth) |auth| auth.identity.form() == .raw_public_key else false;
     Hello.validate(hello) catch return error.InvalidOptions;
     // ECH over datagrams (RFC 9849 with DTLS 1.3) is not built: refused rather than ignored.
@@ -642,6 +655,7 @@ fn releaseScratch(self: *Client) void {
     self.releaseEch();
     scratch.flight.deinit(self.gpa);
     scratch.transcripts.release();
+    if (scratch.scts.len != 0) self.gpa.free(scratch.scts);
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -833,10 +847,32 @@ pub fn verification(self: *const Client, token: types.Token) types.Request {
         .mode = .full,
         .policy = full.policy,
         .pins = if (rejected) &.{} else full.pins,
-        .evidence = full.evidence,
+        .evidence = self.evidence(full.evidence),
         .limits = full.limits,
         .anchor_policies = full.anchor_policies,
     };
+}
+
+/// The caller's evidence, and the SCTs the server sent after its lists.
+fn evidence(self: *const Client, caller: types.Evidence) types.Evidence {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    if (scratch.scts.len == 0) return caller;
+    // `init` left room for one more list.
+    const n = caller.scts.len;
+    @memcpy(scratch.sct_lists[0..n], caller.scts);
+    scratch.sct_lists[n] = scratch.scts;
+    return .{ .crls = caller.crls, .ocsp = caller.ocsp, .scts = scratch.sct_lists[0 .. n + 1] };
+}
+
+/// Keeps the server's SignedCertificateTimestampList for the verification request.
+pub fn keepScts(self: *Client, list: ?[]const u8) Error!void {
+    @setRuntimeSafety(true);
+    const bytes = list orelse return;
+    const scratch = self.scratch.?;
+    if (scratch.scts.len != 0) self.gpa.free(scratch.scts);
+    scratch.scts = &.{};
+    scratch.scts = try self.gpa.dupe(u8, bytes);
 }
 
 /// Accepts the receipt for exactly the pending request. Any mismatch is terminal.
@@ -1551,11 +1587,12 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
     const msg = wire;
     const limits = self.options.limits;
-    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain, .{ .delegated = self.options.hello.accept_delegated });
+    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain, .{ .delegated = self.options.hello.accept_delegated, .scts = self.options.hello.request_scts });
     if (parsed.context.len != 0) return error.IllegalParameter;
     if (parsed.count == 0) return error.EmptyCertificate;
     self.scratch.?.chain_len = parsed.count;
-    self.scratch.?.delegated = parsed.delegated;
+    self.scratch.?.delegated = parsed.leaf.delegated;
+    try self.keepScts(parsed.leaf.scts);
     if (self.scratch.?.peer_raw) {
         // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
         self.raw_pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
@@ -1652,7 +1689,7 @@ fn continueFlight(self: *Client) Error!void {
     for (auth.entries()) |der| total += der.len + 5;
     if (delegated) |credential| total += credential.wire().len + 4;
     const dst = try self.reserve(total);
-    const message_bytes = try Messages.buildCertificate(dst, "", auth.entries(), if (delegated) |credential| credential.wire() else null);
+    const message_bytes = try Messages.buildCertificate(dst, "", auth.entries(), .{ .delegated = if (delegated) |credential| credential.wire() else null });
     try self.state.advance(.local_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1677,7 +1714,7 @@ fn continueFlight(self: *Client) Error!void {
 fn sendEmptyCertificate(self: *Client) Error!void {
     @setRuntimeSafety(true);
     const dst = try self.reserve(16);
-    const message_bytes = try Messages.buildCertificate(dst, "", &.{}, null);
+    const message_bytes = try Messages.buildCertificate(dst, "", &.{}, .{});
     try self.state.advance(.local_empty_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     try self.finishFlight();

@@ -116,6 +116,8 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
         .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
         .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
     });
+    // RFC 6962 section 3.3.1: the credential's SCTs, in the ServerHello, for a client that asks.
+    self.sends_scts = hello.scts and self.options.credentials[self.credential].scts.len != 0;
     return switch (self.options.credentials[self.credential].identity.publicKey()) {
         .rsa => .rsa,
         // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
@@ -227,8 +229,9 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
-    var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type });
+    var hello_buffer: [1024 + Hello.max_scts]u8 = undefined;
+    const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential].scts else null;
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;

@@ -2,7 +2,7 @@
 //! extension's forms, ClientHelloInner reconstruction and the acceptance confirmations. The
 //! handshake roles drive it; nothing here keeps state of its own.
 const std = @import("std");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Labels = @import("../crypto/Labels.zig");

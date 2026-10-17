@@ -22,6 +22,18 @@ pub fn init(gpa: std.mem.Allocator, request: types.Request, anchors: []const []c
     owned.policy.required_policies = try slices(a, request.policy.required_policies);
     owned.evidence.crls = try slices(a, request.evidence.crls);
     owned.evidence.ocsp = try slices(a, request.evidence.ocsp);
+    owned.evidence.scts = try slices(a, request.evidence.scts);
+    if (request.policy.transparency) |transparency| {
+        const policy = try a.create(types.TransparencyPolicy);
+        policy.* = transparency.*;
+        const logs = try a.dupe(types.TransparencyLog, transparency.logs);
+        for (logs) |*log| {
+            log.key = try a.dupe(u8, log.key);
+            log.operator = try a.dupe(u8, log.operator);
+        }
+        policy.logs = logs;
+        owned.policy.transparency = policy;
+    }
     const policies = try a.dupe(types.AnchorPolicy, request.anchor_policies);
     for (policies) |*p| {
         p.name_constraints = try a.dupe(u8, p.name_constraints);
@@ -35,9 +47,17 @@ pub fn init(gpa: std.mem.Allocator, request: types.Request, anchors: []const []c
 pub fn byteSize(request: types.Request, anchors: []const []const u8) error{ServiceLimit}!usize {
     @setRuntimeSafety(true);
     var total: usize = 0;
-    for ([_][]const []const u8{ request.chain, anchors, request.policy.required_policies, request.evidence.crls, request.evidence.ocsp }) |list| {
+    for ([_][]const []const u8{ request.chain, anchors, request.policy.required_policies, request.evidence.crls, request.evidence.ocsp, request.evidence.scts }) |list| {
         try sizeAdd([]const u8, &total, list.len);
         for (list) |bytes| try sizeAdd(u8, &total, bytes.len);
+    }
+    if (request.policy.transparency) |transparency| {
+        try sizeAdd(types.TransparencyPolicy, &total, 1);
+        try sizeAdd(types.TransparencyLog, &total, transparency.logs.len);
+        for (transparency.logs) |log| {
+            try sizeAdd(u8, &total, log.key.len);
+            try sizeAdd(u8, &total, log.operator.len);
+        }
     }
     if (request.identity == .dns) try sizeAdd(u8, &total, request.identity.dns.len);
     try sizeAdd([32]u8, &total, request.pins.len);

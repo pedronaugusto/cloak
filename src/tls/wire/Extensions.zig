@@ -1,5 +1,5 @@
 //! Every ID, including unknown and GREASE, participates in duplicate rejection.
-const R = @import("Reader.zig");
+const R = @import("../../wire/Reader.zig");
 pub const Extension = struct { id: u16, bytes: []const u8 };
 pub const NextError = R.ReadError || error{ DuplicateExtension, ExtensionLimit };
 reader: R,

@@ -51,6 +51,13 @@ pub const pki = struct {
     pub const dc_p256 = @embedFile("pki/dc_p256.der");
     pub const dc_client = @embedFile("pki/dc_client.der");
     pub const dc_no_signature = @embedFile("pki/dc_no_signature.der");
+    /// Certificate Transparency (RFC 6962): the root, a certificate with SCTs embedded from logs
+    /// a and b, one without and the SCT list for it, and the four test logs' keys.
+    pub const ct_ca = @embedFile("pki/ct_ca.der");
+    pub const ct_leaf = @embedFile("pki/ct_leaf.der");
+    pub const ct_plain = @embedFile("pki/ct_plain.der");
+    pub const ct_plain_scts = @embedFile("pki/ct_plain.scts");
+    pub const ct_logs = [_][]const u8{ @embedFile("pki/ct_log_a.spki.der"), @embedFile("pki/ct_log_b.spki.der"), @embedFile("pki/ct_log_c.spki.der"), @embedFile("pki/ct_log_d.spki.der") };
     /// A time inside every fixture's validity.
     pub const time: i64 = 1_800_000_000;
 };

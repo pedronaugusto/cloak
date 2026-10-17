@@ -22,6 +22,7 @@ const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
 const Possession = @import("Possession.zig");
 const Delegation = @import("Delegation.zig");
+const transparency = @import("../../verify/transparency.zig");
 const Schedule = @import("Schedule.zig");
 const State = @import("State.zig");
 const Transcripts = @import("Transcripts.zig");
@@ -55,6 +56,12 @@ pub const Credential = struct {
     /// TLS 1.3 client that takes it while it is valid; its key then signs CertificateVerify and
     /// the certificate's key is not used. Retained with the identity.
     delegated: ?Delegation.Credential = null,
+    /// The certificate's SignedCertificateTimestampList (RFC 6962 section 3.3), borrowed: SCTs
+    /// logs issued for it as it is, sent to a client that asks (TLS 1.3 in the leaf's entry, TLS
+    /// 1.2 in the ServerHello). SCTs embedded in the certificate need nothing here. At most
+    /// `max_scts` bytes.
+    scts: []const u8 = "",
+    pub const max_scts = Hello.max_scts;
 };
 
 pub const Options = struct {
@@ -163,6 +170,8 @@ authenticated: bool = false,
 raw_pin: ?u16 = null,
 /// The chosen credential's delegated credential is sent and signs (RFC 9345).
 delegating: bool = false,
+/// The chosen credential's SCTs go to a client that asked for them (RFC 6962).
+sends_scts: bool = false,
 /// The client proved possession with its delegated credential.
 delegated_used: bool = false,
 peer_certificate: bool = false,
@@ -294,6 +303,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     for (options.credentials) |credential| {
         for (credential.names) |name| if (name.len == 0 or name.len > 253) return error.InvalidOptions;
         if (credential.delegated) |delegated| if (delegated.side() != .server or !delegated.belongsTo(credential.identity)) return error.InvalidOptions;
+        if (credential.scts.len != 0) {
+            if (credential.scts.len > Credential.max_scts or credential.identity.form() != .x509) return error.InvalidOptions;
+            _ = transparency.List.init(credential.scts) catch return error.InvalidOptions;
+        }
     }
     if (options.accept_delegated and (options.client_auth == .none or options.client_verify != .full or options.max_version != .tls13)) return error.InvalidOptions;
     if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
@@ -848,6 +861,7 @@ fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!v
     // The clock is known: `mayDelegate` held the hello for it.
     self.delegating = if (credential.delegated) |delegated| if (hello.delegated) |list| delegated.usable(types.seconds(self.now.?), list, hello) else false else false;
     self.scheme = if (self.delegating) credential.delegated.?.keyScheme() else Possession.choose(credential.identity.publicKey(), hello) orelse return error.NoSignatureScheme;
+    self.sends_scts = hello.scts and credential.scts.len != 0;
     self.negotiateTypes(hello);
 }
 
@@ -1243,10 +1257,15 @@ fn sendCertificate(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const identity = self.options.credentials[self.credential].identity;
-    const delegated: ?[]const u8 = if (self.delegating) self.options.credentials[self.credential].delegated.?.wire() else null;
+    const credential = self.options.credentials[self.credential];
+    const leaf: Messages.Leaf = .{
+        .delegated = if (self.delegating) credential.delegated.?.wire() else null,
+        .scts = if (self.sends_scts) credential.scts else null,
+    };
     var total: usize = 64;
     for (identity.entries()) |der| total += der.len + 5;
-    if (delegated) |bytes| total += bytes.len + 4;
+    if (leaf.delegated) |bytes| total += bytes.len + 4;
+    if (leaf.scts) |bytes| total += bytes.len + 4;
     const offered = scratch.compression[0..scratch.compression_len];
     const codec = if (offered.len != 0) Compression.choose(self.options.certificate_compression, offered) else null;
     try self.state.advance(.certificate, .handshake, .parsed, true);
@@ -1254,14 +1273,14 @@ fn sendCertificate(self: *Server) Client.Error!void {
         // RFC 8879: the CompressedCertificate takes the Certificate's place, in the transcript too.
         const plain_buf = try self.gpa.alloc(u8, total);
         defer self.gpa.free(plain_buf);
-        const plain = try Messages.buildCertificate(plain_buf, "", identity.entries(), delegated);
+        const plain = try Messages.buildCertificate(plain_buf, "", identity.entries(), leaf);
         const dst = try self.reserve(plain.len);
         const message = Compression.build(dst, chosen, plain) orelse break :compressed;
         try self.queueMessage(.handshake, message);
         return self.signCertificate(identity);
     }
     const dst = try self.reserve(total);
-    const message = try Messages.buildCertificate(dst, "", identity.entries(), delegated);
+    const message = try Messages.buildCertificate(dst, "", identity.entries(), leaf);
     try self.queueMessage(.handshake, message);
     return self.signCertificate(identity);
 }
@@ -1427,7 +1446,7 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     self.held = try self.gpa.dupe(u8, msg);
     const reparsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &scratch.chain, accept);
     scratch.chain_len = reparsed.count;
-    scratch.delegated = reparsed.delegated;
+    scratch.delegated = reparsed.leaf.delegated;
     if (scratch.peer_raw) {
         // The raw key this server selected for the client (RFC 7250), one its policy pins.
         self.raw_pin = try Possession.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);

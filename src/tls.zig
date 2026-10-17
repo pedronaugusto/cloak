@@ -114,6 +114,7 @@ test {
     _ = @import("tls/Psk12_test.zig");
     _ = @import("tls/RawKey_test.zig");
     _ = @import("tls/Delegated_test.zig");
+    _ = @import("tls/Transparency_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");
     _ = @import("tls/wire.zig");

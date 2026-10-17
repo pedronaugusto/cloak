@@ -3,7 +3,7 @@
 //! handshake bounds every size around them and commits the compressed message to the transcript
 //! as it crossed the wire.
 const std = @import("std");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 
 /// CertificateCompressionAlgorithm (RFC 8879 section 7.3).

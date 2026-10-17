@@ -11,6 +11,7 @@ test {
     _ = @import("verify/signature.zig");
     _ = @import("verify/constraints.zig");
     _ = @import("verify/revocation.zig");
+    _ = @import("verify/transparency.zig");
     _ = @import("verify/identity.zig");
     _ = @import("verify/policy.zig");
     _ = @import("verify/Verifier_test.zig");

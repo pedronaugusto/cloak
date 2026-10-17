@@ -1,10 +1,11 @@
 //! Hello negotiation for TLS 1.3 and TLS 1.2. Borrowed fields retain their enclosing message lease.
 const std = @import("std");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Ech = @import("Ech.zig");
 const Compression = @import("Compression.zig");
+const Messages = @import("Messages.zig");
 const suites = @import("../crypto/Suite.zig");
 const Suite = suites.Suite;
 const Suite13 = suites.Suite13;
@@ -85,6 +86,9 @@ pub const Options = struct {
     /// The client takes a server's delegated credential (RFC 9345), TLS 1.3 only: the hello's
     /// delegated_credential lists the schemes a credential's key may use.
     accept_delegated: bool = false,
+    /// The client asks for the server's SCTs (RFC 6962 section 3.3.1): set by `Client` when its
+    /// verification requires Certificate Transparency.
+    request_scts: bool = false,
     /// DTLS: connection_id (RFC 9146). Null offers or accepts none; otherwise the connection ID
     /// this end receives records with, borrowed; empty: it sends with the peer's but takes none.
     connection_id: ?[]const u8 = null,
@@ -333,7 +337,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (sni.len != 0) try serverName(&w, sni);
     // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
     if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
-    if (tls13 and options.accept_delegated) try delegatedExtension(&w, options.require_pq_auth);
+    try evidenceExtensions(&w, options, tls13);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
     var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
@@ -409,10 +413,17 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// What this client takes to authenticate the server beyond its certificate's key: a delegated
+/// credential (RFC 9345, TLS 1.3) and SCTs (RFC 6962), each asked for only when policy says so.
+fn evidenceExtensions(w: *Writer, options: Options, tls13: bool) EncodeError!void {
+    if (tls13 and options.accept_delegated) try delegatedExtension(w, options.require_pq_auth);
+    if (options.request_scts) try extension(w, Messages.signed_certificate_timestamp, "");
+}
+
 /// delegated_credential (RFC 9345 section 4.1.1): the schemes a credential's key may use.
 fn delegatedExtension(w: *Writer, require_pq_auth: bool) EncodeError!void {
     const list = credentialSchemes(require_pq_auth);
-    try w.int(u16, @import("Messages.zig").delegated_credential);
+    try w.int(u16, Messages.delegated_credential);
     // safe: bounded by the scheme table.
     try w.int(u16, @intCast(2 + list.len * 2));
     try w.int(u16, @intCast(list.len * 2));
@@ -533,7 +544,19 @@ pub const ServerHello = struct {
 /// DTLS: `connection_id` the server's answer to connection_id, `srtp` the profile it chose.
 /// `raw_server_key`, `raw_client_key`: the server selected the raw public key type (RFC 7250) for
 /// its own Certificate or the client's, which TLS 1.2 answers in its ServerHello.
-pub const ServerHello12 = struct { suite: Suite12, random: *const [32]u8, alpn: []const u8, resumed: bool = false, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, raw_server_key: bool = false, raw_client_key: bool = false };
+pub const ServerHello12 = struct {
+    suite: Suite12,
+    random: *const [32]u8,
+    alpn: []const u8,
+    resumed: bool = false,
+    ticket: bool = false,
+    connection_id: ?[]const u8 = null,
+    srtp: ?Srtp = null,
+    raw_server_key: bool = false,
+    raw_client_key: bool = false,
+    /// The server's SignedCertificateTimestampList (RFC 6962 section 3.3.1), when the client asked.
+    scts: ?[]const u8 = null,
+};
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
 /// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
@@ -566,6 +589,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var ech: ?*const [8]u8 = null;
     var answered: DatagramAnswer = .{};
     var types: CertificateTypes = .{};
+    var scts: ?[]const u8 = null;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         only12 = only12 or answers12(item.id);
@@ -608,6 +632,12 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             },
             16 => alpn = try selectedAlpn(&value, options),
             23 => ems = true,
+            Messages.signed_certificate_timestamp => {
+                if (!options.request_scts) return error.UnsolicitedExtension;
+                if (item.bytes.len == 0) return error.DecodeError;
+                scts = item.bytes;
+                value.pos = item.bytes.len;
+            },
             35 => {
                 // An empty SessionTicket: a NewSessionTicket will follow.
                 if (!sent.ticket12) return error.UnsolicitedExtension;
@@ -628,7 +658,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = scts }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
     if (only12 or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
@@ -692,12 +722,12 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     return error.UnofferedSelection;
 }
 
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes };
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes, scts: ?[]const u8 };
 
 /// The ServerHello extensions only a TLS 1.2 answer carries.
 fn answers12(id: u16) bool {
     return switch (id) {
-        0, 11, 16, 23, 35, 0xff01, client_certificate_type, server_certificate_type => true,
+        0, 11, 16, 18, 23, 35, 0xff01, client_certificate_type, server_certificate_type => true,
         else => false,
     };
 }
@@ -734,7 +764,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key, .scts = seen.scts } };
 }
 /// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
 /// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
@@ -866,7 +896,11 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
 /// DTLS: `connection_id` the connection ID the server receives on, `srtp` the profile it chose.
 /// `client_certificate_type`, `server_certificate_type`: the types selected (RFC 7250), answered
 /// when the client sent the extension.
-pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null };
+/// `scts`: the certificate's SignedCertificateTimestampList, for a client that asked (RFC 6962
+/// section 3.3.1), at most `max_scts` bytes.
+/// The longest SignedCertificateTimestampList a server sends.
+pub const max_scts = 2048;
+pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -891,6 +925,7 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     if (echo.srtp) |profile| try srtpAnswer(&w, profile);
     if (echo.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
     if (echo.server_certificate_type) |kind| try extension(&w, server_certificate_type, &.{@backingInt(kind)});
+    if (echo.scts) |list| try extension(&w, Messages.signed_certificate_timestamp, list);
     if (alpn.len != 0) {
         try w.int(u16, 16);
         // safe: a protocol name is at most 255 bytes.
@@ -898,7 +933,8 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
         try w.int(u16, @intCast(alpn.len + 1));
         try w.vector(u8, alpn);
     }
-    // safe: the extension block holds short fixed extensions and one protocol name.
+    // safe: the extension block holds short fixed extensions, an SCT list bounded by the
+    // server's options and one protocol name.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
     // safe: bounded by the caller's buffer.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);

@@ -392,8 +392,9 @@ test "C3 server memory: a connection holds no handshake scratch until a peer sen
     const created = count.live_bytes;
     std.debug.print("\nC3 memory server created={d} bytes\n", .{created});
     // The server state and the credential table only: the scratch is the large allocation.
-    // 1176 measured since delegated credentials (a reference per credential, two flags, an option).
-    try std.testing.expect(created <= 1184);
+    // 1176 measured since delegated credentials (a reference per credential, two flags, an option);
+    // 1208 since Certificate Transparency (a credential's SCTs, the policy's reference, evidence).
+    try std.testing.expect(created <= 1216);
     // A connection the peer never speaks on is released without ever having built it.
     try std.testing.expect(!pair.conn.hs.state.server.pending());
     try pair.client.start();

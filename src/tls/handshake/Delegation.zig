@@ -4,7 +4,7 @@
 //! presents with its certificate. One module serves both roles; only the signed label differs.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Hello = @import("Hello.zig");
 const Possession = @import("Possession.zig");

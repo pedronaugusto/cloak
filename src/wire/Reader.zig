@@ -1,4 +1,5 @@
-//! Strict enclosing-length cursor for untrusted TLS fields; no retained owner.
+//! Strict enclosing-length cursor for untrusted fields in the TLS presentation language; no
+//! retained owner.
 const std = @import("std");
 pub const ReadError = error{InvalidLength};
 bytes: []const u8,

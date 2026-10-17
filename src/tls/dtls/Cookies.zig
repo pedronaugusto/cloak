@@ -18,7 +18,7 @@ const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Hello = @import("../handshake/Hello.zig");
 const ClientHello = @import("../handshake/ClientHello.zig");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Record = @import("Record.zig");
 const Datagram = @import("Datagram.zig");
 

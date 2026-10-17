@@ -847,6 +847,48 @@ server sends one (OpenSSL and Go speak no RFC 9345, BoringSSL's bssl tool has no
 selfserv cannot load one), so cloak's client is tested against cloak's server, and the offer against
 OpenSSL's server, which ignores it.
 
+## Certificate Transparency
+
+Certificate Transparency (RFC 6962) is a verification policy, not a TLS feature: `types.Policy`
+names a `TransparencyPolicy`, borrowed, and the verifier (`verify/transparency.zig`) checks the
+signed certificate timestamps of the path it accepts, beside revocation and with the same owners.
+TLS only carries SCTs to it. Version 1 SCTs only: RFC 9162's v2 has no deployed logs.
+
+The policy is the caller's: the logs (each a key and an operator, and when it retired), the counts
+and when the log list stops being current. A log's ID is the SHA-256 of its key, so an ID never
+names another key, and every listed key is checked (ECDSA P-256 or RSA, SHA-256) whatever the
+certificate carries. An SCT counts when it names a listed log not yet counted, is timestamped no
+later than now and before its log retired, and its signature verifies; anything else is skipped,
+never trusted, since a certificate may carry SCTs from logs this caller does not list. A
+certificate is compliant by its embedded SCTs (over the precertificate: the TBS with the SCT list
+extension removed and re-encoded, and the issuer key's hash, the issuer being the path's next
+certificate) from `embedded` distinct logs, `embedded_long` when it is valid longer than
+`long_lifetime`, one of them not retired; or by SCTs delivered beside it (over the certificate
+itself: the TLS extension, a caller's list) from `delivered` distinct logs none retired; either
+way from `operators` distinct operators. The defaults are the counts Chrome's and Apple's policies
+ask of public certificates. Log lists, their distribution and freshness, inclusion proofs and
+gossip are upstream: cloak checks what it is given.
+
+Errors are typed: a malformed list `InvalidTransparency`, too few SCTs `MissingTransparency`
+(the verifier reports it instead of `NoTrustedPath` when it is why no path was accepted), a list
+past its `expires` `StaleTransparency`, a policy that cannot decide `InvalidTransparencyPolicy`.
+Each SCT signature is charged to the request's signature budget. The receipt says `compliant`
+and holds no longer than the list's `expires`, so a session resumed from it does not outlive the
+list; the request digest covers the policy and the delivered lists, so the client's cache key
+keeps sessions verified under one policy from resuming under another, and a service's owned
+request copies both.
+
+TLS: a client whose policy names one asks for SCTs (signed_certificate_timestamp, empty) in
+both versions; the server's list comes in the leaf's CertificateEntry (TLS 1.3; on another entry
+illegal_parameter, unasked unsupported_extension, empty decode_error) or in the ServerHello
+(TLS 1.2), and joins the request after the caller's lists. A server's `Credential.scts` is a
+list for its certificate as it is, checked for framing when the server is made, sent only to a
+client that asks, never with a raw key. SCTs in a stapled OCSP response are not read: cloak asks
+for no stapled status.
+
+Peers: OpenSSL 4.0.3's `s_client -ct` (strict, with `-ctlogfile`) verifies a cloak server's
+embedded and delivered SCTs, and cloak's client verifies OpenSSL's server's (`-serverinfo`).
+
 ## TLS 1.2
 
 TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)

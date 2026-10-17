@@ -10,8 +10,9 @@ const signatures = @import("signature.zig");
 const constraints = @import("constraints.zig");
 const policies = @import("policy.zig");
 const revocation = @import("revocation.zig");
+const transparency = @import("transparency.zig");
 pub const Request = T.Request;
-pub const VerifyError = C.ParseError || identity.Error || signatures.Error || constraints.Error || policies.Error || revocation.Error || V.InitError || error{ VerificationLimit, NoTrustedPath, InvalidValidity, InvalidCa, InvalidAnchorPolicy };
+pub const VerifyError = C.ParseError || identity.Error || signatures.Error || constraints.Error || policies.Error || revocation.Error || transparency.Error || V.InitError || error{ VerificationLimit, NoTrustedPath, InvalidValidity, InvalidCa, InvalidAnchorPolicy };
 const Work = @import("Work.zig");
 const Counters = struct { candidates: usize = 0, parses: usize = 0, signatures: usize = 0, rejected: usize = 0, parsed_bytes: usize = 0 };
 const Search = struct {
@@ -23,6 +24,9 @@ const Search = struct {
     count: usize = 0,
     work: Counters = .{},
     receipt: ?V = null,
+    /// Why the last path that met everything else failed Certificate Transparency: the verdict
+    /// when no path is accepted.
+    transparency_failure: ?transparency.Error = null,
     constraint_work: Work,
     policy_work: Work,
 
@@ -196,15 +200,29 @@ const Search = struct {
             if (err == error.VerificationLimit) return err;
             return false;
         };
+        // Certificate Transparency: the leaf's SCTs over this path's issuer key. Each signature
+        // it verifies is charged like the path's.
+        var left = self.request.limits.signatures - self.work.signatures;
+        const transparent = transparency.check(self.gpa, self.path[0..self.count], transparency.milliseconds(self.request.time), self.request.policy.transparency, self.request.evidence.scts, &left) catch |err| switch (err) {
+            error.MissingTransparency, error.InvalidTransparency => {
+                self.work.signatures = self.request.limits.signatures - left;
+                self.transparency_failure = err;
+                return false;
+            },
+            else => return err,
+        };
+        self.work.signatures = self.request.limits.signatures - left;
         var expires = self.path[0].not_after;
         for (self.path[0 .. self.count - 1]) |*cert| expires = @min(expires, cert.not_after);
         if (ap.check_validity) expires = @min(expires, anchor.not_after);
         if (evidence.expires) |deadline| expires = @min(expires, deadline);
+        if (transparent.expires) |deadline| expires = @min(expires, deadline);
         var der: [16][]const u8 = undefined;
         for (self.path[0..self.count], 0..) |*cert, i| der[i] = cert.der;
         var receipt = try V.init(self.gpa, self.request, der[0..self.count], true, T.instant(expires));
         receipt.revocation = evidence.status;
         receipt.revocation_expires = if (evidence.expires) |deadline| T.instant(deadline) else null;
+        receipt.transparency = transparent.status;
         self.receipt = receipt;
         return true;
     }
@@ -250,7 +268,7 @@ fn run(gpa: std.mem.Allocator, request: T.Request, anchors: []const []const u8, 
     try identity.pins(&state.path[0], request.pins);
     if (request.mode == .none) return V.init(gpa, request, request.chain[0..1], false, T.instant(state.path[0].not_after));
     try leafFloors(&state.path[0], request);
-    if (!try state.search()) return error.NoTrustedPath;
+    if (!try state.search()) return state.transparency_failure orelse error.NoTrustedPath;
     return state.receipt.?;
 }
 fn leafFloors(cert: *const C.Certificate, request: T.Request) VerifyError!void {
@@ -267,6 +285,8 @@ fn bounds(request: T.Request, anchors: usize) VerifyError!void {
     var bytes: usize = 0;
     for (request.chain) |cert| bytes = (aegis.int.Checked(usize).init(bytes).add(cert.len) catch return error.VerificationLimit).raw();
     if (bytes > request.limits.chain_bytes or request.pins.len > request.limits.candidates or request.policy.required_policies.len > request.limits.policy_nodes) return error.VerificationLimit;
+    if (request.evidence.scts.len > T.TransparencyPolicy.max_lists) return error.VerificationLimit;
+    if (request.policy.transparency) |policy| try transparency.validate(policy.*);
     if (request.anchor_policies.len != 0 and request.anchor_policies.len != anchors) return error.InvalidAnchorPolicy;
 }
 fn akiConsistent(child: *const C.Certificate, issuer: *const C.Certificate) bool {
@@ -304,6 +324,6 @@ pub fn nativePath(gpa: std.mem.Allocator, request: T.Request, selected_chain: []
     }
     try leafFloors(&state.path[0], request);
     try identity.pins(&state.path[0], request.pins);
-    if (!try state.accept(0)) return error.NoTrustedPath;
+    if (!try state.accept(0)) return state.transparency_failure orelse error.NoTrustedPath;
     return state.receipt.?;
 }

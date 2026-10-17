@@ -4,7 +4,7 @@
 //! RFC 8422, RFC 4279, RFC 5077). Parsed fields borrow their message; every length is checked against its parent.
 const std = @import("std");
 const aegis = @import("aegis");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Messages = @import("Messages.zig");

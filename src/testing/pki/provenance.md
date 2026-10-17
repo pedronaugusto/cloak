@@ -35,3 +35,15 @@ extension (1.3.6.1.4.1.44363.44, NULL): `dc_p256` (a server certificate for `exa
 which RFC 9345 section 4.2 refuses as a delegator). Validity from 2026-10-10 for a hundred years;
 subject and authority key identifiers named. The delegated credentials themselves are issued by
 the tests with `tls.DelegatedCredential.issue`.
+
+The Certificate Transparency set (RFC 6962), made with Go 1.27.1 and certificate-transparency-go
+fdc03fb (its `x509.BuildPrecertTBS` and `ct.SerializeSCTSignatureInput`; every SCT checked with its
+`ctutil.VerifySCT`): `ct_ca.der`, a P-256 root (path length 0); four test logs, `ct_log_a`,
+`ct_log_b` and `ct_log_c` (P-256) and `ct_log_d` (RSA-2048), each a `.spki.der` and a PKCS#8
+`.key.pem`; server certificates on the `p256` key for `example.com`, `*.example.org` and
+`192.0.2.7`, valid from 2026-12-01 for 89 days unless named long (365 days), whose embedded SCTs
+were issued an hour after that: `ct_leaf` (logs a and b), `ct_leaf_one_operator` (a and c, which
+the tests give one operator), `ct_leaf_long` (a and b), `ct_leaf_long_three` (a, b and d) and
+`ct_leaf_wrong_entry` (b, and an SCT from a over another precertificate); `ct_plain`, without
+SCTs, and `ct_plain.scts`, a SignedCertificateTimestampList from logs a and b over it as it is.
+The generator is not kept: the files are the fixture.

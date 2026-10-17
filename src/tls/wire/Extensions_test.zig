@@ -2,7 +2,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const inputs = @import("../../testing/inputs.zig");
 const E = @import("Extensions.zig");
-const R = @import("Reader.zig");
+const R = @import("../../wire/Reader.zig");
 test "C2 catalogue_extension_uniqueness_and_negotiation_allowlist" {
     for ([_]u16{ 0, 43, 51, 0x0a0a, 65535 }) |id| {
         var bytes: [8]u8 = @splat(0);

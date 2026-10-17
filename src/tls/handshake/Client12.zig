@@ -59,6 +59,8 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
         if (self.options.hello.raw_server_key and !hello.raw_server_key) return error.UnsupportedCertificate;
         self.scratch.?.peer_raw = hello.raw_server_key;
         self.scratch.?.client_raw = hello.raw_client_key;
+        // RFC 6962 section 3.3.1: TLS 1.2 delivers the SCTs in the ServerHello.
+        try self.keepScts(hello.scts);
     }
     self.state.ticket12 = hello.ticket;
     try self.state.advance(.server_hello, epoch, .parsed, boundary);

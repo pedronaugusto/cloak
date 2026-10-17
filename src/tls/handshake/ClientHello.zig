@@ -1,7 +1,7 @@
 //! A hostile ClientHello, parsed once into borrowed views. This checks structure and
 //! uniqueness, never policy: which suite, group or identity to pick is the server's.
 const std = @import("std");
-const Reader = @import("../wire/Reader.zig");
+const Reader = @import("../../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Transport = @import("../crypto/Suite.zig").Transport;
@@ -74,6 +74,8 @@ ech: ?[]const u8,
 compress_certificate: ?[]const u8,
 /// delegated_credential (RFC 9345): the SignatureSchemeList body, two bytes each, when sent.
 delegated: ?[]const u8,
+/// signed_certificate_timestamp (RFC 6962 section 3.3.1) was sent, empty: the client takes SCTs.
+scts: bool,
 /// DTLS connection_id (RFC 9146): the connection ID the client receives on, when sent.
 connection_id: ?[]const u8,
 /// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
@@ -130,6 +132,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.ech = null;
     self.compress_certificate = null;
     self.delegated = null;
+    self.scts = false;
     self.connection_id = null;
     self.srtp = null;
     self.server_certificate_types = null;
@@ -188,10 +191,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.alpn = list;
         },
         41 => try self.offeredPsks(&value),
-        42 => {
-            if (bytes.len != 0) return error.DecodeError;
-            self.early_data = true;
-        },
+        42 => self.early_data = try empty(bytes),
         43 => {
             self.versions = (try value.vector(u8)).bytes;
             try value.finish();
@@ -233,6 +233,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.compress_certificate = bytes;
         },
         34 => self.delegated = try schemeList(&value),
+        18 => self.scts = try empty(bytes),
         54 => {
             self.connection_id = (try value.vector(u8)).bytes;
             try value.finish();
@@ -254,10 +255,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.point_formats = true;
             self.uncompressed_points = std.mem.findScalar(u8, formats, 0) != null;
         },
-        23 => {
-            if (bytes.len != 0) return error.DecodeError;
-            self.extended_master_secret = true;
-        },
+        23 => self.extended_master_secret = try empty(bytes),
         0xff01 => {
             // The initial handshake's renegotiated_connection is empty; anything else is
             // handshake_failure (RFC 5746 section 3.6).
@@ -269,7 +267,12 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
     }
 }
 
-/// A client_certificate_type or server_certificate_type list (RFC 7250): one or more types.
+/// An extension whose presence says it all: its body must be empty.
+fn empty(bytes: []const u8) ParseError!bool {
+    if (bytes.len != 0) return error.DecodeError;
+    return true;
+}
+
 /// A SignatureSchemeList filling its extension: two bytes per scheme, at least one.
 fn schemeList(value: *Reader) ParseError![]const u8 {
     const list = (try value.vector(u16)).bytes;
@@ -278,6 +281,7 @@ fn schemeList(value: *Reader) ParseError![]const u8 {
     return list;
 }
 
+/// A client_certificate_type or server_certificate_type list (RFC 7250): one or more types.
 fn certificateTypes(value: *Reader) ParseError![]const u8 {
     @setRuntimeSafety(true);
     const types = (try value.vector(u8)).bytes;

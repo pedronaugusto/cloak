@@ -17,7 +17,7 @@ const Psk = @import("../tls/handshake/Psk.zig");
 const Delegation = @import("../tls/handshake/Delegation.zig");
 pub const pki = @import("Peer.zig").pki;
 
-pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature };
+pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -100,6 +100,10 @@ pub const Options = struct {
     server_accept_delegated: bool = false,
     delegated_issued: i64 = pki.time,
     delegated_lifetime: i64 = 3 * 24 * 60 * 60,
+    /// Certificate Transparency: the client's policy, and the SCT list the server's credential
+    /// sends to a client that asks.
+    client_transparency: ?*const certificates.types.TransparencyPolicy = null,
+    server_scts: []const u8 = "",
 };
 
 /// The SHA-256 of a certificate's SubjectPublicKeyInfo: the pin of its key as a raw public key.
@@ -138,11 +142,12 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     try self.trust.addDer(pki.mldsa_ca, .{});
     try self.trust.addDer(pki.mixed_ca, .{});
     try self.trust.addDer(pki.dc_ca, .{});
+    try self.trust.addDer(pki.ct_ca, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
     const key = try certificates.PrivateKey.parse(gpa, switch (cert) {
-        .p256, .dc_p256, .dc_no_signature => pki.p256_pem,
+        .p256, .dc_p256, .dc_no_signature, .ct_leaf, .ct_plain => pki.p256_pem,
         .p384 => pki.p384_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
@@ -156,6 +161,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     const leaf = switch (cert) {
         .dc_p256 => pki.dc_p256,
         .dc_no_signature => pki.dc_no_signature,
+        .ct_leaf => pki.ct_leaf,
+        .ct_plain => pki.ct_plain,
         .p256 => pki.p256,
         .p384 => pki.p384,
         .ed25519 => pki.ed25519,
@@ -168,6 +175,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     };
     const root = switch (cert) {
         .dc_p256, .dc_no_signature => pki.dc_ca,
+        .ct_leaf, .ct_plain => pki.ct_ca,
         .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
         .mldsa44_classical => pki.mixed_ca,
         else => pki.ca,
@@ -195,7 +203,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.client_dc) |dc| dc.deinit();
     self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
-        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
+        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency }, .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .external_psk = options.client_psk,
@@ -214,8 +222,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
         .credentials = if (options.server_psk_only) &.{} else switch (options.server_raw) {
-            .none => &.{.{ .identity = self.identity, .delegated = self.server_dc }},
-            .only => &.{.{ .identity = self.raw_identity.? }},
+            .none => &.{.{ .identity = self.identity, .delegated = self.server_dc, .scts = options.server_scts }},
+            .only => &.{.{ .identity = self.raw_identity.?, .scts = options.server_scts }},
             .both => &.{ .{ .identity = self.raw_identity.? }, .{ .identity = self.identity } },
         },
         .suites = options.server_suites,
