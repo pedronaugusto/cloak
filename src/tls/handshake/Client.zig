@@ -147,7 +147,9 @@ pub fn alertFor(err: anyerror) Alert {
         error.NoApplicationProtocol => .no_application_protocol,
         error.UnofferedScheme, error.SchemeKeyMismatch => .illegal_parameter,
         error.BadSignature, error.BadFinished, error.BadBinder => .decrypt_error,
-        error.HandshakeLimit => .internal_error,
+        // A peer's message or handshake past the receiver's bounds: a length out of the range it
+        // takes (RFC 8446 section 6.2), not an internal failure.
+        error.HandshakeLimit => .decode_error,
         error.VerificationRejected, error.UnsupportedKey, error.InvalidCertificate, error.InvalidDer => .bad_certificate,
         else => .internal_error,
     };

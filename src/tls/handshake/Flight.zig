@@ -159,7 +159,7 @@ pub fn eraseEmit(emit: *Emit) void {
     }
 }
 
-pub const Error = error{ QueueFull, HandshakeLimit, OutOfMemory };
+pub const Error = error{ QueueFull, OutOfMemory };
 
 const Flight = @This();
 
@@ -194,12 +194,13 @@ pub fn pending(self: *const Flight) bool {
     return self.len != 0;
 }
 
-/// Room for `want` more bytes at the end of the flight buffer, within `cap`.
+/// Room for `want` more bytes at the end of the flight buffer, within `cap`. A flight past it is
+/// this end's own output: QueueFull, an internal error, never the peer's.
 pub fn reserve(self: *Flight, gpa: std.mem.Allocator, want: usize, cap: usize) Error![]u8 {
     @setRuntimeSafety(true);
-    const needed = (aegis.int.Checked(usize).init(self.used).add(want) catch return error.HandshakeLimit).raw();
+    const needed = (aegis.int.Checked(usize).init(self.used).add(want) catch return error.QueueFull).raw();
     if (needed > self.buf.len) {
-        if (needed > cap) return error.HandshakeLimit;
+        if (needed > cap) return error.QueueFull;
         const capacity = @min(cap, @max(needed, @max(4096, self.buf.len * 2)));
         const grown = try gpa.alloc(u8, capacity);
         @memcpy(grown[0..self.used], self.buf[0..self.used]);

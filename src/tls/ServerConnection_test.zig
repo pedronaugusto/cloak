@@ -121,6 +121,18 @@ test "F96 catalogue_legacy_record_version_ignored (any {03,XX} on a plaintext re
     try fails(.aes_128_gcm_sha256, .{ .first_record_version = 0x0403 }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
+test "F110 catalogue_oversized_handshake_message_decode_error (a message past the receiver's bound is the peer's error: decode_error, not internal_error)" {
+    // tlsfuzzer's test-truncating-of-client-hello: a ClientHello header announcing 131,584 bytes,
+    // past the 128 KiB message bound. RFC 8446 section 6.2: internal_error is for failures
+    // unrelated to the peer; a length out of the range the receiver takes is decode_error.
+    for ([_][]const u8{ "\x16\x03\x01\x00\x04\x01\x02\x02\x00", "\x16\x03\x01\x00\x04\x01\xff\xff\xff" }) |record| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+        defer pair.deinit();
+        try std.testing.expectError(error.HandshakeLimit, pair.conn.receive(record));
+        try std.testing.expectEqual(Alert.decode_error, pair.conn.diagnostics().alert_sent.?);
+    }
+}
+
 test "F97 catalogue_authenticated_inner_content_unexpected (no type, an unknown one, an empty alert or handshake: unexpected_message, not bad_record_mac)" {
     // RFC 8446 section 5.4: no non-zero octet in the inner plaintext; section 5: an unknown record
     // type; section 5.1: an empty alert or handshake fragment. The tag held, so it is no MAC failure.
