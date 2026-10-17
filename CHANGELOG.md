@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- cloak builds for every architecture again: 0.11.2's aegis 0.1.10 gave its AArch64 data-independent-timing instructions to the assembler of an unoptimized build on x86_64 (and every architecture without the mode), which refused them, so a Debug build reaching a secret computation failed outside AArch64. On aegis 0.1.11, which keeps them to AArch64 at compile time.
+
 ## [0.11.2] - 2026-10-17
 
 ### Fixed
