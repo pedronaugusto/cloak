@@ -53,6 +53,8 @@ pub const Srtp = enum(u16) {
 /// cloak names in them: X.509 and a raw public key.
 pub const client_certificate_type = 19;
 pub const server_certificate_type = 20;
+/// post_handshake_auth (RFC 8446 section 4.2.6): empty, from a client only.
+pub const post_handshake_auth = 49;
 pub const CertificateType = enum(u8) { x509 = 0, raw_public_key = 2, _ };
 /// The connection_id extension's number (RFC 9146 section 3).
 pub const connection_id_extension = 54;
@@ -78,6 +80,10 @@ pub const Options = struct {
     raw_server_key: bool = false,
     /// This client's credential is a raw public key: client_certificate_type offers that type alone.
     raw_client_key: bool = false,
+    /// The client answers a CertificateRequest after the handshake (RFC 8446 section 4.6.2):
+    /// post_handshake_auth is offered. TLS 1.3 over a stream only: QUIC forbids it (RFC 9001
+    /// section 4.4), and cloak's datagrams do not build it.
+    post_handshake_auth: bool = false,
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     parameters: []const u8 = "",
@@ -236,6 +242,7 @@ pub fn validate(options: Options) ValidateError!void {
     for (options.srtp, 0..) |profile, i| for (options.srtp[0..i]) |old| {
         if (old == profile) return error.InvalidOptions;
     };
+    if (options.post_handshake_auth and (options.transport != .stream or !options.allows13())) return error.InvalidOptions;
     if (options.sni.len > 253) return error.InvalidOptions;
     if (options.sni.len != 0) {
         var label: usize = 0;
@@ -430,11 +437,13 @@ fn delegatedExtension(w: *Writer, require_pq_auth: bool) EncodeError!void {
     for (list) |scheme| try w.int(u16, @backingInt(scheme));
 }
 
-/// RFC 7250: one type each, the raw key; X.509 is what a hello without the extension means.
+/// What the client's certificate may be and when it may be asked for: RFC 7250's types, one each,
+/// the raw key (X.509 is what a hello without the extension means), and post_handshake_auth.
 fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
     const raw: []const u8 = &.{ 1, @backingInt(CertificateType.raw_public_key) };
     if (options.raw_client_key) try extension(w, client_certificate_type, raw);
     if (options.raw_server_key) try extension(w, server_certificate_type, raw);
+    if (options.post_handshake_auth and options.allows13()) try extension(w, post_handshake_auth, "");
 }
 
 /// connection_id and use_srtp as a datagram hello offers them.

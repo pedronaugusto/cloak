@@ -80,6 +80,9 @@ scts: bool,
 connection_id: ?[]const u8,
 /// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
 srtp: ?[]const u8,
+/// post_handshake_auth (RFC 8446 section 4.2.6) was sent, empty: the client answers a
+/// CertificateRequest after the handshake.
+post_handshake_auth: bool,
 /// RFC 7250: the certificate types the client takes from the server, and those it can present,
 /// one byte each in its order, when sent. Absent means X.509 alone.
 server_certificate_types: ?[]const u8,
@@ -133,6 +136,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.compress_certificate = null;
     self.delegated = null;
     self.scts = false;
+    self.post_handshake_auth = false;
     self.connection_id = null;
     self.srtp = null;
     self.server_certificate_types = null;
@@ -234,6 +238,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         34 => self.delegated = try schemeList(&value),
         18 => self.scts = try empty(bytes),
+        49 => self.post_handshake_auth = try empty(bytes),
         54 => {
             self.connection_id = (try value.vector(u8)).bytes;
             try value.finish();

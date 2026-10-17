@@ -104,6 +104,21 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.bytes = .fromRaw(0);
             if (self.owner == .kernel) self.owner = .next;
         }
+        /// The Finished of a post-handshake authentication sent under this epoch: the MAC of
+        /// `transcript` under the finished key of the current traffic secret (RFC 8446 section
+        /// 4.4: client_application_traffic_secret_N). The secret never leaves the epoch; a kernel
+        /// holding the keys leaves it here too. Only an open epoch made from a traffic secret.
+        pub fn finished(self: *const Self, transcript: *const [Hash.digest_length]u8, out: *[Hash.digest_length]u8) void {
+            @setRuntimeSafety(true);
+            aegis.assert.pre(!self.closed and self.traffic != null, "a Finished is made under an open epoch's traffic secret");
+            Labels.finished(Hash, .tls13, out, self.traffic.?.expose(), transcript);
+        }
+        /// Checks a post-handshake Finished received under this epoch, in constant time.
+        pub fn checkFinished(self: *const Self, transcript: *const [Hash.digest_length]u8, received: []const u8) Labels.CheckError!void {
+            @setRuntimeSafety(true);
+            aegis.assert.pre(!self.closed and self.traffic != null, "a Finished is checked under an open epoch's traffic secret");
+            return Labels.checkFinished(Hash, .tls13, self.traffic.?.expose(), transcript, received);
+        }
         fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {
             // unreachable: fixed label and AEAD-sized output meet the HKDF bounds.
             Labels.expand(Hash, key, secret, "key", "") catch unreachable;

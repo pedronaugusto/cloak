@@ -388,10 +388,11 @@ buffer: about 50 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
 calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (688 bytes) and one
-heap block of 816 bytes (the key schedule's exporter and resumption secrets among it), 1,504
+heap block of 832 bytes (the key schedule's exporter and resumption secrets among it), 1,520
 bytes in total, in a Debug build: the client's options live in the handshake scratch and go with
 it, and only what outlives the handshake (the ticket cache, the message bound, the server name
-and the client certificate's identity) stays. These are heap figures from a counting allocator; stack use
+and the client certificate's identity) stays; post-handshake authentication, when offered, adds
+its 336 bytes. These are heap figures from a counting allocator; stack use
 is not measured here.
 
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
@@ -888,6 +889,69 @@ for no stapled status.
 
 Peers: OpenSSL 4.0.3's `s_client -ct` (strict, with `-ctlogfile`) verifies a cloak server's
 embedded and delivered SCTs, and cloak's client verifies OpenSSL's server's (`-serverinfo`).
+
+## Post-handshake client authentication
+
+TLS 1.3 over a stream lets a server ask for a client certificate after the handshake (RFC 8446
+section 4.6.2), the way an HTTP/1.1 server asks for one only for some resource. Neither end does
+it unless asked: a client offers post_handshake_auth with `post_handshake_auth`, a server asks
+only a client that offered it and only with its own `post_handshake_auth`. QUIC forbids it (RFC
+9001 section 4.4) and cloak's datagrams do not build it, so both options are refused there; TLS
+1.2 has none. A client that did not offer it ends the connection at a request with
+unexpected_message.
+
+What outlives the handshake for it (`handshake/PostAuth.zig`) is kept only when both ends took
+it: the transcript's hash state through the client's Finished, a hash state and no messages
+(336 bytes with its bookkeeping, measured: an idle client that offered it holds 1,856 bytes
+with its struct, an idle server that keeps it 2,243). Every exchange starts from that hash: its
+CertificateRequest, the client's Certificate and CertificateVerify, then the Finished over them.
+Nothing of an exchange enters the handshake's transcript or another exchange's, so a signature or
+Finished made for one request stands for no other. The Finished key comes from the current
+application traffic secret of the client's write direction (RFC 8446 section 4.4:
+client_application_traffic_secret_N), which the record layer holds and turns at each key update,
+so the record layer makes and checks that MAC (`Protection.finished`, `Protection.checkFinished`)
+and the secret never leaves it; under a kernel record layer (kTLS) it is still the connection's,
+since the epoch keeps its traffic secret for the next update.
+
+An exchange crosses the connection's halves, and one half holds it at a time, handed over through
+an atomic owner. At the server `requestCertificate` (the write half) builds a request whose context
+is the request's number, eight bytes, never repeated on the connection, which is what RFC 8446
+asks of it (unique within the connection); randomness would add nothing a signature over the
+connection's own transcript does not already give, and would need an entropy service on the write
+half. After the request is sealed the read half owns the exchange: a Certificate with any other
+context is illegal_parameter (a replay of an earlier answer, or one made for nothing); one with
+no request outstanding is unexpected_message. A chain is verified as in the handshake by the
+server's `client_verify`, through a `verify` request with a fresh `time` request first, since the
+handshake's clock is long past; a pinned raw key when the handshake agreed that type (RFC 7250).
+The CertificateVerify is checked against the leaf's key over the exchange's transcript, and then
+the record layer checks the Finished under the read keys it arrived under. The answer's messages
+come together with nothing between them (RFC 8446 section 4.6.2): application data or a KeyUpdate
+inside an answer is unexpected_message, so one key covers it. Only then does the exchange count:
+`postAuthentication` reaches the request's number, with `authenticated` saying whether the client
+proved a certificate the policy authenticates. An empty Certificate counts with `authenticated`
+false: declining is the client's right and the application's to weigh. A refused chain, a bad
+signature or Finished end the connection. One request is outstanding at a time
+(`RequestOutstanding`). The application gates the action a request was made for on the outcome
+reaching that request's number, as `Session.requestCertificate` documents; the handshake's
+`Info.peer_authenticated` stays the handshake's, and tickets carry the handshake's
+authentication, never a later one.
+
+At the client the read half takes a request and answers with the handshake's `auth` when the
+request takes it (a scheme it lists for the credential's key, and the certificate type the
+handshake agreed); otherwise with an empty Certificate. Delegated credentials answer only the
+handshake's request: here the certificate's key signs. The signature takes fresh noise through an
+`entropy` request, or a `sign` request for a key held elsewhere, checked against the identity's key
+before it is used, as in the handshake. The Certificate and CertificateVerify then go to the write
+half, which makes room in its record budget first (so no key update falls inside the answer), makes
+the Finished under its current write keys and sends all three. A second request while an answer is
+still to be written is refused as a second one outstanding: cloak's server and OpenSSL's keep one
+outstanding, and holding requests would make the reader wait on the writer, which the halves never
+do. Each request counts as a control message toward the flood bound.
+
+Under a kernel record layer that holds the server's read keys, application data reaches the
+application without the connection, so an answer with application data inside it is not seen
+as such there; its messages and Finished are still checked. Peers: OpenSSL 4.0.3 (`s_client
+-enable_pha`, and `s_server`'s `c` command) and NSS (`tstclnt -E`, `selfserv -E` with three `-r`).
 
 ## TLS 1.2
 

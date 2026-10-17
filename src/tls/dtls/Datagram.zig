@@ -710,6 +710,8 @@ fn drainEngine(self: *Datagram) Error!void {
             .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
             .ticket => {},
             .refuse_renegotiation => {},
+            // Post-handshake authentication is a stream's: a datagram never offers or keeps it.
+            .auth_response, .auth_finished => return error.UnexpectedMessage,
             .complete => {
                 self.hs.settle();
                 self.negotiated = self.hs.info();

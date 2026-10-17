@@ -293,11 +293,13 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
 
 /// A CertificateRequest with an empty context asking for these signature schemes, and with
 /// delegated_credential listing `delegated` when it is not empty (RFC 9345 section 4.1.2).
-pub fn buildCertificateRequest(out: []u8, schemes: []const u16, delegated: []const u16) BuildError![]u8 {
+/// A CertificateRequest: empty `context` in the handshake, the request's own after it (RFC 8446
+/// section 4.3.2).
+pub fn buildCertificateRequest(out: []u8, context: []const u8, schemes: []const u16, delegated: []const u16) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try header(&w, .certificate_request);
-    try w.int(u8, 0);
+    try w.vector(u8, context);
     const delegated_len: usize = if (delegated.len != 0) 6 + delegated.len * 2 else 0;
     // safe: each extension is six bytes of header and its list, bounded by the scheme table.
     try w.int(u16, @intCast(6 + schemes.len * 2 + delegated_len));

@@ -294,6 +294,69 @@ test "C2 session reports a rejected server chain as the alert it sent" {
     try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings));
     try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
     try std.testing.expectEqual(@as(?Connection.Error, error.VerificationRejected), report.reason);
+    try std.testing.expectEqual(@as(?Session.VerifyError, error.NoTrustedPath), report.verification);
+}
+
+test "C10 session keeps the verifier's reason for a refused chain: Certificate Transparency" {
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    const logs = [_]certificates.types.TransparencyLog{
+        .{ .key = pki.ct_logs[0], .operator = "alpha" },
+        .{ .key = pki.ct_logs[1], .operator = "beta" },
+    };
+    const required: certificates.types.TransparencyPolicy = .{ .logs = &logs };
+    // The server's certificate has no SCTs and delivers none.
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [64]u8 = undefined;
+    var report: Session.Diagnostics = .{};
+    var settings = options(snapshot);
+    settings.policy.transparency = &required;
+    settings.diagnostics = &report;
+    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings));
+    try std.testing.expectEqual(@as(?Alert, .bad_certificate), report.alert_sent);
+    try std.testing.expectEqual(@as(?Session.VerifyError, error.MissingTransparency), report.verification);
+}
+
+test "C10 session answers a post-handshake CertificateRequest from the reading task" {
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    const key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
+    defer key.deinit();
+    const auth = try certificates.ClientAuth.init(gpa, &.{pki.client}, key, .{});
+    defer auth.deinit();
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    var settings = options(snapshot);
+    settings.auth = auth;
+    settings.post_handshake_auth = true;
+    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+    defer session.deinit();
+    try std.testing.expectEqual(Connection.PostAuthOutcome{ .generation = 0, .authenticated = false }, session.postAuthentication().?);
+    try peer.requestCertificate("session");
+    try peer.send("after");
+    var line: [8]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "after", line[0..try session.reader().readSliceShort(line[0..5])]);
+    try std.testing.expect(peer.post_finished_ok and peer.post_signature_ok and peer.alert == null);
+    try std.testing.expectEqual(Connection.PostAuthOutcome{ .generation = 1, .authenticated = true }, session.postAuthentication().?);
 }
 
 /// A transport whose reads fail the way a cancelled `std.Io` read does: `ReadFailed`, with the
@@ -330,4 +393,42 @@ test "a cancelled transport read ends open with ReadFailed and releases the conn
     try std.testing.expectError(error.ReadFailed, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot)));
     try std.testing.expectEqual(@as(?anyerror, error.Canceled), transport.err);
     // The testing allocator reports anything open left behind.
+}
+
+test "C10 session accept asks for a client certificate after the handshake and gates on its answer" {
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    const key = try certificates.PrivateKey.parse(gpa, pki.p256_pem, .{});
+    defer key.deinit();
+    const identity = try certificates.Identity.init(gpa, &.{ pki.p256, pki.ca }, key, .{});
+    defer identity.deinit();
+    const credentials = [_]Server.Credential{.{ .identity = identity }};
+    var peer = client_module.ClientPeer(.aes_128_gcm_sha256).init(gpa, .{ .post_handshake_auth = true }, 5);
+    defer peer.deinit();
+    try peer.start();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, .{
+        .credentials = &credentials,
+        .client_trust = .{ .snapshot = snapshot },
+        .post_handshake_auth = true,
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    });
+    defer session.deinit();
+    const number = try session.requestCertificate();
+    try std.testing.expectEqual(@as(usize, 1), peer.requests.items.len);
+    try peer.answer(.{});
+    try peer.send("GET /admin");
+    var line: [16]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "GET /admin", line[0..try session.reader().readSliceShort(line[0..10])]);
+    const outcome = session.postAuthentication().?;
+    try std.testing.expect(outcome.generation == number and outcome.authenticated);
 }

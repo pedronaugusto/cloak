@@ -81,6 +81,26 @@ pub const Config = struct {
     early_record_size: usize = 600,
     /// The record version of the first record.
     first_record_version: u16 = 0x0301,
+    /// Offer post_handshake_auth (RFC 8446 section 4.2.6).
+    post_handshake_auth: bool = false,
+};
+
+/// How the scripted client answers a post-handshake CertificateRequest, faithfully or not.
+pub const Answer = struct {
+    /// The request answered, by arrival; the last by default. With no request at all, the answer
+    /// is unsolicited and its transcript the handshake's alone.
+    request: ?usize = null,
+    /// Present the client certificate and sign; an empty Certificate otherwise.
+    present: bool = true,
+    /// This context instead of the request's.
+    context: ?[]const u8 = null,
+    /// Sign the handshake's transcript with this exchange's Certificate, leaving out its request.
+    sign_without_request: bool = false,
+    /// The key of the Finished: the current application secret, the handshake's, or the one the
+    /// last key update replaced.
+    finished_key: enum { current, handshake, previous } = .current,
+    /// A record between the Certificate and the rest of the answer.
+    between: enum { none, application, key_update } = .none,
 };
 
 pub fn ClientPeer(comptime suite: Suite13) type {
@@ -138,6 +158,13 @@ pub fn ClientPeer(comptime suite: Suite13) type {
         ticket_count: usize = 0,
         key_updates_seen: usize = 0,
         extra_after: std.ArrayList(u8) = .empty,
+        /// The transcript through the client's Finished, every post-handshake exchange's start;
+        /// the current application write secret and the one before it.
+        base: Transcript(Hash) = .{},
+        app_write: Secret = undefined,
+        previous_write: Secret = undefined,
+        /// Post-handshake CertificateRequests received, whole.
+        requests: std.ArrayList([]u8) = .empty,
 
         pub fn init(gpa: std.mem.Allocator, config: Config, seed: u64) Self {
             return .{ .gpa = gpa, .config = config, .rng = .init(seed) };
@@ -150,6 +177,8 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             self.chain.deinit(self.gpa);
             self.received.deinit(self.gpa);
             self.extra_after.deinit(self.gpa);
+            for (self.requests.items) |request| self.gpa.free(request);
+            self.requests.deinit(self.gpa);
             for (&self.shares) |*slot| if (slot.*) |*share| share.deinit();
             if (self.schedule) |*s| s.deinit();
             if (self.tx) |*e| e.deinit();
@@ -271,6 +300,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 try Ext.put(&ext, gpa, 16, alpn.items);
             }
             if (t == .cookie_in_first and !second) try Ext.put(&ext, gpa, 44, &.{ 0, 1, 'x' });
+            if (self.config.post_handshake_auth) try Ext.put(&ext, gpa, 49, &.{});
             if (t == .duplicate_extension) try Ext.put(&ext, gpa, 43, &.{ 2, 3, 4 });
             if (self.config.early_data and (!second or t == .early_data_in_second)) try Ext.put(&ext, gpa, 42, &.{});
             // Key shares: the first hello sends the configured groups, the second only the requested one.
@@ -407,6 +437,11 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 2 => try self.onServerHello(message),
                 8 => try self.onEncrypted(message),
                 13 => {
+                    if (self.connected) {
+                        // After the handshake: an exchange of its own, answered by `answer`.
+                        try self.requests.append(self.gpa, try self.gpa.dupe(u8, message));
+                        return;
+                    }
                     self.requested_certificate = true;
                     try self.transcript.commit(message);
                 },
@@ -663,6 +698,9 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             self.rx.?.deinit();
             self.tx = try epochFrom(&self.client_app);
             self.rx = try epochFrom(&self.server_app);
+            self.base = self.transcript;
+            self.app_write = self.client_app;
+            self.previous_write = self.client_app;
             self.connected = true;
         }
 
@@ -675,6 +713,78 @@ pub fn ClientPeer(comptime suite: Suite13) type {
         pub fn keyUpdate(self: *Self, request: bool) !void {
             try self.sealOne(.handshake, &.{ 24, 0, 0, 1, @intFromBool(request) });
             try self.tx.?.update();
+            self.previous_write = self.app_write;
+            try Labels.expand(Hash, &self.app_write, &self.previous_write, "traffic upd", "");
+        }
+
+        /// Answers a post-handshake CertificateRequest as `how` says: Certificate (with the P-256
+        /// client certificate, or empty), CertificateVerify over the exchange's transcript, and
+        /// Finished under the current application secret (RFC 8446 section 4.4), each its own
+        /// record, by its own transcript and keys.
+        pub fn answer(self: *Self, how: Answer) !void {
+            var transcript = self.base;
+            const request: ?[]const u8 = if (how.request) |i| self.requests.items[i] else if (self.requests.items.len != 0) self.requests.items[self.requests.items.len - 1] else null;
+            if (request) |cr| if (!how.sign_without_request) try transcript.commit(cr);
+            const context: []const u8 = how.context orelse if (request) |cr| cr[5..][0..cr[4]] else "";
+            var body: std.ArrayList(u8) = .empty;
+            defer body.deinit(self.gpa);
+            try body.append(self.gpa, @intCast(context.len));
+            try body.appendSlice(self.gpa, context);
+            var len: [3]u8 = undefined;
+            if (how.present) {
+                std.mem.writeInt(u24, &len, @intCast(pki.client.len + 5), .big);
+                try body.appendSlice(self.gpa, &len);
+                std.mem.writeInt(u24, &len, @intCast(pki.client.len), .big);
+                try body.appendSlice(self.gpa, &len);
+                try body.appendSlice(self.gpa, pki.client);
+                try body.appendSlice(self.gpa, &.{ 0, 0 });
+            } else try body.appendSlice(self.gpa, &.{ 0, 0, 0 });
+            var certificate: std.ArrayList(u8) = .empty;
+            defer certificate.deinit(self.gpa);
+            try self.appendMessage(&certificate, 11, body.items);
+            try transcript.commit(certificate.items);
+            try self.sealOne(.handshake, certificate.items);
+            switch (how.between) {
+                .none => {},
+                .application => try self.sealOne(.application, "between"),
+                .key_update => try self.keyUpdate(false),
+            }
+            if (how.present) {
+                const digest = transcript.digest();
+                var content_buf: [64 + 34 + 48]u8 = undefined;
+                const content = signedContent(&digest, false, &content_buf);
+                const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+                const kp = try Ecdsa.KeyPair.fromSecretKey(try Ecdsa.SecretKey.fromBytes(pki.client_secret[0..32].*));
+                var der: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
+                const sig = (try kp.sign(content, null)).toDer(&der);
+                var cv_body: [4 + 80]u8 = undefined;
+                std.mem.writeInt(u16, cv_body[0..2], 0x0403, .big);
+                std.mem.writeInt(u16, cv_body[2..4], @intCast(sig.len), .big);
+                @memcpy(cv_body[4..][0..sig.len], sig);
+                var cv: std.ArrayList(u8) = .empty;
+                defer cv.deinit(self.gpa);
+                try self.appendMessage(&cv, 15, cv_body[0 .. 4 + sig.len]);
+                // The signature left the request out; the transcript goes on with it.
+                if (how.sign_without_request) {
+                    transcript = self.base;
+                    try transcript.commit(request.?);
+                    try transcript.commit(certificate.items);
+                }
+                try transcript.commit(cv.items);
+                try self.sealOne(.handshake, cv.items);
+            }
+            const digest = transcript.digest();
+            var verify_data: Secret = undefined;
+            const key = switch (how.finished_key) {
+                .current => &self.app_write,
+                .handshake => &self.client_hs,
+                .previous => &self.previous_write,
+            };
+            Labels.finished(Hash, .tls13, &verify_data, key, &digest);
+            var finished: std.ArrayList(u8) = .empty;
+            defer finished.deinit(self.gpa);
+            try self.appendMessage(&finished, 20, &verify_data);
+            try self.sealOne(.handshake, finished.items);
         }
 
         pub fn closeNotify(self: *Self) !void {

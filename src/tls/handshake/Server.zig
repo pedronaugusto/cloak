@@ -16,6 +16,7 @@ const Labels = @import("../crypto/Labels.zig");
 const Exchange = @import("../crypto/Exchange.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Client = @import("Client.zig");
+const PostAuth = @import("PostAuth.zig");
 const ClientHello = @import("ClientHello.zig");
 const Flight = @import("Flight.zig");
 const Hello = @import("Hello.zig");
@@ -102,6 +103,9 @@ pub const Options = struct {
     /// TLS 1.2 session tickets too (RFC 5077), from the same ring. An abbreviated TLS 1.2
     /// handshake reuses the session's master secret with no new key exchange: off unless asked.
     tls12_tickets: bool = false,
+    /// Ask for a client certificate after the handshake when the client offers it (RFC 8446
+    /// section 4.6.2), checked by `client_verify`; TLS 1.3 over a stream only.
+    post_handshake_auth: bool = false,
     /// Encrypted Client Hello (RFC 9849, shared mode): the configs this server decrypts with,
     /// at most `Ech.max_keys`, borrowed for the life of the connection. A client whose ECH does
     /// not decrypt is answered with the configs marked `retry`.
@@ -172,6 +176,9 @@ raw_pin: ?u16 = null,
 delegating: bool = false,
 /// The chosen credential's SCTs go to a client that asked for them (RFC 6962).
 sends_scts: bool = false,
+/// Post-handshake authentication, kept from the client's Finished when the client offered it and
+/// the options allow it.
+post_auth: ?*PostAuth = null,
 /// The client proved possession with its delegated credential.
 delegated_used: bool = false,
 peer_certificate: bool = false,
@@ -234,6 +241,8 @@ const Scratch = struct {
     takes_tickets: bool = false,
     /// The client offered early data, which this server never accepts: its records are skipped.
     early_offered: bool = false,
+    /// The client offered post_handshake_auth.
+    post_auth_offered: bool = false,
     /// Seconds: when the session's tickets expire (from its full handshake), and when the
     /// client's authentication expires.
     session_expires: i64 = std.math.maxInt(i64),
@@ -317,6 +326,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     Compression.validate(options.certificate_compression, .compress) catch return error.InvalidOptions;
     // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
     if (options.ech_keys.len != 0 and (options.max_version != .tls13 or options.transport == .datagram)) return error.InvalidOptions;
+    if (options.post_handshake_auth and (options.max_version != .tls13 or options.transport != .stream)) return error.InvalidOptions;
     const self = try gpa.create(Server);
     errdefer gpa.destroy(self);
     // The credential table is copied; the names it points at and the identities (retained below)
@@ -350,6 +360,7 @@ pub fn deinit(self: *Server) void {
         if (credential.delegated) |delegated| delegated.deinit();
     }
     gpa.free(self.options.credentials);
+    if (self.post_auth) |post| post.deinit();
     self.* = undefined;
     gpa.destroy(self);
 }
@@ -427,7 +438,13 @@ pub fn compat(self: *const Server) bool {
 }
 
 pub fn need(self: *const Server) Need {
+    if (self.need_now == .none) if (self.post_auth) |post| return post.need;
     return self.need_now;
+}
+
+/// What a client's post-handshake answer is checked against: the handshake's client policy.
+fn postPolicy(self: *const Server) PostAuth.Policy {
+    return .{ .verify = self.options.client_verify, .limits = self.options.limits, .require_pq_auth = self.options.require_pq_auth };
 }
 
 // ---------------------------------------------------------------- services
@@ -460,6 +477,7 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
 
 pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
     @setRuntimeSafety(true);
+    if (self.established) return self.post_auth.?.provideTime(now);
     if (self.need_now != .time) return error.UnexpectedService;
     self.now = now;
     self.need_now = .none;
@@ -477,6 +495,7 @@ pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
 /// The verification request for the pending client chain; valid while `need` is `.verify`.
 pub fn verification(self: *const Server, token: types.Token) types.Request {
     @setRuntimeSafety(true);
+    if (self.established) return self.post_auth.?.verification(token, self.postPolicy());
     const full = self.options.client_verify.full;
     const scratch = self.scratch.?;
     return .{
@@ -498,6 +517,7 @@ pub fn verification(self: *const Server, token: types.Token) types.Request {
 
 pub fn provideVerification(self: *Server, token: types.Token, receipt: *const types.Verification) Client.Error!void {
     @setRuntimeSafety(true);
+    if (self.established) return self.post_auth.?.provideVerification(token, receipt, self.postPolicy());
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
     if (self.options.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
@@ -518,6 +538,7 @@ pub fn provideVerification(self: *Server, token: types.Token, receipt: *const ty
 }
 
 pub fn rejectVerification(self: *Server) void {
+    if (self.post_auth) |post| post.rejectVerification();
     self.state.fail();
     self.need_now = .none;
 }
@@ -664,11 +685,12 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
 pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase() == .failed) return error.Closed;
-    if (self.need_now != .none) return error.Pending;
+    if (self.need() != .none) return error.Pending;
     errdefer self.state.fail();
     if (bytes_in.len > self.options.limits.message) return error.HandshakeLimit;
     const parsed = try Messages.body(bytes_in);
     if (self.version == .tls12) return Server12.receive(self, parsed.kind, bytes_in, epoch, boundary);
+    if (self.established and parsed.kind != .key_update) return self.onPostAnswer(parsed.kind, bytes_in, epoch);
     switch (parsed.kind) {
         .client_hello => try self.onClientHello(bytes_in, epoch, boundary),
         .certificate => try self.onCertificate(bytes_in, epoch, boundary),
@@ -771,6 +793,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (second and hello.early_data) return error.IllegalParameter;
     if (!second) self.scratch.?.early_offered = hello.early_data;
     self.scratch.?.takes_tickets = hello.psk_dhe;
+    self.scratch.?.post_auth_offered = hello.post_handshake_auth;
     if (hello.compress_certificate) |list| {
         // checkExtension bounded it: one length byte and at most 254 bytes of algorithms.
         @memcpy(self.scratch.?.compression[0..list.len], list);
@@ -1248,7 +1271,7 @@ fn sendRequest(self: *Server) Client.Error!void {
     var delegated: [Delegation.schemes.len]u16 = undefined;
     for (credential_list, delegated[0..credential_list.len]) |scheme, *slot| slot.* = @backingInt(scheme);
     const dst = try self.reserve(128);
-    const message = try Messages.buildCertificateRequest(dst, schemes[0..allowed.len], delegated[0..credential_list.len]);
+    const message = try Messages.buildCertificateRequest(dst, "", schemes[0..allowed.len], delegated[0..credential_list.len]);
     try self.state.advance(.certificate_request, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
 }
@@ -1501,6 +1524,8 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             var finished_buf: [Transcripts.max_digest]u8 = undefined;
             try k.schedule.complete(scratch.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
+            // Every later exchange starts from the transcript through this Finished.
+            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth);
         },
     }
     try self.push(.{ .secret = .{ .direction = .read, .epoch = .application, .traffic = self.app_read.? } });
@@ -1571,8 +1596,29 @@ fn issueTickets(self: *Server) Client.Error!void {
     }
 }
 
+/// A client's answer to a post-handshake CertificateRequest: its Certificate, CertificateVerify
+/// and Finished, each only where the outstanding request's exchange stands.
+fn onPostAnswer(self: *Server, kind: Messages.Type, msg: []const u8, epoch: Epoch) Client.Error!void {
+    @setRuntimeSafety(true);
+    const post = self.post_auth orelse return error.UnexpectedMessage;
+    if (self.state.phase() != .connected) return error.UnexpectedMessage;
+    if (epoch != .application) return error.WrongEpoch;
+    switch (kind) {
+        .certificate => try post.onCertificate(msg, self.postPolicy()),
+        .certificate_verify => try post.onCertificateVerify(msg),
+        .finished => {
+            try post.onFinished(msg);
+            try self.push(.auth_finished);
+        },
+        else => return error.UnexpectedMessage,
+    }
+}
+
 fn onKeyUpdate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Client.Error!void {
     @setRuntimeSafety(true);
+    // A client's answer comes whole, with nothing between its messages (RFC 8446 section
+    // 4.6.2), and so under one key.
+    if (self.post_auth) |post| if (post.midFlight()) return error.UnexpectedMessage;
     try self.state.advance(.key_update, epoch, .parsed, boundary);
     try self.push(.{ .key_update = .{ .request_peer = try Messages.keyUpdate(msg) } });
 }

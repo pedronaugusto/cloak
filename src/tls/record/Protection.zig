@@ -170,6 +170,45 @@ pub fn update(self: *Protection) UpdateError!void {
     }
 }
 
+pub const FinishedError = @import("../crypto/Labels.zig").CheckError;
+
+/// The Finished of a TLS 1.3 post-handshake authentication sent under the current keys: the MAC
+/// of `transcript` (the suite's hash length) under the current traffic secret, into `out`.
+pub fn finished(self: *const Protection, transcript: []const u8, out: []u8) []u8 {
+    @setRuntimeSafety(true);
+    aegis.assert.pre(!self.tls12(), "post-handshake authentication is TLS 1.3's");
+    switch (self.state) {
+        inline else => |*e, tag| {
+            if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) {
+                unreachable; // unreachable: refused above
+            } else {
+                const n = suites.Hash(@field(Suite13, @tagName(tag))).digest_length;
+                aegis.assert.pre(transcript.len == n and out.len >= n, "a transcript and a MAC are the suite's hash length");
+                e.finished(transcript[0..n], out[0..n]);
+                return out[0..n];
+            }
+        },
+    }
+}
+
+/// Checks the Finished of a TLS 1.3 post-handshake authentication received under the current
+/// keys, in constant time; `BadFinished` when it is not the MAC of `transcript`.
+pub fn checkFinished(self: *const Protection, transcript: []const u8, received: []const u8) FinishedError!void {
+    @setRuntimeSafety(true);
+    aegis.assert.pre(!self.tls12(), "post-handshake authentication is TLS 1.3's");
+    switch (self.state) {
+        inline else => |*e, tag| {
+            if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) {
+                unreachable; // unreachable: refused above
+            } else {
+                const n = suites.Hash(@field(Suite13, @tagName(tag))).digest_length;
+                aegis.assert.pre(transcript.len == n, "a transcript is the suite's hash length");
+                return e.checkFinished(transcript[0..n], received);
+            }
+        },
+    }
+}
+
 /// Records and plaintext bytes still available before the epoch must be replaced.
 pub fn remaining(self: *const Protection) struct { records: u64, bytes: u64 } {
     @setRuntimeSafety(true);

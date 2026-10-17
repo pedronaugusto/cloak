@@ -143,6 +143,12 @@ pub const Emit = union(enum) {
     refuse_renegotiation,
     /// Everything this side owes has been queued and the peer is authenticated.
     complete,
+    /// A client's answer to a post-handshake CertificateRequest is ready for the write half,
+    /// which ends it with a Finished under its current keys (stream TLS 1.3 only).
+    auth_response,
+    /// A client's post-handshake Finished arrived: the read half checks it under its current
+    /// keys before the authentication counts (stream TLS 1.3 only).
+    auth_finished,
 };
 
 pub fn eraseEmit(emit: *Emit) void {

@@ -78,6 +78,10 @@ pub const Diagnostics = struct {
     alert_received: ?Alert = null,
     /// The peer asked for a certificate (or, for a server, this one asks).
     certificate_requested: bool = false,
+    /// Why the verifier refused the peer's chain, when it did: the alert names a class
+    /// (`unknown_ca`, `certificate_expired`, `bad_certificate`), this the reason, such as
+    /// `MissingTransparency` or `Revoked`.
+    verification: ?VerifyError = null,
 };
 
 /// What the transport's end of stream means for application data.
@@ -124,6 +128,10 @@ pub const Options = struct {
     accept_delegated: bool = false,
     /// Required when `auth` is an identity cloak holds no signing key for.
     signer: ?Signer = null,
+    /// Answer CertificateRequests after the handshake (RFC 8446 section 4.6.2), TLS 1.3: with
+    /// `auth` when the request takes it, an empty Certificate otherwise. The reading task signs
+    /// (through `signer` for a key held elsewhere) and the answer goes out under the write lock.
+    post_handshake_auth: bool = false,
     /// TLS 1.3 resumption from a ticket cache. Under the system's verifier (macOS, Windows) a
     /// session is resumed for at most an hour after the full handshake that verified it: the
     /// system's trust can change without a generation to show it.
@@ -175,6 +183,8 @@ clock: Clock,
 /// The first failure behind a `ReadFailed` or `WriteFailed` from an adapter, as an error's
 /// integer; zero for none. Read it with `failure`.
 failure_code: std.atomic.Value(u16) = .init(0),
+/// The verifier's refusal of the peer's chain, as an error's integer; zero for none.
+verification_code: std.atomic.Value(u16) = .init(0),
 /// Held by the reading task through each read.
 read_lock: std.Io.Mutex = .init,
 /// Held by whichever task writes to the connection's write half or the transport's writer.
@@ -216,6 +226,7 @@ pub fn open(
         .accept_delegated = options.accept_delegated,
         .auth = options.auth,
         .auth_delegated = options.auth_delegated,
+        .post_handshake_auth = options.post_handshake_auth,
         .resumption = resumptionFor(options),
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
@@ -295,6 +306,9 @@ pub const ServerOptions = struct {
     /// TLS 1.2 session tickets too (RFC 5077), from the same ring: an abbreviated TLS 1.2
     /// handshake reuses the session's master secret with no new key exchange. Off unless asked.
     tls12_tickets: bool = false,
+    /// Ask for client certificates after the handshake (`requestCertificate`), TLS 1.3, when the
+    /// client offers it; checked by `client_trust` and `client_policy`.
+    post_handshake_auth: bool = false,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the session.
     ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
@@ -347,6 +361,7 @@ pub fn accept(
         .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .post_handshake_auth = options.post_handshake_auth,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
@@ -391,6 +406,11 @@ pub fn diagnostics(session: *const Session) Diagnostics {
         .alert_sent = seen.alert_sent,
         .alert_received = seen.alert_received,
         .certificate_requested = session.conn.certificateRequested(),
+        .verification = verification: {
+            const code = session.verification_code.load(.acquire);
+            if (code == 0) break :verification null;
+            break :verification @errorCast(@errorFromInt(code));
+        },
     };
 }
 
@@ -537,6 +557,7 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
         try session.conn.provide(token, .{ .verified = &receipt });
     } else |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
+        _ = session.verification_code.cmpxchgStrong(0, @intFromError(err), .acq_rel, .acquire);
         const why: Connection.VerifyFailure = switch (err) {
             error.NoTrustedPath => .untrusted,
             error.InvalidValidity => .expired,
@@ -743,6 +764,28 @@ fn sendAll(session: *Session, bytes: []const u8) !void {
         rest = rest[n..];
     }
     _ = try session.flushOutput();
+}
+
+pub const RequestError = Connection.RequestError || OpenError || std.Io.Writer.Error || std.Io.Cancelable;
+
+/// Asks the client for a certificate after the handshake, as the writing task: the request
+/// goes out now, after what was written so far. Returns the generation its answer completes;
+/// the reading task takes the answer and asks for its verification, and `postAuthentication`
+/// reaches that generation once it is checked. Gate what the request was made for on it.
+pub fn requestCertificate(session: *Session) RequestError!u64 {
+    try session.write_lock.lock(session.io);
+    defer session.releaseWrite();
+    try session.flushLocked();
+    const number = try session.conn.requestCertificate();
+    _ = try session.flushOutput();
+    try session.output.flush();
+    return number;
+}
+
+/// The post-handshake authentications completed and the last one's verdict; null when the
+/// session keeps none. From either task.
+pub fn postAuthentication(session: *const Session) ?Connection.PostAuthOutcome {
+    return session.conn.postAuthentication();
 }
 
 pub const FinishError = std.Io.Writer.Error || Connection.FinishError || OpenError || std.Io.Cancelable;

@@ -41,6 +41,8 @@ pub const Options = struct {
     conn_gpa: ?std.mem.Allocator = null,
     /// Trust no root, so any client chain fails to verify.
     distrust: bool = false,
+    /// Ask for client certificates after the handshake, checked by the test root.
+    post_auth: bool = false,
 };
 
 pub fn ServerPair(comptime suite: Suite13) type {
@@ -103,10 +105,11 @@ pub fn ServerPair(comptime suite: Suite13) type {
                 .groups = options.groups,
                 .suites = &.{comptime SuiteAll.from13(suite)},
                 .client_auth = options.client_auth,
-                .client_verify = if (options.client_auth != .none and options.verify_clients) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
+                .client_verify = if ((options.client_auth != .none or options.post_auth) and options.verify_clients) .{ .full = .{ .trust_generation = self.snapshot.generation() } } else .none,
                 .limits = options.limits,
                 .key_log = options.key_log,
                 .generation = .fromRaw(11),
+                .post_handshake_auth = options.post_auth,
             });
             return self;
         }

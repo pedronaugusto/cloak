@@ -259,6 +259,41 @@ pub fn digest(self: *const Self, out: *[max_digest]u8) []const u8 {
     }
 }
 
+/// The TLS 1.3 transcript once its hash is chosen, without the rest a running handshake keeps:
+/// what a post-handshake authentication starts every exchange from (RFC 8446 section 4.4).
+pub const Selected = union(enum) {
+    sha256: Sha256,
+    sha384: Sha384,
+
+    pub fn commit(self: *Selected, message: []const u8) CommitError!void {
+        switch (self.*) {
+            inline else => |*t| try t.commit(message),
+        }
+    }
+
+    /// Digest of everything committed so far, the suite's hash length.
+    pub fn digest(self: *const Selected, out: *[max_digest]u8) []const u8 {
+        switch (self.*) {
+            inline else => |*t| {
+                const d = t.digest();
+                out[0..d.len].* = d;
+                return out[0..d.len];
+            },
+        }
+    }
+};
+
+/// The chosen hash's state, to be continued apart from this transcript. Only once the suite is
+/// selected, and never for a datagram transcript of DTLS 1.2.
+pub fn selected(self: *const Self) Selected {
+    aegis.assert.pre(self.datagram12 == null, "a TLS 1.3 transcript has no DTLS 1.2 form");
+    return switch (self.state) {
+        .pending => unreachable, // unreachable: the suite is selected before the handshake completes
+        .sha256 => |t| .{ .sha256 = t },
+        .sha384 => |t| .{ .sha384 = t },
+    };
+}
+
 test "C2 transcripts select the suite hash and erase the other" {
     var transcripts: Self = .{};
     try transcripts.commit("\x01\x00\x00\x02hi");

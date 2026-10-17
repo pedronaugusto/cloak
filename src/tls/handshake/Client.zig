@@ -28,44 +28,14 @@ const Hpke = @import("../crypto/Hpke.zig");
 const Psk = @import("Psk.zig");
 const Delegation = @import("Delegation.zig");
 const transparency = @import("../../verify/transparency.zig");
+const PostAuth = @import("PostAuth.zig");
+const Terms = @import("Terms.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Direction = Flight.Direction;
 
-pub const Limits = struct {
-    /// One handshake message, header included.
-    message: usize = 128 * 1024,
-    /// All handshake messages of one connection before it is established.
-    handshake: usize = 256 * 1024,
-    /// Total DER bytes of a peer chain.
-    chain_bytes: usize = 64 * 1024,
-    /// Entries of a peer chain.
-    certificates: usize = Messages.max_certificates,
-};
-
-/// Peer verification. `none` is an explicit choice and yields an unauthenticated connection.
-/// `raw_key` trusts a raw public key (RFC 7250, TLS 1.3 and 1.2) by its pin and nothing else: no
-/// certificate, name or trust store is involved, and a peer presenting certificates is refused.
-pub const Verify = union(enum) {
-    none,
-    full: Full,
-    raw_key: RawKey,
-    pub const RawKey = struct {
-        /// The SHA-256 of each SubjectPublicKeyInfo the peer may hold, at least one and at most
-        /// `max_pins`; `Info.raw_key_pin` names the one it proved.
-        pins: []const [32]u8,
-        pub const max_pins = 1024;
-    };
-    pub const Full = struct {
-        trust_generation: types.TrustGeneration,
-        policy_generation: types.PolicyGeneration = .fromRaw(1),
-        policy: types.Policy = .{},
-        pins: []const [32]u8 = &.{},
-        evidence: types.Evidence = .{},
-        limits: types.Limits = .{},
-        anchor_policies: []const types.AnchorPolicy = &.{},
-    };
-};
+pub const Limits = Terms.Limits;
+pub const Verify = Terms.Verify;
 
 /// Receives NSS key-log lines. The sink is outside the confidentiality guarantee.
 pub const KeyLog = struct {
@@ -118,23 +88,8 @@ pub const Options = struct {
 pub const Traffic = Flight.Traffic;
 pub const Emit = Flight.Emit;
 
-pub const Need = union(enum) {
-    none,
-    /// Exactly `len` fresh CSPRNG bytes.
-    entropy: struct { len: usize },
-    /// Real (calendar) time in seconds.
-    time,
-    /// Peer chain verification.
-    verify,
-    /// A CertificateVerify signature for the client certificate.
-    sign,
-    /// Peer QUIC transport parameters need an accept or reject.
-    parameters,
-};
-
-/// What a key held elsewhere must sign. `prehashed` content is already the digest of the
-/// scheme's hash (a TLS 1.2 CertificateVerify signs the transcript hash); sign it as is.
-pub const SignRequest = struct { scheme: Hello.SignatureScheme, content: []const u8, prehashed: bool = false };
+pub const Need = Terms.Need;
+pub const SignRequest = Terms.SignRequest;
 
 pub const Info = struct {
     version: suites.Version,
@@ -267,6 +222,8 @@ ech_retry: ?[]u8 = null,
 /// expires. Tickets of the session never outlive either.
 origin: i64 = 0,
 auth_expires: i64 = std.math.maxInt(i64),
+/// Post-handshake authentication, kept from the client's Finished when it was offered.
+post_auth: ?*PostAuth = null,
 
 const Kept = struct {
     auth: ?certificates.ClientAuth,
@@ -465,6 +422,7 @@ pub fn deinit(self: *Client) void {
     self.wipe();
     if (self.kept.auth) |auth| auth.deinit();
     if (self.kept.auth_delegated) |delegated| delegated.deinit();
+    if (self.post_auth) |post| post.deinit();
     if (self.ech_retry) |list| gpa.free(list);
     self.* = undefined;
     gpa.destroy(self);
@@ -520,6 +478,7 @@ pub fn allows12(self: *const Client) bool {
 }
 
 pub fn need(self: *const Client) Need {
+    if (self.need_now == .none) if (self.post_auth) |post| return post.need;
     return self.need_now;
 }
 
@@ -586,13 +545,14 @@ fn echEntropy(self: *const Client) usize {
 /// and leaves the request open for a fresh draw.
 pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
     @setRuntimeSafety(true);
-    const expected = switch (self.need_now) {
+    const expected = switch (self.need()) {
         .entropy => |e| e.len,
         else => return error.UnexpectedService,
     };
     if (entropy.len != expected) return error.InvalidEntropy;
     errdefer self.eraseShares();
     if (self.version == .tls12) return Client12.onEntropy(self, entropy);
+    if (self.established) return self.postAnswered(self.post_auth.?.provideEntropy(entropy, self.kept.auth.?));
     if (self.state.phase() == .start) {
         var at: usize = 0;
         self.scratch.?.random = entropy[0..32].*;
@@ -912,6 +872,7 @@ pub fn rejectVerification(self: *Client) void {
 
 pub fn signRequest(self: *const Client) SignRequest {
     @setRuntimeSafety(true);
+    if (self.established) return self.post_auth.?.signRequest();
     // Ed25519 in TLS 1.2 signs the handshake messages, not their digest.
     if (self.version == .tls12 and self.sign_scheme == .ed25519) return .{ .scheme = .ed25519, .content = self.scratch.?.transcripts.keptBytes() };
     return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12 };
@@ -920,7 +881,8 @@ pub fn signRequest(self: *const Client) SignRequest {
 /// Checks the signature against the identity's public key before using it.
 pub fn provideSignature(self: *Client, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
-    if (self.need_now != .sign) return error.UnexpectedService;
+    if (self.need() != .sign) return error.UnexpectedService;
+    if (self.established) return self.postAnswered(self.post_auth.?.provideSignature(signature, self.kept.auth.?));
     if (self.version == .tls12) return Client12.onSignature(self, signature);
     const auth = self.options.auth.?;
     Possession.verifyKey(@backingInt(self.sign_scheme), &.{self.sign_scheme}, auth.identity.publicKey(), self.signRequest().content, signature) catch return error.BadSignature;
@@ -1207,7 +1169,7 @@ fn sendOuterHello(self: *Client) Error!void {
 pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase() == .failed) return error.Closed;
-    if (self.need_now != .none) return error.Pending;
+    if (self.need() != .none) return error.Pending;
     errdefer self.state.fail();
     if (bytes_in.len > self.kept.message_limit) return error.HandshakeLimit;
     if (!self.established) {
@@ -1221,7 +1183,7 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
         .server_hello => try self.onServerHello(bytes_in, epoch, boundary),
         .hello_verify_request => try self.onHelloVerify(bytes_in, epoch, boundary),
         .encrypted_extensions => try self.onEncrypted(bytes_in, epoch, boundary),
-        .certificate_request => try self.onCertificateRequest(bytes_in, epoch, boundary),
+        .certificate_request => if (self.established) try self.onPostRequest(bytes_in, epoch) else try self.onCertificateRequest(bytes_in, epoch, boundary),
         .certificate => try self.onCertificate(bytes_in, epoch, boundary),
         .compressed_certificate => try self.onCompressedCertificate(bytes_in, epoch, boundary),
         .certificate_verify => try self.onCertificateVerify(bytes_in, epoch, boundary),
@@ -1739,6 +1701,8 @@ fn finishFlight(self: *Client) Error!void {
             var finished_buf: [Transcripts.max_digest]u8 = undefined;
             try k.schedule.complete(self.scratch.?.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
+            // Every later exchange starts from the transcript through this Finished.
+            if (self.options.hello.post_handshake_auth) self.post_auth = try PostAuth.init(self.gpa, .client, tag, &self.scratch.?.transcripts, self.scratch.?.client_raw, false);
         },
     }
     self.established = true;
@@ -1792,6 +1756,22 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
             }) catch return;
         },
     }
+}
+
+/// A CertificateRequest after the handshake (RFC 8446 section 4.6.2): only to a client that
+/// offered post_handshake_auth, unexpected_message otherwise. Each counts as a control message.
+fn onPostRequest(self: *Client, msg: []const u8, epoch: Epoch) Error!void {
+    @setRuntimeSafety(true);
+    const post = self.post_auth orelse return error.UnexpectedMessage;
+    if (self.version != .tls13 or self.state.phase() != .connected) return error.UnexpectedMessage;
+    if (epoch != .application) return error.WrongEpoch;
+    return self.postAnswered(post.onRequest(msg, self.kept.auth));
+}
+
+/// After a step of a post-handshake answer: once it is built, the write half is told.
+fn postAnswered(self: *Client, step: Error!void) Error!void {
+    try step;
+    if (self.post_auth.?.answerReady()) try self.push(.auth_response);
 }
 
 fn onKeyUpdate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {

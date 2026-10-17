@@ -45,6 +45,10 @@ test {
     _ = Server;
 }
 pub const Machine = @import("handshake/Machine.zig");
+pub const PostAuth = @import("handshake/PostAuth.zig");
+test {
+    _ = PostAuth;
+}
 pub const Messages12 = @import("handshake/Messages12.zig");
 test {
     _ = Messages12;

@@ -6,6 +6,7 @@ const types = certificates.types;
 const Client = @import("Client.zig");
 const Flight = @import("Flight.zig");
 const Server = @import("Server.zig");
+pub const PostAuth = @import("PostAuth.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Emit = Flight.Emit;
@@ -178,6 +179,14 @@ pub fn provideSignature(self: Machine, signature: []const u8) Error!void {
 pub fn provideParameters(self: Machine, accept: bool) Error!void {
     return switch (self.state) {
         inline else => |m| m.provideParameters(accept),
+    };
+}
+
+/// Post-handshake authentication, when the handshake kept it: the client offered it (and a server
+/// allows it). Set before the connection splits, and fixed from then.
+pub fn postAuth(self: Machine) ?*PostAuth {
+    return switch (self.state) {
+        inline else => |m| m.post_auth,
     };
 }
 

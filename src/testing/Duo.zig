@@ -104,6 +104,10 @@ pub const Options = struct {
     /// sends to a client that asks.
     client_transparency: ?*const certificates.types.TransparencyPolicy = null,
     server_scts: []const u8 = "",
+    /// Post-handshake authentication: the client offers it, the server asks with it, checking
+    /// the client's chain by the test root even when the handshake asks for no certificate.
+    client_post_auth: bool = false,
+    server_post_auth: bool = false,
 };
 
 /// The SHA-256 of a certificate's SubjectPublicKeyInfo: the pin of its key as a raw public key.
@@ -218,6 +222,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .auth = self.auth,
         .auth_delegated = self.client_dc,
         .accept_delegated = options.client_accept_delegated,
+        .post_handshake_auth = options.client_post_auth,
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
@@ -234,13 +239,14 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .require_pq_auth = options.server_require_pq_auth,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
-        .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
+        .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_auth != .none or options.server_post_auth) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
         .tls12_tickets = options.server_tls12_tickets,
         .ech_keys = options.server_ech,
         .certificate_compression = options.server_codecs,
         .external_psk = options.server_psk,
         .accept_delegated = options.server_accept_delegated,
+        .post_handshake_auth = options.server_post_auth,
     });
     return self;
 }
@@ -334,6 +340,18 @@ pub fn handshake(self: *Duo) !void {
         if (self.client.phase() == .connected and self.server.phase() == .connected and
             self.client.output().len == 0 and self.server.output().len == 0) return;
         if (!sent and !answered) return error.Stalled;
+    }
+    return error.Stalled;
+}
+
+/// Moves output both ways, answering requests, until neither end has anything to send.
+pub fn pump(self: *Duo) !void {
+    for (0..64) |_| {
+        try self.serve(&self.client);
+        const sent = try self.move(&self.client, &self.server);
+        try self.serve(&self.server);
+        const answered = try self.move(&self.server, &self.client);
+        if (!sent and !answered and self.client.output().len == 0 and self.server.output().len == 0) return;
     }
     return error.Stalled;
 }

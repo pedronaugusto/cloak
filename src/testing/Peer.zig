@@ -286,6 +286,17 @@ pub fn Peer(comptime suite: Suite13) type {
         close_notify: bool = false,
         alert: ?u8 = null,
         key_updates_seen: usize = 0,
+        /// Post-handshake authentication: the transcript through the client's Finished, the
+        /// client's current application secret, the exchange in progress and what it proved.
+        base: Transcript(Hash) = .{},
+        client_write: Secret = undefined,
+        post_transcript: ?Transcript(Hash) = null,
+        post_context: [255]u8 = undefined,
+        post_context_len: usize = 0,
+        post_certificates: usize = 0,
+        post_signature_ok: bool = false,
+        post_finished_ok: bool = false,
+        post_answers: usize = 0,
 
         pub fn init(gpa: std.mem.Allocator, config: Config) Self {
             return .{ .gpa = gpa, .config = config };
@@ -950,9 +961,12 @@ pub fn Peer(comptime suite: Suite13) type {
             if (self.connected and message[0] == 24) {
                 self.key_updates_seen += 1;
                 try self.rx.?.update();
+                const old = self.client_write;
+                try Labels.expand(Hash, &self.client_write, &old, "traffic upd", "");
                 if (message[4] == 1) try self.keyUpdate(false);
                 return;
             }
+            if (self.connected) if (self.post_transcript) |*transcript| return self.onPostMessage(transcript, message);
             switch (message[0]) {
                 11 => {
                     const context = message[4];
@@ -981,6 +995,8 @@ pub fn Peer(comptime suite: Suite13) type {
                     };
                     self.client_finished_ok = true;
                     try self.transcript.commit(message);
+                    self.base = self.transcript;
+                    self.client_write = self.client_app;
                     try self.connect();
                 },
                 4 => {},
@@ -1028,6 +1044,62 @@ pub fn Peer(comptime suite: Suite13) type {
 
         pub fn send(self: *Self, bytes: []const u8) !void {
             try self.sealOne(.application, bytes);
+        }
+
+        /// A post-handshake CertificateRequest with `context` (RFC 8446 section 4.6.2), whose answer
+        /// this peer checks by its own transcript and the client's current application secret.
+        pub fn requestCertificate(self: *Self, context: []const u8) !void {
+            var message: [4 + 1 + 255 + 2 + 4 + 2 + 6]u8 = undefined;
+            const body_len = 1 + context.len + 2 + 4 + 2 + 6;
+            message[0] = 13;
+            std.mem.writeInt(u24, message[1..4], @intCast(body_len), .big);
+            message[4] = @intCast(context.len);
+            @memcpy(message[5..][0..context.len], context);
+            const at = 5 + context.len;
+            message[at..][0..14].* = .{ 0, 12, 0, 13, 0, 8, 0, 6, 0x04, 0x03, 0x08, 0x07, 0x08, 0x04 };
+            const cr = message[0 .. 4 + body_len];
+            var transcript = self.base;
+            try transcript.commit(cr);
+            self.post_transcript = transcript;
+            @memcpy(self.post_context[0..context.len], context);
+            self.post_context_len = context.len;
+            self.post_certificates = 0;
+            self.post_signature_ok = false;
+            self.post_finished_ok = false;
+            try self.sealOne(.handshake, cr);
+        }
+
+        fn onPostMessage(self: *Self, transcript: *Transcript(Hash), message: []const u8) !void {
+            switch (message[0]) {
+                11 => {
+                    const context = message[4 .. 5 + message[4]];
+                    if (!std.mem.eql(u8, context[1..], self.post_context[0..self.post_context_len])) self.alert = 47;
+                    const at = 5 + message[4];
+                    const list_len = std.mem.readInt(u24, message[at..][0..3], .big);
+                    if (list_len != 0) self.post_certificates += 1;
+                    try transcript.commit(message);
+                },
+                15 => {
+                    const digest = transcript.digest();
+                    var content_buf: [64 + 34 + 48]u8 = undefined;
+                    const content = signedContent(&digest, false, &content_buf);
+                    const scheme = std.mem.readInt(u16, message[4..6], .big);
+                    const sig_len = std.mem.readInt(u16, message[6..8], .big);
+                    self.post_signature_ok = verifyClient(scheme, message[8..][0..sig_len], content);
+                    try transcript.commit(message);
+                },
+                20 => {
+                    const digest = transcript.digest();
+                    Labels.checkFinished(Hash, .tls13, &self.client_write, &digest, message[4..]) catch {
+                        self.alert = 51;
+                        return;
+                    };
+                    self.post_finished_ok = true;
+                    self.post_answers += 1;
+                    self.post_transcript = null;
+                },
+                else => self.alert = 10,
+            }
         }
 
         /// A KeyUpdate under the old keys, then the next write keys.

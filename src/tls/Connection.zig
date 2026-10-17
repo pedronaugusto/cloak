@@ -95,6 +95,9 @@ pub const ClientOptions = struct {
     accept_delegated: bool = false,
     /// TLS 1.3 session resumption from a ticket cache.
     resumption: ?Resumption = null,
+    /// Answer CertificateRequests after the handshake (RFC 8446 section 4.6.2), TLS 1.3: with
+    /// `auth` when the request takes it, an empty Certificate otherwise.
+    post_handshake_auth: bool = false,
     /// Encrypted Client Hello (RFC 9849). With a config list it is required: the connection is
     /// TLS 1.3 only, and fails with `EchRejected` when the server does not accept it.
     ech: Ech.Mode = .off,
@@ -213,6 +216,8 @@ const owe_no_renegotiation: u8 = 4;
 const owe_fatal: u8 = 8;
 /// The connection failed in the read half: the write half erases its keys.
 const owe_teardown: u8 = 16;
+/// A client's answer to a post-handshake CertificateRequest, to end with its Finished and send.
+const owe_auth: u8 = 32;
 
 pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connection {
     @setRuntimeSafety(true);
@@ -245,6 +250,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .require_pq_auth = options.require_pq_auth,
             .accept_delegated = options.accept_delegated,
             .certificate_compression = options.certificate_compression,
+            .post_handshake_auth = options.post_handshake_auth,
         },
         .resumption = options.resumption,
         .ech = options.ech,
@@ -290,6 +296,9 @@ pub const ServerOptions = struct {
     /// TLS 1.2 session tickets too (RFC 5077): an abbreviated TLS 1.2 handshake reuses the
     /// session's master secret with no new key exchange, so they are off unless asked for.
     tls12_tickets: bool = false,
+    /// Ask for a client certificate after the handshake (`requestCertificate`), TLS 1.3, when
+    /// the client offers it; its answer is checked by `client_verify`.
+    post_handshake_auth: bool = false,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the connection.
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
@@ -323,6 +332,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .post_handshake_auth = options.post_handshake_auth,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
@@ -542,11 +552,16 @@ fn writeOwed(self: *Connection) void {
         self.tx = null;
         return;
     }
-    if (self.write_done.load(.acquire)) return;
+    if (self.write_done.load(.acquire)) {
+        // Nothing more goes out: an answer never sent frees the next request all the same.
+        if (bits & owe_auth != 0) self.hs.postAuth().?.sent();
+        return;
+    }
     if (bits & owe_no_renegotiation != 0) self.sendAlert(1, .no_renegotiation);
     if (bits & (owe_key_update | owe_update_request) != 0) {
         self.sendKeyUpdate(bits & owe_update_request != 0) catch |err| self.failWrite(err);
     }
+    if (bits & owe_auth != 0 and self.phase() != .failed) self.sendAuthResponse() catch |err| self.failWrite(err);
 }
 
 /// Owes the write half `bits`; written at once before the handshake completes.
@@ -606,19 +621,24 @@ fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void 
     // Handshake messages are the handshake's; after it the read half queues none.
     aegis.assert.invariant(!self.split, "a split connection seals no handshake message");
     if (epoch != self.tx_epoch) return error.UnexpectedRecord;
-    var rest = message;
+    // The first record of a ClientHello may carry the older legacy version.
+    const legacy = self.tx == null and !self.sent_hello and self.hs.role() == .client;
+    try self.sealHandshake(message, legacy);
+    if (epoch == .initial) self.sent_hello = true;
+}
+
+/// Handshake bytes in records of the current write epoch, at most 2^14 bytes each.
+fn sealHandshake(self: *Connection, bytes: []const u8, legacy: bool) Error!void {
+    @setRuntimeSafety(true);
+    var rest = bytes;
     while (rest.len != 0) {
         const n = @min(rest.len, max_content);
         const dst = try self.outbox.tail(self.gpa, n + record_overhead, self.limits.output + max_record);
         const wire = try self.sealRecord(.handshake, rest[0..n], dst);
-        if (self.tx == null and !self.sent_hello and self.hs.role() == .client) {
-            // The first record of a ClientHello may carry the older legacy version.
-            dst[1..3].* = .{ 3, 1 };
-        }
+        if (legacy) dst[1..3].* = .{ 3, 1 };
         self.outbox.commit(wire.len);
         rest = rest[n..];
     }
-    if (epoch == .initial) self.sent_hello = true;
 }
 
 fn sealCompatCcs(self: *Connection) Error!void {
@@ -682,6 +702,11 @@ fn drain(self: *Connection) Error!void {
             .keys12 => |*k| try self.install12(k.direction, &k.keys),
             .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
             .ticket => try self.onControl(),
+            .auth_response => {
+                try self.onControl();
+                try self.owe(owe_auth);
+            },
+            .auth_finished => try self.checkAuthFinished(),
             .refuse_renegotiation => {
                 try self.onControl();
                 try self.owe(owe_no_renegotiation);
@@ -732,14 +757,95 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     if (self.tx_kernel) self.rekey_at = @intCast(self.outbox.pending().len);
 }
 
-/// Queues a key update before the write epoch can run out of records or bytes.
-fn budgetWrite(self: *Connection) Error!void {
+/// Queues a key update before the write epoch can run out of records or bytes: `records` and
+/// `bytes` must fit in what is left.
+fn budgetWrite(self: *Connection, records: u64, bytes: u64) Error!void {
     @setRuntimeSafety(true);
     const left = self.tx.?.remaining();
-    if (left.records < 4 or left.bytes < 2 * max_content) {
+    if (left.records < records or left.bytes < bytes) {
         if (self.tx.?.tls12()) return error.RecordLimit;
         try self.sendKeyUpdate(false);
     }
+}
+
+// ---------------------------------------------------------------- post-handshake authentication
+
+pub const PostAuthOutcome = Machine.PostAuth.Outcome;
+pub const RequestError = SendError || error{
+    /// The client did not offer post-handshake authentication, or this server does not ask for
+    /// it (`post_handshake_auth`), or the connection is not TLS 1.3 over a stream.
+    PostAuthUnavailable,
+    /// The last request has no checked answer yet.
+    RequestOutstanding,
+};
+
+/// Asks the client for a certificate (RFC 8446 section 4.6.2), as the write half: a
+/// CertificateRequest with a context of its own goes out. Returns the generation its answer
+/// completes: once `postAuthentication` reaches it, that answer was checked, and its
+/// `authenticated` says whether the client proved a certificate the policy authenticates. A
+/// chain the policy refuses, a bad signature or Finished ends the connection; an empty
+/// Certificate is a refusal the application weighs. One request is outstanding at a time.
+pub fn requestCertificate(self: *Connection) RequestError!u64 {
+    @setRuntimeSafety(true);
+    const timing = aegis.secret.Timing.begin();
+    defer timing.end();
+    self.writeOwed();
+    if (self.phase() == .failed) return error.Closed;
+    if (self.phase() != .connected) return error.NotConnected;
+    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if (self.hs.role() != .server) return error.PostAuthUnavailable;
+    const post = self.hs.postAuth() orelse return error.PostAuthUnavailable;
+    var buf: [256]u8 = undefined;
+    const made = post.request(&buf) catch |err| switch (err) {
+        error.RequestOutstanding => return error.RequestOutstanding,
+        else => |e| return self.writeFailed(e),
+    };
+    self.budgetWrite(4, 2 * max_content) catch |err| return self.writeFailed(err);
+    self.sealHandshake(made.message, false) catch |err| return self.writeFailed(err);
+    post.publish();
+    return made.number;
+}
+
+/// The post-handshake authentications completed so far and the last one's verdict; null when
+/// the connection keeps none. From either task.
+pub fn postAuthentication(self: *const Connection) ?PostAuthOutcome {
+    if (self.phase() == .failed) return null;
+    const post = self.hs.postAuth() orelse return null;
+    return post.result();
+}
+
+/// The client's answer, in the write half: its Certificate and CertificateVerify, then a
+/// Finished under the current write keys (RFC 8446 section 4.4: client_application_traffic_secret_N),
+/// all three in that epoch: room is made in its budget first, so no key update falls among them.
+fn sendAuthResponse(self: *Connection) Error!void {
+    @setRuntimeSafety(true);
+    const post = self.hs.postAuth().?;
+    defer post.sent();
+    const answer = post.response();
+    try self.budgetWrite(answer.flight.len / max_content + 6, answer.flight.len + 4 * max_content);
+    var finished: [4 + 48]u8 = undefined;
+    const mac = self.tx.?.finished(answer.transcript, finished[4..]);
+    finished[0] = 20;
+    std.mem.writeInt(u24, finished[1..4], @intCast(mac.len), .big); // safe: 32 or 48
+    try self.sealHandshake(answer.flight, false);
+    try self.sealHandshake(finished[0 .. 4 + mac.len], false);
+}
+
+/// A client's post-handshake Finished, in the read half: the MAC of the exchange under the
+/// current read keys, before the exchange counts.
+fn checkAuthFinished(self: *Connection) Error!void {
+    @setRuntimeSafety(true);
+    const post = self.hs.postAuth().?;
+    const check = post.finishedCheck();
+    try self.rx.?.checkFinished(check.transcript, check.received);
+    post.settled();
+}
+
+/// Whether the read half is inside a client's post-handshake answer, where no other record may
+/// come between its messages (RFC 8446 section 4.6.2).
+fn midAuth(self: *const Connection) bool {
+    const post = self.hs.postAuth() orelse return false;
+    return self.hs.role() == .server and post.midFlight();
 }
 
 /// Accepts the longest prefix of `plaintext` that fits one record; returns its length. Zero
@@ -756,7 +862,7 @@ pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     if (plaintext.len == 0) return 0;
     const n = @min(plaintext.len, max_content);
     if (self.outbox.pending().len + n + record_overhead > self.limits.output) return 0;
-    self.budgetWrite() catch |err| return self.writeFailed(err);
+    self.budgetWrite(4, 2 * max_content) catch |err| return self.writeFailed(err);
     const dst = self.outbox.tail(self.gpa, n + record_overhead, self.limits.output + max_record) catch |err| return self.writeFailed(err);
     const wire = self.tx.?.seal(.application, plaintext[0..n], 0, dst) catch |err| return self.writeFailed(err);
     self.outbox.commit(wire.len);
@@ -1256,7 +1362,7 @@ fn openRecord(self: *Connection) Error!void {
                 break :trial opened;
             } else try protection.open(wire, self.record[5..]);
             if (plain.content == .application) {
-                if (self.phase() != .connected) return error.UnexpectedRecord;
+                if (self.phase() != .connected or self.midAuth()) return error.UnexpectedRecord;
                 self.control_run = 0;
             }
             self.plain_kind = plain.content;

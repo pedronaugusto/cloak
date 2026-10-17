@@ -38,6 +38,8 @@ pub const Options = struct {
     hold_sign: bool = false,
     /// The allocator behind the connection alone, to measure what it holds.
     client_gpa: ?std.mem.Allocator = null,
+    /// Offer post-handshake authentication.
+    post_auth: bool = false,
 };
 
 pub fn Pair(comptime suite: Suite13) type {
@@ -95,6 +97,7 @@ pub fn Pair(comptime suite: Suite13) type {
                 .compat = options.compat,
                 .key_log = options.key_log,
                 .generation = .fromRaw(7),
+                .post_handshake_auth = options.post_auth,
             });
             return self;
         }
