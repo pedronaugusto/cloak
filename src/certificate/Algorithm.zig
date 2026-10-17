@@ -1,6 +1,7 @@
 const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const mldsa = @import("../crypto/mldsa.zig");
+const roca = @import("../crypto/roca.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
@@ -130,6 +131,22 @@ pub fn pssParameters(e: Der.Element) Error!Pss {
     if (salt > 512) return error.DerLimit;
     return .{ .hash = hash, .mgf_hash = mgf_hash, .salt_length = salt };
 }
+/// The checks every RSA public key gets, from a certificate, a raw key or built by a caller (a
+/// JWK's n and e), before it verifies anything: 2048 to 4096 bits, odd, minimal encodings, an odd
+/// exponent of 3 to 2^32-1, and no ROCA fingerprint (CVE-2017-15361: a modulus anyone can factor
+/// from the key alone is no one's key).
+pub fn checkRsa(n: []const u8, exponent: []const u8) error{InvalidPublicKey}!void {
+    @setRuntimeSafety(true);
+    if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0) return error.InvalidPublicKey;
+    // safe: clz on u8 is at most eight and widens to usize.
+    const bits = n.len * 8 - @as(usize, @clz(n[0]));
+    if (bits < 2048 or exponent.len == 0 or exponent.len > 4 or exponent[0] == 0) return error.InvalidPublicKey;
+    var ev: u32 = 0;
+    for (exponent) |byte| ev = (ev << 8) | byte;
+    if (ev < 3 or ev & 1 == 0) return error.InvalidPublicKey;
+    if (roca.fingerprinted(n)) return error.InvalidPublicKey;
+}
+
 pub fn publicKey(encoded: []const u8) Error!PublicKey {
     @setRuntimeSafety(true);
     var r = (try Der.single(encoded, 0x30)).reader();
@@ -150,12 +167,7 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
         const n = try Der.integer((try k.expect(2)).value);
         const exponent = try Der.integer((try k.expect(2)).value);
         try k.finish();
-        if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0) return error.InvalidPublicKey;
-        // safe: clz on u8 is at most eight and widens to usize.
-        const bits = n.len * 8 - @as(usize, @clz(n[0]));
-        if (bits < 2048 or exponent.len > 4) return error.InvalidPublicKey;
-        const ev = try Der.number(exponent);
-        if (ev < 3 or ev & 1 == 0) return error.InvalidPublicKey;
+        try checkRsa(n, exponent);
         return .{ .rsa = .{ .modulus = n, .exponent = exponent, .pss = pss, .pss_only = eql(id, pss_oid) } };
     }
     if (eql(id, ec_oid)) {

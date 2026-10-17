@@ -92,6 +92,16 @@ that RSA's numbers agree (n = pq, the exponents and CRT values) and are minimal.
 all eight: the private operation is CRT's, and a JWK with d alone (or more than two primes) is
 refused by its reader. The build runs in a scrubbed frame like a parse.
 
+An RSA modulus with the ROCA fingerprint (CVE-2017-15361: Infineon's library made primes that
+anyone factors from the public key) is refused wherever cloak takes an RSA key: a certificate's
+or raw key's SubjectPublicKeyInfo (`Algorithm.checkRsa`, also bounding the size and exponent),
+a key a caller builds for `signature.verify` (a JWK's n and e: the verifier runs the same
+check, so no path skips it), and a private key, parsed or from its numbers. The test is the
+published detector's moduli test, its masks derived from their definition (the powers of 65537
+modulo each prime up to 167) and checked against the published ones; a random modulus passes it
+with probability below 2^-150. Trusting such a key is the failure, not its speed: a certificate
+with one is invalid (bad_certificate), like any malformed key.
+
 ## Build and verification decisions
 
 The shipped module uses published aegis, std and native platform trust APIs.

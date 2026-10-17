@@ -21,3 +21,8 @@ rsa_padding_mode:pss -pkeyopt rsa_pss_saltlen:<len> -pkeyopt rsa_mgf1_md:<hash>`
 exceed the private operation's 2048-bit factor limit: the primes from `openssl prime -generate`,
 d, dp, dq and qinv computed once with Python's `pow(x, -1, m)`, the DER written by
 `openssl asn1parse -genconf` and accepted by `openssl rsa -check`.
+
+`roca/` holds the ROCA detector's own test vectors (crocs-muni/roca df6071d, `roca/tests/data`,
+MIT): `mod03.txt` (2048 bits) and `mod09.txt` (4096 bits), `cert04.pem`, `cert05.pem`,
+`pubkey03.pem` and `privkey05.pem` have the fingerprint; `mod04.txt`, `cert01.pem`, `cert06.pem`,
+`pubkey01.pem` and `privkey03.pem` do not. Copied unchanged.

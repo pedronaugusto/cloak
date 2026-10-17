@@ -110,7 +110,7 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
     }
 }
 
-test "C10 TLS 1.2 PSK: a wrong key and an unknown identity fail alike, at the client's Finished" {
+test "F95 catalogue_psk12_identity_probe_and_offline_guess: a wrong key and an unknown identity fail alike, at the client's Finished" {
     const other: [16]u8 = @splat(0x33);
     // A wrong key, a name nobody holds, a key of the other version, and a lookup that answers
     // for another identity: each the same refusal, the client's Finished record failing to open
@@ -137,7 +137,7 @@ test "C10 TLS 1.2 PSK: a wrong key and an unknown identity fail alike, at the cl
     }
 }
 
-test "C10 TLS 1.2 PSK: a key's version, length and suites are checked before anything is sent" {
+test "F95 catalogue_psk12_identity_probe_and_offline_guess: a key's version, length (no password-like key) and suites are checked before anything is sent" {
     var table: Table = .{ .entries = &.{} };
     // TLS 1.2 keys are 16 to 64 bytes, SHA-256's.
     for ([_]Psk.External{

@@ -11,6 +11,7 @@ test {
     _ = @import("NativeVerification.zig");
     _ = @import("credentials.zig");
     _ = @import("PrivateKey.zig");
+    _ = @import("Roca_test.zig");
     _ = @import("Identity.zig");
     _ = @import("ClientAuth.zig");
     _ = @import("credentials/Key.zig");

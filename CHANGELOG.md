@@ -11,6 +11,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `PrivateKey.fromComponents`: a private key from its numbers, as a JWK carries them: an EC scalar (P-256, P-384) with its optional public point, an Ed25519 seed with its optional public key, or a two-prime RSA key's n, e, d, p, q, dp, dq and qi. The DER parsers go through the same constructors, so a built key gets every check a parsed one does: the scalar in range, the public half derived and compared, RSA's numbers agreeing and minimal.
 - A server may hold no credential when it has a PSK lookup: it authenticates by keys alone. A client offering none it knows ends with handshake_failure (`PskRequired`).
 
+### Security
+
+- RSA keys with the ROCA fingerprint (CVE-2017-15361, factorable from the public key) are refused wherever cloak takes one: certificates, raw keys, a key built for `signature.verify` (which now checks every RSA key as the parsers do: size, exponent and fingerprint), and private keys, parsed or from their numbers. The fingerprint test is the published detector's, checked against its test keys.
+
 ### Changed
 
 - Breaking: `tls.Suite` gains `.psk_aes_128_ccm` and `.psk_aes_128_ccm_8`, `Suite12.authentication()` returns `Suite12.Authentication` with `.psk`, and `Info.group` is optional (null for TLS 1.2 PSK, which has no key exchange).

@@ -133,6 +133,8 @@ const rsa_key = @FieldType(A.PublicKey, "rsa");
 fn recover(key: rsa_key, signature: []const u8, out: *[512]u8) Error!struct { bytes: []const u8, bits: usize } {
     @setRuntimeSafety(true);
     const Modulus = std.crypto.ff.Modulus(4096);
+    // A key built by a caller gets the checks a parsed one got.
+    try A.checkRsa(key.modulus, key.exponent);
     if (signature.len != key.modulus.len) return error.InvalidSignature;
     const n = Modulus.fromBytes(key.modulus, .big) catch return error.InvalidPublicKey;
     const m = Modulus.Fe.fromBytes(n, signature, .big) catch return error.InvalidSignature;

@@ -6,6 +6,7 @@
 const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const kernel = @import("../crypto/rsa.zig");
+const roca = @import("../crypto/roca.zig");
 /// `UnsupportedKey`: a valid key the private operation cannot hold, a factor above 2048 bits.
 pub const Error = Der.Error || error{ InvalidKey, UnsupportedKey };
 /// The public modulus and exponent as parsed, for matching a certificate, and the private key
@@ -48,6 +49,9 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     if (n.len * 8 - @as(usize, @clz(n[0])) < 2048) return error.InvalidKey;
     const exponent = try Der.number(e);
     if (exponent < 3 or exponent & 1 == 0) return error.InvalidKey;
+    // A modulus with the ROCA fingerprint is factorable from the public key (CVE-2017-15361):
+    // whoever holds it is not the only one who can sign.
+    if (roca.fingerprinted(n)) return error.InvalidKey;
     var values: [8]Uint = undefined;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&values));
     for (integers, &values) |bytes, *value| {
