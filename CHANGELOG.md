@@ -12,6 +12,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Changed
 
 - Breaking: `Verify` gains `.raw_key`, Session's `Trust` gains `.raw_keys`, `Server.credentialFor` takes the forms the client accepts, and `SessionCache.Entry` and `Fields` gain `raw_key_pin`. A ticket issued before this release does not open (its authentication field grew), so its client does a full handshake.
+- An established client connection keeps only what outlives the handshake: its options live in the handshake scratch and are released with it, so an idle client is 1,504 bytes (688 of struct, 816 of heap; 2,040 before).
 
 ## [0.12.0] - 2026-10-17
 

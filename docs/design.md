@@ -367,9 +367,11 @@ record buffer sized to the record being read, a message buffer and the output
 buffer: about 50 KiB at the peak for the default offer. When the connection is
 established the scratch block and flight are freed; `trim` returns the record and
 message buffers and `trimOutput` the output buffer when nothing is pending, and `Session`
-calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (664 bytes) and one
-heap block of 1,328 bytes (the key schedule's exporter and resumption secrets among it), 1,992
-bytes in total, in a Debug build. These are heap figures from a counting allocator; stack use
+calls them before it waits to read and after it flushes. What remains for an idle connection is the struct (688 bytes) and one
+heap block of 816 bytes (the key schedule's exporter and resumption secrets among it), 1,504
+bytes in total, in a Debug build: the client's options live in the handshake scratch and go with
+it, and only what outlives the handshake (the ticket cache, the message bound, the server name
+and the client certificate's identity) stays. These are heap figures from a counting allocator; stack use
 is not measured here.
 
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
