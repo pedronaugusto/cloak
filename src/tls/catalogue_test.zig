@@ -46,8 +46,8 @@ test "F27 catalogue_heartbeat_and_nested_length_overread across DER, hellos, cer
 
     // Certificate: an entry claiming more than the list; the list claiming more than the message.
     var out: [Messages.max_certificates][]const u8 = undefined;
-    try std.testing.expectError(error.InvalidLength, Messages.certificate("\x0b\x00\x00\x0a\x00\x00\x00\x06\x00\x00\x09ab\x00\x00", 16, 65536, &out));
-    try std.testing.expectError(error.InvalidLength, Messages.certificate("\x0b\x00\x00\x06\x00\x00\x00\x40\x00\x00", 16, 65536, &out));
+    try std.testing.expectError(error.InvalidLength, Messages.certificate("\x0b\x00\x00\x0a\x00\x00\x00\x06\x00\x00\x09ab\x00\x00", 16, 65536, &out, .{}));
+    try std.testing.expectError(error.InvalidLength, Messages.certificate("\x0b\x00\x00\x06\x00\x00\x00\x40\x00\x00", 16, 65536, &out, .{}));
 
     // Heartbeat (content type 24) is not a record cloak accepts, before or after the handshake.
     var conn = try Connection.client(std.testing.allocator, .{ .identity = .none, .verify = .none });

@@ -45,6 +45,12 @@ pub const Options = struct {
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
+    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
+    auth_delegated: ?@import("../handshake/Delegation.zig").Credential = null,
+    /// Take a server's delegated credential (RFC 9345): its key proves possession for the
+    /// verified certificate that signed it. TLS 1.3, with full verification.
+    accept_delegated: bool = false,
     /// TLS 1.3 session resumption from a ticket cache (no early data: QUIC 0-RTT is not offered).
     resumption: ?Client.Resumption = null,
     /// Encrypted Client Hello (RFC 9849); a config list makes it required.
@@ -75,6 +81,9 @@ pub const ServerOptions = struct {
     require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
+    /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
+    /// and fully verified.
+    accept_delegated: bool = false,
     /// Session tickets to issue and resume from; tickets never permit 0-RTT.
     tickets: ?*Server.TicketKeys = null,
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the handshake.
@@ -164,6 +173,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
             .require_alpn = true,
             .require_hybrid = options.require_hybrid,
             .require_pq_auth = options.require_pq_auth,
+            .accept_delegated = options.accept_delegated,
             .transport = .quic,
             .parameters = options.parameters,
             .certificate_compression = options.certificate_compression,
@@ -174,6 +184,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
+        .auth_delegated = options.auth_delegated,
         .limits = options.limits,
         .compat = false,
         .key_log = options.key_log,
@@ -201,6 +212,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,

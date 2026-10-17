@@ -116,6 +116,12 @@ pub const Options = struct {
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
+    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
+    auth_delegated: ?@import("handshake/Delegation.zig").Credential = null,
+    /// Take a server's delegated credential (RFC 9345): its key proves possession for the
+    /// verified certificate that signed it. TLS 1.3, with full verification.
+    accept_delegated: bool = false,
     /// Required when `auth` is an identity cloak holds no signing key for.
     signer: ?Signer = null,
     /// TLS 1.3 resumption from a ticket cache. Under the system's verifier (macOS, Windows) a
@@ -207,7 +213,9 @@ pub fn open(
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
         .require_pq_auth = options.require_pq_auth,
+        .accept_delegated = options.accept_delegated,
         .auth = options.auth,
+        .auth_delegated = options.auth_delegated,
         .resumption = resumptionFor(options),
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
@@ -278,6 +286,9 @@ pub const ServerOptions = struct {
     /// How a presented client chain is checked.
     client_trust: Trust = .none,
     client_policy: certificates.types.Policy = .{},
+    /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
+    /// and fully verified.
+    accept_delegated: bool = false,
     /// Session tickets to issue and resume from (TLS 1.3, PSK-DHE, never early data). The ring
     /// is shared between sessions and must outlive them; rotate it on the caller's schedule.
     tickets: ?*Connection.TicketKeys = null,
@@ -333,6 +344,7 @@ pub fn accept(
         .require_pq_auth = options.require_pq_auth,
         .client_auth = options.client_auth,
         .client_verify = policy,
+        .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
         .ech_keys = options.ech_keys,

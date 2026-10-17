@@ -45,6 +45,12 @@ pub const pki = struct {
     pub const mldsa44_classical_pem = @embedFile("pki/mldsa44_classical.key.pem");
     pub const p256_pqca_pem = @embedFile("pki/p256_pqca.key.pem");
     pub const client_mldsa65_pem = @embedFile("pki/client_mldsa65.key.pem");
+    /// Delegated credentials (RFC 9345): a P-256 root and leaves carrying DelegationUsage, on the
+    /// p256 and client keys; `dc_no_signature` lacks the digitalSignature key usage.
+    pub const dc_ca = @embedFile("pki/dc_ca.der");
+    pub const dc_p256 = @embedFile("pki/dc_p256.der");
+    pub const dc_client = @embedFile("pki/dc_client.der");
+    pub const dc_no_signature = @embedFile("pki/dc_no_signature.der");
     /// A time inside every fixture's validity.
     pub const time: i64 = 1_800_000_000;
 };

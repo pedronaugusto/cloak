@@ -58,6 +58,21 @@ pub const certificate_compression = struct {
     pub const Error = Compression.Error;
     pub const max_codecs = Compression.max_codecs;
 };
+/// Delegated credentials (RFC 9345): a short-lived key an end-entity certificate signs for, so a
+/// TLS 1.3 endpoint proves possession with it while the certificate's key stays elsewhere. A
+/// server's goes in its `Credential`, a client's beside its certificate (`auth_delegated`); either
+/// end takes the peer's with `accept_delegated`. `issue` makes one with a certificate's key.
+pub const delegated_credentials = struct {
+    const Delegation = @import("tls/handshake/Delegation.zig");
+    pub const Credential = Delegation.Credential;
+    pub const Role = Delegation.Role;
+    pub const Spec = Delegation.Spec;
+    pub const IssueError = Delegation.IssueError;
+    pub const issue = Delegation.issue;
+    pub const max_validity = Delegation.max_validity;
+    /// The schemes a credential's key may use.
+    pub const schemes = Delegation.schemes;
+};
 /// Provisioned (external) PSKs, a key per version: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK (no
 /// forward secrecy, for CoAP's and LwM2M's PSK mode). A client's key and a server's lookup.
 pub const psk = struct {
@@ -98,6 +113,7 @@ test {
     _ = @import("tls/Psk_test.zig");
     _ = @import("tls/Psk12_test.zig");
     _ = @import("tls/RawKey_test.zig");
+    _ = @import("tls/Delegated_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");
     _ = @import("tls/wire.zig");

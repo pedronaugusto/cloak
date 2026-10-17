@@ -15,24 +15,24 @@ test "C2 messages certificate list parses entries and bounds count bytes and ext
     var buf: [256]u8 = undefined;
     const body = [_]u8{0} ++ [_]u8{ 0, 0, 14 } ++ [_]u8{ 0, 0, 3, 'a', 'b', 'c', 0, 0 } ++ [_]u8{ 0, 0, 1, 'z', 0, 0 };
     const wire = message(11, &body, &buf);
-    const parsed = try M.certificate(wire, 16, 1024, &chain);
+    const parsed = try M.certificate(wire, 16, 1024, &chain, .{});
     try std.testing.expectEqual(@as(usize, 2), parsed.count);
     try std.testing.expectEqual(@as(usize, 4), parsed.total_bytes);
     try std.testing.expectEqualSlices(u8, "abc", chain[0]);
     try std.testing.expectEqualSlices(u8, "z", chain[1]);
-    try std.testing.expectError(error.CertificateLimit, M.certificate(wire, 1, 1024, &chain));
-    try std.testing.expectError(error.CertificateLimit, M.certificate(wire, 16, 3, &chain));
+    try std.testing.expectError(error.CertificateLimit, M.certificate(wire, 1, 1024, &chain, .{}));
+    try std.testing.expectError(error.CertificateLimit, M.certificate(wire, 16, 3, &chain, .{}));
     // An entry extension is unsolicited, an empty DER is invalid, the list must fill its vector.
     const with_extension = [_]u8{ 0, 0, 0, 8, 0, 0, 1, 'a', 0, 2, 0, 0 };
-    try std.testing.expectError(error.UnsolicitedExtension, M.certificate(message(11, &with_extension, &buf), 16, 1024, &chain));
+    try std.testing.expectError(error.UnsolicitedExtension, M.certificate(message(11, &with_extension, &buf), 16, 1024, &chain, .{}));
     const empty_der = [_]u8{0} ++ [_]u8{ 0, 0, 5 } ++ [_]u8{ 0, 0, 0, 0, 0 };
-    try std.testing.expectError(error.InvalidMessage, M.certificate(message(11, &empty_der, &buf), 16, 1024, &chain));
-    try std.testing.expectError(error.InvalidLength, M.certificate(message(11, &.{ 0, 0, 0, 5, 1 }, &buf), 16, 1024, &chain));
-    try std.testing.expectError(error.InvalidMessage, M.certificate(message(15, &body, &buf), 16, 1024, &chain));
+    try std.testing.expectError(error.InvalidMessage, M.certificate(message(11, &empty_der, &buf), 16, 1024, &chain, .{}));
+    try std.testing.expectError(error.InvalidLength, M.certificate(message(11, &.{ 0, 0, 0, 5, 1 }, &buf), 16, 1024, &chain, .{}));
+    try std.testing.expectError(error.InvalidMessage, M.certificate(message(15, &body, &buf), 16, 1024, &chain, .{}));
     // Every truncation of a valid message fails cleanly.
-    for (0..wire.len) |len| try std.testing.expect(std.meta.isError(M.certificate(wire[0..len], 16, 1024, &chain)));
+    for (0..wire.len) |len| try std.testing.expect(std.meta.isError(M.certificate(wire[0..len], 16, 1024, &chain, .{})));
     // An empty list parses to zero entries; the handshake turns that into a decode error.
-    const none = try M.certificate(message(11, &.{ 0, 0, 0, 0 }, &buf), 16, 1024, &chain);
+    const none = try M.certificate(message(11, &.{ 0, 0, 0, 0 }, &buf), 16, 1024, &chain, .{});
     try std.testing.expectEqual(@as(usize, 0), none.count);
 }
 
@@ -98,14 +98,14 @@ test "C2 messages builders produce the wire form the parsers read" {
     try std.testing.expectEqualSlices(u8, &.{ 24, 0, 0, 1, 1 }, try M.buildKeyUpdate(&out, true));
     try std.testing.expectEqualSlices(u8, &.{ 20, 0, 0, 4, 1, 2, 3, 4 }, try M.buildFinished(&out, &.{ 1, 2, 3, 4 }));
     try std.testing.expectEqualSlices(u8, &.{ 15, 0, 0, 7, 8, 7, 0, 3, 'a', 'b', 'c' }, try M.buildCertificateVerify(&out, 0x0807, "abc"));
-    try std.testing.expectEqualSlices(u8, &.{ 11, 0, 0, 4, 0, 0, 0, 0 }, try M.buildCertificate(&out, "", &.{}));
+    try std.testing.expectEqualSlices(u8, &.{ 11, 0, 0, 4, 0, 0, 0, 0 }, try M.buildCertificate(&out, "", &.{}, null));
     const chain = [_][]const u8{ "one", "two" };
-    const built = try M.buildCertificate(&out, "", &chain);
+    const built = try M.buildCertificate(&out, "", &chain, null);
     var parsed: [M.max_certificates][]const u8 = undefined;
-    const result = try M.certificate(built, 16, 1024, &parsed);
+    const result = try M.certificate(built, 16, 1024, &parsed, .{});
     try std.testing.expectEqual(@as(usize, 2), result.count);
     try std.testing.expectEqualSlices(u8, "two", parsed[1]);
-    try std.testing.expectError(error.BufferTooSmall, M.buildCertificate(out[0..10], "", &chain));
+    try std.testing.expectError(error.BufferTooSmall, M.buildCertificate(out[0..10], "", &chain, null));
     try std.testing.expectError(error.BufferTooSmall, M.buildFinished(out[0..5], &.{ 1, 2, 3, 4 }));
 }
 
@@ -140,7 +140,7 @@ fn fuzz(_: void, case: *shakedown.Case) !void {
 
 fn parseAll(input: []const u8) !void {
     var chain: [M.max_certificates][]const u8 = undefined;
-    if (M.certificate(input, 16, 4096, &chain)) |parsed| {
+    if (M.certificate(input, 16, 4096, &chain, .{ .delegated = true })) |parsed| {
         try std.testing.expect(parsed.count <= 16 and parsed.total_bytes <= 4096);
         for (chain[0..parsed.count]) |der| try std.testing.expect(der.len != 0);
     } else |_| {}

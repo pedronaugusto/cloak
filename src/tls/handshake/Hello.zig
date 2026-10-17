@@ -82,6 +82,9 @@ pub const Options = struct {
     parameters: []const u8 = "",
     /// Certificate decoders a client offers (RFC 8879), TLS 1.3 only.
     certificate_compression: []const Compression.Codec = &.{},
+    /// The client takes a server's delegated credential (RFC 9345), TLS 1.3 only: the hello's
+    /// delegated_credential lists the schemes a credential's key may use.
+    accept_delegated: bool = false,
     /// DTLS: connection_id (RFC 9146). Null offers or accepts none; otherwise the connection ID
     /// this end receives records with, borrowed; empty: it sends with the peer's but takes none.
     connection_id: ?[]const u8 = null,
@@ -153,6 +156,36 @@ pub const schemes = classical ++ mldsa_schemes;
 pub const schemes12 = classical ++ [_]SignatureScheme{ .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 };
 /// What a hello offering both versions lists: TLS 1.2's schemes and ML-DSA's.
 const schemes_both = schemes12 ++ mldsa_schemes;
+
+/// The schemes a delegated credential's key may use (RFC 9345 section 4): the TLS 1.3
+/// CertificateVerify schemes but rsa_pss_rsae_*, a credential's RSA key never having the
+/// rsaEncryption OID; ML-DSA's alone under a post-quantum authentication policy.
+pub const credential_schemes = withoutRsae(&schemes);
+const pq_credential_schemes = withoutRsae(&mldsa_schemes);
+
+pub fn credentialSchemes(require_pq_auth: bool) []const SignatureScheme {
+    return if (require_pq_auth) &pq_credential_schemes else &credential_schemes;
+}
+
+fn withoutRsae(comptime from: []const SignatureScheme) [countWithoutRsae(from)]SignatureScheme {
+    var out: [countWithoutRsae(from)]SignatureScheme = undefined;
+    var n: usize = 0;
+    for (from) |scheme| if (!rsae(scheme)) {
+        out[n] = scheme;
+        n += 1;
+    };
+    return out;
+}
+
+fn countWithoutRsae(comptime from: []const SignatureScheme) usize {
+    var n: usize = 0;
+    for (from) |scheme| n += @intFromBool(!rsae(scheme));
+    return n;
+}
+
+fn rsae(scheme: SignatureScheme) bool {
+    return scheme == .rsa_pss_rsae_sha256 or scheme == .rsa_pss_rsae_sha384 or scheme == .rsa_pss_rsae_sha512;
+}
 
 /// The schemes a CertificateVerify (TLS 1.3) may use under `options`: ML-DSA's alone when the
 /// policy requires post-quantum authentication.
@@ -300,6 +333,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (sni.len != 0) try serverName(&w, sni);
     // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
     if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
+    if (tls13 and options.accept_delegated) try delegatedExtension(&w, options.require_pq_auth);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
     var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
@@ -375,6 +409,16 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// delegated_credential (RFC 9345 section 4.1.1): the schemes a credential's key may use.
+fn delegatedExtension(w: *Writer, require_pq_auth: bool) EncodeError!void {
+    const list = credentialSchemes(require_pq_auth);
+    try w.int(u16, @import("Messages.zig").delegated_credential);
+    // safe: bounded by the scheme table.
+    try w.int(u16, @intCast(2 + list.len * 2));
+    try w.int(u16, @intCast(list.len * 2));
+    for (list) |scheme| try w.int(u16, @backingInt(scheme));
+}
+
 /// RFC 7250: one type each, the raw key; X.509 is what a hello without the extension means.
 fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
     const raw: []const u8 = &.{ 1, @backingInt(CertificateType.raw_public_key) };

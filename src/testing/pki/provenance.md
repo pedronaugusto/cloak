@@ -26,3 +26,12 @@ certificate whose path is classical. Every certificate names its key (subjectKey
 its issuer's (authorityKeyIdentifier). `*.key.pem` are the leaf keys.
 `ed25519_key_encipherment.der` is an Ed25519 server certificate under `mixed_ca` whose keyUsage
 adds keyEncipherment, which RFC 8410 forbids a signature-only key.
+
+The delegated-credential set (RFC 9345), made with OpenSSL 4.0.3: `dc_ca.der`, a P-256 root
+(path length 0), and the leaves it signs, each carrying the non-critical DelegationUsage
+extension (1.3.6.1.4.1.44363.44, NULL): `dc_p256` (a server certificate for `example.com`,
+`*.example.org` and `192.0.2.7` on the `p256` key), `dc_client` (client authentication on the
+`client` key) and `dc_no_signature` (a server certificate whose keyUsage is keyAgreement alone,
+which RFC 9345 section 4.2 refuses as a delegator). Validity from 2026-10-10 for a hundred years;
+subject and authority key identifiers named. The delegated credentials themselves are issued by
+the tests with `tls.DelegatedCredential.issue`.

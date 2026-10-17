@@ -72,6 +72,8 @@ extensions: []const u8,
 ech: ?[]const u8,
 /// compress_certificate (RFC 8879): the algorithm list with its length byte, when sent.
 compress_certificate: ?[]const u8,
+/// delegated_credential (RFC 9345): the SignatureSchemeList body, two bytes each, when sent.
+delegated: ?[]const u8,
 /// DTLS connection_id (RFC 9146): the connection ID the client receives on, when sent.
 connection_id: ?[]const u8,
 /// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
@@ -127,6 +129,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.point_formats = false;
     self.ech = null;
     self.compress_certificate = null;
+    self.delegated = null;
     self.connection_id = null;
     self.srtp = null;
     self.server_certificate_types = null;
@@ -171,9 +174,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             self.has_groups = true;
         },
         13 => {
-            self.schemes = (try value.vector(u16)).bytes;
-            try value.finish();
-            if (self.schemes.len < 2 or self.schemes.len % 2 != 0) return error.DecodeError;
+            self.schemes = try schemeList(&value);
             self.has_schemes = true;
         },
         16 => {
@@ -231,6 +232,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             @import("Compression.zig").checkExtension(bytes) catch return error.DecodeError;
             self.compress_certificate = bytes;
         },
+        34 => self.delegated = try schemeList(&value),
         54 => {
             self.connection_id = (try value.vector(u8)).bytes;
             try value.finish();
@@ -268,6 +270,14 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
 }
 
 /// A client_certificate_type or server_certificate_type list (RFC 7250): one or more types.
+/// A SignatureSchemeList filling its extension: two bytes per scheme, at least one.
+fn schemeList(value: *Reader) ParseError![]const u8 {
+    const list = (try value.vector(u16)).bytes;
+    try value.finish();
+    if (list.len < 2 or list.len % 2 != 0) return error.DecodeError;
+    return list;
+}
+
 fn certificateTypes(value: *Reader) ParseError![]const u8 {
     @setRuntimeSafety(true);
     const types = (try value.vector(u8)).bytes;

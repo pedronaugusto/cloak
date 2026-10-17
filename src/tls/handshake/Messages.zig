@@ -31,6 +31,7 @@ pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     UnsolicitedExtension,
     MissingExtension,
     IllegalParameter,
+    UnexpectedMessage,
 };
 
 /// Splits a message into type and body after checking the enclosing length exactly.
@@ -42,16 +43,27 @@ pub fn body(message: []const u8) ParseError!struct { kind: Type, bytes: []const 
 
 pub const max_certificates = 16;
 
-/// A server Certificate: the context and the DER of each entry, leaf first.
+/// A Certificate: the context and the DER of each entry, leaf first, and the extensions of the
+/// leaf's entry this end asked for.
 pub const Certificates = struct {
     context: []const u8,
     count: usize,
     total_bytes: usize,
+    /// The leaf's delegated_credential body (RFC 9345), when this end offered the extension.
+    delegated: ?[]const u8 = null,
 };
 
-/// Parses a Certificate message into `out`. No entry extension is accepted: the client
-/// offers none (no status_request, no SCT), so any extension is unsolicited.
-pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out: *[max_certificates][]const u8) ParseError!Certificates {
+/// The CertificateEntry extensions this end solicited.
+pub const Accept = struct {
+    /// delegated_credential (RFC 9345), on the leaf only.
+    delegated: bool = false,
+};
+
+/// Parses a Certificate message into `out`. An entry extension is accepted only where `accept`
+/// solicited it: a delegated credential on the leaf alone (RFC 9345 section 4.1.1: unsolicited is
+/// unexpected_message, on another entry illegal_parameter, two on the leaf illegal_parameter).
+/// Every other extension is unsolicited: this end offers none (no status_request, no SCT).
+pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out: *[max_certificates][]const u8, accept: Accept) ParseError!Certificates {
     @setRuntimeSafety(true);
     const parsed = try body(message);
     if (parsed.kind != .certificate) return error.InvalidMessage;
@@ -61,25 +73,37 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
     try r.finish();
     var count: usize = 0;
     var total: usize = 0;
+    var delegated: ?[]const u8 = null;
     while (list.pos != list.bytes.len) {
         const der = (try list.vector(u24)).bytes;
         if (der.len == 0) return error.InvalidMessage;
-        const extensions = (try list.vector(u16)).bytes;
-        if (extensions.len != 0) return error.UnsolicitedExtension;
+        var ext: Extensions = .{ .reader = try list.vector(u16) };
+        // Where nothing was solicited any extension block is unsolicited, well formed or not.
+        while (ext.next() catch |err| return if (accept.delegated) err else error.UnsolicitedExtension) |item| {
+            if (item.id != delegated_credential) return error.UnsolicitedExtension;
+            if (!accept.delegated) return error.UnexpectedMessage;
+            if (count != 0) return error.IllegalParameter;
+            delegated = item.bytes;
+        }
         if (count == @min(max_count, max_certificates)) return error.CertificateLimit;
         total = (aegis.int.Checked(usize).init(total).add(der.len) catch return error.CertificateLimit).raw();
         if (total > max_bytes) return error.CertificateLimit;
         out[count] = der;
         count += 1;
     }
-    return .{ .context = context, .count = count, .total_bytes = total };
+    return .{ .context = context, .count = count, .total_bytes = total, .delegated = delegated };
 }
+
+/// The delegated_credential extension's number (RFC 9345 section 4.1).
+pub const delegated_credential = 34;
 
 /// Borrowed view of a CertificateRequest.
 pub const CertificateRequest = struct {
     context: []const u8,
     /// signature_algorithms body: even-length list of two-byte scheme identifiers.
     schemes: []const u8,
+    /// delegated_credential's SignatureSchemeList body (RFC 9345 section 4.1.2), when sent.
+    delegated: ?[]const u8 = null,
 
     /// Whether the server accepts a given scheme for the client's CertificateVerify.
     pub fn accepts(self: CertificateRequest, scheme: u16) bool {
@@ -101,15 +125,16 @@ pub fn certificateRequest(message: []const u8) ParseError!CertificateRequest {
     var ext: Extensions = .{ .reader = try r.vector(u16) };
     try r.finish();
     var schemes: ?[]const u8 = null;
+    var delegated: ?[]const u8 = null;
     while (try ext.next()) |item| {
-        if (item.id != 13) continue;
+        if (item.id != 13 and item.id != delegated_credential) continue;
         var value: Reader = .{ .bytes = item.bytes };
         const list = (try value.vector(u16)).bytes;
         try value.finish();
         if (list.len < 2 or list.len % 2 != 0) return error.InvalidMessage;
-        schemes = list;
+        if (item.id == 13) schemes = list else delegated = list;
     }
-    return .{ .context = context, .schemes = schemes orelse return error.MissingExtension };
+    return .{ .context = context, .schemes = schemes orelse return error.MissingExtension, .delegated = delegated };
 }
 
 pub const CertificateVerify = struct { scheme: u16, signature: []const u8 };
@@ -211,20 +236,28 @@ pub fn buildKeyUpdate(out: []u8, request_peer: bool) BuildError![]u8 {
     return seal(&w);
 }
 
-/// A Certificate with an empty context and one entry per DER, each without extensions.
-pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u8) BuildError![]u8 {
+/// A Certificate with an empty context and one entry per DER; the leaf's entry carries a
+/// delegated credential when one is given, every other entry no extension.
+pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u8, delegated: ?[]const u8) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try header(&w, .certificate);
     try w.vector(u8, context);
     const list_at = w.pos;
     try w.int(u24, 0);
-    for (chain) |der| {
+    for (chain, 0..) |der, i| {
         if (der.len > 0xffffff) return error.BufferTooSmall;
         // safe: certificate length was just bounded by the u24 maximum.
         try w.int(u24, @intCast(der.len));
         try w.put(der);
-        try w.int(u16, 0);
+        const extension = if (i == 0) delegated else null;
+        if (extension) |credential| {
+            if (credential.len > 0xffff - 4) return error.BufferTooSmall;
+            // safe: the credential was just bounded below the u16 maximum.
+            try w.int(u16, @intCast(credential.len + 4));
+            try w.int(u16, delegated_credential);
+            try w.vector(u16, credential);
+        } else try w.int(u16, 0);
     }
     const list_len = w.pos - list_at - 3;
     if (list_len > 0xffffff) return error.BufferTooSmall;
@@ -233,19 +266,28 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
     return seal(&w);
 }
 
-/// A CertificateRequest with an empty context asking for these signature schemes.
-pub fn buildCertificateRequest(out: []u8, schemes: []const u16) BuildError![]u8 {
+/// A CertificateRequest with an empty context asking for these signature schemes, and with
+/// delegated_credential listing `delegated` when it is not empty (RFC 9345 section 4.1.2).
+pub fn buildCertificateRequest(out: []u8, schemes: []const u16, delegated: []const u16) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try header(&w, .certificate_request);
     try w.int(u8, 0);
-    // safe: the extension is four bytes of header and the list, bounded by the scheme table.
-    try w.int(u16, @intCast(6 + schemes.len * 2));
-    try w.int(u16, 13);
+    const delegated_len: usize = if (delegated.len != 0) 6 + delegated.len * 2 else 0;
+    // safe: each extension is six bytes of header and its list, bounded by the scheme table.
+    try w.int(u16, @intCast(6 + schemes.len * 2 + delegated_len));
+    try schemeList(&w, 13, schemes);
+    if (delegated.len != 0) try schemeList(&w, delegated_credential, delegated);
+    return seal(&w);
+}
+
+/// An extension whose body is a SignatureSchemeList.
+fn schemeList(w: *Writer, id: u16, schemes: []const u16) BuildError!void {
+    try w.int(u16, id);
+    // safe: bounded by the scheme table.
     try w.int(u16, @intCast(2 + schemes.len * 2));
     try w.int(u16, @intCast(schemes.len * 2));
     for (schemes) |scheme| try w.int(u16, scheme);
-    return seal(&w);
 }
 
 pub fn buildCertificateVerify(out: []u8, scheme: u16, signature: []const u8) BuildError![]u8 {

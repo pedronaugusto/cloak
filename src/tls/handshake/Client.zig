@@ -26,6 +26,7 @@ const Ech = @import("Ech.zig");
 const Compression = @import("Compression.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 const Psk = @import("Psk.zig");
+const Delegation = @import("Delegation.zig");
 
 pub const Epoch = Flight.Epoch;
 pub const Direction = Flight.Direction;
@@ -102,6 +103,10 @@ pub const Options = struct {
     verify: Verify,
     /// Certificates and key for a CertificateRequest; its signature is a signing request.
     auth: ?certificates.ClientAuth = null,
+    /// A delegated credential of `auth`'s certificate (RFC 9345, role `client`), presented with
+    /// it when the server's CertificateRequest takes one; its key signs then. Needs full
+    /// verification of the server, whose clock decides whether it is still valid.
+    auth_delegated: ?Delegation.Credential = null,
     limits: Limits = .{},
     /// A random legacy session id and one change_cipher_spec, for middleboxes (stream only).
     compat: bool = true,
@@ -153,6 +158,9 @@ pub const Info = struct {
     /// The peer proved a raw public key (RFC 7250): its index in the policy's pins. Null when it
     /// presented certificates or nothing.
     raw_key_pin: ?u16 = null,
+    /// The peer proved possession with a delegated credential (RFC 9345) its verified certificate
+    /// signed, not with the certificate's own key.
+    delegated_credential: bool = false,
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
@@ -223,6 +231,8 @@ authenticated: bool = false,
 requested_certificate: bool = false,
 /// The index of the pin the server's raw public key matched (RFC 7250).
 raw_pin: ?u16 = null,
+/// The server proved possession with a delegated credential (RFC 9345).
+delegated_used: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
 established: bool = false,
 /// The client's application write secret, queued after its Finished.
@@ -259,6 +269,7 @@ auth_expires: i64 = std.math.maxInt(i64),
 
 const Kept = struct {
     auth: ?certificates.ClientAuth,
+    auth_delegated: ?Delegation.Credential = null,
     resumption: ?Resumption,
     sni: []const u8,
     message_limit: usize,
@@ -288,8 +299,14 @@ const Scratch = struct {
     /// RFC 7250: the server selected the raw key type for its Certificate, and for the client's.
     peer_raw: bool = false,
     client_raw: bool = false,
+    /// RFC 9345: the server's delegated credential (in `held`) and, once checked, its key.
+    delegated: ?[]const u8 = null,
+    delegated_key: ?Delegation.Checked = null,
     cr_schemes: [1024]u8 = undefined,
     cr_len: u16 = 0,
+    /// The CertificateRequest's delegated_credential list, when it sent one.
+    cr_delegated: [1024]u8 = undefined,
+    cr_delegated_len: ?u16 = null,
     /// TLS 1.2: the certificate types a CertificateRequest named (Client12.rsa_sign, ecdsa_sign).
     cr_types: u8 = 0,
     sign_content: [Messages.max_signed]u8 = undefined,
@@ -374,6 +391,13 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
             Hello.validate(hello) catch return error.InvalidOptions;
         },
     }
+    // A delegated credential is checked by the clock of a verified chain (RFC 9345 section 4.1.3),
+    // in TLS 1.3 only; a client's own belongs to its certificate.
+    if (hello.accept_delegated and (options.verify != .full or !hello.allows13())) return error.InvalidOptions;
+    if (options.auth_delegated) |delegated| {
+        const auth = options.auth orelse return error.InvalidOptions;
+        if (options.verify != .full or !hello.allows13() or delegated.side() != .client or !delegated.belongsTo(auth.identity)) return error.InvalidOptions;
+    }
     if (options.external_psk) |psk| {
         Psk.validate(psk) catch return error.InvalidOptions;
         if (!offersKeySuite(hello, psk)) return error.InvalidOptions;
@@ -404,6 +428,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         if (options.hello.allows13() or (resumption.tls12 and options.hello.allows12())) self.need_now = .time;
         self.cache_key = cacheKey(options, resumption.namespace);
     }
+    if (options.auth_delegated) |delegated| self.kept.auth_delegated = delegated.retain();
     if (options.auth) |auth| {
         self.kept.auth = auth.retain();
         // A TLS 1.2 CertificateVerify by Ed25519 signs the handshake messages themselves.
@@ -426,6 +451,7 @@ pub fn deinit(self: *Client) void {
     const gpa = self.gpa;
     self.wipe();
     if (self.kept.auth) |auth| auth.deinit();
+    if (self.kept.auth_delegated) |delegated| delegated.deinit();
     if (self.ech_retry) |list| gpa.free(list);
     self.* = undefined;
     gpa.destroy(self);
@@ -528,7 +554,8 @@ fn initialEntropy(self: *const Client) usize {
     for (initial.groups[0..initial.count]) |group| len += Exchange.entropyLength(group.?);
     len += self.echEntropy();
     // A client certificate whose key cloak holds is signed for here, with noise drawn up front.
-    if (self.options.auth) |auth| len += auth.identity.noiseLength() orelse 0;
+    // A delegated credential signs instead when the server takes it: noise for either.
+    if (self.options.auth) |auth| len += @max(auth.identity.noiseLength() orelse 0, if (self.options.auth_delegated) |delegated| delegated.noiseLength() else 0);
     return len;
 }
 
@@ -728,6 +755,8 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
         });
         for (auth.entries()) |der| part(&h, der);
     } else part(&h, "no client certificate");
+    // A session a delegated credential authenticated resumes only where one is taken.
+    part(&h, if (options.hello.accept_delegated) "delegated credentials" else "no delegated credentials");
     return h.finalResult();
 }
 
@@ -816,11 +845,20 @@ pub fn provideVerification(self: *Client, token: types.Token, receipt: *const ty
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
     if (self.options.hello.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
+    // A delegated credential is checked against the certificate just verified (RFC 9345 section
+    // 4.1.3); its key then proves possession.
+    if (self.scratch.?.delegated) |bytes| {
+        const view = Delegation.parse(bytes) catch return error.IllegalParameter;
+        const hello = self.options.hello;
+        self.scratch.?.delegated_key = try Delegation.check(self.gpa, view, self.scratch.?.chain[0], .server, types.seconds(self.now.?), Hello.verifySchemes(hello), Delegation.offered(hello.require_pq_auth));
+    }
     try self.state.advance(.verify_chain, self.verifyEpoch(), .chain, true);
     self.authenticated = true;
-    // A session resumed from this one is authenticated no longer than this verdict holds.
+    // A session resumed from this one is authenticated no longer than this verdict holds, nor
+    // than the delegated credential that proved it.
     self.auth_expires = types.seconds(receipt.expires);
     if (receipt.revocation_expires) |until| self.auth_expires = @min(self.auth_expires, types.seconds(until));
+    if (self.scratch.?.delegated_key) |checked| self.auth_expires = @min(self.auth_expires, checked.expires);
     self.need_now = .none;
 }
 
@@ -1467,6 +1505,12 @@ fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: 
     @memcpy(self.scratch.?.cr_schemes[0..keep], parsed.schemes[0..keep]);
     // safe: at most 1024 bytes are kept.
     self.scratch.?.cr_len = @intCast(keep);
+    if (parsed.delegated) |list| {
+        const kept = @min(list.len, self.scratch.?.cr_delegated.len) & ~@as(usize, 1);
+        @memcpy(self.scratch.?.cr_delegated[0..kept], list[0..kept]);
+        // safe: at most 1024 bytes are kept.
+        self.scratch.?.cr_delegated_len = @intCast(kept);
+    }
 }
 
 fn onCertificate(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -1507,10 +1551,11 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
     const msg = wire;
     const limits = self.options.limits;
-    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain);
+    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain, .{ .delegated = self.options.hello.accept_delegated });
     if (parsed.context.len != 0) return error.IllegalParameter;
     if (parsed.count == 0) return error.EmptyCertificate;
     self.scratch.?.chain_len = parsed.count;
+    self.scratch.?.delegated = parsed.delegated;
     if (self.scratch.?.peer_raw) {
         // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
         self.raw_pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
@@ -1535,7 +1580,12 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, true, self.scratch.?.transcripts.digest(&digest_buf));
-    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
+    if (self.scratch.?.delegated_key) |checked| {
+        // The credential's key signs, under the one scheme the credential names (RFC 9345
+        // section 4.1.3): any other is unoffered.
+        try Possession.verifyKey(parsed.scheme, &.{checked.scheme}, checked.key, content, parsed.signature);
+        self.delegated_used = true;
+    } else try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
 }
@@ -1591,11 +1641,18 @@ fn continueFlight(self: *Client) Error!void {
     // The type the server selected (RFC 7250) must be the one this credential is.
     if ((auth.identity.form() == .raw_public_key) != self.scratch.?.client_raw) return self.sendEmptyCertificate();
     const request: Messages.CertificateRequest = .{ .context = "", .schemes = self.scratch.?.cr_schemes[0..self.scratch.?.cr_len] };
-    const scheme = Possession.choose(auth.identity.publicKey(), request) orelse return self.sendEmptyCertificate();
+    // RFC 9345 section 4.1.2: a credential the server listed a scheme for, while it is valid.
+    const delegated: ?Delegation.Credential = if (self.kept.auth_delegated) |credential| use: {
+        const listed = self.scratch.?.cr_delegated_len orelse break :use null;
+        const now = self.now orelse break :use null;
+        break :use if (credential.usable(types.seconds(now), self.scratch.?.cr_delegated[0..listed], request)) credential else null;
+    } else null;
+    const scheme = if (delegated) |credential| credential.keyScheme() else Possession.choose(auth.identity.publicKey(), request) orelse return self.sendEmptyCertificate();
     var total: usize = 64;
     for (auth.entries()) |der| total += der.len + 5;
+    if (delegated) |credential| total += credential.wire().len + 4;
     const dst = try self.reserve(total);
-    const message_bytes = try Messages.buildCertificate(dst, "", auth.entries());
+    const message_bytes = try Messages.buildCertificate(dst, "", auth.entries(), if (delegated) |credential| credential.wire() else null);
     try self.state.advance(.local_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1603,6 +1660,11 @@ fn continueFlight(self: *Client) Error!void {
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
     self.scratch.?.sign_content_len = @intCast(content.len);
     self.sign_scheme = scheme;
+    if (delegated) |credential| {
+        var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+        const signature = credential.sign(content, self.scratch.?.sign_noise[0..credential.noiseLength()], &out) catch return error.SigningFailed;
+        return self.sendCertificateVerify(signature);
+    }
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (auth.identity.noiseLength()) |noise_length| {
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
@@ -1615,7 +1677,7 @@ fn continueFlight(self: *Client) Error!void {
 fn sendEmptyCertificate(self: *Client) Error!void {
     @setRuntimeSafety(true);
     const dst = try self.reserve(16);
-    const message_bytes = try Messages.buildCertificate(dst, "", &.{});
+    const message_bytes = try Messages.buildCertificate(dst, "", &.{}, null);
     try self.state.advance(.local_empty_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     try self.finishFlight();
@@ -1731,6 +1793,7 @@ pub fn info(self: *const Client) ?Info {
         .external_psk = self.external_used,
         .srtp = self.srtp,
         .raw_key_pin = self.raw_pin,
+        .delegated_credential = self.delegated_used,
     };
 }
 

@@ -80,6 +80,12 @@ pub const Options = struct {
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
+    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
+    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
+    auth_delegated: ?@import("../handshake/Delegation.zig").Credential = null,
+    /// Take a server's delegated credential (RFC 9345): its key proves possession for the
+    /// verified certificate that signed it. TLS 1.3, with full verification.
+    accept_delegated: bool = false,
     resumption: ?Resumption = null,
     /// A provisioned key to offer, borrowed: DTLS 1.3 PSK-DHE, or DTLS 1.2 plain PSK with its
     /// suites listed (CoAP's and LwM2M's PSK mode; no forward secrecy).
@@ -115,6 +121,9 @@ pub const ServerOptions = struct {
     require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
+    /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
+    /// and fully verified.
+    accept_delegated: bool = false,
     tickets: ?*TicketKeys = null,
     tls12_tickets: bool = false,
     /// Provisioned keys, looked up by the offered identity: DTLS 1.3 PSK-DHE, DTLS 1.2 plain PSK
@@ -355,6 +364,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
             .require_pq_auth = options.require_pq_auth,
+            .accept_delegated = options.accept_delegated,
             .connection_id = options.connection_id,
             .srtp = options.srtp,
         },
@@ -363,6 +373,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
+        .auth_delegated = options.auth_delegated,
         .limits = options.limits.handshake,
         .compat = false,
         .key_log = options.key_log,
@@ -403,6 +414,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
         .external_psk = options.external_psk,

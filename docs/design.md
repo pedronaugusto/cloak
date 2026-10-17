@@ -795,6 +795,58 @@ list (the raw form itself is at least one byte), which the server takes as no ce
 TLS 1.2 session ticket carries the client's proved pin as a TLS 1.3 one does, and the client's
 cache entry the server's.
 
+## Delegated credentials
+
+A delegated credential (RFC 9345) is a short-lived key the holder of an end-entity certificate
+signs for, so a TLS 1.3 endpoint proves possession with it while the certificate's key stays
+elsewhere: an edge holds credentials that expire within days, the origin keeps the certificate's
+key. `Delegation.zig` holds the format, the receiver's checks and the owned credential; both
+roles use it, and only the signed label differs ("TLS, server delegated credentials" or
+"client"). Every carrier (stream, QUIC, DTLS 1.3) takes it, since it lives in the handshake;
+TLS 1.2 has none and ignores the extension.
+
+Receiving. A client taking one (`accept_delegated`) lists in its hello's delegated_credential the
+schemes a credential's key may use: the TLS 1.3 CertificateVerify schemes but rsa_pss_rsae_*, an
+rsaEncryption key never being a credential's (RFC 9345 section 4), and ML-DSA's alone under
+`require_pq_auth`. A server taking a client's lists the same in its CertificateRequest. Taking one
+needs `.full` verification: the credential's lifetime counts from the certificate's notBefore, and
+the clock and the verified chain are what a check stands on, so a pinned raw key or `verify = .none`
+has nothing to check it against (the raw-key namespace never meets a credential). The Certificate
+parser takes the extension only where it was offered and only on the leaf's entry: unoffered is
+unexpected_message, on another entry or twice illegal_parameter, any other entry extension
+unsupported_extension. After the chain's receipt is accepted, the credential is checked (RFC 9345
+sections 4.1.1-4.1.3), each failure illegal_parameter: its scheme is one this end listed and may
+use and binds to its key, the delegation's algorithm is one this end lists in signature_algorithms
+(TLS 1.3's schemes, never PKCS#1 v1.5), the certificate carries DelegationUsage (NULL, non-critical)
+and the digitalSignature key usage, the credential has not expired (valid up to the second before
+notBefore + valid_time), has at most seven days to run, and expires before the certificate does,
+and the certificate's key signed it. CertificateVerify is then verified with the credential's key
+under the one scheme it names; any other scheme is unoffered. `Info.delegated_credential` reports
+it. A session's tickets authenticate no longer than the credential: the client's cache entry and the
+server's ticket both end at its expiry, as they end at the chain verdict's, so resumption cannot
+stretch the delegation (F89). The client's cache key and the server's ticket policy say whether
+credentials are taken.
+
+Sending. A credential is a `delegated_credentials.Credential`: the wire bytes and the private key,
+retained and shared like an identity. `Credential.init` checks it against the identity's certificate
+when it is made (the certificate may delegate, the key matches, the scheme suits it, the delegation
+verifies, it ends before the certificate), so a credential no peer could take is refused once, not at
+every handshake; `issue` makes one with the certificate's key, which cloak must hold. A server's goes
+in its `Credential` beside the identity it belongs to, a client's beside its certificate
+(`auth_delegated`). It is sent only while a peer would take it: the peer listed its scheme for
+credentials and its algorithm in signature_algorithms, it has not expired and has no more than seven
+days to run. A server whose credential has one asks for the clock before it answers a hello that
+offers the extension, as it does for tickets; a client knows the clock from verifying the server. When
+the credential does not fit, the certificate's key signs as before (or the signing request goes to
+the caller when that key is held elsewhere), so a stale credential costs a fallback, never a failed
+handshake. The credential's key is always held by cloak and signs inside the engine with hedged noise
+drawn with the handshake's entropy.
+
+Peers: NSS 3.128's tstclnt (`-B`) verifies a cloak server's credential (trials `--dc`); no available
+server sends one (OpenSSL and Go speak no RFC 9345, BoringSSL's bssl tool has no option for one, NSS's
+selfserv cannot load one), so cloak's client is tested against cloak's server, and the offer against
+OpenSSL's server, which ignores it.
+
 ## TLS 1.2
 
 TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)

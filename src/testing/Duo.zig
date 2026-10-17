@@ -14,9 +14,10 @@ const TicketKeys = @import("../tls/resumption/TicketKeys.zig");
 const Ech = @import("../tls/handshake/Ech.zig");
 const Compression = @import("../tls/handshake/Compression.zig");
 const Psk = @import("../tls/handshake/Psk.zig");
+const Delegation = @import("../tls/handshake/Delegation.zig");
 pub const pki = @import("Peer.zig").pki;
 
-pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca };
+pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -89,6 +90,16 @@ pub const Options = struct {
     client_raw_pins: ?[]const [32]u8 = null,
     client_raw: bool = false,
     server_raw_pins: ?[]const [32]u8 = null,
+    /// Delegated credentials (RFC 9345): the server's credential carries one (the certificate is
+    /// `dc_p256` unless another is named), the client's certificate is `dc_client` with one, each
+    /// with a P-384 key expiring `delegated_lifetime` seconds after `delegated_issued`; and
+    /// whether each end takes the peer's.
+    server_delegated: bool = false,
+    client_delegated: bool = false,
+    client_accept_delegated: bool = false,
+    server_accept_delegated: bool = false,
+    delegated_issued: i64 = pki.time,
+    delegated_lifetime: i64 = 3 * 24 * 60 * 60,
 };
 
 /// The SHA-256 of a certificate's SubjectPublicKeyInfo: the pin of its key as a raw public key.
@@ -109,6 +120,8 @@ snapshot: certificates.Trust.Snapshot,
 identity: certificates.Identity,
 raw_identity: ?certificates.Identity = null,
 auth: ?certificates.ClientAuth = null,
+server_dc: ?Delegation.Credential = null,
+client_dc: ?Delegation.Credential = null,
 rng: std.Random.DefaultPrng,
 options: Options,
 
@@ -124,10 +137,12 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     try self.trust.addDer(pki.ca, .{});
     try self.trust.addDer(pki.mldsa_ca, .{});
     try self.trust.addDer(pki.mixed_ca, .{});
+    try self.trust.addDer(pki.dc_ca, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
-    const key = try certificates.PrivateKey.parse(gpa, switch (options.cert) {
-        .p256 => pki.p256_pem,
+    const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
+    const key = try certificates.PrivateKey.parse(gpa, switch (cert) {
+        .p256, .dc_p256, .dc_no_signature => pki.p256_pem,
         .p384 => pki.p384_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
@@ -138,7 +153,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .p256_pqca => pki.p256_pqca_pem,
     }, .{});
     defer key.deinit();
-    const leaf = switch (options.cert) {
+    const leaf = switch (cert) {
+        .dc_p256 => pki.dc_p256,
+        .dc_no_signature => pki.dc_no_signature,
         .p256 => pki.p256,
         .p384 => pki.p384,
         .ed25519 => pki.ed25519,
@@ -149,7 +166,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .mldsa44_classical => pki.mldsa44_classical,
         .p256_pqca => pki.p256_pqca,
     };
-    const root = switch (options.cert) {
+    const root = switch (cert) {
+        .dc_p256, .dc_no_signature => pki.dc_ca,
         .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
         .mldsa44_classical => pki.mixed_ca,
         else => pki.ca,
@@ -162,7 +180,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     if (options.client_cert) {
         const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
-        const chain: []const []const u8 = if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
+        const chain: []const []const u8 = if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else if (options.client_delegated) &.{ pki.dc_client, pki.dc_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
         self.auth = if (options.client_raw)
             try certificates.ClientAuth.initRawKey(gpa, (try certificates.certificate.parse(chain[0], .{})).spki, client_key, .{})
         else if (options.client_external)
@@ -171,6 +189,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
             try certificates.ClientAuth.init(gpa, chain, client_key, .{});
     }
     errdefer if (self.auth) |auth| auth.deinit();
+    self.server_dc = if (options.server_delegated) try self.delegate(self.identity, .server) else null;
+    errdefer if (self.server_dc) |dc| dc.deinit();
+    self.client_dc = if (options.client_delegated) try self.delegate(self.auth.?.identity, .client) else null;
+    errdefer if (self.client_dc) |dc| dc.deinit();
     self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
         .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
@@ -186,11 +208,13 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .require_pq_auth = options.client_require_pq_auth,
         .alpn = options.client_alpn,
         .auth = self.auth,
+        .auth_delegated = self.client_dc,
+        .accept_delegated = options.client_accept_delegated,
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
         .credentials = if (options.server_psk_only) &.{} else switch (options.server_raw) {
-            .none => &.{.{ .identity = self.identity }},
+            .none => &.{.{ .identity = self.identity, .delegated = self.server_dc }},
             .only => &.{.{ .identity = self.raw_identity.? }},
             .both => &.{ .{ .identity = self.raw_identity.? }, .{ .identity = self.identity } },
         },
@@ -208,6 +232,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .ech_keys = options.server_ech,
         .certificate_compression = options.server_codecs,
         .external_psk = options.server_psk,
+        .accept_delegated = options.server_accept_delegated,
     });
     return self;
 }
@@ -217,11 +242,30 @@ pub fn deinit(self: *Duo) void {
     self.client.deinit();
     self.server.deinit();
     if (self.auth) |auth| auth.deinit();
+    if (self.server_dc) |dc| dc.deinit();
+    if (self.client_dc) |dc| dc.deinit();
     if (self.raw_identity) |raw| raw.deinit();
     self.identity.deinit();
     self.snapshot.deinit();
     self.trust.deinit();
     gpa.destroy(self);
+}
+
+/// A delegated credential of `identity`'s certificate with the P-384 key, as `options` say.
+fn delegate(self: *Duo, identity: certificates.Identity, role: Delegation.Role) !Delegation.Credential {
+    const dc_key = try certificates.PrivateKey.parse(self.gpa, pki.p384_pem, .{});
+    defer dc_key.deinit();
+    var noise: [certificates.PrivateKey.max_noise]u8 = undefined;
+    self.rng.random().bytes(&noise);
+    const bytes = try Delegation.issue(self.gpa, identity, .{
+        .role = role,
+        .spki = (try certificates.certificate.parse(pki.p384, .{})).spki,
+        .scheme = .ecdsa_p384_sha384,
+        .algorithm = .ecdsa_p256_sha256,
+        .expires = certificates.types.instant(self.options.delegated_issued + self.options.delegated_lifetime),
+    }, noise[0..identity.noiseLength().?]);
+    defer self.gpa.free(bytes);
+    return Delegation.Credential.init(self.gpa, identity, bytes, dc_key, role);
 }
 
 fn serve(self: *Duo, conn: *Connection) !void {

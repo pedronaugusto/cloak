@@ -61,3 +61,7 @@ test {
     _ = Compression;
 }
 pub const Psk = @import("handshake/Psk.zig");
+pub const Delegation = @import("handshake/Delegation.zig");
+test {
+    _ = Delegation;
+}
