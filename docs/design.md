@@ -82,6 +82,16 @@ copy of the material travels back through the parser's frames. Live registers,
 the entry function's own frame and a signal stack stay out of reach. Wasm
 inspection cannot establish a downstream JIT's spill behavior.
 
+A key can also be built from its numbers (`PrivateKey.fromComponents`), as a JWK carries them
+(RFC 7518 section 6, RFC 8037): an EC scalar of exactly the curve's width with its optional
+public point, an Ed25519 seed with its optional public key, or a two-prime RSA key's eight
+numbers in their fewest bytes. There is no second validator: the DER parsers extract the same
+numbers and call the same constructors (`Key.ecKey`, `Key.ed25519Key`, `Rsa.fromIntegers`), so
+both routes check the scalar's range, derive the public half and compare it when given, and check
+that RSA's numbers agree (n = pq, the exponents and CRT values) and are minimal. An RSA key needs
+all eight: the private operation is CRT's, and a JWK with d alone (or more than two primes) is
+refused by its reader. The build runs in a scrubbed frame like a parse.
+
 ## Build and verification decisions
 
 The shipped module uses published aegis, std and native platform trust APIs.

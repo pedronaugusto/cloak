@@ -29,6 +29,16 @@ pub fn parse(encoded: []const u8, out: *Key) Error!void {
     var integers: [8][]const u8 = undefined;
     for (&integers) |*n| n.* = try Der.integer((try r.expect(2)).value);
     try r.finish();
+    return fromIntegers(&integers, out);
+}
+
+/// Validates a key given by its numbers, unsigned big-endian in their fewest bytes (a JWK's
+/// n, e, d, p, q, dp, dq and qi; an RSAPrivateKey's after its sign bytes), into `out`: the one
+/// path every RSA private key takes, parsed or built.
+pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
+    @setRuntimeSafety(true);
+    // Every number is positive and in its fewest bytes: one value has one encoding.
+    for (integers) |bytes| if (bytes.len == 0 or bytes[0] == 0) return error.InvalidKey;
     const n = integers[0];
     const e = integers[1];
     const d = integers[2];

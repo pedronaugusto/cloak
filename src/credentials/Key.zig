@@ -159,14 +159,7 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
     }
     if (std.mem.eql(u8, id, oid_ed)) {
         if (parameter != null) return error.InvalidKey;
-        const seed = (try Der.single(key, 4)).value;
-        if (seed.len != 32) return error.InvalidKey;
-        var owned_seed = seed[0..32].*;
-        defer std.crypto.secureZero(u8, &owned_seed);
-        var pair = EdKey.create(&owned_seed) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-        out.* = .{ .ed25519 = pair };
-        return;
+        return ed25519Key((try Der.single(key, 4)).value, null, out);
     }
     return error.UnsupportedKey;
 }
@@ -236,7 +229,19 @@ fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void
     const public = if (r.peek() == 0xa1) try Der.octetBits((try Der.single((try r.next()).value, 3)).value) else null;
     try r.finish();
     const named = curve orelse return error.InvalidKey;
-    if (std.mem.eql(u8, named, oid_p256)) {
+    if (std.mem.eql(u8, named, oid_p256)) return ecKey(.p256, scalar, public, out);
+    if (std.mem.eql(u8, named, oid_p384)) return ecKey(.p384, scalar, public, out);
+    return error.UnsupportedKey;
+}
+
+pub const EcCurve = enum { p256, p384 };
+
+/// An EC key from its scalar, exactly the curve's width (SEC 1, RFC 7518 section 6.2.2.1), into
+/// `out`: 0 < d < n, and the public point derived from it, compared with `public` (SEC 1
+/// uncompressed, 0x04 || x || y) when one is given. The one path every EC private key takes.
+pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    if (named == .p256) {
         if (scalar.len != 32) return error.InvalidKey;
         var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
@@ -252,7 +257,7 @@ fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void
         out.* = .{ .p256 = kp };
         return;
     }
-    if (std.mem.eql(u8, named, oid_p384)) {
+    {
         if (scalar.len != 48) return error.InvalidKey;
         var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
@@ -265,7 +270,29 @@ fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void
         out.* = .{ .p384 = kp };
         return;
     }
-    return error.UnsupportedKey;
+}
+
+/// An Ed25519 key from its 32-byte seed (RFC 8032, RFC 8410, RFC 8037's d), into `out`, its
+/// public key compared with `public` when one is given. The one path every Ed25519 key takes.
+pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    if (seed.len != 32) return error.InvalidKey;
+    var owned_seed = seed[0..32].*;
+    defer std.crypto.secureZero(u8, &owned_seed);
+    var pair = EdKey.create(&owned_seed) catch return error.InvalidKey;
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
+    if (public) |p| if (!std.mem.eql(u8, p, &pair.public_key.toBytes())) return error.InvalidKey;
+    out.* = .{ .ed25519 = pair };
+}
+
+/// An RSA key from its numbers (`Rsa.fromIntegers`), into `out`.
+pub fn rsaFromIntegers(integers: *const [8][]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    out.* = .{ .rsa = undefined };
+    Rsa.fromIntegers(integers, &out.rsa) catch |err| {
+        std.crypto.secureZero(u8, std.mem.asBytes(out));
+        return err;
+    };
 }
 fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);

@@ -185,3 +185,99 @@ test "ECDSA keys sign as DER or as r || s (P1363), each verified in its own form
         try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .ecdsa_p1363 = if (hash == .sha256) .sha384 else .sha256 }, "content", noise[0..key.noiseLength()], &fixed));
     }
 }
+
+/// The DER of a PEM file's first block, owned by the caller.
+fn pemDer(text: []const u8) !Pem.Block {
+    var pem = Pem.init(text);
+    return (try pem.next(std.testing.allocator, 65536)).?;
+}
+
+fn certKey(text: []const u8) !@import("../certificate.zig").PublicKey {
+    var block = try pemDer(text);
+    defer block.deinit(std.testing.allocator);
+    // The parsed key borrows the DER: keep a copy alive for the test's length.
+    const der = try std.testing.allocator.dupe(u8, block.der);
+    kept_ders.append(std.testing.allocator, der) catch unreachable; // unreachable: tests allocate little
+    return (try @import("../certificate.zig").parse(der, .{})).public_key;
+}
+var kept_ders: std.ArrayList([]u8) = .empty;
+fn freeKept() void {
+    for (kept_ders.items) |der| std.testing.allocator.free(der);
+    kept_ders.deinit(std.testing.allocator);
+    kept_ders = .empty;
+}
+
+test "C10 private keys from their components: the same key as parsed, and every check a parse makes" {
+    @setRuntimeSafety(true);
+    const gpa = std.testing.allocator;
+    const Der = @import("../wire/Der.zig");
+    defer freeKept();
+    // RSA: the eight numbers of an RSAPrivateKey, as a JWK carries them.
+    var rsa_block = try pemDer(@embedFile("testdata/rsa.pkcs1.pem"));
+    defer rsa_block.deinit(gpa);
+    var r = (try Der.single(rsa_block.der, 0x30)).reader();
+    _ = try r.expect(2);
+    var numbers: [8][]const u8 = undefined;
+    for (&numbers) |*n| n.* = try Der.integer((try r.expect(2)).value);
+    const rsa = try PrivateKey.fromComponents(gpa, .{ .rsa = .{ .n = numbers[0], .e = numbers[1], .d = numbers[2], .p = numbers[3], .q = numbers[4], .dp = numbers[5], .dq = numbers[6], .qi = numbers[7] } });
+    defer rsa.deinit();
+    try std.testing.expect(rsa.matchesKey(try certKey(@embedFile("testdata/rsa.cert.pem"))));
+    const parsed = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{});
+    defer parsed.deinit();
+    var noise: [PrivateKey.max_noise]u8 = @splat(7);
+    var a: [PrivateKey.max_signature]u8 = undefined;
+    var b: [PrivateKey.max_signature]u8 = undefined;
+    // PKCS#1 v1.5 is deterministic: the same key signs the same bytes.
+    try std.testing.expectEqualSlices(u8, try parsed.sign(.{ .rsa = .sha256 }, "jwk", noise[0..parsed.noiseLength()], &a), try rsa.sign(.{ .rsa = .sha256 }, "jwk", noise[0..rsa.noiseLength()], &b));
+    // Numbers that disagree, a leading zero, a missing one: refused as a parse refuses them.
+    var dq = try gpa.dupe(u8, numbers[6]);
+    defer gpa.free(dq);
+    dq[dq.len - 1] ^= 2;
+    const zero_led = try std.mem.concat(gpa, u8, &.{ "\x00", numbers[1] });
+    defer gpa.free(zero_led);
+    for ([_][8][]const u8{
+        .{ numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], dq, numbers[7] },
+        .{ numbers[0], zero_led, numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], numbers[7] },
+        .{ numbers[0], numbers[1], numbers[2], numbers[4], numbers[3], numbers[5], numbers[6], numbers[7] },
+        .{ numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], "" },
+    }) |bad| try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .rsa = .{ .n = bad[0], .e = bad[1], .d = bad[2], .p = bad[3], .q = bad[4], .dp = bad[5], .dq = bad[6], .qi = bad[7] } }));
+    // EC: the scalar and the public point of an ECPrivateKey.
+    var ec_block = try pemDer(@embedFile("testdata/p256.sec1.pem"));
+    defer ec_block.deinit(gpa);
+    var e = (try Der.single(ec_block.der, 0x30)).reader();
+    _ = try e.expect(2);
+    const d = (try e.expect(4)).value;
+    _ = try e.expect(0xa0);
+    const point = try Der.octetBits((try Der.single((try e.expect(0xa1)).value, 3)).value);
+    const p256_cert = try certKey(@embedFile("testdata/p256.cert.pem"));
+    for ([_]?[]const u8{ null, point }) |public| {
+        const ec = try PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p256, .d = d, .public = public } });
+        defer ec.deinit();
+        try std.testing.expect(ec.matchesKey(p256_cert));
+    }
+    var other_point = try gpa.dupe(u8, point);
+    defer gpa.free(other_point);
+    other_point[64] ^= 1;
+    const order = [_]u8{ 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51 };
+    for ([_]struct { d: []const u8, public: ?[]const u8 = null }{
+        .{ .d = d, .public = other_point },
+        .{ .d = &@as([32]u8, @splat(0)) },
+        .{ .d = &order },
+        .{ .d = d[1..] },
+        .{ .d = &(@as([1]u8, .{0}) ++ @as([32]u8, @splat(1))) },
+    }) |bad| try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p256, .d = bad.d, .public = bad.public } }));
+    // A P-256 scalar is not a P-384 key.
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p384, .d = d } }));
+    // Ed25519: the seed (a JWK's d) and the public key (its x).
+    var ed_block = try pemDer(@embedFile("testdata/ed25519.pkcs8.pem"));
+    defer ed_block.deinit(gpa);
+    const seed = ed_block.der[ed_block.der.len - 32 ..];
+    const ed_cert = try certKey(@embedFile("testdata/ed25519.cert.pem"));
+    const ed = try PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed, .public = ed_cert.ed25519 } });
+    defer ed.deinit();
+    try std.testing.expect(ed.matchesKey(ed_cert));
+    var other_x: [32]u8 = ed_cert.ed25519[0..32].*;
+    other_x[0] ^= 1;
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed, .public = &other_x } }));
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed[1..] } }));
+}

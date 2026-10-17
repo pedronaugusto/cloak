@@ -36,6 +36,47 @@ fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) Pa
     try parser.parse(gpa, bytes, options, state.material.exposeMut());
     return .{ .state = state };
 }
+/// A private key by its numbers, as a JWK (RFC 7518 section 6, RFC 8037) or another format
+/// carries them, never in DER. Each goes through the checks a parsed key of its kind gets, by the
+/// same code: an RSA key's numbers agreeing, an EC scalar in range, and the public half derived
+/// and compared when it is given. Borrowed for the call only.
+pub const Components = union(enum) {
+    /// The private scalar d, exactly the curve's width, and optionally the public point as
+    /// SEC 1 uncompressed bytes (0x04 || x || y), the form a certificate's key takes.
+    ec: struct { curve: parser.EcCurve, d: []const u8, public: ?[]const u8 = null },
+    /// The 32-byte seed (a JWK's d) and optionally the 32-byte public key (its x).
+    ed25519: struct { seed: []const u8, public: ?[]const u8 = null },
+    /// A two-prime key's numbers, unsigned big-endian in their fewest bytes. All eight are
+    /// needed: the private operation is CRT's.
+    rsa: struct { n: []const u8, e: []const u8, d: []const u8, p: []const u8, q: []const u8, dp: []const u8, dq: []const u8, qi: []const u8 },
+};
+
+pub const ComponentsError = std.mem.Allocator.Error || error{ InvalidKey, UnsupportedKey };
+
+pub fn fromComponents(gpa: std.mem.Allocator, components: Components) ComponentsError!PrivateKey {
+    return aegis.secret.scrubbed(parse_stack, buildKey, .{ gpa, components });
+}
+
+fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!PrivateKey {
+    @setRuntimeSafety(true);
+    const state = try gpa.create(State);
+    errdefer gpa.destroy(state);
+    state.gpa = gpa;
+    state.refs = .init(1);
+    state.material = .init(undefined);
+    errdefer state.material.deinit();
+    const out = state.material.exposeMut();
+    (switch (components) {
+        .ec => |ec| parser.ecKey(ec.curve, ec.d, ec.public, out),
+        .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
+        .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
+    }) catch |err| return switch (err) {
+        error.UnsupportedKey => error.UnsupportedKey,
+        else => error.InvalidKey,
+    };
+    return .{ .state = state };
+}
+
 pub fn isEncrypted(bytes: []const u8) bool {
     @setRuntimeSafety(true);
     if (std.mem.find(u8, bytes, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null or std.mem.find(u8, bytes, "Proc-Type: 4,ENCRYPTED") != null) return true;

@@ -132,8 +132,9 @@ pub const Options = struct {
     ech_retry: ?*[]u8 = null,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
-    /// A provisioned key to offer (PSK-DHE, TLS 1.3); borrowed. A server that selects it is
-    /// authenticated by it, with no certificate.
+    /// A provisioned key to offer, borrowed: TLS 1.3 PSK-DHE, or TLS 1.2 plain PSK with its
+    /// suites listed (no forward secrecy). A server that selects it is authenticated by it, with
+    /// no certificate.
     external_psk: ?@import("handshake/Psk.zig").External = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
@@ -287,7 +288,8 @@ pub const ServerOptions = struct {
     ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
     certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
-    /// Provisioned keys, looked up by the offered identity (PSK-DHE, TLS 1.3).
+    /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
+    /// when its suites are listed. With them `credentials` may be empty.
     external_psk: ?@import("handshake/Psk.zig").Lookup = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
