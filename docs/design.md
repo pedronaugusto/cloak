@@ -214,7 +214,12 @@ ReleaseFast build: shakedown's leak test (dudect: a fixed and a random class of 
 secret, interleaved, Welch's t) per kernel. On an Apple M3 without the mode std's X25519
 was told apart by its secret (|t| 16 to 37) and the P-curves, ML-KEM, AES-GCM,
 ChaCha20-Poly1305, HMAC, the Choice comparison and the signatures were not; with the mode
-none was. A run finds a leak with some confidence and never proves there is none. AEAD selects std's kernels and rejects `.none` mitigations
+none was. A run finds a leak with some confidence and never proves there is none. The
+curve and RSA kernels keep their own masks (one value barrier per mask, reused across a
+table entry's limbs and vectors): aegis's `Choice` selects one integer per barrier and
+hands out no raw mask, so moving them would cost a barrier per word or widen `Choice` to
+what it exists to avoid, for no change in what the built code does; their evidence is the
+codegen review of the AArch64 field and the timing rows. AEAD selects std's kernels and rejects `.none` mitigations
 independently of caller options. Generated-code/timing campaigns remain required
 before a complete TLS security claim. Named wipes cover owned storage, not all
 compiler-created argument copies, register spills or std AEAD local schedules.
