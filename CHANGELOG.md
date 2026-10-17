@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-17
+
 ### Added
 
 - ML-DSA-44, -65 and -87 (FIPS 204) in certificates and TLS 1.3 CertificateVerify (RFC 9881, draft-ietf-tls-mldsa: schemes `mldsa44`, `mldsa65`, `mldsa87`), both roles, server and client certificates, in cloak's own implementation: the matrix is expanded where it is used, never held, so ML-DSA-87 signs in 18 KiB of stack and verifies in 12 KiB (std's key generation and signing take 770 KiB, its verification 290 KiB). Private keys in every RFC 9881 form (seed, expanded, both), each checked; hedged signing. Matches std byte for byte and passes Wycheproof's ML-DSA vectors. Interop with OpenSSL 4.0.3 and wolfSSL 5.9.4 both roles.
