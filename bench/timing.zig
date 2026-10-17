@@ -14,7 +14,7 @@ const leak = @import("shakedown").leak;
 const slots = 1 << 10;
 
 /// The 32-byte comparison every Finished, binder, tag and confirmation check goes through.
-const Equal = struct {
+pub const Equal = struct {
     reference: [32]u8 = @splat(0x6b),
     inputs: [slots][32]u8 = undefined,
     sink: u8 = 0,
@@ -32,7 +32,7 @@ const Equal = struct {
 
 /// A private scalar times a fixed peer point, P-256 (cloak's kernel) or P-384. The fixed class is
 /// the scalar 1, the edge a windowed walk must not shortcut.
-fn Agree(comptime G: type) type {
+pub fn Agree(comptime G: type) type {
     return struct {
         const Self = @This();
         peer: [G.public_length]u8 = undefined,
@@ -67,7 +67,7 @@ fn Agree(comptime G: type) type {
 }
 
 /// A private scalar times the base point: the key share and the signing nonce's point.
-fn Public(comptime G: type) type {
+pub fn Public(comptime G: type) type {
     return struct {
         const Self = @This();
         agree: Agree(G) = .{},
@@ -86,7 +86,7 @@ fn Public(comptime G: type) type {
 }
 
 /// X25519 (std): a clamped secret of zeros against random secrets.
-const X25519 = struct {
+pub const X25519 = struct {
     const X = std.crypto.dh.X25519;
     peer: [32]u8 = undefined,
     secrets: [slots][32]u8 = undefined,
@@ -112,7 +112,7 @@ const X25519 = struct {
 
 /// ML-KEM-768 decapsulation (std): a valid ciphertext against random ones, which implicit
 /// rejection must answer in the same time.
-const Decaps = struct {
+pub const Decaps = struct {
     const K = std.crypto.kem.ml_kem.MLKem768;
     pair: K.KeyPair = undefined,
     valid: [K.ciphertext_length]u8 = undefined,
@@ -140,7 +140,7 @@ const Decaps = struct {
 
 /// cloak's key shares: an X25519 private half from fixed entropy against random entropy, agreeing
 /// with a fixed server share (the client's half of the TLS exchange).
-const ShareAgree = struct {
+pub const ShareAgree = struct {
     const Exchange = harness.Exchange;
     server: [32]u8 = undefined,
     entropy: [slots][32]u8 = undefined,
@@ -173,7 +173,7 @@ const ShareAgree = struct {
 
 /// cloak's HPKE recipient (an ECH server opening a client's hello): the server's X25519 key held
 /// fixed against random keys, the client's encapsulated key fixed.
-const HpkeOpen = struct {
+pub const HpkeOpen = struct {
     const Hpke = harness.Hpke;
     enc: [32]u8 = undefined,
     secrets: [slots][32]u8 = undefined,
@@ -198,7 +198,7 @@ const HpkeOpen = struct {
 
 /// A record's AEAD seal under a traffic key held fixed against random keys (std's kernels, as the
 /// record layer calls them): 1 KiB of plaintext.
-fn Seal(comptime A: type) type {
+pub fn Seal(comptime A: type) type {
     return struct {
         const Self = @This();
         keys: [slots][A.key_length]u8 = undefined,
@@ -221,7 +221,7 @@ fn Seal(comptime A: type) type {
 
 /// HMAC-SHA256 under a key held fixed against random keys: every HKDF step of the key schedule,
 /// the Finished and binder MACs, the cookie MAC.
-const Mac = struct {
+pub const Mac = struct {
     const H = std.crypto.auth.hmac.sha2.HmacSha256;
     keys: [slots][32]u8 = undefined,
     out: [32]u8 = undefined,
@@ -240,7 +240,7 @@ const Mac = struct {
 
 /// Signing with a held key: ECDSA's hedged nonce from fixed noise (zeros) against random noise;
 /// RSA's blinded private operation over a fixed message against random ones.
-const Sign = struct {
+pub const Sign = struct {
     key: cloak.PrivateKey,
     algorithm: cloak.certificates.certificate.Algorithm.Signature,
     over_message: bool,
