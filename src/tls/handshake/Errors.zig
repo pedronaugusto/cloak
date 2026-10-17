@@ -33,6 +33,8 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     UnexpectedCookie,
     InappropriateFallback,
     NoClientCertificate,
+    /// A server whose only authentication is provisioned keys found none the client offered.
+    PskRequired,
     BadBinder,
     /// The peer's authentication is not post-quantum where the policy requires it
     /// (`require_pq_auth`): a classical signature on its path.

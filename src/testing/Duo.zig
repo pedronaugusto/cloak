@@ -77,6 +77,8 @@ pub const Options = struct {
     /// Provisioned keys: the client's and the server's lookup.
     client_psk: ?Psk.External = null,
     server_psk: ?Psk.Lookup = null,
+    /// The server holds no credential: provisioned keys are its only authentication.
+    server_psk_only: bool = false,
     /// What the client connection allocates from, to measure it; the harness's own otherwise.
     client_gpa: ?std.mem.Allocator = null,
     /// Raw public keys (RFC 7250): the server's credentials (its certificate's, or the raw key of
@@ -187,7 +189,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
-        .credentials = switch (options.server_raw) {
+        .credentials = if (options.server_psk_only) &.{} else switch (options.server_raw) {
             .none => &.{.{ .identity = self.identity }},
             .only => &.{.{ .identity = self.raw_identity.? }},
             .both => &.{ .{ .identity = self.raw_identity.? }, .{ .identity = self.identity } },

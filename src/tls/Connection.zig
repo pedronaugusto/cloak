@@ -94,7 +94,8 @@ pub const ClientOptions = struct {
     ech: Ech.Mode = .off,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
-    /// A provisioned key to offer (PSK-DHE, TLS 1.3); borrowed.
+    /// A provisioned key to offer, borrowed: TLS 1.3 PSK-DHE, or TLS 1.2 plain PSK with its
+    /// suites listed (no forward secrecy).
     external_psk: ?Psk.External = null,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
@@ -282,7 +283,8 @@ pub const ServerOptions = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
-    /// Provisioned keys, looked up by the offered identity (PSK-DHE, TLS 1.3).
+    /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
+    /// when its suites are listed. With them a server needs no credential.
     external_psk: ?Psk.Lookup = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,

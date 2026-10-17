@@ -37,3 +37,20 @@ test "C4 TLS 1.2 messages round-trip and refuse lengths past their parent" {
     try std.testing.expectEqualSlices(u8, &key, try Messages12.clientKeyExchange(cke, .x25519));
     try std.testing.expectError(error.IllegalParameter, Messages12.clientKeyExchange(cke, .p256));
 }
+
+test "C10 TLS 1.2 PSK messages: the identity and hint vectors, and RFC 4279's premaster" {
+    var buffer: [128]u8 = undefined;
+    const cke = try Messages12.buildPskClientKeyExchange(&buffer, "device-1");
+    try std.testing.expectEqualSlices(u8, "\x10\x00\x00\x0a\x00\x08device-1", cke);
+    try std.testing.expectEqualSlices(u8, "device-1", try Messages12.pskClientKeyExchange(cke));
+    // A length past its parent, and bytes after the identity, are refused.
+    try std.testing.expectError(error.InvalidLength, Messages12.pskClientKeyExchange("\x10\x00\x00\x03\x00\x05a"));
+    try std.testing.expectError(error.InvalidLength, Messages12.pskClientKeyExchange("\x10\x00\x00\x04\x00\x01ab"));
+    const ske = try Messages12.buildPskServerKeyExchange(&buffer, "hint");
+    try std.testing.expectEqualSlices(u8, "hint", try Messages12.pskServerKeyExchange(ske));
+    try std.testing.expectEqualSlices(u8, "", try Messages12.pskServerKeyExchange("\x0c\x00\x00\x02\x00\x00"));
+    // An ECDHE ServerKeyExchange is no hint: its curve type byte breaks the vector.
+    try std.testing.expectError(error.InvalidLength, Messages12.pskServerKeyExchange("\x0c\x00\x00\x08\x03\x00\x1d\x01\xaa\x04\x03\x00"));
+    var premaster: [Messages12.max_premaster]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "\x00\x03\x00\x00\x00\x00\x03abc", Messages12.pskPremaster(&premaster, "abc"));
+}

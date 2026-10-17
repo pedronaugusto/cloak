@@ -8,8 +8,24 @@ const Duo = @import("../../testing/Duo.zig");
 const Kernel = @import("../../testing/Kernel.zig");
 const Connection = @import("../Connection.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
+const Psk = @import("../handshake/Psk.zig");
 
 const gpa = std.testing.allocator;
+
+/// A handshake of the one suite listed, owned by the caller: a PSK suite's on a provisioned key,
+/// the rest on the test certificate.
+fn duoOptions(listed: *const [1]Suite) Duo.Options {
+    const suite = listed[0];
+    const Keys = struct {
+        const psk: Psk.External = .{ .identity = "kernel", .secret = &@as([16]u8, @splat(0x4b)), .version = .tls12 };
+        fn find(_: ?*anyopaque, _: Psk.Query) ?Psk.External {
+            return psk;
+        }
+    };
+    const psk = if (suite.tls12()) |s12| s12.authentication() == .psk else false;
+    if (!psk) return .{ .client_suites = listed, .server_suites = listed };
+    return .{ .client_suites = listed, .server_suites = listed, .client_psk = Keys.psk, .server_psk = .{ .find = Keys.find }, .server_psk_only = true, .client_verify_none = true };
+}
 
 /// A finished handshake, with the server's kernel.
 const Setup = struct {
@@ -17,7 +33,8 @@ const Setup = struct {
     kernel: Kernel = .{},
 
     fn init(suite: Suite, limits: Connection.Limits) !Setup {
-        const duo = try Duo.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite} });
+        const listed: [1]Suite = .{suite};
+        const duo = try Duo.init(gpa, duoOptions(&listed));
         errdefer duo.deinit();
         duo.server.limits = limits;
         try duo.handshake();
@@ -111,7 +128,7 @@ const Setup = struct {
 };
 
 const tls13_suites = [_]Suite{ .aes_128_gcm_sha256, .aes_256_gcm_sha384, .chacha20_poly1305_sha256, .aes_128_ccm_sha256 };
-const tls12_suites = [_]Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm };
+const tls12_suites = [_]Suite{ .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .psk_aes_128_ccm };
 
 test "C9 both directions move to a kernel mid-stream, every suite a kernel runs, and data and close cross" {
     for (tls13_suites ++ tls12_suites) |suite| {
@@ -187,11 +204,12 @@ test "C9 catalogue_ktls_partial_handoff_sequence_owner: a direction moves only a
 }
 
 test "C9 a direction moves only once the handshake completes, and AES-256-CCM and CCM_8 stay in software" {
-    for ([_]Suite{ .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8 }) |suite| try staysInSoftware(suite);
+    for ([_]Suite{ .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 }) |suite| try staysInSoftware(suite);
 }
 
 fn staysInSoftware(suite: Suite) !void {
-    var duo = try Duo.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite} });
+    const listed: [1]Suite = .{suite};
+    var duo = try Duo.init(gpa, duoOptions(&listed));
     defer duo.deinit();
     var kernel: Kernel = .{};
     defer kernel.deinit();

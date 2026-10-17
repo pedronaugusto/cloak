@@ -92,8 +92,10 @@ pub const Options = struct {
     /// Encrypted Client Hello (RFC 9849). A config list makes it required and the connection
     /// TLS 1.3 only.
     ech: Ech.Mode = .off,
-    /// A provisioned key to offer (PSK-DHE, TLS 1.3): a server that selects it is authenticated
-    /// by it, with no certificate. Offered instead of a ticket, never with one.
+    /// A provisioned key to offer, for its one version: TLS 1.3 (PSK-DHE), offered instead of a
+    /// ticket, never with one; or TLS 1.2 (plain PSK, RFC 4279), offered by listing its suites,
+    /// which have no forward secrecy. A server that selects it is authenticated by it, with no
+    /// certificate.
     external_psk: ?Psk.External = null,
     /// The identity the server certificate must carry.
     identity: types.Identity = .none,
@@ -133,7 +135,8 @@ pub const Info = struct {
     /// The handshake resumed a session from a ticket: the peer's authentication is the original
     /// handshake's.
     suite: suites.Suite,
-    group: Group,
+    /// The key exchange's group; null for a TLS 1.2 provisioned key, which has none.
+    group: ?Group,
     alpn: []const u8,
     server_name: []const u8,
     peer_authenticated: bool,
@@ -174,7 +177,7 @@ pub fn alertFor(err: anyerror) Alert {
         error.UnsupportedVersion => .protocol_version,
         error.UnsupportedCertificate => .unsupported_certificate,
         error.PinMismatch => .bad_certificate,
-        error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate => .handshake_failure,
+        error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate, error.PskRequired => .handshake_failure,
         error.InappropriateFallback => .inappropriate_fallback,
         error.Downgrade => .illegal_parameter,
         error.NoApplicationProtocol => .no_application_protocol,
@@ -373,12 +376,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     }
     if (options.external_psk) |psk| {
         Psk.validate(psk) catch return error.InvalidOptions;
-        // A key needs a TLS 1.3 suite of its hash.
-        if (!hello.allows13()) return error.InvalidOptions;
-        for (hello.suites) |suite| {
-            if (suite.tls13()) |s13| if (suites.digestLength(s13) == psk.hash.length()) break;
-        } else return error.InvalidOptions;
+        if (!offersKeySuite(hello, psk)) return error.InvalidOptions;
     }
+    // The TLS 1.2 PSK suites are offered only with a TLS 1.2 key to complete them.
+    const key12 = if (options.external_psk) |psk| psk.version == .tls12 else false;
+    for (hello.suites) |suite| if (suite.tls12()) |s12| if (s12.authentication() == .psk and !key12) return error.InvalidOptions;
     const self = try gpa.create(Client);
     errdefer gpa.destroy(self);
     const scratch = try gpa.create(Scratch);
@@ -392,7 +394,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         .state = .init(.client, options.hello.transport),
         .scratch = scratch,
     };
-    self.external_offered = options.external_psk != null;
+    // A TLS 1.3 key goes in the hello's pre_shared_key; a TLS 1.2 key waits for its suite.
+    self.external_offered = if (options.external_psk) |psk| psk.version == .tls13 else false;
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
     // A datagram hello that may be answered in DTLS 1.2 is hashed in its DTLS form too.
     if (options.hello.transport == .datagram and options.hello.allows12()) scratch.transcripts.startDatagram(0, 0, options.hello.allows13());
@@ -407,6 +410,15 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         if (hello.allows12() and auth.identity.publicKey() == .ed25519) scratch.transcripts.keep(gpa);
     }
     return self;
+}
+
+/// Whether the hello offers a suite a provisioned key can complete: one of its version and hash.
+fn offersKeySuite(hello: Hello.Options, psk: Psk.External) bool {
+    for (hello.suites) |suite| switch (psk.version) {
+        .tls13 => if (suite.tls13()) |s13| if (hello.allows13() and suites.digestLength(s13) == psk.hash.length()) return true,
+        .tls12 => if (suite.tls12()) |s12| if (hello.allows12() and s12.authentication() == .psk) return true,
+    };
+    return false;
 }
 
 pub fn deinit(self: *Client) void {
@@ -724,7 +736,7 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
 fn takeTicket(self: *Client) void {
     @setRuntimeSafety(true);
     const resumption = self.options.resumption orelse return;
-    if (self.options.hello.allows13() and self.options.external_psk == null) if (resumption.cache.take(&self.cache_key, .tls13, self.origin)) |found| {
+    if (self.options.hello.allows13() and !self.external_offered) if (resumption.cache.take(&self.cache_key, .tls13, self.origin)) |found| {
         var taken = found;
         if (self.options.hello.offers13(taken.entry.suite.tls13().?)) self.offered = taken else taken.release();
     };
@@ -1709,7 +1721,7 @@ pub fn info(self: *const Client) ?Info {
     return .{
         .version = self.version,
         .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
-        .group = self.group.?,
+        .group = self.group,
         .alpn = self.alpn,
         .server_name = self.kept.sni,
         .peer_authenticated = self.authenticated,

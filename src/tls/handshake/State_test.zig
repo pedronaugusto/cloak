@@ -250,3 +250,55 @@ test "C4 a TLS 1.2 handshake takes no retry request, and the table holds no rewr
     try std.testing.expectEqual(.local_ccs12, empty.phase());
     try std.testing.expectError(error.UnexpectedMessage, empty.advance(.local_certificate_verify, .initial, .possession, true));
 }
+
+test "C10 TLS 1.2 PSK path: no certificate or request either way, an unsigned hint at most" {
+    // The client: after a ServerHello choosing a PSK suite, a Certificate or CertificateRequest
+    // has no edge; a hint may come once, before ServerHelloDone.
+    for ([_]S.Action{ .certificate, .certificate_request }) |action| {
+        var client = S.State.init(.client, .stream);
+        client.version = .tls12;
+        try client.advance(.client_hello, .initial, .parsed, true);
+        try client.markPsk12();
+        try client.advance(.server_hello, .initial, .parsed, false);
+        try std.testing.expectEqual(.server_key_exchange12, client.phase());
+        try std.testing.expectError(error.UnexpectedMessage, client.advance(action, .initial, .parsed, false));
+    }
+    var client = S.State.init(.client, .stream);
+    client.version = .tls12;
+    try client.advance(.client_hello, .initial, .parsed, true);
+    try client.markPsk12();
+    try client.advance(.server_hello, .initial, .parsed, false);
+    try client.advance(.server_key_exchange, .initial, .parsed, false);
+    try std.testing.expectError(error.UnexpectedMessage, client.advance(.server_key_exchange, .initial, .parsed, false));
+    client = S.State.init(.client, .stream);
+    client.version = .tls12;
+    try client.advance(.client_hello, .initial, .parsed, true);
+    try client.markPsk12();
+    try client.advance(.server_hello, .initial, .parsed, false);
+    try client.advance(.server_hello_done, .initial, .parsed, true);
+    // The client's flight is its identity alone: no certificate of its own.
+    try std.testing.expectError(error.UnexpectedMessage, client.advance(.local_certificate, .initial, .parsed, true));
+    // The server: ServerHello, ServerHelloDone, then the client's key exchange, never a certificate.
+    var server = S.State.init(.server, .stream);
+    server.version = .tls12;
+    try server.advance(.client_hello, .initial, .parsed, true);
+    try server.markPsk12();
+    try std.testing.expectError(error.UnexpectedMessage, server.advance(.certificate, .initial, .parsed, true));
+    server = S.State.init(.server, .stream);
+    server.version = .tls12;
+    try server.advance(.client_hello, .initial, .parsed, true);
+    try server.markPsk12();
+    try server.advance(.server_hello, .initial, .parsed, true);
+    try server.advance(.server_hello_done, .initial, .parsed, true);
+    try std.testing.expectEqual(.c_key_exchange12, server.phase());
+    try std.testing.expectError(error.UnexpectedMessage, server.advance(.certificate, .initial, .parsed, true));
+    // The decision is TLS 1.2's, before the ServerHello only.
+    var late = S.State.init(.server, .stream);
+    try late.advance(.client_hello, .initial, .parsed, true);
+    try std.testing.expectError(error.UnexpectedMessage, late.markPsk12());
+    var after = S.State.init(.client, .stream);
+    after.version = .tls12;
+    try after.advance(.client_hello, .initial, .parsed, true);
+    try after.advance(.server_hello, .initial, .parsed, false);
+    try std.testing.expectError(error.UnexpectedMessage, after.markPsk12());
+}

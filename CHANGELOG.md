@@ -4,6 +4,20 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- TLS 1.2 and DTLS 1.2 PSK (RFC 4279) with TLS_PSK_WITH_AES_128_CCM_8 (0xC0A8) and TLS_PSK_WITH_AES_128_CCM (0xC0A4, RFC 6655), both roles: the PSK mode of the CoAP and LwM2M profiles (RFC 7925). Spoken only when the suites are listed with a TLS 1.2 key; plain PSK has no forward secrecy. Keys are 16 to 64 bytes. An identity the server does not know fails at the client's Finished as a wrong key does, so a prober cannot tell known identities from unknown ones. No tickets on such sessions.
+- `psk.External.version`: a key is for one version, and `psk.Query.version` tells a lookup which; an answer of the other version is passed over. `dtls.Datagram` takes provisioned keys too (both versions).
+- A server may hold no credential when it has a PSK lookup: it authenticates by keys alone. A client offering none it knows ends with handshake_failure (`PskRequired`).
+
+### Changed
+
+- Breaking: `tls.Suite` gains `.psk_aes_128_ccm` and `.psk_aes_128_ccm_8`, `Suite12.authentication()` returns `Suite12.Authentication` with `.psk`, and `Info.group` is optional (null for TLS 1.2 PSK, which has no key exchange).
+
+### Fixed
+
+- A TLS 1.3 server chose its credential before deciding a provisioned key, so a client offering a key it knows but taking only raw keys failed against an X.509-only server (unsupported_certificate), and a server could not be PSK-only. The credential is now chosen only for a handshake no PSK authenticates.
+
 ## [0.14.1] - 2026-10-17
 
 ### Added

@@ -7,7 +7,11 @@
 //! resume its session (RFC 5077): the ServerHello echoes its session id, then this server's
 //! ChangeCipherSpec and Finished, then the client's; a NewSessionTicket goes before this server's
 //! ChangeCipherSpec, in either handshake, to a client that asked. The server random carries the
-//! TLS 1.3 downgrade sentinel, since this server would have spoken TLS 1.3.
+//! TLS 1.3 downgrade sentinel, since this server would have spoken TLS 1.3. A PSK suite (RFC 4279)
+//! takes the provisioned key's path: ServerHello and ServerHelloDone, no hint and no certificate;
+//! the client names its key in ClientKeyExchange, and an identity this server does not know is
+//! answered as a wrong key would be, at the client's Finished, so a prober learns nothing of
+//! which identities exist.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
@@ -21,6 +25,7 @@ const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 const Ticket = @import("../resumption/Ticket.zig");
+const Psk = @import("Psk.zig");
 const types = certificates.types;
 
 const Error = @import("Errors.zig").Error;
@@ -36,44 +41,26 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     if (!hello.extended_master_secret) return error.NoExtendedMasterSecret;
     if (!hello.secureRenegotiation()) return error.NoSecureRenegotiation;
     if (!hello.uncompressed_points) return error.IllegalParameter;
-    // TLS 1.2 has no missing_extension alert: without the lists there is no scheme or curve
-    // both sides accept (SHA-1 and the default curves are not), a handshake_failure.
-    if (!hello.has_schemes) return error.NoSignatureScheme;
-    if (!hello.has_groups) return error.NoSharedGroup;
     if (self.tls12 == null) self.tls12 = try @import("Flight.zig").Secrets12.create(self.gpa);
     scratch.client_random = hello.random[0..32].*;
     @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
     // safe: parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
-    scratch.point_formats = hello.point_formats;
-    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
-    self.credential = try self.chooseCredential(hello.server_name, .{
-        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
-        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
-    });
-    self.negotiateTypes(hello);
-    const identity = self.options.credentials[self.credential].identity;
-    const public_key = identity.publicKey();
-    // The suite must authenticate with the credential's key type, in the server's order.
-    const wanted: @TypeOf(suites.Suite12.authentication(.ecdhe_rsa_aes_128_gcm_sha256)) = switch (public_key) {
-        .rsa => .rsa,
-        .ec, .ed25519 => .ecdsa,
-        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
-        .mldsa => return error.NoSharedSuite,
-    };
-    // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
-    switch (public_key) {
-        .ec => |ec| if (!hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) return error.NoSharedSuite,
-        else => {},
+    self.suite12 = try chooseSuite(self, hello);
+    if (self.suite12.?.authentication() == .psk) {
+        // Neither side presents a certificate: no types to answer, no curve, no point formats.
+        scratch.server_type = null;
+        scratch.client_type = null;
+        scratch.peer_raw = false;
+        scratch.point_formats = false;
+    } else {
+        scratch.point_formats = hello.point_formats;
+        self.negotiateTypes(hello);
+        self.group = for (self.options.groups) |group| {
+            if (group.classical() and hello.offersGroup(group)) break group;
+        } else return error.NoSharedGroup;
+        self.scheme = Possession.chooseServer12(self.options.credentials[self.credential].identity.publicKey(), hello) orelse return error.NoSignatureScheme;
     }
-    self.suite12 = for (self.options.suites) |suite| {
-        const candidate = suite.tls12() orelse continue;
-        if (candidate.authentication() == wanted and hello.offersSuite(@backingInt(candidate))) break candidate;
-    } else return error.NoSharedSuite;
-    self.group = for (self.options.groups) |group| {
-        if (group.classical() and hello.offersGroup(group)) break group;
-    } else return error.NoSharedGroup;
-    self.scheme = Possession.chooseServer12(public_key, hello) orelse return error.NoSignatureScheme;
     self.alpn = "";
     if (self.options.alpn.len != 0) {
         if (hello.alpn.len == 0) {
@@ -91,6 +78,57 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     if (takesTickets(self, hello) and self.now == null) return self.holdHello(msg);
     return answer(self, msg, hello);
 }
+
+/// The suite in the server's order the client offers and this server can complete: a PSK suite
+/// when it has provisioned keys, a certificate suite of its credential's key. A certificate suite
+/// needs the client's schemes and groups (TLS 1.2 has no missing_extension alert: without them no
+/// scheme or curve is shared, a handshake_failure); a PSK suite needs neither.
+fn chooseSuite(self: anytype, hello: *const ClientHello) Error!suites.Suite12 {
+    @setRuntimeSafety(true);
+    var refusal: Error = error.NoSharedSuite;
+    const wanted = if (self.options.credentials.len == 0) null else if (!hello.has_schemes) blk: {
+        refusal = error.NoSignatureScheme;
+        break :blk null;
+    } else if (!hello.has_groups) blk: {
+        refusal = error.NoSharedGroup;
+        break :blk null;
+    } else credentialKey(self, hello) catch |err| blk: {
+        refusal = err;
+        break :blk null;
+    };
+    for (self.options.suites) |suite| {
+        const candidate = suite.tls12() orelse continue;
+        if (!hello.offersSuite(@backingInt(candidate))) continue;
+        const authentication = candidate.authentication();
+        if (authentication == .psk) {
+            if (self.options.external_psk != null) return candidate;
+        } else if (wanted == authentication) return candidate;
+    }
+    return refusal;
+}
+
+/// The credential for the client's name and certificate types, and the kind of suite its key
+/// authenticates.
+fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.Authentication {
+    @setRuntimeSafety(true);
+    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
+    self.credential = try self.chooseCredential(hello.server_name, .{
+        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
+        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
+    });
+    return switch (self.options.credentials[self.credential].identity.publicKey()) {
+        .rsa => .rsa,
+        // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
+        .ec => |ec| if (hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) .ecdsa else error.NoSharedSuite,
+        .ed25519 => .ecdsa,
+        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
+        .mldsa => error.NoSharedSuite,
+    };
+}
+
+/// The bytes of the key an unknown identity is answered with: random, so its Finished fails as a
+/// wrong key's does.
+const decoy_length = 32;
 
 /// TLS 1.2 tickets are on and the client sent the SessionTicket extension.
 fn takesTickets(self: anytype, hello: *const ClientHello) bool {
@@ -112,14 +150,21 @@ pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!v
             issue = held.ring().issuing(now) != null;
         }
     }
+    // A provisioned key's session gets no ticket: the key, not a ticket, is how it starts again.
+    const psk = !self.resumed and self.suite12.?.authentication() == .psk;
+    if (psk) {
+        try self.state.markPsk12();
+        self.external = true;
+        issue = false;
+    }
     self.state.ticket12 = issue;
     // A client may answer the CertificateRequest with Ed25519, which signs the messages themselves.
-    if (self.options.client_auth != .none and !self.resumed) scratch.transcripts.keep(self.gpa);
+    if (self.options.client_auth != .none and !self.resumed and !psk) scratch.transcripts.keep(self.gpa);
     // DTLS 1.2 numbers both sides' messages from the client's hello.
     if (self.options.transport == .datagram) scratch.transcripts.startDatagram(self.first_sequence, self.first_sequence, false);
     try scratch.transcripts.commit(msg);
     self.answered = true;
-    const exchange = if (self.resumed) 0 else Exchange.entropyLength(self.group.?) + self.signNoiseLength();
+    const exchange = if (self.resumed) 0 else if (psk) decoy_length else Exchange.entropyLength(self.group.?) + self.signNoiseLength();
     self.need_now = .{ .entropy = .{ .len = 32 + exchange + @as(usize, if (issue) Ticket.salt_length else 0) } };
 }
 
@@ -168,6 +213,13 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
         @memcpy(self.tls12.?.randoms[32..64], &random);
         return sendResumed(self, &random);
     }
+    if (self.external) {
+        self.need_now = .none;
+        @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
+        @memcpy(self.tls12.?.randoms[32..64], &random);
+        @memcpy(scratch.psk.exposeMut()[0..decoy_length], entropy[32..][0..decoy_length]);
+        return sendPskFlight(self, &random);
+    }
     const group = self.group.?;
     const share_end = 32 + Exchange.entropyLength(group);
     scratch.share12 = Exchange.Share.init(group, entropy[32..share_end]) catch return error.InvalidEntropy;
@@ -202,6 +254,20 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
         return sendKeyExchange(self, signature);
     }
     self.need_now = .sign;
+}
+
+/// The provisioned key's flight: ServerHello and ServerHelloDone. No identity hint: keys are
+/// named by the client alone.
+fn sendPskFlight(self: anytype, random: *const [32]u8) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    var hello_buffer: [1024]u8 = undefined;
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = false, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    try self.state.advance(.server_hello, .initial, .parsed, true);
+    try queue(self, hello);
+    const done = try Messages12.buildServerHelloDone(try self.reserve(4));
+    try self.state.advance(.server_hello_done, .initial, .parsed, true);
+    try self.queueMessage(.initial, done);
 }
 
 /// The abbreviated handshake's flight: the ServerHello echoing the client's session id, a new
@@ -389,6 +455,7 @@ fn onRawKey(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!
 
 fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
+    if (self.external) return onPskKeyExchange(self, msg, epoch, boundary);
     try self.state.advance(.client_key_exchange, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
     const public = try Messages12.clientKeyExchange(msg, self.group.?);
@@ -398,12 +465,46 @@ fn onClientKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     defer agreed.deinit();
     share.deinit();
     scratch.share12 = null;
+    deriveMaster(self, agreed.bytes());
+}
+
+/// The client's identity: its key, from the caller's lookup, makes the premaster (RFC 4279
+/// section 2). An identity with no key here (unknown, of the other version, malformed) gets the
+/// decoy instead: the handshake goes on and fails at the client's Finished, as a wrong key's does.
+fn onPskKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    try self.state.advance(.client_key_exchange, epoch, .parsed, boundary);
+    const scratch = self.scratch.?;
+    const identity = try Messages12.pskClientKeyExchange(msg);
+    try scratch.transcripts.commit(msg);
+    const known = knownKey(self, identity);
+    self.authenticated = known != null;
+    var premaster: [Messages12.max_premaster]u8 = undefined;
+    defer std.crypto.secureZero(u8, &premaster);
+    deriveMaster(self, Messages12.pskPremaster(&premaster, known orelse scratch.psk.expose()[0..decoy_length]));
+}
+
+/// The key the caller's lookup holds for a TLS 1.2 identity, exactly as named; null for none.
+fn knownKey(self: anytype, identity: []const u8) ?[]const u8 {
+    @setRuntimeSafety(true);
+    if (identity.len == 0 or identity.len > Psk.max_identity) return null;
+    const scratch = self.scratch.?;
+    const lookup = self.options.external_psk.?;
+    const found = lookup.find(lookup.context, .{ .identity = identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport, .version = .tls12 }) orelse return null;
+    if (found.version != .tls12 or !std.mem.eql(u8, found.identity, identity)) return null;
+    Psk.validate(found) catch return null;
+    return found.secret;
+}
+
+/// The extended master secret (RFC 7627: the session hash covers the handshake through
+/// ClientKeyExchange) and both directions' keys.
+fn deriveMaster(self: anytype, premaster: []const u8) void {
+    @setRuntimeSafety(true);
     switch (self.suite12.?) {
         inline else => |suite| {
             const Hash = suites.Hash12(suite);
             var digest_buf: [Transcripts.max_digest]u8 = undefined;
-            // The session hash covers the handshake through ClientKeyExchange (RFC 7627).
-            Prf.masterSecret(Hash, self.tls12.?.master.exposeMut(), agreed.bytes(), scratch.transcripts.digestOf(&digest_buf, Hash.digest_length));
+            Prf.masterSecret(Hash, self.tls12.?.master.exposeMut(), premaster, self.scratch.?.transcripts.digestOf(&digest_buf, Hash.digest_length));
             self.tls12.?.deriveKeys(Hash, suite, .server);
         },
     }
@@ -450,6 +551,8 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             const Hash = suites.Hash12(suite);
             var digest_buf: [Transcripts.max_digest]u8 = undefined;
             try Prf.checkFinished(Hash, self.tls12.?.master.expose(), true, scratch.transcripts.digestOf(&digest_buf, Hash.digest_length), received);
+            // The decoy's Finished cannot check but by a guess of 32 random bytes; refused all the same.
+            if (self.external and !self.authenticated) return error.BadFinished;
             try self.state.advance(.finished, epoch, .finished, boundary);
             try scratch.transcripts.commit(msg);
             if (!self.resumed) {
@@ -467,6 +570,7 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
         },
     }
     self.established = true;
-    self.authenticated = self.authenticated and self.options.client_verify != .none;
+    // A provisioned key authenticated the client whatever the certificate policy.
+    self.authenticated = self.authenticated and (self.external or self.options.client_verify != .none);
     try self.push(.complete);
 }

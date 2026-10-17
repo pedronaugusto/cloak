@@ -5,7 +5,10 @@
 //! the extended master secret (RFC 7627); no renegotiation. With a session ticket (RFC 5077) the
 //! server may instead resume: its ServerHello echoes the session id, then its ChangeCipherSpec
 //! and Finished, then the client's, all from the ticket's master secret; a NewSessionTicket comes
-//! before the server's ChangeCipherSpec whenever its ServerHello said so.
+//! before the server's ChangeCipherSpec whenever its ServerHello said so. A ServerHello choosing a
+//! PSK suite (RFC 4279) takes the provisioned key's path: no Certificate either way, an optional
+//! ServerKeyExchange carrying an identity hint the client ignores, then the client's identity in
+//! its ClientKeyExchange; the key authenticates both ends.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
@@ -44,6 +47,12 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
         self.auth_expires = entry.auth_expires;
         self.group = entry.group;
         self.raw_pin = entry.raw_key_pin;
+    } else if (hello.suite.authentication() == .psk) {
+        // The provisioned key authenticates both ends: no certificate to type, verify or pin.
+        if (hello.raw_server_key or hello.raw_client_key) return error.IllegalParameter;
+        try self.state.markPsk12();
+        self.external_used = true;
+        self.authenticated = true;
     } else {
         // RFC 7250: a client pinning the server's key refuses the X.509 a server that did not
         // select the raw key would send, before anything is verified.
@@ -82,7 +91,7 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
     @setRuntimeSafety(true);
     switch (kind) {
         .certificate => try onCertificate(self, msg, epoch, boundary),
-        .server_key_exchange => try onServerKeyExchange(self, msg, epoch, boundary),
+        .server_key_exchange => if (self.external_used) try onPskHint(self, msg, epoch, boundary) else try onServerKeyExchange(self, msg, epoch, boundary),
         .certificate_request => try onCertificateRequest(self, msg, epoch, boundary),
         .server_hello_done => try onServerHelloDone(self, msg, epoch, boundary),
         .new_session_ticket => try onTicket(self, msg, epoch, boundary),
@@ -136,6 +145,8 @@ fn suiteKey(suite: suites.Suite12, key: certificates.certificate.PublicKey) Erro
     const ok = switch (suite.authentication()) {
         .ecdsa => key == .ec or key == .ed25519,
         .rsa => key == .rsa,
+        // A PSK suite has no certificate (its path never verifies one).
+        .psk => false,
     };
     if (!ok) return error.UnsupportedKey;
 }
@@ -157,6 +168,14 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     @memcpy(scratch.server_public[0..ske.public.len], ske.public);
     // safe: a classical public value is at most 97 bytes, checked by the parser.
     scratch.server_public_len = @intCast(ske.public.len);
+}
+
+/// A PSK ServerKeyExchange: an identity hint, unsigned, which names nothing cloak uses.
+fn onPskHint(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    try self.state.advance(.server_key_exchange, epoch, .parsed, boundary);
+    _ = try Messages12.pskServerKeyExchange(msg);
+    try self.scratch.?.transcripts.commit(msg);
 }
 
 fn onCertificateRequest(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
@@ -184,6 +203,7 @@ fn onServerHelloDone(self: anytype, msg: []const u8, epoch: Epoch, boundary: boo
     try self.state.advance(.server_hello_done, epoch, .parsed, boundary);
     try Messages12.serverHelloDone(msg);
     try self.scratch.?.transcripts.commit(msg);
+    if (self.external_used) return sendPskFlight(self);
     // The client's own ECDHE key comes from fresh entropy, after the server named the group.
     self.need_now = .{ .entropy = .{ .len = Exchange.entropyLength(self.group.?) } };
 }
@@ -248,16 +268,7 @@ fn sendFlight(self: anytype) Error!void {
     defer agreed.deinit();
     share.deinit();
     scratch.share12 = null;
-    switch (self.suite12.?) {
-        inline else => |suite| {
-            const Hash = suites.Hash12(suite);
-            var digest_buf: [Transcripts.max_digest]u8 = undefined;
-            // The session hash covers the handshake through ClientKeyExchange (RFC 7627).
-            const session_hash = scratch.transcripts.digestOf(&digest_buf, Hash.digest_length);
-            Prf.masterSecret(Hash, self.tls12.?.master.exposeMut(), agreed.bytes(), session_hash);
-        },
-    }
-    self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
+    deriveMaster(self, agreed.bytes());
     if (scheme) |chosen| {
         self.sign_scheme = chosen;
         if (chosen == .ed25519) {
@@ -287,6 +298,35 @@ fn sendFlight(self: anytype) Error!void {
         self.need_now = .sign;
         return;
     }
+    try finishFlight(self);
+}
+
+/// The extended master secret from the premaster: the session hash covers the handshake through
+/// ClientKeyExchange (RFC 7627).
+fn deriveMaster(self: anytype, premaster: []const u8) void {
+    @setRuntimeSafety(true);
+    switch (self.suite12.?) {
+        inline else => |suite| {
+            const Hash = suites.Hash12(suite);
+            var digest_buf: [Transcripts.max_digest]u8 = undefined;
+            const session_hash = self.scratch.?.transcripts.digestOf(&digest_buf, Hash.digest_length);
+            Prf.masterSecret(Hash, self.tls12.?.master.exposeMut(), premaster, session_hash);
+        },
+    }
+    self.keyLog("CLIENT_RANDOM", self.tls12.?.master.expose());
+}
+
+/// The provisioned key's flight: the identity in ClientKeyExchange, the premaster from the key
+/// alone (RFC 4279 section 2), then ChangeCipherSpec and Finished.
+fn sendPskFlight(self: anytype) Error!void {
+    @setRuntimeSafety(true);
+    const psk = self.options.external_psk.?;
+    const exchange = try Messages12.buildPskClientKeyExchange(try self.reserve(8 + psk.identity.len), psk.identity);
+    try self.state.advance(.local_key_exchange, .initial, .parsed, true);
+    try self.queueMessage(.initial, exchange);
+    var premaster: [Messages12.max_premaster]u8 = undefined;
+    defer std.crypto.secureZero(u8, &premaster);
+    deriveMaster(self, Messages12.pskPremaster(&premaster, psk.secret));
     try finishFlight(self);
 }
 
@@ -361,7 +401,8 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     // A resumed session's client speaks last.
     if (self.resumed) try finishFlight(self);
     self.established = true;
-    self.authenticated = self.authenticated and self.options.verify != .none;
+    // A provisioned key authenticated the server whatever the certificate policy.
+    self.authenticated = self.external_used or (self.authenticated and self.options.verify != .none);
     try self.push(.complete);
 }
 
@@ -373,8 +414,9 @@ fn onTicket(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!
     const ticket = try Messages12.newSessionTicket(msg);
     try self.scratch.?.transcripts.commit(msg);
     self.dropTicket12();
-    // An empty ticket: the server changed its mind (RFC 5077 section 3.3).
-    if (ticket.ticket.len == 0 or self.options.resumption == null) return;
+    // An empty ticket: the server changed its mind (RFC 5077 section 3.3). A session on a
+    // provisioned key keeps none: the key, not a ticket, is how it starts again.
+    if (ticket.ticket.len == 0 or self.options.resumption == null or self.external_used) return;
     self.ticket12 = try self.gpa.dupe(u8, ticket.ticket);
     self.ticket12_hint = ticket.lifetime_hint;
 }

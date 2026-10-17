@@ -58,7 +58,8 @@ pub const certificate_compression = struct {
     pub const Error = Compression.Error;
     pub const max_codecs = Compression.max_codecs;
 };
-/// Provisioned (external) PSKs, PSK-DHE only: a client's key and a server's lookup.
+/// Provisioned (external) PSKs, a key per version: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK (no
+/// forward secrecy, for CoAP's and LwM2M's PSK mode). A client's key and a server's lookup.
 pub const psk = struct {
     const Psk = @import("tls/handshake/Psk.zig");
     pub const External = Psk.External;
@@ -66,6 +67,8 @@ pub const psk = struct {
     pub const Query = Psk.Query;
     pub const Hash = Psk.Hash;
     pub const max_identity = Psk.max_identity;
+    pub const min_secret12 = Psk.min_secret12;
+    pub const max_secret12 = Psk.max_secret12;
 };
 /// Kernel record layers (kTLS): after the handshake a connection's direction moves to the kernel,
 /// which seals or opens its records (`Connection.offload`); the connection keeps the rest.
@@ -93,6 +96,7 @@ test {
     _ = @import("tls/Pq_test.zig");
     _ = @import("tls/MlDsa_test.zig");
     _ = @import("tls/Psk_test.zig");
+    _ = @import("tls/Psk12_test.zig");
     _ = @import("tls/RawKey_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");

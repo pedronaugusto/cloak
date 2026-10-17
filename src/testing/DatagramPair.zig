@@ -8,6 +8,7 @@ const peer_module = @import("Peer.zig");
 const Datagram = @import("../tls/dtls/Datagram.zig");
 const Cookies = @import("../tls/dtls/Cookies.zig");
 const suites = @import("../tls/crypto/Suite.zig");
+const Psk = @import("../tls/handshake/Psk.zig");
 const Group = @import("../tls/crypto/Group.zig").Group;
 const Record = @import("../tls/dtls/Record.zig");
 const SessionCache = @import("../tls/resumption/SessionCache.zig");
@@ -52,6 +53,11 @@ pub const Options = struct {
     /// Raw public keys (RFC 7250): the server presents its key, which the client pins; with
     /// `mutual`, the client presents its key too, which the server pins.
     raw_keys: bool = false,
+    /// Provisioned keys: the client's and the server's lookup; with `psk_only` the server holds
+    /// no credential and the client verifies nothing but the key.
+    client_psk: ?Psk.External = null,
+    server_psk: ?Psk.Lookup = null,
+    psk_only: bool = false,
 };
 
 const Packet = struct { bytes: []u8 };
@@ -121,7 +127,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
     errdefer if (self.client_auth) |auth| auth.deinit();
     self.client = .{ .dtls = try Datagram.client(gpa, .{
         .identity = .{ .dns = "example.com" },
-        .verify = if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
+        .verify = if (options.psk_only) .none else if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
+        .external_psk = options.client_psk,
         .suites = options.client_suites,
         .min_version = options.client_min,
         .max_version = options.client_max,
@@ -144,7 +151,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
 
 pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
     return .{
-        .credentials = &self.credential,
+        .credentials = if (self.options.psk_only) &.{} else &self.credential,
+        .external_psk = self.options.server_psk,
         .suites = self.options.server_suites,
         .groups = self.options.server_groups orelse self.options.groups,
         .client_auth = if (self.options.mutual) .required else .none,

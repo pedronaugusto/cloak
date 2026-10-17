@@ -1,6 +1,6 @@
 //! A handshake `State` driven to a named phase through the machine's own edges, for tests that
 //! start in the middle of a handshake. The path is the shortest one the table declares, without
-//! a resumption unless the phase needs one; on the way, the policy flags are set so each edge is
+//! a resumption or a provisioned key unless the phase needs one; on the way, the policy flags are set so each edge is
 //! admitted, then set to what the test asks for.
 const std = @import("std");
 const S = @import("../tls/handshake/State.zig");
@@ -64,9 +64,10 @@ fn route(comptime T: type, lines: anytype, phase: S.Phase, version: S.Version, r
         }
         for (lines, 0..) |line, i| {
             if (line.from != at_state or seen[@backingInt(line.to)]) continue;
-            if (!resume_ok and (line.on == .resumed or line.on == .resumed12)) continue;
+            // The decisions (a resumption, a provisioned key) only when no plain path reaches it.
+            if (!resume_ok and (line.on == .resumed or line.on == .resumed12 or line.on == .psk12)) continue;
             // A version's own edges: TLS 1.2 events only on the way to a TLS 1.2 phase, and back.
-            const twelve = line.on == .server_hello12 or line.on == .resumed12;
+            const twelve = line.on == .server_hello12 or line.on == .resumed12 or line.on == .psk12;
             if (twelve and version != .tls12) continue;
             if ((line.on == .server_hello or line.on == .resumed) and version == .tls12) continue;
             seen[@backingInt(line.to)] = true;
@@ -82,6 +83,10 @@ fn take(state: *S.State, line: Line) S.AdvanceError!void {
     if (line.on == .resumed or line.on == .resumed12) {
         state.version = if (line.on == .resumed12) .tls12 else .tls13;
         return state.markResumed();
+    }
+    if (line.on == .psk12) {
+        state.version = .tls12;
+        return state.markPsk12();
     }
     if (line.on == .server_hello12) state.version = .tls12;
     const action: S.Action = if (line.on == .server_hello12) .server_hello else @fromBackingInt(@intCast(@backingInt(line.on)));

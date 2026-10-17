@@ -73,7 +73,8 @@ pub const Options = struct {
     transport: suites.Transport = .stream,
     /// The server's QUIC transport parameters.
     parameters: []const u8 = "",
-    /// At least one. The first answers when no name matches or none was sent.
+    /// The first answers when no name matches or none was sent. None only with `external_psk`:
+    /// such a server authenticates by provisioned keys alone.
     credentials: []const Credential,
     /// What to do with a server name no credential answers for.
     unknown_name: enum { first, reject } = .first,
@@ -93,9 +94,10 @@ pub const Options = struct {
     /// Certificate encoders (RFC 8879), in the server's order of preference: the first whose
     /// algorithm the client lists compresses the Certificate, when that makes it smaller.
     certificate_compression: []const Compression.Codec = &.{},
-    /// Provisioned keys (PSK-DHE, TLS 1.3), looked up by the identity a client offers; a client
-    /// that proves one is authenticated by it, with no certificate either way, and is issued no
-    /// tickets. Tried before tickets.
+    /// Provisioned keys, looked up by the identity a client offers, for the version negotiated:
+    /// TLS 1.3 PSK-DHE, tried before tickets; TLS 1.2 plain PSK when a PSK suite is listed and
+    /// chosen. A client that proves one is authenticated by it, with no certificate either way,
+    /// and is issued no tickets.
     external_psk: ?Psk.Lookup = null,
     /// DTLS: connection_id (RFC 9146), answered when a client offers it. Null answers none;
     /// otherwise the connection ID this server receives records with, borrowed; empty: it sends
@@ -166,7 +168,8 @@ resumed: bool = false,
 /// messages in its transcript (RFC 6347 section 4.2.2). The carrier sets it.
 first_sequence: u16 = 0,
 ech_accepted: bool = false,
-/// The handshake used a provisioned key.
+/// The handshake uses a provisioned key: TLS 1.3 once its binder checked, TLS 1.2 once a PSK
+/// suite is chosen (the key itself proves at the client's Finished).
 external: bool = false,
 /// DTLS: the first hello was answered statelessly (`resumeRetry`), so the second is also the
 /// first this server sees whole: what a first hello records is recorded from it.
@@ -266,7 +269,8 @@ const Keys = union(Suite13) {
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
     try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
-    if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
+    // Provisioned keys may be a server's only authentication; otherwise it needs a credential.
+    if (options.credentials.len > 32 or (options.credentials.len == 0 and options.external_psk == null)) return error.InvalidOptions;
     if (options.require_pq_auth and (options.client_auth != .required or options.client_verify == .none)) return error.InvalidOptions;
     switch (options.client_verify) {
         .raw_key => |raw| if (raw.pins.len == 0 or raw.pins.len > Verify.RawKey.max_pins or options.client_auth == .none) return error.InvalidOptions,
@@ -277,6 +281,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     };
     if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
+    // The TLS 1.2 PSK suites are spoken only with provisioned keys to complete them.
+    for (options.suites) |suite| if (suite.tls12()) |s12| if (s12.authentication() == .psk and options.external_psk == null) return error.InvalidOptions;
     Ech.checkKeys(options.ech_keys) catch return error.InvalidOptions;
     Compression.validate(options.certificate_compression, .compress) catch return error.InvalidOptions;
     // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
@@ -772,6 +778,8 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     if (hello.has_psk and hello.psk_dhe) try self.choosePsk(msg, hello);
+    // A PSK authenticates the handshake: only without one is a credential chosen.
+    if (!self.pskMode()) try self.chooseAuthentication(hello);
     try scratch.transcripts.commit(msg);
     const group = self.group.?;
     const share = hello.shareFor(group).?;
@@ -787,6 +795,20 @@ fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client
         self.deferred = entropy;
         self.need_now = .parameters;
     } else self.need_now = entropy;
+}
+
+/// The credential, its signature scheme and the certificate types of a handshake no PSK
+/// authenticates. A server holding provisioned keys alone has nothing to offer it.
+fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!void {
+    @setRuntimeSafety(true);
+    if (self.options.credentials.len == 0) return error.PskRequired;
+    // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
+    self.credential = try self.chooseCredential(hello.server_name, .{
+        .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
+        .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
+    });
+    self.scheme = Possession.choose(self.options.credentials[self.credential].identity.publicKey(), hello) orelse return error.NoSignatureScheme;
+    self.negotiateTypes(hello);
 }
 
 /// What a ticket must agree with to resume: this policy, this name and protocol, a suite of its
@@ -826,8 +848,8 @@ fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Cli
     while (index < 8) : (index += 1) {
         const offer = hello.pskIdentity(index) orelse return false;
         if (offer.identity.len > Psk.max_identity) continue;
-        const found = lookup.find(lookup.context, .{ .identity = offer.identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport }) orelse continue;
-        if (!std.mem.eql(u8, found.identity, offer.identity)) continue;
+        const found = lookup.find(lookup.context, .{ .identity = offer.identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport, .version = .tls13 }) orelse continue;
+        if (found.version != .tls13 or !std.mem.eql(u8, found.identity, offer.identity)) continue;
         Psk.validate(found) catch continue;
         if (found.hash.length() != suites.digestLength(self.suite.?)) continue;
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
@@ -931,8 +953,8 @@ pub fn allows12(self: *const Server) bool {
     return hello.allows12();
 }
 
-/// Chooses suite, group, credential, scheme and protocol from the client's offer and the
-/// server's preference; the server's order wins.
+/// Chooses suite, group and protocol from the client's offer and the server's preference; the
+/// server's order wins. The credential waits for the PSK decision (`chooseAuthentication`).
 fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
@@ -954,16 +976,6 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
         } else return error.NoSharedGroup;
     }
     if (self.options.require_hybrid and !self.group.?.hybrid()) return error.HybridRequired;
-    if (!second or self.stateless_retry) {
-        // RFC 7250: X.509 unless the client lists only other types; a raw key when it lists one.
-        self.credential = try self.chooseCredential(hello.server_name, .{
-            .x509 = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.x509)),
-            .raw_public_key = ClientHello.admitsType(hello.server_certificate_types, @backingInt(Hello.CertificateType.raw_public_key)),
-        });
-    }
-    const identity = self.options.credentials[self.credential].identity;
-    self.scheme = Possession.choose(identity.publicKey(), hello) orelse return error.NoSignatureScheme;
-    self.negotiateTypes(hello);
     self.alpn = "";
     if (self.options.alpn.len != 0) {
         if (hello.alpn.len == 0) {
@@ -1503,7 +1515,7 @@ pub fn info(self: *const Server) ?Info {
     return .{
         .version = self.version,
         .suite = if (self.suite12) |suite| suites.Suite.from12(suite) else suites.Suite.from13(self.suite.?),
-        .group = self.group.?,
+        .group = self.group,
         .alpn = self.alpn,
         .server_name = if (self.scratch) |scratch| scratch.server_name[0..scratch.server_name_len] else self.server_name_copy,
         .peer_authenticated = self.authenticated,

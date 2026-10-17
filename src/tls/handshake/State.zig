@@ -94,23 +94,26 @@ pub const Action = enum {
 };
 pub const Proof = enum { parsed, chain, possession, finished };
 /// What moves a machine: the handshake actions, plus the events no message names. A TLS 1.2
-/// ServerHello is its own event (`server_hello12`), and so is the decision to resume a session
-/// (`resumed` in TLS 1.3, `resumed12` in TLS 1.2), which is taken before the edges that differ.
+/// ServerHello is its own event (`server_hello12`), and so are the decisions to resume a session
+/// (`resumed` in TLS 1.3, `resumed12` in TLS 1.2) and to authenticate by a provisioned key in
+/// TLS 1.2 (`psk12`), each taken before the edges that differ.
 pub const Event = blk: {
     const actions = @typeInfo(Action).@"enum".field_names;
-    var names: [actions.len + 3][:0]const u8 = undefined;
+    var names: [actions.len + 4][:0]const u8 = undefined;
     for (actions, 0..) |name, i| names[i] = name;
     names[actions.len] = "server_hello12";
     names[actions.len + 1] = "resumed";
     names[actions.len + 2] = "resumed12";
+    names[actions.len + 3] = "psk12";
     var values: [names.len]u8 = undefined;
     for (&values, 0..) |*v, i| v.* = i;
     break :blk @Enum(u8, .exhaustive, &names, &values);
 };
 
 /// The client's states. Several project onto one `Phase`: the resumed TLS 1.3 extensions
-/// (`extensions_psk`), and in TLS 1.2 the resumed path (`r_` states) and the key exchange after
-/// a sent certificate (`local_key_exchange_proof12`), whose CertificateVerify must follow.
+/// (`extensions_psk`), and in TLS 1.2 the resumed path (`r_` states), the provisioned-key path
+/// (`p_` states, no certificate either way) and the key exchange after a sent certificate
+/// (`local_key_exchange_proof12`), whose CertificateVerify must follow.
 pub const ClientState = enum {
     start,
     hello,
@@ -145,6 +148,10 @@ pub const ClientState = enum {
     r_peer_finished12,
     r_local_ccs12,
     r_local_finished12,
+    hello_psk12,
+    p_server_key_exchange12,
+    p_server_done12,
+    p_local_flight12,
     connected,
 };
 
@@ -188,6 +195,8 @@ pub const ServerState = enum {
     r_s_finished12,
     r_c_ccs12,
     r_c_finished12,
+    hello_psk12,
+    p_s_done12,
     connected,
 };
 
@@ -258,6 +267,15 @@ pub const client_lines = [_]Line(ClientState){
     .{ .from = .r_peer_finished12, .on = .finished, .to = .r_local_ccs12, .rule = .{ .epoch = .application, .proof = .finished, .boundary = true } },
     .{ .from = .r_local_ccs12, .on = .local_ccs, .to = .r_local_finished12, .rule = init_rule },
     .{ .from = .r_local_finished12, .on = .local_finished, .to = .connected, .rule = .{ .epoch = .application, .proof = .finished } },
+    // A provisioned key (RFC 4279): no Certificate or CertificateRequest either way; a
+    // ServerKeyExchange only to carry an identity hint, unsigned; then the client's identity,
+    // and the rest as in a full handshake.
+    .{ .from = .hello, .on = .psk12, .to = .hello_psk12, .rule = decision },
+    .{ .from = .hello_psk12, .on = .server_hello12, .to = .p_server_key_exchange12, .rule = init_rule },
+    .{ .from = .p_server_key_exchange12, .on = .server_key_exchange, .to = .p_server_done12, .rule = init_rule },
+    .{ .from = .p_server_key_exchange12, .on = .server_hello_done, .to = .p_local_flight12, .rule = init_end },
+    .{ .from = .p_server_done12, .on = .server_hello_done, .to = .p_local_flight12, .rule = init_end },
+    .{ .from = .p_local_flight12, .on = .local_key_exchange, .to = .local_ccs12, .rule = init_rule },
 };
 
 pub const server_lines = [_]Line(ServerState){
@@ -312,6 +330,11 @@ pub const server_lines = [_]Line(ServerState){
     .{ .from = .r_s_finished12, .on = .local_finished, .to = .r_c_ccs12, .rule = .{ .epoch = .application, .proof = .finished } },
     .{ .from = .r_c_ccs12, .on = .ccs, .to = .r_c_finished12, .rule = init_end },
     .{ .from = .r_c_finished12, .on = .finished, .to = .connected, .rule = .{ .epoch = .application, .proof = .finished, .boundary = true } },
+    // A provisioned key: ServerHello and ServerHelloDone (no identity hint), then the client's
+    // identity, and the rest as in a full handshake without a client certificate.
+    .{ .from = .hello, .on = .psk12, .to = .hello_psk12, .rule = decision },
+    .{ .from = .hello_psk12, .on = .server_hello12, .to = .p_s_done12, .rule = init_rule },
+    .{ .from = .p_s_done12, .on = .server_hello_done, .to = .c_key_exchange12, .rule = init_rule },
 };
 
 /// One role's machine: the aegis topology and, beside it, each edge's rule.
@@ -351,14 +374,15 @@ fn projected(comptime name: []const u8) Phase {
         .{ "extensions_psk", .extensions },
         .{ "hello_psk", .hello },
         .{ "hello_resumed12", .hello },
+        .{ "hello_psk12", .hello },
         .{ "possession_asking", .possession },
         .{ "finished_asking", .finished },
         .{ "local_key_exchange_proof12", .local_key_exchange12 },
         .{ "c_key_exchange_proof12", .c_key_exchange12 },
     };
     inline for (aliases) |alias| if (std.mem.eql(u8, alias[0], name)) return alias[1];
-    // A resumed TLS 1.2 state shows the phase of the full handshake it mirrors.
-    if (std.mem.startsWith(u8, name, "r_")) return @field(Phase, name[2..]);
+    // A resumed or provisioned-key TLS 1.2 state shows the phase of the full handshake it mirrors.
+    if (std.mem.startsWith(u8, name, "r_") or std.mem.startsWith(u8, name, "p_")) return @field(Phase, name[2..]);
     return @field(Phase, name);
 }
 pub const Client = Table(ClientState, &client_lines);
@@ -406,6 +430,18 @@ pub const State = struct {
         const event: Event = if (self.version == .tls12) .resumed12 else .resumed;
         switch (self.machine) {
             inline else => |*m| _ = m.step(event) catch return error.UnexpectedMessage,
+        }
+    }
+
+    /// Marks a TLS 1.2 handshake authenticated by a provisioned key, before the ServerHello's
+    /// edge is taken: the client as it reads a ServerHello choosing a PSK suite, the server as
+    /// it chooses one. Anywhere else the machine has no such edge, and the handshake fails.
+    pub fn markPsk12(self: *State) AdvanceError!void {
+        if (self.failed) return error.Closed;
+        errdefer self.failed = true;
+        if (self.version != .tls12) return error.UnexpectedMessage;
+        switch (self.machine) {
+            inline else => |*m| _ = m.step(.psk12) catch return error.UnexpectedMessage,
         }
     }
 

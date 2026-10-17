@@ -678,6 +678,53 @@ Reflection (an endpoint that is both client and server answering its own hello) 
 key provisioned for both roles, which is the caller's to avoid (RFC 9257 section 4.1). Live peer:
 OpenSSL's `-psk` both roles; Go has no provisioned PSKs.
 
+A key is for one version (`External.version`; RFC 8446 appendix E.7 forbids sharing one), and a
+lookup is told the version it answers for (`Query.version`); an answer of the other version is
+passed over. A server's credentials may be empty when it has a lookup: it then authenticates by
+keys alone, and a client offering none it knows ends with handshake_failure (`PskRequired`).
+For that the TLS 1.3 server decides the PSK before it chooses a credential: the credential, its
+scheme and the certificate types are chosen only for a handshake no PSK authenticates (a key
+offered by a client that takes only raw keys meets a server holding only X.509, and the key
+decides).
+
+### TLS 1.2 PSK
+
+CoAP's and LwM2M's PSK mode (RFC 7252 section 9.1.3.1, RFC 7925 section 4.2, LwM2M 1.1/1.2) is
+TLS 1.2 plain PSK (RFC 4279) with TLS_PSK_WITH_AES_128_CCM_8 (0xC0A8, the mandatory one) or
+TLS_PSK_WITH_AES_128_CCM (0xC0A4, RFC 6655), over DTLS 1.2 or TLS 1.2. Plain PSK has no key
+exchange: the premaster is the key alone (its length, as many zeros, the length again, the key),
+so a key that leaks opens every session ever recorded under it, and anyone who records one
+handshake can test guesses at the key offline against its Finished. The profiles mandate it;
+cloak speaks it only when the suites are listed with a TLS 1.2 key, at both ends, never by
+default, and refuses keys shorter than 16 bytes (a password-like key is a search away) or longer
+than RFC 4279's 64. The ECDHE_PSK suites (RFC 8442's AEAD ones) would give forward secrecy, but
+no profile asks for them and no peer here speaks them (OpenSSL has only ECDHE-PSK with CBC and
+ChaCha20): a candidate, not built.
+
+The wire is RFC 4279's: the server sends ServerHello and ServerHelloDone, no Certificate and no
+ServerKeyExchange (no identity hint: keys are named by the client alone); a client ignores a
+hint a server sends, unsigned, in a ServerKeyExchange; the client names its key in
+ClientKeyExchange (`opaque psk_identity<0..2^16-1>`), then ChangeCipherSpec and Finished. The
+extended master secret and the renegotiation indication are required as for every TLS 1.2
+handshake; neither side presents or requests a certificate, so the server answers no certificate
+types and no point formats, and a ServerHello choosing a PSK suite that answers certificate types
+is refused. In the state table the decision is an event, `psk12`, taken before the ServerHello's
+edge (as `resumed12` is), and the path's own states (`p_`) project onto the full handshake's
+phases; past the key exchange it joins the full handshake.
+
+The server chooses by its own order among the suites the client offers: a PSK suite when it has
+a lookup, a certificate suite of its credential's key otherwise, so one server can take both
+kinds of client. The identity arrives only in ClientKeyExchange, after the suite is chosen. An
+identity the lookup does not know, one of the other version, an empty or oversized one, or an
+answer naming another identity, is not refused there: the server goes on with a random key drawn
+with its hello's entropy, and the client's Finished fails to open as a wrong key's does
+(bad_record_mac), so a prober cannot tell a known identity from an unknown one (RFC 4279 section
+2 allows either). A session on a key gets no ticket (the server promises none; a client that is
+sent one anyway keeps none), and `Info.group` is null: there was no key exchange. Kernel TLS takes
+the CCM suite as its ECDHE sibling; CCM_8 stays in software. Live peers: OpenSSL 4.0.3 (`-psk`,
+its CCM_8 only at `@SECLEVEL=0`) and wolfSSL 5.9.4 built with PSK, both roles, over TLS 1.2 and
+DTLS 1.2.
+
 ## Raw public keys
 
 A raw public key (RFC 7250) is a key trusted for itself, by a pin the caller provisioned, with
@@ -740,7 +787,8 @@ offered only when one of its suites is listed (QUIC and `require_hybrid` are TLS
 A server prefers TLS 1.3 whenever the client offers it.
 
 Only the modern subset exists. Key exchange is ECDHE on X25519, P-256 or P-384 (the hybrid
-group is TLS 1.3's), with a fresh share per connection; the record ciphers are AES-128-GCM,
+group is TLS 1.3's), with a fresh share per connection, except for the provisioned-key suites
+of the IoT profiles (above), which have none; the record ciphers are AES-128-GCM,
 AES-256-GCM and ChaCha20-Poly1305 (RFC 5288, RFC 7905), the GCM explicit nonce being the
 record sequence; the master secret is always the extended one (RFC 7627), and a peer
 without it is refused, as is one without the secure renegotiation indication (RFC 5746).

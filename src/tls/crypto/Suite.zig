@@ -3,7 +3,9 @@
 //! devices whose AES has no fast GHASH, and the default offer leaves them out. CCM_8, the 8-byte
 //! tag the CoAP and LwM2M profiles require (RFC 7925), is TLS 1.2's only and spoken only when
 //! listed; a datagram key under it ends its association after 2^7 records fail to open (RFC 9147
-//! appendix B.3). Availability is not policy permission.
+//! appendix B.3). The TLS 1.2 PSK suites (RFC 6655), CoAP's and LwM2M's PSK mode, are spoken only
+//! when listed with a provisioned key: plain PSK has no key exchange, so no forward secrecy.
+//! Availability is not policy permission.
 const std = @import("std");
 const ccm = @import("Ccm.zig");
 
@@ -61,6 +63,8 @@ pub const Suite = enum(u16) {
     ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
     ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
     ecdhe_ecdsa_aes_128_ccm_8 = 0xc0ae,
+    psk_aes_128_ccm = 0xc0a4,
+    psk_aes_128_ccm_8 = 0xc0a8,
     _,
 
     /// The default offer and preference: TLS 1.3 first, AES-128-GCM first within each version.
@@ -116,7 +120,8 @@ pub const Suite13 = enum(u16) {
     aes_128_ccm_sha256 = 0x1304,
 };
 
-/// The TLS 1.2 suites: ECDHE, an ECDSA (or EdDSA) or RSA certificate, an AEAD.
+/// The TLS 1.2 suites: ECDHE, an ECDSA (or EdDSA) or RSA certificate, an AEAD; or a provisioned
+/// key alone (PSK) and an AEAD.
 pub const Suite12 = enum(u16) {
     ecdhe_ecdsa_aes_128_gcm_sha256 = 0xc02b,
     ecdhe_ecdsa_aes_256_gcm_sha384 = 0xc02c,
@@ -128,15 +133,20 @@ pub const Suite12 = enum(u16) {
     ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
     /// RFC 7251: CoAP's and LwM2M's mandatory suite for raw keys and certificates (RFC 7925).
     ecdhe_ecdsa_aes_128_ccm_8 = 0xc0ae,
+    /// RFC 6655: a provisioned key and AES-128-CCM, the 16-byte-tag sibling of CCM_8.
+    psk_aes_128_ccm = 0xc0a4,
+    /// RFC 6655: CoAP's and LwM2M's mandatory suite for their PSK mode (RFC 7925). No key
+    /// exchange: a key that leaks opens every recorded session made with it.
+    psk_aes_128_ccm_8 = 0xc0a8,
 
     pub fn cipher(suite: Suite12) Cipher {
         return switch (suite) {
             .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_rsa_aes_128_gcm_sha256 => .aes_128_gcm,
             .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_rsa_aes_256_gcm_sha384 => .aes_256_gcm,
             .ecdhe_rsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_chacha20_poly1305_sha256 => .chacha20_poly1305,
-            .ecdhe_ecdsa_aes_128_ccm => .aes_128_ccm,
+            .ecdhe_ecdsa_aes_128_ccm, .psk_aes_128_ccm => .aes_128_ccm,
             .ecdhe_ecdsa_aes_256_ccm => .aes_256_ccm,
-            .ecdhe_ecdsa_aes_128_ccm_8 => .aes_128_ccm_8,
+            .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 => .aes_128_ccm_8,
         };
     }
 
@@ -146,14 +156,17 @@ pub const Suite12 = enum(u16) {
         return if (suite == .ecdhe_ecdsa_aes_256_gcm_sha384 or suite == .ecdhe_rsa_aes_256_gcm_sha384) 48 else 32;
     }
 
-    /// The kind of certificate key the suite authenticates with. EdDSA keys use the ECDSA suites
-    /// (RFC 8422 section 5.1).
-    pub fn authentication(suite: Suite12) enum { ecdsa, rsa } {
+    /// What the suite authenticates with: a certificate key of a kind, or a provisioned key.
+    /// EdDSA keys use the ECDSA suites (RFC 8422 section 5.1).
+    pub fn authentication(suite: Suite12) Authentication {
         return switch (suite) {
             .ecdhe_ecdsa_aes_128_gcm_sha256, .ecdhe_ecdsa_aes_256_gcm_sha384, .ecdhe_ecdsa_chacha20_poly1305_sha256, .ecdhe_ecdsa_aes_128_ccm, .ecdhe_ecdsa_aes_256_ccm, .ecdhe_ecdsa_aes_128_ccm_8 => .ecdsa,
             .ecdhe_rsa_aes_128_gcm_sha256, .ecdhe_rsa_aes_256_gcm_sha384, .ecdhe_rsa_chacha20_poly1305_sha256 => .rsa,
+            .psk_aes_128_ccm, .psk_aes_128_ccm_8 => .psk,
         };
     }
+
+    pub const Authentication = enum { ecdsa, rsa, psk };
 };
 
 /// The record ciphers both versions use.

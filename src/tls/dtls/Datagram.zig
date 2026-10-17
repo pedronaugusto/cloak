@@ -25,6 +25,7 @@ const Messages = @import("../handshake/Messages.zig");
 const Alert = @import("../wire/Alert.zig").Alert;
 const Record = @import("Record.zig");
 const Hello = @import("../handshake/Hello.zig");
+const Psk = @import("../handshake/Psk.zig");
 pub const Admission = @import("Admission.zig");
 
 pub const Suite = suites.Suite;
@@ -80,6 +81,9 @@ pub const Options = struct {
     require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
     resumption: ?Resumption = null,
+    /// A provisioned key to offer, borrowed: DTLS 1.3 PSK-DHE, or DTLS 1.2 plain PSK with its
+    /// suites listed (CoAP's and LwM2M's PSK mode; no forward secrecy).
+    external_psk: ?Psk.External = null,
     /// The largest datagram this end sends, without IP and UDP headers.
     mtu: u16 = 1200,
     timing: Timing = .{},
@@ -113,6 +117,9 @@ pub const ServerOptions = struct {
     client_verify: Verify = .none,
     tickets: ?*TicketKeys = null,
     tls12_tickets: bool = false,
+    /// Provisioned keys, looked up by the offered identity: DTLS 1.3 PSK-DHE, DTLS 1.2 plain PSK
+    /// when its suites are listed. With them a server needs no credential.
+    external_psk: ?Psk.Lookup = null,
     mtu: u16 = 1200,
     timing: Timing = .{},
     limits: Limits = .{},
@@ -352,6 +359,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .srtp = options.srtp,
         },
         .resumption = options.resumption,
+        .external_psk = options.external_psk,
         .identity = options.identity,
         .verify = options.verify,
         .auth = options.auth,
@@ -397,6 +405,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .client_verify = options.client_verify,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .external_psk = options.external_psk,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,

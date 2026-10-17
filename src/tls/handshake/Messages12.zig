@@ -1,6 +1,7 @@
 //! TLS 1.2 handshake messages: Certificate without contexts or entry extensions, the ECDHE
-//! ServerKeyExchange, CertificateRequest, ServerHelloDone, ClientKeyExchange and the session
-//! ticket's NewSessionTicket (RFC 5246, RFC 8422, RFC 5077). Parsed fields borrow their message; every length is checked against its parent.
+//! ServerKeyExchange, CertificateRequest, ServerHelloDone, ClientKeyExchange, the plain-PSK forms
+//! of the two key exchange messages and the session ticket's NewSessionTicket (RFC 5246,
+//! RFC 8422, RFC 4279, RFC 5077). Parsed fields borrow their message; every length is checked against its parent.
 const std = @import("std");
 const aegis = @import("aegis");
 const Reader = @import("../wire/Reader.zig");
@@ -210,6 +211,61 @@ pub fn buildClientKeyExchange(out: []u8, public: []const u8) BuildError![]u8 {
     try Messages.header(&w, .client_key_exchange);
     try w.vector(u8, public);
     return Messages.seal(&w);
+}
+
+/// A plain-PSK ClientKeyExchange (RFC 4279 section 2): the identity the client's key goes by, as
+/// sent (cloak bounds it when looking it up).
+pub fn pskClientKeyExchange(message: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    const parsed = try Messages.body(message);
+    if (parsed.kind != .client_key_exchange) return error.InvalidMessage;
+    var r: Reader = .{ .bytes = parsed.bytes };
+    const identity = (try r.vector(u16)).bytes;
+    try r.finish();
+    return identity;
+}
+
+pub fn buildPskClientKeyExchange(out: []u8, identity: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try Messages.header(&w, .client_key_exchange);
+    try w.vector(u16, identity);
+    return Messages.seal(&w);
+}
+
+/// A plain-PSK ServerKeyExchange: an identity hint, which a client ignores (RFC 4279 section 2
+/// leaves its use to the application, and cloak's keys are named by the client alone).
+pub fn pskServerKeyExchange(message: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    const parsed = try Messages.body(message);
+    if (parsed.kind != .server_key_exchange) return error.InvalidMessage;
+    var r: Reader = .{ .bytes = parsed.bytes };
+    const hint = (try r.vector(u16)).bytes;
+    try r.finish();
+    return hint;
+}
+
+pub fn buildPskServerKeyExchange(out: []u8, hint: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try Messages.header(&w, .server_key_exchange);
+    try w.vector(u16, hint);
+    return Messages.seal(&w);
+}
+
+/// The plain-PSK premaster secret (RFC 4279 section 2): the key's length, as many zeros, the
+/// length again, then the key.
+pub const max_premaster = 2 + 64 + 2 + 64;
+pub fn pskPremaster(out: *[max_premaster]u8, secret: []const u8) []const u8 {
+    @setRuntimeSafety(true);
+    aegis.assert.invariant(secret.len <= 64, "a TLS 1.2 key is at most 64 bytes");
+    // safe: at most 64.
+    const n: u16 = @intCast(secret.len);
+    std.mem.writeInt(u16, out[0..2], n, .big);
+    @memset(out[2..][0..n], 0);
+    std.mem.writeInt(u16, out[2 + n ..][0..2], n, .big);
+    @memcpy(out[4 + n ..][0..n], secret);
+    return out[0 .. 4 + 2 * @as(usize, n)];
 }
 
 /// A TLS 1.2 NewSessionTicket (RFC 5077 section 3.3): the lifetime hint in seconds (zero for

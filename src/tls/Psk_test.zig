@@ -188,3 +188,31 @@ test "F85 catalogue_selfie_psk_role_reflection_and_context" {
     // same key provisioned for both roles: that is the caller's to avoid (RFC 9257 section 4.1),
     // and a server's lookup is a separate table from any client's key.
 }
+
+test "C10 a PSK-only server needs no credential, and a key decides before any credential is chosen" {
+    const psk: Psk.External = .{ .identity = "device-11", .secret = &key256 };
+    var table: Table = .{ .entries = &.{.{ .psk = psk }} };
+    {
+        const duo = try connect(.{ .server_psk_only = true, .client_verify_none = true, .client_psk = psk, .server_psk = table.lookup() });
+        defer duo.deinit();
+        try std.testing.expect(duo.client.info().?.external_psk and duo.server.info().?.external_psk);
+        try exportsMatch(duo);
+    }
+    // A client that takes only a raw key, against a server holding only X.509: the key it
+    // offers authenticates both ends, so no credential form is ever asked of the server.
+    {
+        const pins = [_][32]u8{@splat(0x77)};
+        const duo = try connect(.{ .client_raw_pins = &pins, .client_psk = psk, .server_psk = table.lookup() });
+        defer duo.deinit();
+        try std.testing.expect(duo.client.info().?.external_psk and duo.client.info().?.peer_authenticated);
+    }
+    // Offered no key it knows, a server without credentials has nothing to authenticate with.
+    {
+        const duo = try Duo.init(gpa, .{ .server_psk_only = true, .client_verify_none = true, .client_psk = .{ .identity = "stranger", .secret = &key256 }, .server_psk = table.lookup() });
+        defer duo.deinit();
+        try std.testing.expectError(error.PskRequired, duo.handshake());
+        try std.testing.expectEqual(.handshake_failure, duo.server.diagnostics().alert_sent.?);
+    }
+    // No credential and no lookup is no server at all.
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_psk_only = true }));
+}
