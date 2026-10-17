@@ -893,3 +893,59 @@ CCM fixes a 13-byte nonce, so cloak's CCM is its own (12-byte nonce, 16-byte tag
 `src/crypto/`, pinned by Wycheproof's and RFC 3610's vectors, its tag compared in constant
 time. CCM's confidentiality limit is 2^23 records per key (RFC 9147 Appendix B), below
 the GCM limit, and its records fail authentication at most 2^23.5 times per key.
+
+## Kernel record layer (C9)
+
+On Linux a connection's direction can move to the kernel's TLS record layer (kTLS) once the
+handshake completes: the kernel seals or opens that direction's records, the application's
+data passes the connection by (sendfile included), and the connection keeps the rest of TLS.
+The handshake never runs in the kernel, and QUIC and DTLS cannot use it.
+
+The move is one call, `Connection.offload(direction, installer)`. It needs a clean boundary:
+for the read direction no part of a record or handshake message held and no plaintext unread
+(and every byte the caller read from the transport given to `receive`, which only the caller
+can know); for the write direction no output unacknowledged. The connection copies the
+direction's keys and the next record's number into `offload.Keys`, the installer gives them to
+the kernel, and only on its success does the epoch release them (`Protection.release`): its key
+and IV are erased, its owner is the kernel, and sealing or opening it here fails. A refused
+install leaves the direction in software, unchanged. TLS 1.2 GCM and CCM keys carry the next
+record's number as the explicit nonce, which the kernel sends and counts up with the records,
+so the records go on as cloak's own would. The traffic secret of a TLS 1.3 epoch stays for the
+next key update; nothing else of the direction does.
+
+After the move the connection is driven through three calls besides the halves' usual status.
+`receiveControl` takes a record the kernel opened that is not application data, by its record
+type and plaintext, and processes it as `receive` would (alerts, NewSessionTicket, KeyUpdate,
+a TLS 1.2 HelloRequest and its refusal). `control` hands out each record the connection sends
+(an alert, a KeyUpdate, the close_notify of `finish`) as its record type and plaintext, for the
+kernel to seal (TLS_SET_RECORD_TYPE); the write half frames them in its output buffer instead
+of sealing them. `offloadRecords` reports the kernel's record count, read from it
+(`Socket.records`), at least every `offloadInterval` records: a quarter of the epoch's limit
+before it, a TLS 1.3 connection updates its write keys or asks the peer to update its own, and
+TLS 1.2, which has no key update, ends the connection. Application data never reaches the
+connection, so the run of control records that counts as a flood resets when a report shows
+records beyond the control ones.
+
+A key update in a kernel direction turns the epoch here at once, as in software: a KeyUpdate
+received, or one sent once `control` has handed it out and it is acknowledged (records queued
+behind it wait). The epoch's owner is then `next` (`offloadPending`), and `offload` gives the
+kernel the next keys. Linux took TLS 1.3 key updates in 6.14: before it a second install of a
+direction is EBUSY (`RekeyUnsupported`). The old keys are gone by then and the peer reads and
+writes under the next ones, so the connection ends (NoKeyUpdate; a fatal alert still goes out
+when the write keys are untouched) rather than going back to them (design 8.2). Linux stops its
+receive path after a handshake record whose first byte is KeyUpdate's type, and only there, so
+under a kernel a KeyUpdate must be its record's only message: one later in a record would leave
+the kernel opening under dropped keys, and a record that starts with the type without being a
+whole KeyUpdate would stop it with nothing to give it. Both end the connection. A record the
+kernel opened after a KeyUpdate, before the next keys, is refused.
+
+The Linux backend is `tls.offload.linux`: `Socket.install` attaches the "tls" upper-layer
+protocol and installs `CryptoInfo`, the cipher's uAPI struct (the IV's first four bytes are
+the salt, its last eight the IV, ChaCha20-Poly1305 taking all twelve); `Socket.records` reads
+the record number back (the kernel answers only a buffer of its struct's exact size, keys
+included, which are erased); `probe` installs throwaway keys on loopback connections for every
+version, cipher and direction, and installs TLS 1.3 again as a key update would, so what a
+kernel takes is a probe's verdict, never its version string. The control-message I/O, sendfile
+and the wait when the receive path stops for new keys are the caller's (reactor's, in the
+family). TLS_TX_ZEROCOPY_RO is never set, so a file sent is sealed as it was when sent. Tests
+play a kernel in software (every OS) and run the real one in Linux VMs on 6.8 and 7.0.

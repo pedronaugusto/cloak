@@ -4,6 +4,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- Kernel record layers (kTLS): after the handshake either direction of a `tls.Connection` moves to the kernel through `offload(direction, installer)`, which hands over that direction's keys and record number only at a clean boundary (every byte read given to `receive`, every record and message in it complete, every plaintext byte consumed, every byte of output acknowledged) and erases its copy once the kernel holds them; a kernel that refuses them leaves the direction in software as it was. The kernel then seals or opens application data, and the connection keeps the rest: records the kernel opens that are not application data come in through `receiveControl` (alerts, NewSessionTicket, KeyUpdate, a TLS 1.2 HelloRequest), records it sends go out through `control` and `acknowledgeControl` for the kernel to seal with their type, and `offloadRecords` keeps each epoch within its record limit from the kernel's counts (a TLS 1.3 key update a quarter before it; TLS 1.2 ends there). A TLS 1.3 key update in a kernel direction turns the epoch at once and gives the kernel the next keys through `offload` again (`offloadPending`); a kernel that refuses them ends the connection rather than go back to keys the peer has dropped. Under a kernel a KeyUpdate must be its record's only message, since Linux stops its receive path only after a record that starts with one. `send`, `output`, `acknowledge` and `receive` stop a caller that uses them on a direction the kernel holds.
+- `tls.offload.linux`: `Socket.install` (the "tls" upper-layer protocol, then SOL_TLS TLS_TX or TLS_RX with the cipher's uAPI struct), `Socket.records` (the kernel's record count), `CryptoInfo` (the uAPI bytes, for a caller that installs by its own path) and `probe`, which installs throwaway keys on loopback connections and reports the versions, ciphers and directions the running kernel takes and whether it takes TLS 1.3 key updates (Linux 6.14 and later). Every cipher a kernel has: AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 and AES-128-CCM, TLS 1.2 and 1.3; AES-256-CCM has no kernel cipher and stays in software. Tested on Linux 6.8 (no key updates: the connection ends at one) and 7.0 (key updates both ways), sendfile included.
+
 ## [0.11.0] - 2026-10-17
 
 ### Added

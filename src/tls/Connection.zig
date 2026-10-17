@@ -13,6 +13,10 @@
 //! half at its next call, `output` included; status (`phase`, `diagnostics`, `readClosed`) may be
 //! read from either. `info`, `certificateRequested` and `exportKeyingMaterial` read what the
 //! handshake fixed and may be called from either task while the connection lives.
+//!
+//! Either half may then move to a kernel record layer (kTLS, `offload`): the kernel seals or
+//! opens that direction's records, the application's data passes the connection by, and the
+//! connection keeps the rest of TLS for that direction through `receiveControl` and `control`.
 const std = @import("std");
 const aegis = @import("aegis");
 const certificates = @import("../certificates.zig");
@@ -32,6 +36,7 @@ const Flight = @import("handshake/Flight.zig");
 const Ech = @import("handshake/Ech.zig");
 const Compression = @import("handshake/Compression.zig");
 const Psk = @import("handshake/Psk.zig");
+const Keys = @import("offload/Keys.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -181,8 +186,17 @@ alert_received: std.atomic.Value(u16) = .init(no_alert),
 /// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes.
 owed: std.atomic.Value(u8) = .init(0),
 owed_alert: std.atomic.Value(u8) = .init(0),
+/// The directions a kernel record layer holds: it seals or opens their records from then on.
+rx_kernel: bool = false,
+tx_kernel: bool = false,
+/// With the write keys in a kernel and a key update made: the pending control bytes the kernel
+/// sends under the old keys (the KeyUpdate and what came before it) before it takes the new.
+rekey_at: ?u32 = null,
 
 const no_alert: u16 = 0x100;
+/// A KeyUpdate message: its type, and its length with the header.
+const key_update_type: u8 = 24;
+const key_update_len: usize = 5;
 const owe_key_update: u8 = 1;
 const owe_update_request: u8 = 2;
 const owe_no_renegotiation: u8 = 4;
@@ -519,6 +533,14 @@ fn owe(self: *Connection, bits: u8) Error!void {
 /// One record of `content` in the current transmit epoch.
 fn sealRecord(self: *Connection, content: Protection.Content, body: []const u8, dst: []u8) Error![]u8 {
     @setRuntimeSafety(true);
+    if (self.tx_kernel) {
+        // The kernel seals it: the record waits as its type, length and plaintext (`control`).
+        dst[0] = @backingInt(content);
+        // safe: control records are at most 2^14 bytes.
+        std.mem.writeInt(u16, dst[1..3], @intCast(body.len), .big);
+        @memcpy(dst[3..][0..body.len], body);
+        return dst[0 .. 3 + body.len];
+    }
     if (self.tx) |*protection| return protection.seal(content, body, 0, dst);
     dst[0] = @backingInt(content);
     dst[1..3].* = .{ 3, 3 };
@@ -539,11 +561,13 @@ pub fn owes(self: *Connection) bool {
 
 /// Ciphertext to write to the transport, after what the read half owes is written.
 pub fn output(self: *Connection) []const u8 {
+    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys writes the records");
     if (self.owes()) self.writeOwed();
     return self.outbox.pending();
 }
 
 pub fn acknowledge(self: *Connection, n: usize) void {
+    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys writes the records");
     self.outbox.acknowledge(n);
 }
 
@@ -651,6 +675,8 @@ fn onControl(self: *Connection) Error!void {
 fn onPeerKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     try self.onControl();
+    // Under a kernel, a KeyUpdate is its record's whole plaintext (`controlChecked`).
+    if (self.rx_kernel and (self.plain_end != key_update_len or self.record[0] != key_update_type)) return error.UnexpectedRecord;
     try self.rx.?.update();
     self.rx_asked_update = false;
     if (request_peer) try self.owe(owe_key_update);
@@ -661,12 +687,19 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     // TLS 1.2 has no key update; its connection closes before the record or byte cap instead.
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
+    if (self.tx.?.owner() == .next) {
+        // A kernel has yet to take the keys of the last update: this one waits for it.
+        _ = self.owed.fetchOr(if (request_peer) owe_update_request else owe_key_update, .seq_cst);
+        return;
+    }
     var message_buf: [5]u8 = undefined;
     const message = try Messages.buildKeyUpdate(&message_buf, request_peer);
     const dst = try self.outbox.tail(self.gpa, message.len + record_overhead, self.limits.output + max_record);
-    const wire = try self.tx.?.seal(.handshake, message, 0, dst);
+    const wire = try self.sealRecord(.handshake, message, dst);
     self.outbox.commit(wire.len);
     try self.tx.?.update();
+    // safe: pending output is bounded by the output limit plus one record.
+    if (self.tx_kernel) self.rekey_at = @intCast(self.outbox.pending().len);
 }
 
 /// Queues a key update before the write epoch can run out of records or bytes.
@@ -683,6 +716,7 @@ fn budgetWrite(self: *Connection) Error!void {
 /// means the output backlog must drain first.
 pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     @setRuntimeSafety(true);
+    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys seals application data");
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
@@ -740,6 +774,255 @@ fn settlePhase(self: *Connection) void {
     }
 }
 
+// ---------------------------------------------------------------- kernel record layer
+
+pub const Direction = Keys.Direction;
+pub const OffloadError = Keys.InstallError || error{
+    /// The handshake has not completed.
+    NotConnected,
+    /// The connection failed, or this direction is closed.
+    Closed,
+    /// Bytes are staged in this direction: output not yet acknowledged, or part of a record or
+    /// message read, or plaintext not yet consumed. Drain them and call again.
+    Unclean,
+    /// The kernel already holds this direction's current keys.
+    Offloaded,
+};
+
+/// Moves `direction`'s record protection to a kernel record layer (kTLS) through `installer`,
+/// or gives the kernel the keys a key update made (`offloadPending`). The read direction belongs
+/// to the read half, the write direction to the write half.
+///
+/// The first move needs a clean boundary: every byte read from the transport given to
+/// `receive` and every record and message in it complete, every plaintext byte consumed, every
+/// byte of `output` acknowledged. When the installer fails nothing has moved and the connection
+/// goes on in software. Once the kernel holds the keys they are erased here; the kernel seals
+/// or opens application data, and the connection keeps the rest: control records the kernel
+/// opens come in through `receiveControl`, records the connection sends go out through
+/// `control`, and `offloadRecords` keeps each epoch within its record limit.
+///
+/// A key update in a kernel direction (TLS 1.3) turns the epoch here at once: a KeyUpdate
+/// received, or one sent once the kernel has written it. The kernel takes the next keys
+/// through this call. A kernel that refuses them (`RekeyUnsupported`: before Linux 6.14) ends
+/// the connection, since the old keys are gone and records under them would be refused by the
+/// peer or forged by anyone reusing them.
+pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installer) OffloadError!void {
+    @setRuntimeSafety(true);
+    if (self.phase() == .failed) return error.Closed;
+    if (!self.split) return error.NotConnected;
+    const slot = switch (direction) {
+        .read => &self.rx,
+        .write => &self.tx,
+    };
+    const protection = if (slot.*) |*p| p else return error.Closed;
+    const rekey = switch (protection.owner()) {
+        .software => false,
+        .kernel => return error.Offloaded,
+        .next => true,
+    };
+    if (rekey) {
+        // The KeyUpdate goes out under the keys the kernel holds before it takes the next.
+        if (direction == .write and self.rekey_at != 0) return error.Unclean;
+    } else {
+        const done = switch (direction) {
+            .read => self.read_done.load(.acquire),
+            .write => self.write_done.load(.acquire),
+        };
+        if (done) return error.Closed;
+        if (protection.kernelCipher() == null) return error.Unsupported;
+        if (!self.cleanFor(direction)) return error.Unclean;
+    }
+    var keys: Keys = .{ .version = .tls13, .cipher = .aes_128_gcm, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
+    defer keys.deinit();
+    protection.exportKeys(&keys);
+    installer.install(direction, &keys) catch |err| {
+        if (rekey) self.failRekey(direction);
+        return err;
+    };
+    protection.release();
+    switch (direction) {
+        .read => self.rx_kernel = true,
+        .write => {
+            self.tx_kernel = true;
+            self.rekey_at = null;
+        },
+    }
+}
+
+/// Whether a kernel record layer holds `direction`.
+pub fn offloaded(self: *const Connection, direction: Direction) bool {
+    return switch (direction) {
+        .read => self.rx_kernel,
+        .write => self.tx_kernel,
+    };
+}
+
+/// Whether a key update made keys the kernel must take, through `offload`, before the
+/// direction goes on: after a KeyUpdate received, and after one sent once `control` has handed
+/// it out and it is acknowledged.
+pub fn offloadPending(self: *const Connection, direction: Direction) bool {
+    return switch (direction) {
+        .read => if (self.rx) |*p| self.rx_kernel and p.owner() == .next else false,
+        .write => if (self.tx) |*p| self.tx_kernel and p.owner() == .next and self.rekey_at == 0 else false,
+    };
+}
+
+/// Every byte of the direction is settled: nothing a kernel would see half of.
+fn cleanFor(self: *const Connection, direction: Direction) bool {
+    return switch (direction) {
+        .read => self.record_have == 0 and self.plain_kind == null and self.header_have == 0 and self.message_total == 0 and self.hs.need() == .none,
+        .write => self.outbox.pending().len == 0,
+    };
+}
+
+/// A kernel refused the keys of a key update the connection had already made: no keys are left
+/// for the direction, and the connection ends. Nothing more goes out under the write keys the
+/// kernel kept, since the peer reads under the next ones.
+fn failRekey(self: *Connection, direction: Direction) void {
+    @setRuntimeSafety(true);
+    switch (direction) {
+        .read => self.failRead(error.NoKeyUpdate),
+        .write => {
+            if (self.tx) |*p| p.deinit();
+            self.tx = null;
+            self.outbox.acknowledge(self.outbox.pending().len);
+            self.rekey_at = null;
+            self.failWrite(error.NoKeyUpdate);
+        },
+    }
+}
+
+/// A record the kernel opened that is not application data, given by its record type (alert
+/// 21, handshake 22) and plaintext: an alert, a NewSessionTicket, a KeyUpdate, a TLS 1.2
+/// HelloRequest. Each is taken as `receive` takes it; answer what it asks (`request`) before
+/// the next. Only with the read direction offloaded.
+pub fn receiveControl(self: *Connection, record_type: u8, plaintext: []const u8) ReceiveError!void {
+    @setRuntimeSafety(true);
+    aegis.assert.pre(self.rx_kernel, "control records come from a kernel that holds the read keys");
+    aegis.assert.pre(self.plain_kind == null and self.hs.need() == .none, "a control record waits until the last one's request is answered");
+    if (self.phase() == .failed) {
+        if (self.rx) |*p| p.deinit();
+        self.rx = null;
+        return error.Closed;
+    }
+    if (self.read_done.load(.acquire)) return error.Closed;
+    self.controlChecked(record_type, plaintext) catch |err| return self.readFailed(err);
+}
+
+fn controlChecked(self: *Connection, record_type: u8, plaintext: []const u8) ReceiveError!void {
+    @setRuntimeSafety(true);
+    const protection = &self.rx.?;
+    // After the peer's KeyUpdate every record is under its next keys, which the kernel does not
+    // hold yet: one it opened under the old keys is out of order.
+    if (protection.owner() == .next) return error.UnexpectedRecord;
+    const content: Protection.Content = switch (record_type) {
+        21 => .alert,
+        22 => .handshake,
+        else => return error.UnexpectedRecord,
+    };
+    if (plaintext.len == 0) return error.UnexpectedRecord;
+    if (plaintext.len > max_content) return error.RecordOverflow;
+    // Linux stops its receive path after a handshake record whose first byte is KeyUpdate's
+    // type, and nowhere else. So a KeyUpdate comes as a record of its own: one that starts
+    // with the type but is not a whole KeyUpdate would stop the kernel with no keys to give
+    // it, and one later in a record would leave the kernel opening under the old keys.
+    if (content == .handshake and plaintext[0] == key_update_type and
+        (plaintext.len != key_update_len or self.message_total != 0 or self.header_have != 0)) return error.UnexpectedRecord;
+    // The record took one number of the kernel's count.
+    protection.account(protection.records() + 1);
+    if (self.record.len < plaintext.len) {
+        if (self.record.len != 0) self.gpa.free(self.record);
+        self.record = &.{};
+        self.record = try self.gpa.alloc(u8, max_content);
+    }
+    @memcpy(self.record[0..plaintext.len], plaintext);
+    self.plain_kind = content;
+    self.plain_pos = 0;
+    self.plain_end = plaintext.len;
+    _ = try self.receiveChecked(&.{});
+}
+
+/// A record the connection sends while a kernel holds the write keys: the kernel seals it with
+/// its record type (Linux: `sendmsg` with a TLS_SET_RECORD_TYPE control message).
+pub const Control = struct {
+    record_type: u8,
+    bytes: []const u8,
+};
+
+/// With the write direction offloaded: the next record to send (an alert, a KeyUpdate, the
+/// close_notify of `finish`), after what the read half owes is queued; null when none, or when
+/// the kernel must take the keys of a key update first (`offloadPending`). Send it whole, in
+/// order, and `acknowledgeControl` it.
+pub fn control(self: *Connection) ?Control {
+    @setRuntimeSafety(true);
+    aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
+    if (self.owes()) self.writeOwed();
+    const pending = self.outbox.pending();
+    if (pending.len == 0 or self.rekey_at == 0) return null;
+    const len = std.mem.readInt(u16, pending[1..3], .big);
+    return .{ .record_type = pending[0], .bytes = pending[3..][0..len] };
+}
+
+/// The record `control` handed out is sent.
+pub fn acknowledgeControl(self: *Connection) void {
+    @setRuntimeSafety(true);
+    aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
+    const pending = self.outbox.pending();
+    aegis.assert.pre(pending.len != 0 and self.rekey_at != 0, "the caller acknowledges a record control handed out");
+    const n = 3 + @as(usize, std.mem.readInt(u16, pending[1..3], .big));
+    self.outbox.acknowledge(n);
+    // safe: the KeyUpdate's bytes end at `rekey_at`, past every whole record before it.
+    if (self.rekey_at) |*at| at.* -= @intCast(n);
+}
+
+/// The most records a kernel may seal or open in `direction` between two `offloadRecords`.
+pub fn offloadInterval(self: *const Connection, direction: Direction) u64 {
+    const slot = switch (direction) {
+        .read => &self.rx,
+        .write => &self.tx,
+    };
+    return if (slot.*) |*p| p.recordLimit() / 4 else 0;
+}
+
+/// Reports the kernel's count of records in an offloaded direction under its current keys (the
+/// next record's number, as the kernel's crypto state holds it), at least every
+/// `offloadInterval` records, read after the direction's last `offload`. With a quarter of the epoch's record limit left, a TLS 1.3 connection updates its
+/// write keys or asks the peer to update its own; TLS 1.2, which has no key update, ends the
+/// connection there, before the limit.
+pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Error!void {
+    @setRuntimeSafety(true);
+    switch (direction) {
+        .read => {
+            aegis.assert.pre(self.rx_kernel, "records are counted by a kernel that holds the read keys");
+            if (self.phase() == .failed) return error.Closed;
+            if (self.read_done.load(.acquire)) return;
+            const p = if (self.rx) |*x| x else return error.Closed;
+            if (p.owner() != .kernel) return;
+            // Records past the control ones: application data came in between.
+            if (records > p.records()) self.control_run = 0;
+            p.account(records);
+            if (p.remaining().records > p.recordLimit() / 4) return;
+            if (p.tls12()) return self.readFailed(error.RecordLimit);
+            if (self.rx_asked_update or self.write_done.load(.acquire)) return;
+            self.rx_asked_update = true;
+            self.owe(owe_update_request) catch |err| return self.readFailed(err);
+        },
+        .write => {
+            aegis.assert.pre(self.tx_kernel, "records are counted by a kernel that holds the write keys");
+            self.writeOwed();
+            if (self.phase() == .failed) return error.Closed;
+            // After close_notify nothing more is sealed, so nothing more is counted.
+            if (self.write_done.load(.acquire)) return;
+            const p = if (self.tx) |*x| x else return error.Closed;
+            if (p.owner() != .kernel) return;
+            p.account(records);
+            if (p.remaining().records > p.recordLimit() / 4) return;
+            if (p.tls12()) return self.writeFailed(error.RecordLimit);
+            self.sendKeyUpdate(false) catch |err| return self.writeFailed(err);
+        },
+    }
+}
+
 // ---------------------------------------------------------------- inbound
 
 /// Plaintext waiting for the application; empty when none.
@@ -778,6 +1061,7 @@ fn blocked(self: *const Connection) bool {
 /// with the unconsumed remainder.
 pub fn receive(self: *Connection, input: []const u8) ReceiveError!usize {
     @setRuntimeSafety(true);
+    aegis.assert.pre(!self.rx_kernel, "a kernel that holds the read keys opens the records");
     if (self.phase() == .failed) {
         // The write half failed: the read keys go too.
         if (self.rx) |*p| p.deinit();

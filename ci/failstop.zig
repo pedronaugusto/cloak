@@ -8,6 +8,8 @@ const cloak = @import("cloak");
 const cases = [_]struct { name: []const u8, message: []const u8 }{
     .{ .name = "consume", .message = "the caller consumes at most what is readable" },
     .{ .name = "acknowledge", .message = "the caller acknowledges at most what is pending" },
+    .{ .name = "control", .message = "control records go to a kernel that holds the write keys" },
+    .{ .name = "receiveControl", .message = "control records come from a kernel that holds the read keys" },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -36,4 +38,7 @@ fn misuse(gpa: std.mem.Allocator, name: []const u8) !void {
     // Nothing is readable or pending yet: one byte is past either end.
     if (std.mem.eql(u8, name, "consume")) conn.consume(1);
     if (std.mem.eql(u8, name, "acknowledge")) conn.acknowledge(1);
+    // No direction is with a kernel: there are no control records to take or give.
+    if (std.mem.eql(u8, name, "control")) _ = conn.control();
+    if (std.mem.eql(u8, name, "receiveControl")) try conn.receiveControl(21, &.{ 1, 0 });
 }

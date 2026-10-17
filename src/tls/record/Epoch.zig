@@ -3,6 +3,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Labels = @import("../crypto/Labels.zig");
+const Keys = @import("../offload/Keys.zig");
 pub const RecordCount = aegis.units.Count(struct {}, u64);
 pub const ByteCount = aegis.units.Count(struct {}, u64);
 pub const Content = enum(u8) { alert = 21, handshake = 22, application = 23 };
@@ -15,6 +16,9 @@ pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength,
 pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, PartialOverlap, RecordOverflow };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
 pub const TrialError = OpenError || error{Undecryptable};
+/// Who seals or opens an epoch's records: the epoch itself, or a kernel record layer that holds
+/// its keys (`kernel`), or a kernel that has yet to take the keys a key update made (`next`).
+pub const Owner = enum(u8) { software, kernel, next };
 
 pub fn Epoch(comptime suite: suites.Suite13) type {
     const A = suites.Aead(suite);
@@ -30,6 +34,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         bytes: ByteCount = .fromRaw(0),
         limits: struct { records: RecordCount, bytes: ByteCount },
         closed: bool = false,
+        owner: Owner = .software,
         pub fn init(key: [A.key_length]u8, iv: [12]u8, limits: Limits) InitError!Self {
             @setRuntimeSafety(true);
             if (limits.records == 0 or limits.records > 1 << 24 or limits.bytes == 0 or limits.bytes > 1 << 38) return error.InvalidLimits;
@@ -50,6 +55,27 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             traffic.moveInto(&result.traffic.?);
             return result;
         }
+        /// Copies the record keys and the next record's number into `keys` for a kernel to
+        /// take; nothing changes here until `release`.
+        pub fn exportKeys(self: *const Self, keys: *Keys) void {
+            @setRuntimeSafety(true);
+            aegis.assert.pre(!self.closed and self.owner != .kernel, "only keys this epoch holds are exported");
+            @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
+            keys.iv.exposeMut().* = self.iv.expose().*;
+            keys.sequence = self.sequence.raw();
+        }
+        /// The kernel holds the keys: they are erased here, and its records are the kernel's to
+        /// seal or open. The traffic secret stays, for the next key update.
+        pub fn release(self: *Self) void {
+            self.key.deinit();
+            self.iv.deinit();
+            self.owner = .kernel;
+        }
+        /// The kernel's count of records under these keys, read from it: the budget follows the
+        /// records it sealed or opened. A count below the one known is stale and changes nothing.
+        pub fn account(self: *Self, records: u64) void {
+            if (self.owner == .kernel and records > self.sequence.raw()) self.sequence = .fromRaw(records);
+        }
         pub const UpdateError = error{ Closed, MissingTraffic };
         /// The connection calls this only after committing/accepting the complete
         /// old-key KeyUpdate record. No public caller may install an epoch.
@@ -57,6 +83,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             @setRuntimeSafety(true);
             if (self.closed) return error.Closed;
             if (self.traffic == null) return error.MissingTraffic;
+            // A kernel takes one key update at a time: the next keys wait for it.
+            aegis.assert.pre(self.owner != .next, "a kernel takes the next keys before another update");
             var next = TrafficSecret.init(undefined);
             defer next.deinit();
             // unreachable: fixed label and hash-sized output meet the HKDF bounds.
@@ -74,6 +102,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.traffic = .init(next.expose().*);
             self.sequence = .fromRaw(0);
             self.bytes = .fromRaw(0);
+            if (self.owner == .kernel) self.owner = .next;
         }
         fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {
             // unreachable: fixed label and AEAD-sized output meet the HKDF bounds.
@@ -107,7 +136,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         /// Exact alias means input starts at out.ptr + 5; other overlap is refused.
         pub fn seal(self: *Self, content: Content, input: []const u8, padding: usize, out: []u8) SealError![]u8 {
             @setRuntimeSafety(true);
-            if (self.closed) return error.Closed;
+            if (self.closed or self.owner != .software) return error.Closed;
             if (content != .application and input.len == 0) return error.InvalidLength;
             if (input.len > max_content or padding > max_content - input.len) return error.InvalidLength;
             const inner_len = input.len + 1 + padding;
@@ -143,7 +172,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         }
         fn openChecked(self: *Self, wire: []const u8, out: []u8, trial: bool) TrialError!Plaintext {
             @setRuntimeSafety(true);
-            if (self.closed) return error.Closed;
+            if (self.closed or self.owner != .software) return error.Closed;
             if (wire.len < 5 + 17 or wire.len > 5 + max_ciphertext) return self.bad();
             if (!std.mem.eql(u8, wire[0..3], &.{ 23, 3, 3 }) or std.mem.readInt(u16, wire[3..5], .big) != wire.len - 5) return self.bad();
             const len = wire.len - 5 - A.tag_length;

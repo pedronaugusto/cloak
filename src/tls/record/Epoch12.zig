@@ -7,6 +7,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Epoch = @import("Epoch.zig");
+const Keys = @import("../offload/Keys.zig");
 
 pub const Content = Epoch.Content;
 pub const Plaintext = Epoch.Plaintext;
@@ -32,6 +33,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         bytes: Epoch.ByteCount = .fromRaw(0),
         limits: struct { records: Epoch.RecordCount, bytes: Epoch.ByteCount },
         closed: bool = false,
+        owner: Epoch.Owner = .software,
 
         /// `iv` is the key block's fixed IV: four bytes for GCM, twelve for ChaCha20-Poly1305.
         pub fn init(key: *const [A.key_length]u8, iv: *const [fixed]u8, limits: Limits) InitError!Self {
@@ -49,6 +51,33 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             self.key.deinit();
             self.iv.deinit();
             self.closed = true;
+        }
+
+        /// Copies the record keys and the next record's number into `keys` for a kernel to
+        /// take; nothing changes here until `release`. GCM and CCM records go on carrying their
+        /// number as the explicit nonce: the kernel sends the IV's last eight bytes and counts
+        /// them up with the records.
+        pub fn exportKeys(self: *const Self, keys: *Keys) void {
+            @setRuntimeSafety(true);
+            aegis.assert.pre(!self.closed and self.owner == .software, "only keys this epoch holds are exported");
+            @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
+            var iv = self.iv.expose().*;
+            if (explicit != 0) std.mem.writeInt(u64, iv[4..12], self.sequence.raw(), .big);
+            keys.iv.exposeMut().* = iv;
+            std.crypto.secureZero(u8, &iv);
+            keys.sequence = self.sequence.raw();
+        }
+
+        /// The kernel holds the keys: they are erased here, and its records are the kernel's.
+        pub fn release(self: *Self) void {
+            self.key.deinit();
+            self.iv.deinit();
+            self.owner = .kernel;
+        }
+
+        /// The kernel's count of records under these keys; a stale count changes nothing.
+        pub fn account(self: *Self, records: u64) void {
+            if (self.owner == .kernel and records > self.sequence.raw()) self.sequence = .fromRaw(records);
         }
 
         fn nonce(self: *const Self) [12]u8 {
@@ -85,7 +114,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         /// out.ptr + 5 + explicit nonce; other overlap is refused.
         pub fn seal(self: *Self, content: Content, input: []const u8, out: []u8) SealError![]u8 {
             @setRuntimeSafety(true);
-            if (self.closed) return error.Closed;
+            if (self.closed or self.owner != .software) return error.Closed;
             if (content != .application and input.len == 0) return error.InvalidLength;
             if (input.len > max_content) return error.InvalidLength;
             const wire_len = overhead + input.len;
@@ -112,7 +141,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         /// plaintext stays where the ciphertext was, after the explicit nonce.
         pub fn open(self: *Self, wire: []const u8, out: []u8) OpenError!Plaintext {
             @setRuntimeSafety(true);
-            if (self.closed) return error.Closed;
+            if (self.closed or self.owner != .software) return error.Closed;
             if (wire.len < overhead) return self.bad();
             // A ciphertext whose plaintext would pass 2^14 bytes: record_overflow (RFC 5246
             // section 6.2.3), refused before any decryption work.

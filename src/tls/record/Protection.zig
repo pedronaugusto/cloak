@@ -5,6 +5,7 @@ const suites = @import("../crypto/Suite.zig");
 const Epoch = @import("Epoch.zig");
 const Epoch12 = @import("Epoch12.zig").Epoch12;
 const Suite13 = suites.Suite13;
+const Keys = @import("../offload/Keys.zig");
 
 pub const Limits = Epoch.Limits;
 pub const Content = Epoch.Content;
@@ -13,6 +14,7 @@ pub const InitError = Epoch.InitError;
 pub const SealError = Epoch.SealError;
 pub const OpenError = Epoch.OpenError;
 pub const TrialError = Epoch.TrialError;
+pub const Owner = Epoch.Owner;
 pub const UpdateError = Epoch.Epoch(.aes_128_gcm_sha256).UpdateError || error{NoKeyUpdate};
 
 /// The most bytes protection adds around a plaintext fragment in either version.
@@ -64,6 +66,67 @@ pub fn tls12(self: *const Protection) bool {
         .tls12_aes_128_gcm, .tls12_aes_256_gcm, .tls12_chacha20_poly1305, .tls12_aes_128_ccm, .tls12_aes_256_ccm => true,
         else => false,
     };
+}
+
+/// Who seals or opens this direction's records now.
+pub fn owner(self: *const Protection) Owner {
+    return switch (self.state) {
+        inline else => |*e| e.owner,
+    };
+}
+
+/// The cipher a kernel would run for these records; null when no kernel record layer has it.
+pub fn kernelCipher(self: *const Protection) ?Keys.Cipher {
+    return switch (self.state) {
+        inline else => |_, tag| comptime Keys.Cipher.of(cipherOfTag(tag)),
+    };
+}
+
+/// Copies the version, cipher, keys and next record number into `keys`; `release` gives them
+/// up once a kernel holds them. The cipher must be one `kernelCipher` names.
+pub fn exportKeys(self: *const Protection, keys: *Keys) void {
+    @setRuntimeSafety(true);
+    const cipher = self.kernelCipher();
+    aegis.assert.pre(cipher != null, "keys are exported only for a cipher a kernel runs");
+    keys.cipher = cipher.?;
+    keys.version = if (self.tls12()) .tls12 else .tls13;
+    switch (self.state) {
+        inline else => |*e| e.exportKeys(keys),
+    }
+}
+
+/// The number of the next record: sealed or opened here, or counted by the kernel.
+pub fn records(self: *const Protection) u64 {
+    return switch (self.state) {
+        inline else => |*e| e.sequence.raw(),
+    };
+}
+
+/// The epoch's record limit.
+pub fn recordLimit(self: *const Protection) u64 {
+    return switch (self.state) {
+        inline else => |*e| e.limits.records.raw(),
+    };
+}
+
+/// Erases the keys a kernel now holds; the kernel seals or opens from here.
+pub fn release(self: *Protection) void {
+    switch (self.state) {
+        inline else => |*e| e.release(),
+    }
+}
+
+/// The kernel's record count under the keys it holds, read from it, for the budget.
+pub fn account(self: *Protection, count: u64) void {
+    switch (self.state) {
+        inline else => |*e| e.account(count),
+    }
+}
+
+fn cipherOfTag(comptime tag: @typeInfo(@FieldType(Protection, "state")).@"union".tag_type.?) suites.Cipher {
+    const name = @tagName(tag);
+    if (comptime std.mem.startsWith(u8, name, "tls12_")) return @field(suites.Cipher, name["tls12_".len..]);
+    return suites.cipherOf(@field(Suite13, name));
 }
 
 pub fn seal(self: *Protection, content: Content, input: []const u8, padding: usize, out: []u8) SealError![]u8 {

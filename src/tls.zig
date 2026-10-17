@@ -67,6 +67,17 @@ pub const psk = struct {
     pub const Hash = Psk.Hash;
     pub const max_identity = Psk.max_identity;
 };
+/// Kernel record layers (kTLS): after the handshake a connection's direction moves to the kernel,
+/// which seals or opens its records (`Connection.offload`); the connection keeps the rest.
+pub const offload = struct {
+    pub const Keys = @import("tls/offload/Keys.zig");
+    pub const Cipher = Keys.Cipher;
+    pub const Direction = Keys.Direction;
+    pub const Installer = Keys.Installer;
+    pub const InstallError = Keys.InstallError;
+    /// Linux's: keys installed on a TCP socket, record counts read back, the kernel probed.
+    pub const linux = if (@import("builtin").os.tag == .linux) @import("tls/offload/linux.zig") else struct {};
+};
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
 test {
@@ -89,4 +100,5 @@ test {
     _ = Session;
     _ = quic;
     _ = dtls;
+    _ = @import("tls/offload.zig");
 }
