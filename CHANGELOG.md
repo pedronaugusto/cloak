@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-17
+
 ### Fixed
 
 - X25519's time depended on its secret on an Apple M3: the key shares (`x25519`, X25519MLKEM768) and HPKE (an ECH server's long-lived key, a client's encapsulation) ran without the processor's data-independent timing mode, and the timing campaign on the ReleaseFast build told a fixed secret from random ones (|t| 20 to 30; with the mode, under 3). On AArch64 Linux (an M3 under virtualization) the 32-byte comparison behind every Finished, binder, tag and cookie check was told apart by where its inputs differed (|t| 18 to 23; with the mode, about 1). Every cloak call that computes with a secret (a connection's, a QUIC handshake's or a DTLS association's calls, the cookie check and key rotation, ticket-key rotation) now runs under aegis `Timing` (Arm FEAT_DIT), and the key-exchange and HPKE kernels run as `aegis.secret.scrubbed` computations, which also erase the stack they used: their temporaries were left on it. The P-curve agreements and the signatures already were. Nothing changes where the processor has no such mode.
