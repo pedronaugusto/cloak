@@ -459,7 +459,8 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             self.server_group = group;
             if (std.mem.eql(u8, random, &std.crypto.tls.hello_retry_request_sequence)) {
                 self.got_retry = true;
-                self.retry_group = std.enums.fromInt(Group, group);
+                const named: Group = @fromBackingInt(group);
+                self.retry_group = if (named.supported()) named else null;
                 try self.transcript.retry(message);
                 // Fresh material for the requested group, then the second hello.
                 for (&self.shares) |*slot| if (slot.*) |*s| {

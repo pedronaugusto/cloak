@@ -15,27 +15,36 @@ pub const retry_random = std.crypto.tls.hello_retry_request_sequence;
 /// The last eight bytes of a TLS 1.3 server's random when it negotiates TLS 1.2 (RFC 8446 section 4.1.3).
 pub const downgrade_tls12 = "DOWNGRD\x01";
 pub const Share = struct { group: Group, bytes: []const u8 };
-/// An SRTP protection profile a DTLS association keys for its media (RFC 5764 section 4.1.2,
-/// RFC 7714 section 14.2). The NULL-cipher profiles are not among them.
+/// An SRTP protection profile a DTLS association keys for its media, by its IANA number (RFC 5764
+/// section 4.1.2, RFC 7714 section 14.2). The type is open: `supported` says whether cloak keys
+/// for it; the NULL-cipher profiles are not among those.
 pub const Srtp = enum(u16) {
     aes128_cm_hmac_sha1_80 = 0x0001,
     aes128_cm_hmac_sha1_32 = 0x0002,
     aead_aes_128_gcm = 0x0007,
     aead_aes_256_gcm = 0x0008,
+    _,
+
+    /// Whether cloak keys for this profile: one of the named ones.
+    pub fn supported(profile: Srtp) bool {
+        return profile.keyLength() != null;
+    }
 
     /// The master key's length.
-    pub fn keyLength(profile: Srtp) usize {
+    pub fn keyLength(profile: Srtp) ?usize {
         return switch (profile) {
             .aes128_cm_hmac_sha1_80, .aes128_cm_hmac_sha1_32, .aead_aes_128_gcm => 16,
             .aead_aes_256_gcm => 32,
+            _ => null,
         };
     }
 
     /// The master salt's length.
-    pub fn saltLength(profile: Srtp) usize {
+    pub fn saltLength(profile: Srtp) ?usize {
         return switch (profile) {
             .aes128_cm_hmac_sha1_80, .aes128_cm_hmac_sha1_32 => 14,
             .aead_aes_128_gcm, .aead_aes_256_gcm => 12,
+            _ => null,
         };
     }
 };
@@ -93,6 +102,9 @@ pub const Options = struct {
         return options.allows12() and std.mem.containsAtLeast(Suite, options.suites, 1, &.{Suite.from12(suite)});
     }
 };
+/// A signature scheme by its IANA number (TLS SignatureScheme). The type is open: any number is a
+/// `SignatureScheme`, so a signer switching on one handles a scheme named later; `supported` says
+/// whether cloak signs or verifies with it.
 pub const SignatureScheme = enum(u16) {
     rsa_pkcs1_sha256 = 0x0401,
     rsa_pkcs1_sha384 = 0x0501,
@@ -106,6 +118,12 @@ pub const SignatureScheme = enum(u16) {
     rsa_pss_pss_sha256 = 0x0809,
     rsa_pss_pss_sha384 = 0x080a,
     rsa_pss_pss_sha512 = 0x080b,
+    _,
+
+    /// Whether cloak signs or verifies with this scheme: one of the named ones.
+    pub fn supported(scheme: SignatureScheme) bool {
+        return std.enums.tagName(SignatureScheme, scheme) != null;
+    }
 };
 /// Schemes a TLS 1.3 CertificateVerify may use.
 pub const schemes = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
@@ -120,6 +138,11 @@ pub fn validate(options: Options) ValidateError!void {
     @setRuntimeSafety(true);
     Compression.validate(options.certificate_compression, .decompress) catch return error.InvalidOptions;
     if (options.suites.len == 0 or options.suites.len > std.enums.values(Suite).len or options.groups.len == 0 or options.groups.len > std.enums.values(Group).len or options.alpn.len > 32 or options.parameters.len > 65535) return error.InvalidOptions;
+    // The suites, groups and profiles listed are ones cloak speaks: the types are open, so a
+    // caller can name any number, and every later step relies on this check.
+    for (options.suites) |suite| if (!suite.supported()) return error.InvalidOptions;
+    for (options.groups) |group| if (!group.supported()) return error.InvalidOptions;
+    for (options.srtp) |profile| if (!profile.supported()) return error.InvalidOptions;
     for (options.suites, 0..) |suite, i| for (options.suites[0..i]) |old| {
         if (old == suite) return error.InvalidOptions;
     };
@@ -461,7 +484,9 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 version13 = true;
             },
             51 => {
-                group = std.enums.fromInt(Group, try value.int(u16)) orelse return error.UnofferedSelection;
+                const named: Group = @fromBackingInt(try value.int(u16));
+                if (!named.supported()) return error.UnofferedSelection;
+                group = named;
                 if (!retry) share = (try value.vector(u16)).bytes;
             },
             41 => {

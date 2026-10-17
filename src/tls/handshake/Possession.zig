@@ -13,7 +13,8 @@ pub const Error = error{ UnofferedScheme, SchemeKeyMismatch, BadSignature, Unsup
 /// `offered` is the schemes the local side advertised; TLS 1.3 forbids any other.
 pub fn verify(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, content: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
-    const scheme = std.enums.fromInt(Scheme, scheme_id) orelse return error.UnofferedScheme;
+    const scheme: Scheme = @fromBackingInt(scheme_id);
+    if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
     const cert = try certificates.certificate.parse(leaf_der, .{});
     const algorithm = try bind(scheme, cert.public_key);
@@ -48,6 +49,8 @@ pub fn bind(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signature 
         .rsa_pss_pss_sha256 => try pss(key, true, .sha256, 32),
         .rsa_pss_pss_sha384 => try pss(key, true, .sha384, 48),
         .rsa_pss_pss_sha512 => try pss(key, true, .sha512, 64),
+        // Never offered, so never one a peer may use or a request may name.
+        _ => error.UnofferedScheme,
     };
 }
 
@@ -107,7 +110,8 @@ pub fn transcriptHash12(scheme: Scheme) ?usize {
 /// Checks a TLS 1.2 ServerKeyExchange signature over `content` (the randoms and parameters).
 pub fn verifyMessage12(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, content: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
-    const scheme = std.enums.fromInt(Scheme, scheme_id) orelse return error.UnofferedScheme;
+    const scheme: Scheme = @fromBackingInt(scheme_id);
+    if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
     const cert = try certificates.certificate.parse(leaf_der, .{});
     const algorithm = try bind12(scheme, cert.public_key);
@@ -120,7 +124,8 @@ pub fn verifyMessage12(scheme_id: u16, offered: []const Scheme, leaf_der: []cons
 /// Checks a TLS 1.2 CertificateVerify signature over a transcript `digest` of the scheme's hash.
 pub fn verifyDigest12(scheme_id: u16, offered: []const Scheme, leaf_der: []const u8, digest: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
-    const scheme = std.enums.fromInt(Scheme, scheme_id) orelse return error.UnofferedScheme;
+    const scheme: Scheme = @fromBackingInt(scheme_id);
+    if (!scheme.supported()) return error.UnofferedScheme;
     if (!std.mem.containsAtLeast(Scheme, offered, 1, &.{scheme})) return error.UnofferedScheme;
     if (transcriptHash12(scheme) != digest.len) return error.UnofferedScheme;
     const cert = try certificates.certificate.parse(leaf_der, .{});

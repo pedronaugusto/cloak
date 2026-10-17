@@ -211,6 +211,21 @@ have a share. The handshake owner must bind the subsequent suite and enforce
 one retry. No ephemeral key generation or handshake randomness is supplied by
 the encoder, and none is injected through a consumer API.
 
+The types that name IANA-registered numbers are open enums: `Group`, `Suite`,
+`SignatureScheme`, the SRTP profiles, `Alert`, the HPKE identifiers and the
+certificate-compression algorithms. Any number is a value, so a peer's list reads
+whole, and a value cloak names later does not break a caller's `switch`. What cloak
+speaks is a separate question, `supported()`, answered by the named values. Options
+are refused when they list a value cloak does not speak (`Hello.validate`), and every
+later step relies on that: the exchange kernels and SRTP key lengths take a value
+outside the named set as a broken contract (an aegis fail-stop), not as input. Where a
+number becomes one of these types (a peer's selection, a ServerKeyExchange's curve,
+a signature's scheme, a sealed ticket, a DTLS cookie) an explicit `supported()`
+check stands beside the offered-list check; `std.enums.fromInt` is not that check, as
+it never fails on an open enum. Internal types stay closed where they mean what
+cloak speaks (`Suite13`, `Suite12`, `Cipher`). `Version` stays closed: TLS versions
+are no registry, a new one is a new protocol, and their order is the min/max policy.
+
 The schedule owns handshake/master and exporter roots, wipes displaced roots,
 and transfers directional traffic owners to records. Exporters are gated on
 completion; the future handshake driver must issue completion only after peer

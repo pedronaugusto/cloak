@@ -183,13 +183,14 @@ fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid
             return p[pos.*..][0..n];
         }
     }.bytes;
-    const suite = std.enums.fromInt(suites.Suite, std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big)) orelse return error.Invalid;
-    if (suite.version() != version) return error.Invalid;
+    const suite: suites.Suite = @fromBackingInt(std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big));
+    if (!suite.supported() or suite.version() != version) return error.Invalid;
     const secret_len = (try take(plain, &at, 1))[0];
     if (secret_len != State.secretLength(version, suite)) return error.Invalid;
     out.* = .{ .version = version, .suite = suite, .issued = 0, .expires = 0, .age_add = 0, .policy = undefined };
     @memcpy(out.secret.exposeMut()[0..secret_len], try take(plain, &at, secret_len));
-    out.group = std.enums.fromInt(Group, std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big)) orelse return error.Invalid;
+    out.group = @fromBackingInt(std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big));
+    if (!out.group.supported()) return error.Invalid;
     out.issued = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     out.expires = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     const span = std.math.sub(i64, out.expires, out.issued) catch return error.Invalid;

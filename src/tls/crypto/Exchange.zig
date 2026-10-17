@@ -12,7 +12,7 @@ const MlKem1024 = std.crypto.kem.ml_kem.MLKem1024;
 /// Largest agreed secret: P-384's then ML-KEM-1024's.
 pub const max_secret = ecdh.P384.scalar_length + MlKem1024.shared_length;
 /// Largest key_share entry, either side.
-pub const max_share = Group.secp384r1_mlkem1024.clientShareLength();
+pub const max_share = Group.secp384r1_mlkem1024.clientShareLength().?;
 
 /// The NIST-curve hybrids (draft-ietf-tls-ecdhe-mlkem): the ECDH value then the ML-KEM one, on
 /// the wire and in the secret, the reverse of X25519MLKEM768's order.
@@ -50,14 +50,14 @@ const PureMlKem768 = Pure(MlKem);
 const PureMlKem1024 = Pure(MlKem1024);
 
 comptime {
-    std.debug.assert(P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength());
-    std.debug.assert(P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength());
-    std.debug.assert(P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength());
-    std.debug.assert(P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength());
-    std.debug.assert(MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength());
-    std.debug.assert(MlKem.ciphertext_length == Group.mlkem768.serverShareLength());
-    std.debug.assert(MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength());
-    std.debug.assert(MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength());
+    std.debug.assert(P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength().?);
+    std.debug.assert(P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength().?);
+    std.debug.assert(P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength().?);
+    std.debug.assert(P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength().?);
+    std.debug.assert(MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength().?);
+    std.debug.assert(MlKem.ciphertext_length == Group.mlkem768.serverShareLength().?);
+    std.debug.assert(MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength().?);
+    std.debug.assert(MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength().?);
 }
 
 pub const InitError = error{ InvalidEntropy, WeakKey };
@@ -74,7 +74,18 @@ pub fn entropyLength(group: Group) usize {
         .secp384r1_mlkem1024 => P384MlKem1024.entropy,
         .mlkem768 => MlKem.seed_length,
         .mlkem1024 => MlKem1024.seed_length,
+        _ => unsupported(),
     };
+}
+
+/// Every group reaching an exchange is one cloak speaks: options are checked for it, and a peer's
+/// choice is checked against what this end offered or listed.
+fn unsupported() noreturn {
+    aegis.assert.never("an exchange's group is one cloak speaks");
+}
+
+fn shareLength(length: ?usize) usize {
+    return length orelse unsupported();
 }
 
 pub const Secret = aegis.Secret([max_secret]u8);
@@ -92,7 +103,7 @@ pub const Agreed = struct {
     }
 };
 
-const Private = union(Group) {
+const Private = union(enum) {
     x25519: aegis.Secret([X25519.secret_length]u8),
     p256: aegis.Secret([ecdh.P256.scalar_length]u8),
     p384: aegis.Secret([ecdh.P384.scalar_length]u8),
@@ -142,6 +153,7 @@ pub const Share = struct {
             .secp384r1_mlkem1024 => try initNist(P384MlKem1024, &self, entropy),
             .mlkem768 => self.private = .{ .mlkem768 = try initPure(PureMlKem768, &self, entropy) },
             .mlkem1024 => self.private = .{ .mlkem1024 = try initPure(PureMlKem1024, &self, entropy) },
+            _ => unsupported(),
         }
         return self;
     }
@@ -178,13 +190,13 @@ pub const Share = struct {
 
     /// The `key_exchange` bytes of the client's key_share entry.
     pub fn wire(self: *const Share) []const u8 {
-        return self.public[0..self.group.clientShareLength()];
+        return self.public[0..shareLength(self.group.clientShareLength())];
     }
 
     /// Combines the private half with the server's `key_exchange` bytes.
     pub fn agree(self: *const Share, peer: []const u8) AgreeError!Agreed {
         @setRuntimeSafety(true);
-        if (peer.len != self.group.serverShareLength()) return error.InvalidShare;
+        if (peer.len != shareLength(self.group.serverShareLength())) return error.InvalidShare;
         var out: Agreed = .{ .secret = .init(@splat(0)), .len = 0 };
         errdefer out.deinit();
         const into = out.secret.exposeMut();
@@ -295,6 +307,7 @@ pub fn respondEntropyLength(group: Group) usize {
         .secp384r1_mlkem1024 => P384MlKem1024.respond_entropy,
         .mlkem768 => MlKem.encaps_seed_length,
         .mlkem1024 => MlKem1024.encaps_seed_length,
+        _ => unsupported(),
     };
 }
 
@@ -320,8 +333,8 @@ pub const Response = struct {
 pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!Response {
     @setRuntimeSafety(true);
     if (entropy.len != respondEntropyLength(group)) return error.InvalidEntropy;
-    if (client_share.len != group.clientShareLength()) return error.InvalidShare;
-    var out: Response = .{ .public = @splat(0), .public_len = group.serverShareLength(), .agreed = .{ .secret = .init(@splat(0)), .len = 0 } };
+    if (client_share.len != shareLength(group.clientShareLength())) return error.InvalidShare;
+    var out: Response = .{ .public = @splat(0), .public_len = shareLength(group.serverShareLength()), .agreed = .{ .secret = .init(@splat(0)), .len = 0 } };
     errdefer out.deinit();
     const into = out.agreed.secret.exposeMut();
     switch (group) {
@@ -354,6 +367,7 @@ pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (Ini
         .secp384r1_mlkem1024 => try respondNist(P384MlKem1024, &out, client_share, entropy),
         .mlkem768 => try respondPure(MlKem, &out, client_share, entropy),
         .mlkem1024 => try respondPure(MlKem1024, &out, client_share, entropy),
+        _ => unsupported(),
     }
     return out;
 }

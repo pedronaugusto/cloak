@@ -67,8 +67,8 @@ pub fn serverKeyExchange(message: []const u8) ParseError!ServerKeyExchange {
     if (parsed.kind != .server_key_exchange) return error.InvalidMessage;
     var r: Reader = .{ .bytes = parsed.bytes };
     if (try r.int(u8) != 3) return error.IllegalParameter;
-    const group = std.enums.fromInt(Group, try r.int(u16)) orelse return error.IllegalParameter;
-    if (!group.classical()) return error.IllegalParameter;
+    const group: Group = @fromBackingInt(try r.int(u16));
+    if (!group.supported() or !group.classical()) return error.IllegalParameter;
     const public = (try r.vector(u8)).bytes;
     if (public.len != group.serverShareLength()) return error.IllegalParameter;
     const params = parsed.bytes[0..r.pos];

@@ -174,3 +174,22 @@ test "C8 a first hello in fragments: a DTLS 1.2 server answers its first fragmen
     const short = try hello(&buffer, .tls12, "", 0);
     try std.testing.expect(cookies.check(&only12, "client:1", now, firstFragment(short, 36), &out) == .drop);
 }
+
+test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code points: a cookie names only a group cloak speaks)" {
+    // `check` reads the caller's options unchecked. Listing ffdhe2048 first, and a client
+    // offering it (in place of P-256) without a share: the retry request asks for P-384.
+    var cookies = try keyed();
+    defer cookies.deinit();
+    const ffdhe2048: Hello.Group = @enumFromInt(0x0100);
+    const listing: Datagram.ServerOptions = .{ .credentials = &.{}, .groups = &.{ ffdhe2048, .p384 } };
+    var first_buf: [2048]u8 = undefined;
+    const first = try hello(&first_buf, .tls13, "", 0);
+    const at = std.mem.find(u8, first, &.{ 0x11, 0xec, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18 }).?;
+    first[at + 4 ..][0..2].* = .{ 0x01, 0x00 };
+    var out: [4096]u8 = undefined;
+    const response = cookies.check(&listing, "a", .fromNanoseconds(1), first, &out).respond;
+    // The retry request's key_share: the selected group.
+    const body = response[Record.header12 + 12 ..];
+    const share = std.mem.find(u8, body, &.{ 0, 51, 0, 2 }).?;
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x18 }, body[share + 4 ..][0..2]);
+}

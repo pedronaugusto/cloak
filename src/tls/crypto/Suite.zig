@@ -42,7 +42,9 @@ pub const Transport = enum(u8) {
     }
 };
 
-/// Every suite of either version, by its IANA number.
+/// A cipher suite of either version by its IANA number (TLS Cipher Suites). The type is open: any
+/// number is a `Suite`, and a suite named later is no break; `supported` says whether cloak
+/// speaks it.
 pub const Suite = enum(u16) {
     aes_128_gcm_sha256 = 0x1301,
     aes_256_gcm_sha384 = 0x1302,
@@ -56,6 +58,7 @@ pub const Suite = enum(u16) {
     ecdhe_ecdsa_chacha20_poly1305_sha256 = 0xcca9,
     ecdhe_ecdsa_aes_128_ccm = 0xc0ac,
     ecdhe_ecdsa_aes_256_ccm = 0xc0ad,
+    _,
 
     /// The default offer and preference: TLS 1.3 first, AES-128-GCM first within each version.
     pub const default: []const Suite = &.{
@@ -73,8 +76,16 @@ pub const Suite = enum(u16) {
     /// The TLS 1.3 suites alone, for QUIC and other TLS 1.3-only policies.
     pub const tls13_only: []const Suite = &.{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256, .aes_256_gcm_sha384 };
 
-    pub fn version(suite: Suite) Version {
-        return if (suite.tls13() != null) .tls13 else .tls12;
+    /// Whether cloak speaks this suite: one of the named ones.
+    pub fn supported(suite: Suite) bool {
+        return suite.version() != null;
+    }
+
+    /// The version the suite belongs to; null for one cloak does not speak.
+    pub fn version(suite: Suite) ?Version {
+        if (suite.tls13() != null) return .tls13;
+        if (suite.tls12() != null) return .tls12;
+        return null;
     }
 
     pub fn tls13(suite: Suite) ?Suite13 {
@@ -216,4 +227,5 @@ comptime {
         std.debug.assert(AeadOf(cipher).nonce_length == 12);
     }
     for (std.enums.values(Suite)) |suite| std.debug.assert((suite.tls13() == null) != (suite.tls12() == null));
+    std.debug.assert(std.enums.values(Suite).len == std.enums.values(Suite13).len + std.enums.values(Suite12).len);
 }

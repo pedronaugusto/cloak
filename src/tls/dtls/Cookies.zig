@@ -150,10 +150,12 @@ fn retry13(self: *const Cookies, policy: Hello.Options, address: []const u8, sec
         if (candidate.tls13()) |s| if (hello.offersSuite(@backingInt(s))) break s;
     } else return .drop;
     var asked = false;
+    // `check` reads the caller's options unchecked (the association checks them), so a cookie
+    // never names a group cloak does not speak.
     const group = for (policy.groups) |g| {
-        if (hello.offersGroup(g) and hello.shareFor(g) != null) break g;
+        if (g.supported() and hello.offersGroup(g) and hello.shareFor(g) != null) break g;
     } else for (policy.groups) |g| {
-        if (hello.offersGroup(g)) {
+        if (g.supported() and hello.offersGroup(g)) {
             asked = true;
             break g;
         }
@@ -195,7 +197,8 @@ fn admit13(self: *const Cookies, address: []const u8, seconds: u64, cookie: []co
     if (!aegis.secret.equal(32, &expected, cookie[47 + hash_len ..][0..32]).declassify("a forged cookie is dropped")) return .drop;
     if (!self.fresh(std.mem.readInt(u64, cookie[2..10], .big), seconds)) return .drop;
     const suite = std.enums.fromInt(suites.Suite13, std.mem.readInt(u16, cookie[10..12], .big)) orelse return .drop;
-    const group = std.enums.fromInt(Group, std.mem.readInt(u16, cookie[12..14], .big)) orelse return .drop;
+    const group: Group = @fromBackingInt(std.mem.readInt(u16, cookie[12..14], .big));
+    if (!group.supported()) return .drop;
     if (suites.digestLength(suite) != hash_len) return .drop;
     var retry: Admission.Retry = .{
         .suite = suite,

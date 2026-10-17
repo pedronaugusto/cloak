@@ -378,7 +378,8 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     if (self.state.phase() != .c_verify12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const parsed = try Messages.certificateVerify(msg);
-    const scheme = std.enums.fromInt(Hello.SignatureScheme, parsed.scheme) orelse return error.UnofferedScheme;
+    const scheme: Hello.SignatureScheme = @fromBackingInt(parsed.scheme);
+    if (!scheme.supported()) return error.UnofferedScheme;
     if (scheme == .ed25519) {
         // Ed25519 signs the handshake messages, which the transcript kept whole.
         if (scratch.transcripts.keeper == null) return error.UnofferedScheme;

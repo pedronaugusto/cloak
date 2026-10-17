@@ -229,7 +229,9 @@ test "F59 catalogue_version_rollback_sentinel_and_scsv" {
 test "F60 catalogue_sloth_signature_hash_and_context_downgrade" {
     // MD5 and SHA-1 signature schemes are neither offered nor accepted.
     for ([_]u16{ 0x0101, 0x0201, 0x0203, 0x0202 }) |scheme| {
-        try std.testing.expect(std.enums.fromInt(Hello.SignatureScheme, scheme) == null);
+        const named: Hello.SignatureScheme = @fromBackingInt(scheme);
+        try std.testing.expect(!named.supported());
+        try std.testing.expect(std.mem.findScalar(Hello.SignatureScheme, &Hello.schemes12, named) == null);
     }
     var buffer: [256]u8 = undefined;
     var params: [128]u8 = undefined;

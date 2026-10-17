@@ -562,6 +562,7 @@ pub fn Peer(comptime suite: Suite13) type {
                 .secp384r1_mlkem1024 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP384Sha384, std.crypto.kem.ml_kem.MLKem1024, share, &result),
                 .mlkem768 => try pure(std.crypto.kem.ml_kem.MLKem768, share, &result),
                 .mlkem1024 => try pure(std.crypto.kem.ml_kem.MLKem1024, share, &result),
+                _ => return error.UnsupportedGroup,
             }
             return result;
         }

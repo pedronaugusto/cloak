@@ -511,7 +511,7 @@ pub fn srtpKeys(self: *const Datagram) SrtpError!SrtpKeys {
     if (self.phase_now != .connected) return error.NotConnected;
     const profile = (self.negotiated orelse return error.NotConnected).srtp orelse return error.NoSrtp;
     var keys: SrtpKeys = .{ .profile = profile, .material = .init(@splat(0)), .client = self.role == .client };
-    const len = 2 * (profile.keyLength() + profile.saltLength());
+    const len = 2 * (keyLength(profile) + saltLength(profile));
     // No context: in DTLS 1.2 that differs from an empty one (RFC 5764 section 4.2, RFC 5705).
     self.hs.exportKeyingMaterial(keys.material.exposeMut()[0..len], "EXTRACTOR-dtls_srtp", null) catch {
         keys.deinit();
@@ -546,8 +546,8 @@ pub const SrtpKeys = struct {
     }
 
     fn part(self: *const SrtpKeys, which: enum { key, salt }, client_side: bool) []const u8 {
-        const key = self.profile.keyLength();
-        const salt = self.profile.saltLength();
+        const key = keyLength(self.profile);
+        const salt = saltLength(self.profile);
         const bytes = self.material.expose();
         return switch (which) {
             .key => bytes[if (client_side) 0 else key..][0..key],
@@ -560,6 +560,13 @@ pub const SrtpKeys = struct {
     }
 };
 
+// A negotiated profile is one this end listed, and options list only profiles cloak keys for.
+fn keyLength(profile: Srtp) usize {
+    return profile.keyLength() orelse aegis.assert.never("a negotiated SRTP profile is one cloak keys for");
+}
+fn saltLength(profile: Srtp) usize {
+    return profile.saltLength() orelse aegis.assert.never("a negotiated SRTP profile is one cloak keys for");
+}
 /// The DTLS version, once the hellos chose it.
 fn dtls13(self: *const Datagram) bool {
     return self.hs.version() == .tls13;

@@ -205,7 +205,7 @@ test "F91 catalogue_pq_group_specific_layout_and_auth_policy (group layouts)" {
     fill(&entropy, 29);
     var x_share = try Exchange.Share.init(.x25519_mlkem768, &entropy);
     defer x_share.deinit();
-    var swapped: [Group.secp256r1_mlkem768.clientShareLength()]u8 = @splat(0);
+    var swapped: [Group.secp256r1_mlkem768.clientShareLength().?]u8 = @splat(0);
     @memcpy(swapped[0..1184], x_share.wire()[0..1184]);
     var respond_entropy: [Exchange.respondEntropyLength(.secp256r1_mlkem768)]u8 = undefined;
     fill(&respond_entropy, 31);
@@ -216,13 +216,13 @@ test "F91 catalogue_pq_group_specific_layout_and_auth_policy (group layouts)" {
     var p_share = try Exchange.Share.init(.secp256r1_mlkem768, &p_entropy);
     defer p_share.deinit();
     try std.testing.expectError(error.InvalidShare, Exchange.respond(.secp256r1_mlkem768, p_share.wire()[0 .. p_share.wire().len - 1], &respond_entropy));
-    var short: [Group.secp256r1_mlkem768.serverShareLength() - 1]u8 = @splat(4);
+    var short: [Group.secp256r1_mlkem768.serverShareLength().? - 1]u8 = @splat(4);
     try std.testing.expectError(error.InvalidShare, p_share.agree(&short));
     // A point off the curve in the ECDH half is refused before ML-KEM runs.
-    var reply: [Group.secp256r1_mlkem768.serverShareLength()]u8 = @splat(0);
+    var reply: [Group.secp256r1_mlkem768.serverShareLength().?]u8 = @splat(0);
     reply[0] = 4;
     try std.testing.expectError(error.InvalidShare, p_share.agree(&reply));
-    for (std.enums.values(Group)) |group| try std.testing.expect(Exchange.max_share >= group.clientShareLength() and Exchange.max_share >= group.serverShareLength());
+    for (std.enums.values(Group)) |group| try std.testing.expect(Exchange.max_share >= group.clientShareLength().? and Exchange.max_share >= group.serverShareLength().?);
 }
 
 fn pureLayout(comptime group: Group, comptime K: type) !void {
