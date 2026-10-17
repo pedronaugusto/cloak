@@ -158,7 +158,7 @@ pub fn alertFor(err: anyerror) Alert {
         error.EchRejected => .ech_required,
         error.EchDecryptFailed => .decrypt_error,
         error.MissingExtension => .missing_extension,
-        error.HybridRequired => .insufficient_security,
+        error.HybridRequired, error.PqAuthenticationRequired => .insufficient_security,
         error.UnsupportedVersion => .protocol_version,
         error.NoExtendedMasterSecret, error.NoSecureRenegotiation, error.NoClientCertificate => .handshake_failure,
         error.InappropriateFallback => .inappropriate_fallback,
@@ -305,7 +305,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     try Hello.validate(options.hello);
     switch (options.verify) {
         .full => if (options.identity == .none) return error.InvalidOptions,
-        .none => {},
+        // Post-quantum authentication is of a verified path.
+        .none => if (options.hello.require_pq_auth) return error.InvalidOptions,
     }
     // Middlebox compatibility is a stream's: QUIC and DTLS have neither its session id nor its
     // ChangeCipherSpec.
@@ -618,7 +619,7 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
     part(&h, "cloak session cache v1");
     part(&h, namespace);
     part(&h, options.hello.sni);
-    part(&h, &.{ @backingInt(options.hello.transport), @intFromBool(options.hello.require_hybrid), @intFromBool(options.hello.require_alpn) });
+    part(&h, &.{ @backingInt(options.hello.transport), @intFromBool(options.hello.require_hybrid), @intFromBool(options.hello.require_alpn), @intFromBool(options.hello.require_pq_auth) });
     part(&h, std.mem.asBytes(&options.hello.alpn.len));
     for (options.hello.alpn) |protocol| part(&h, protocol);
     // The reference identity and the whole verification policy, through the request digest of
@@ -743,6 +744,7 @@ pub fn provideVerification(self: *Client, token: types.Token, receipt: *const ty
     @setRuntimeSafety(true);
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
+    if (self.options.hello.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
     try self.state.advance(.verify_chain, self.verifyEpoch(), .chain, true);
     self.authenticated = true;
     // A session resumed from this one is authenticated no longer than this verdict holds.
@@ -1444,7 +1446,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, true, self.scratch.?.transcripts.digest(&digest_buf));
-    try Possession.verify(parsed.scheme, &Hello.schemes, self.scratch.?.chain[0], content, parsed.signature);
+    try Possession.verify(parsed.scheme, Hello.verifySchemes(self.options.hello), self.scratch.?.chain[0], content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
 }

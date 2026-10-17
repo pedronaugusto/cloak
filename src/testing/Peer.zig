@@ -31,6 +31,20 @@ pub const pki = struct {
     pub const rsa_pem = @embedFile("pki/rsa.key.pem");
     pub const client_pem = @embedFile("pki/client.key.pem");
     pub const client_ed25519_pem = @embedFile("pki/client_ed25519.key.pem");
+    pub const mldsa_ca = @embedFile("pki/mldsa_ca.der");
+    pub const mixed_ca = @embedFile("pki/mixed_ca.der");
+    pub const mldsa44 = @embedFile("pki/mldsa44.der");
+    pub const mldsa65 = @embedFile("pki/mldsa65.der");
+    pub const mldsa87 = @embedFile("pki/mldsa87.der");
+    pub const mldsa44_classical = @embedFile("pki/mldsa44_classical.der");
+    pub const p256_pqca = @embedFile("pki/p256_pqca.der");
+    pub const client_mldsa65 = @embedFile("pki/client_mldsa65.der");
+    pub const mldsa44_pem = @embedFile("pki/mldsa44.key.pem");
+    pub const mldsa65_pem = @embedFile("pki/mldsa65.key.pem");
+    pub const mldsa87_pem = @embedFile("pki/mldsa87.key.pem");
+    pub const mldsa44_classical_pem = @embedFile("pki/mldsa44_classical.key.pem");
+    pub const p256_pqca_pem = @embedFile("pki/p256_pqca.key.pem");
+    pub const client_mldsa65_pem = @embedFile("pki/client_mldsa65.key.pem");
     /// A time inside every fixture's validity.
     pub const time: i64 = 1_800_000_000;
 };

@@ -41,6 +41,9 @@ pub const Options = struct {
     suites: []const Suite = Suite.tls13_only,
     groups: []const Group = Group.default,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
     /// TLS 1.3 session resumption from a ticket cache (no early data: QUIC 0-RTT is not offered).
     resumption: ?Client.Resumption = null,
@@ -67,6 +70,9 @@ pub const ServerOptions = struct {
     suites: []const Suite = Suite.tls13_only,
     groups: []const Group = Group.default,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
     /// Session tickets to issue and resume from; tickets never permit 0-RTT.
@@ -157,6 +163,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
             .alpn = options.alpn,
             .require_alpn = true,
             .require_hybrid = options.require_hybrid,
+            .require_pq_auth = options.require_pq_auth,
             .transport = .quic,
             .parameters = options.parameters,
             .certificate_compression = options.certificate_compression,
@@ -187,6 +194,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
         .alpn = options.alpn,
         .require_alpn = true,
         .require_hybrid = options.require_hybrid,
+        .require_pq_auth = options.require_pq_auth,
         .transport = .quic,
         .parameters = options.parameters,
         .credentials = options.credentials,

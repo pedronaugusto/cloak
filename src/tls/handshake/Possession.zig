@@ -43,6 +43,9 @@ pub fn bind(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signature 
         .ecdsa_p256_sha256 => if (key == .ec and key.ec.curve == .p256) .{ .ecdsa = .sha256 } else error.SchemeKeyMismatch,
         .ecdsa_p384_sha384 => if (key == .ec and key.ec.curve == .p384) .{ .ecdsa = .sha384 } else error.SchemeKeyMismatch,
         .ed25519 => if (key == .ed25519) .ed25519 else error.SchemeKeyMismatch,
+        .mldsa44 => mldsa(key, .mldsa44),
+        .mldsa65 => mldsa(key, .mldsa65),
+        .mldsa87 => mldsa(key, .mldsa87),
         .rsa_pss_rsae_sha256 => try pss(key, false, .sha256, 32),
         .rsa_pss_rsae_sha384 => try pss(key, false, .sha384, 48),
         .rsa_pss_rsae_sha512 => try pss(key, false, .sha512, 64),
@@ -51,6 +54,19 @@ pub fn bind(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signature 
         .rsa_pss_pss_sha512 => try pss(key, true, .sha512, 64),
         // Never offered, so never one a peer may use or a request may name.
         _ => error.UnofferedScheme,
+    };
+}
+
+fn mldsa(key: Algorithm.PublicKey, level: Algorithm.MlDsa) Error!Algorithm.Signature {
+    return if (key == .mldsa and key.mldsa.level == level) .{ .mldsa = level } else error.SchemeKeyMismatch;
+}
+
+/// The TLS scheme of an ML-DSA parameter set.
+pub fn mldsaScheme(level: Algorithm.MlDsa) Scheme {
+    return switch (level) {
+        .mldsa44 => .mldsa44,
+        .mldsa65 => .mldsa65,
+        .mldsa87 => .mldsa87,
     };
 }
 
@@ -65,6 +81,19 @@ fn pss(key: Algorithm.PublicKey, restricted: bool, hash: Algorithm.Hash, salt: u
     return .{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = salt } };
 }
 
+/// Whether a verified path (leaf first, the trust anchor last) is signed with ML-DSA at every
+/// link: each certificate but the anchor carries an ML-DSA signature. The anchor's own signature
+/// authenticates nothing; the leaf's key is checked by its CertificateVerify scheme.
+pub fn postQuantumPath(path: []const []const u8) bool {
+    @setRuntimeSafety(true);
+    if (path.len == 0) return false;
+    for (path[0 .. path.len - 1]) |der| {
+        const cert = certificates.certificate.parse(der, .{}) catch return false;
+        if (cert.signature_algorithm != .mldsa) return false;
+    }
+    return true;
+}
+
 /// The scheme a client uses for a leaf, in preference order, among those the server lists.
 pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
@@ -72,6 +101,9 @@ pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512 },
+        .mldsa => |m| switch (m.level) {
+            inline else => |level| &.{comptime mldsaScheme(level)},
+        },
     };
     for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind, scheme, key)) return scheme;
     return null;
@@ -160,6 +192,8 @@ pub fn chooseServer12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 },
+        // TLS 1.3's only.
+        .mldsa => &.{},
     };
     for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
     return null;
@@ -173,6 +207,7 @@ pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
+        .mldsa => &.{},
     };
     for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
     return null;

@@ -189,6 +189,8 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
         // needs the messages the transcript kept from the start.
         .ec => ecdsa_sign,
         .ed25519 => if (scratch.transcripts.keeper != null) ecdsa_sign else return null,
+        // ML-DSA is TLS 1.3's only (draft-ietf-tls-mldsa).
+        .mldsa => return null,
     };
     if (scratch.cr_types & wanted == 0) return null;
     const request: Messages12.CertificateRequest = .{ .types = "", .schemes = scratch.cr_schemes[0..scratch.cr_len] };

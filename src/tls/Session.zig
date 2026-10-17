@@ -109,6 +109,9 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
     /// Required when `auth` is an identity cloak holds no signing key for.
     signer: ?Signer = null,
@@ -198,6 +201,7 @@ pub fn open(
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
+        .require_pq_auth = options.require_pq_auth,
         .auth = options.auth,
         .resumption = resumptionFor(options),
         .ech = options.ech,
@@ -262,6 +266,9 @@ pub const ServerOptions = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     /// How a presented client chain is checked.
     client_trust: Trust = .none,
@@ -316,6 +323,7 @@ pub fn accept(
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
+        .require_pq_auth = options.require_pq_auth,
         .client_auth = options.client_auth,
         .client_verify = policy,
         .tickets = options.tickets,

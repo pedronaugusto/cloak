@@ -3,6 +3,7 @@ const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const A = @import("../certificate/Algorithm.zig");
 const p256 = @import("../crypto/p256.zig");
+const mldsa = @import("../crypto/mldsa.zig");
 pub const Error = error{ InvalidSignature, UnsupportedAlgorithm, InvalidPublicKey };
 /// The longest digest an algorithm here uses.
 pub const max_digest = 64;
@@ -18,6 +19,22 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
             },
             else => return error.InvalidPublicKey,
         },
+        // Pure ML-DSA over the message with an empty context, as X.509 (RFC 9881) and TLS
+        // (draft-ietf-tls-mldsa) use it.
+        .mldsa => |level| switch (key) {
+            .mldsa => |k| {
+                if (k.level != level) return error.InvalidPublicKey;
+                return switch (level) {
+                    inline else => |tag| {
+                        const M = mldsa.Scheme(tag);
+                        if (k.bytes.len != M.public_key_length) return error.InvalidPublicKey;
+                        if (signature.len != M.signature_length) return error.InvalidSignature;
+                        M.verify(k.bytes[0..M.public_key_length], message, "", signature[0..M.signature_length]) catch return error.InvalidSignature;
+                    },
+                };
+            },
+            else => return error.InvalidPublicKey,
+        },
         else => {
             var buffer: [max_digest]u8 = undefined;
             return verifyDigest(key, algorithm, digestOf(algorithm, message, &buffer), signature);
@@ -30,7 +47,7 @@ pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u
     const hash: A.Hash = switch (algorithm) {
         .rsa, .ecdsa => |h| h,
         .pss => |p| p.hash,
-        .ed25519, .unsupported => unreachable, // callers route these elsewhere
+        .ed25519, .mldsa, .unsupported => unreachable, // callers route these elsewhere
     };
     return switch (hash) {
         inline else => |h| {
@@ -45,7 +62,7 @@ pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u
 pub fn verifyDigest(key: A.PublicKey, algorithm: A.Signature, digest: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     switch (algorithm) {
-        .unsupported, .ed25519 => return error.UnsupportedAlgorithm,
+        .unsupported, .ed25519, .mldsa => return error.UnsupportedAlgorithm,
         .rsa => |h| switch (key) {
             .rsa => |k| {
                 if (k.pss_only) return error.UnsupportedAlgorithm;

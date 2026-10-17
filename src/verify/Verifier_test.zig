@@ -116,3 +116,17 @@ test "catalogue_verification_constraint_flood_is_bounded" {
         }
     }
 }
+
+test "a signature-only key asserting encipherment or agreement is refused (RFC 8410, RFC 9881)" {
+    // An Ed25519 leaf whose keyUsage adds keyEncipherment, under a P-256 root; x509-limbo
+    // covers ML-DSA's rfc9881 cases.
+    const anchor = @embedFile("../testing/pki/mixed_ca.der");
+    const ed25519 = @embedFile("../testing/pki/ed25519_key_encipherment.der");
+    const req: T.Request = .{ .chain = &.{ed25519}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(1_800_000_000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    try std.testing.expectError(error.InvalidPurpose, V.verify(std.testing.allocator, req, &.{anchor}));
+    // The same root and profile with an ML-DSA-44 leaf that asserts only digitalSignature passes.
+    var ok = req;
+    ok.chain = &.{@embedFile("../testing/pki/mldsa44_classical.der")};
+    var receipt = try V.verify(std.testing.allocator, ok, &.{anchor});
+    receipt.deinit();
+}

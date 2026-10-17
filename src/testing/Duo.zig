@@ -16,7 +16,7 @@ const Compression = @import("../tls/handshake/Compression.zig");
 const Psk = @import("../tls/handshake/Psk.zig");
 pub const pki = @import("Peer.zig").pki;
 
-pub const Cert = enum { p256, p384, ed25519, rsa };
+pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -38,6 +38,11 @@ pub const Options = struct {
     client_cert: bool = false,
     /// That certificate's key is Ed25519 (P-256 otherwise).
     client_ed25519: bool = false,
+    /// That certificate is ML-DSA-65 under the ML-DSA root.
+    client_mldsa: bool = false,
+    /// Post-quantum authentication required of the server (client) and of the client (server).
+    client_require_pq_auth: bool = false,
+    server_require_pq_auth: bool = false,
     /// The client's key is held elsewhere: the harness signs (Ed25519 only).
     client_external: bool = false,
     /// Bytes moved per receive call, to cut records and messages at every boundary.
@@ -72,6 +77,8 @@ pub const Options = struct {
     /// Provisioned keys: the client's and the server's lookup.
     client_psk: ?Psk.External = null,
     server_psk: ?Psk.Lookup = null,
+    /// What the client connection allocates from, to measure it; the harness's own otherwise.
+    client_gpa: ?std.mem.Allocator = null,
 };
 
 const Duo = @This();
@@ -96,6 +103,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
     try self.trust.addDer(pki.ca, .{});
+    try self.trust.addDer(pki.mldsa_ca, .{});
+    try self.trust.addDer(pki.mixed_ca, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const key = try certificates.PrivateKey.parse(gpa, switch (options.cert) {
@@ -103,6 +112,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .p384 => pki.p384_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
+        .mldsa44 => pki.mldsa44_pem,
+        .mldsa65 => pki.mldsa65_pem,
+        .mldsa87 => pki.mldsa87_pem,
+        .mldsa44_classical => pki.mldsa44_classical_pem,
+        .p256_pqca => pki.p256_pqca_pem,
     }, .{});
     defer key.deinit();
     const leaf = switch (options.cert) {
@@ -110,18 +124,28 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .p384 => pki.p384,
         .ed25519 => pki.ed25519,
         .rsa => pki.rsa,
+        .mldsa44 => pki.mldsa44,
+        .mldsa65 => pki.mldsa65,
+        .mldsa87 => pki.mldsa87,
+        .mldsa44_classical => pki.mldsa44_classical,
+        .p256_pqca => pki.p256_pqca,
     };
-    self.identity = try certificates.Identity.init(gpa, &.{ leaf, pki.ca }, key, .{});
+    const root = switch (options.cert) {
+        .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
+        .mldsa44_classical => pki.mixed_ca,
+        else => pki.ca,
+    };
+    self.identity = try certificates.Identity.init(gpa, &.{ leaf, root }, key, .{});
     errdefer self.identity.deinit();
     self.auth = null;
     if (options.client_cert) {
-        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
+        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
-        const chain = &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
+        const chain: []const []const u8 = if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
         self.auth = if (options.client_external) try certificates.ClientAuth.initExternal(gpa, chain, .{}) else try certificates.ClientAuth.init(gpa, chain, client_key, .{});
     }
     errdefer if (self.auth) |auth| auth.deinit();
-    self.client = try Connection.client(gpa, .{
+    self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
         .verify = if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .pins = options.pins } },
         .ech = options.client_ech,
@@ -133,6 +157,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .max_version = options.client_max,
         .groups = options.client_groups,
         .require_hybrid = options.client_require_hybrid,
+        .require_pq_auth = options.client_require_pq_auth,
         .alpn = options.client_alpn,
         .auth = self.auth,
     });
@@ -144,6 +169,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .max_version = options.server_max,
         .groups = options.server_groups,
         .require_hybrid = options.server_require_hybrid,
+        .require_pq_auth = options.server_require_pq_auth,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
         .client_verify = if (options.client_auth != .none) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,

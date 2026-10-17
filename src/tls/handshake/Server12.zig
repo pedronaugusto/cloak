@@ -56,6 +56,8 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     const wanted: @TypeOf(suites.Suite12.authentication(.ecdhe_rsa_aes_128_gcm_sha256)) = switch (leaf.public_key) {
         .rsa => .rsa,
         .ec, .ed25519 => .ecdsa,
+        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
+        .mldsa => return error.NoSharedSuite,
     };
     // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
     switch (leaf.public_key) {

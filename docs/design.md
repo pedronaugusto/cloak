@@ -976,3 +976,44 @@ kernel takes is a probe's verdict, never its version string. The control-message
 and the wait when the receive path stops for new keys are the caller's (reactor's, in the
 family). TLS_TX_ZEROCOPY_RO is never set, so a file sent is sealed as it was when sent. Tests
 play a kernel in software (every OS) and run the real one in Linux VMs on 6.8 and 7.0.
+
+## ML-DSA (C10)
+
+ML-DSA-44, -65 and -87 (FIPS 204) sign certificates and TLS 1.3 CertificateVerify messages:
+pure ML-DSA with an empty context, over the TBSCertificate (RFC 9881) or the TLS 1.3 signed
+content (draft-ietf-tls-mldsa, schemes 0x0904 to 0x0906). The identifiers are pinned: OIDs
+2.16.840.1.101.3.4.3.17 to .19 with absent parameters, public keys and signatures of their
+exact lengths, and TLS 1.2 never negotiates them (an ML-DSA credential has no TLS 1.2 suite; a
+client that offers both versions lists the ML-DSA schemes for TLS 1.3). A key whose keyUsage
+asserts keyEncipherment, dataEncipherment, keyAgreement, encipherOnly or decipherOnly is
+refused, as RFC 9881 says of ML-DSA and RFC 8410 of Ed25519.
+
+The implementation is cloak's (`src/crypto/mldsa.zig`), after the review the design asked of
+std's: std's arithmetic is branch-free on secrets where it should be, but its key types cache
+the whole matrix A, and its key generation with a signature puts 770 KiB of ML-DSA-87 on the
+stack in ReleaseFast and its verification 290 KiB, past a 512 KiB thread stack. cloak's expands A one polynomial at a time where
+it is used and keeps nothing but the expanded private key: ML-DSA-87 signs in 18 KiB of stack,
+verifies in 12 KiB, derives a key in 15 KiB. Secret values (s1, s2, t0, the mask y, w0, the
+hints before they are released) are handled branch-free and index-free, the norm checks
+included; a rejected candidate's verdict is public, as are A, c and the signature, and ExpandS's
+rejection sampling over the seed's SHAKE stream varies as FIPS 204's reference does. Signing is
+hedged with 32 fresh bytes (`PrivateKey.noiseLength`). It matches std byte for byte (keys,
+deterministic and hedged signatures, each verifying the other's) and passes Wycheproof's
+ML-DSA vectors: verification of all three sets with malformed hints, norm violations and wrong
+lengths, signing from seeds with their randomness, and expanded keys out of range refused.
+Timing evidence on the built binary belongs with C7's.
+
+A private key is read in every RFC 9881 form: the 32-byte seed, the expanded key, or both. A
+seed derives the key; both must agree byte for byte; an expanded key alone is checked against
+itself (s1 and s2 within eta, t0 the low bits of A s1 + s2, tr the hash of the public key that
+results). What is kept is the expanded key and the public key, and `Identity` checks the public
+key against the certificate's.
+
+Post-quantum authentication is required explicitly, never implied: `require_pq_auth` on a
+client means the server's CertificateVerify is ML-DSA (only those schemes are offered) and every
+certificate on its verified path up to the anchor carries an ML-DSA signature (the receipt's
+path, portable or native, is checked); on a server it means the same of the client, whose
+certificate is then required and verified. A hybrid key exchange does not meet it; a
+provisioned PSK, being symmetric, does. The policy is TLS 1.3's, binds the session cache key,
+and fails with `PqAuthenticationRequired` (insufficient_security). A client's handshake memory
+with an ML-DSA-87 chain (13 KiB of certificates) peaks at 81 KiB (82,752 bytes).

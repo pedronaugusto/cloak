@@ -114,6 +114,7 @@ pub fn parse(bytes: []const u8, limits: Limits) ParseError!Certificate {
             try sr.finish();
         },
         .ed25519 => if (sig.len != 64) return error.InvalidCertificate,
+        .mldsa => |level| if (sig.len != Algorithm.mldsaSignatureLength(level)) return error.InvalidCertificate,
         .unsupported => {},
         .rsa, .pss => if (sig.len < 256 or sig.len > 512) return error.InvalidCertificate,
     }

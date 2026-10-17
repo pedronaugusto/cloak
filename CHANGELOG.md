@@ -4,6 +4,21 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- ML-DSA-44, -65 and -87 (FIPS 204) in certificates and TLS 1.3 CertificateVerify (RFC 9881, draft-ietf-tls-mldsa: schemes `mldsa44`, `mldsa65`, `mldsa87`), both roles, server and client certificates, in cloak's own implementation: the matrix is expanded where it is used, never held, so ML-DSA-87 signs in 18 KiB of stack and verifies in 12 KiB (std's key generation and signing take 770 KiB, its verification 290 KiB). Private keys in every RFC 9881 form (seed, expanded, both), each checked; hedged signing. Matches std byte for byte and passes Wycheproof's ML-DSA vectors. Interop with OpenSSL 4.0.3 and wolfSSL 5.9.4 both roles.
+- `require_pq_auth` (client and server options of every carrier): the peer authenticates with ML-DSA, its CertificateVerify and every signature on its verified path up to the anchor; a hybrid key exchange never meets it, a provisioned PSK does. TLS 1.3 only; fails with `PqAuthenticationRequired` (insufficient_security).
+
+### Changed
+
+- Breaking: `certificates.certificate.Algorithm.Signature` and `.PublicKey` gain `.mldsa`; `PrivateKey.max_signature` is ML-DSA-87's 4627 bytes.
+- A client offering both versions lists ML-DSA's schemes after TLS 1.2's; a TLS 1.2 handshake never selects them, and a server whose credential is ML-DSA has no TLS 1.2 suite.
+
+### Fixed
+
+- An Ed25519 certificate whose keyUsage asserts keyEncipherment, dataEncipherment, keyAgreement, encipherOnly or decipherOnly is refused (RFC 8410 section 5), as an ML-DSA one is (RFC 9881).
+- A DTLS client's hello answering a retry request leads with its cookie, so that when the path's MTU cuts it, a stateless server finds the cookie in the first fragment: a hello made longer (here by the ML-DSA schemes) had moved the cookie past it at a 256-byte MTU, and the handshake timed out.
+
 ## [0.11.3] - 2026-10-17
 
 ### Fixed

@@ -2,7 +2,9 @@
 //! promise constant time. Nothing here is public API.
 pub const p256 = @import("crypto/p256.zig");
 pub const rsa = @import("crypto/rsa.zig");
+pub const mldsa = @import("crypto/mldsa.zig");
 test {
     _ = p256;
     _ = rsa;
+    _ = @import("crypto/mldsa_test.zig");
 }

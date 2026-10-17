@@ -75,6 +75,9 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
     resumption: ?Resumption = null,
     /// The largest datagram this end sends, without IP and UDP headers.
@@ -103,6 +106,9 @@ pub const ServerOptions = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
     tickets: ?*TicketKeys = null,
@@ -341,6 +347,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .alpn = options.alpn,
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
+            .require_pq_auth = options.require_pq_auth,
             .connection_id = options.connection_id,
             .srtp = options.srtp,
         },
@@ -383,6 +390,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
+        .require_pq_auth = options.require_pq_auth,
         .credentials = options.credentials,
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,

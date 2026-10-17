@@ -16,3 +16,13 @@ key over the bytes `cloak possession test content` (PSS with a 32-byte salt and 
 Commands: `openssl ecparam -genkey`, `openssl genpkey`, `openssl req -new -x509`,
 `openssl x509 -req -CA` with `basicConstraints`, `keyUsage`, `extendedKeyUsage` and
 `subjectAltName` extensions, `openssl pkeyutl -sign -rawin`.
+
+The ML-DSA set, made with OpenSSL 4.0.3 (`genpkey -algorithm ML-DSA-*`, keys in its default
+PKCS#8 form, the seed and the expanded key together): `mldsa_ca.der`, an ML-DSA-65 root (path
+length 0), and the leaves it signs: `mldsa44`, `mldsa65`, `mldsa87` (server certificates as
+above), `client_mldsa65` (client authentication) and `p256_pqca` (a P-256 server key under the
+ML-DSA root). `mixed_ca.der` is a P-256 root signing `mldsa44_classical`, an ML-DSA-44 server
+certificate whose path is classical. Every certificate names its key (subjectKeyIdentifier) and
+its issuer's (authorityKeyIdentifier). `*.key.pem` are the leaf keys.
+`ed25519_key_encipherment.der` is an Ed25519 server certificate under `mixed_ca` whose keyUsage
+adds keyEncipherment, which RFC 8410 forbids a signature-only key.

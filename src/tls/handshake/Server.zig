@@ -65,6 +65,9 @@ pub const Options = struct {
     /// Fail when the client offers no protocol at all.
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The client authenticates with ML-DSA (`Hello.Options.require_pq_auth`): it needs a
+    /// required, verified client certificate, and TLS 1.3.
+    require_pq_auth: bool = false,
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     /// The server's QUIC transport parameters.
@@ -254,8 +257,9 @@ const Keys = union(Suite13) {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
-    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
+    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
     if (options.credentials.len == 0 or options.credentials.len > 32) return error.InvalidOptions;
+    if (options.require_pq_auth and (options.client_auth != .required or options.client_verify != .full)) return error.InvalidOptions;
     for (options.credentials) |credential| for (credential.names) |name| {
         if (name.len == 0 or name.len > 253) return error.InvalidOptions;
     };
@@ -442,6 +446,7 @@ pub fn provideVerification(self: *Server, token: types.Token, receipt: *const ty
     @setRuntimeSafety(true);
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
+    if (self.options.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
     try self.state.advance(.verify_chain, if (self.version == .tls12) .initial else .handshake, .chain, true);
     self.authenticated = true;
     self.scratch.?.client_auth_expires = types.seconds(receipt.expires);
@@ -875,13 +880,13 @@ pub fn policyDigest(self: *const Server) [32]u8 {
 
 /// Whether this server speaks TLS 1.3.
 pub fn allows13(self: *const Server) bool {
-    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .transport = self.options.transport };
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .require_pq_auth = self.options.require_pq_auth, .transport = self.options.transport };
     return hello.allows13();
 }
 
 /// Whether this server takes TLS 1.2 clients.
 pub fn allows12(self: *const Server) bool {
-    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .transport = self.options.transport };
+    const hello: Hello.Options = .{ .suites = self.options.suites, .min_version = self.options.min_version, .max_version = self.options.max_version, .groups = self.options.groups, .require_hybrid = self.options.require_hybrid, .require_pq_auth = self.options.require_pq_auth, .transport = self.options.transport };
     return hello.allows12();
 }
 
@@ -1096,10 +1101,11 @@ fn sendEncrypted(self: *Server) Client.Error!void {
 
 fn sendRequest(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
+    const allowed = Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth });
     var schemes: [Hello.schemes.len]u16 = undefined;
-    for (Hello.schemes, &schemes) |scheme, *slot| slot.* = @backingInt(scheme);
+    for (allowed, schemes[0..allowed.len]) |scheme, *slot| slot.* = @backingInt(scheme);
     const dst = try self.reserve(64);
-    const message = try Messages.buildCertificateRequest(dst, &schemes);
+    const message = try Messages.buildCertificateRequest(dst, schemes[0..allowed.len]);
     try self.state.advance(.certificate_request, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
 }
@@ -1298,7 +1304,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, false, scratch.transcripts.digest(&digest_buf));
-    try Possession.verify(parsed.scheme, &Hello.schemes, scratch.chain[0], content, parsed.signature);
+    try Possession.verify(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), scratch.chain[0], content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;

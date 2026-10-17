@@ -5,6 +5,7 @@ const Der = @import("wire/Der.zig");
 const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
 const Sign = @import("credentials/Sign.zig");
+const mldsa = @import("crypto/mldsa.zig");
 const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
@@ -61,18 +62,22 @@ pub fn matches(key: PrivateKey, der: []const u8) bool {
             .ed25519 => |p| std.mem.eql(u8, p, &k.public_key.toBytes()),
             else => false,
         },
+        .mldsa => |*k| switch (cert.public_key) {
+            .mldsa => |p| p.level == k.level and std.mem.eql(u8, p.bytes, k.publicKey()),
+            else => false,
+        },
     };
 }
 /// The most noise bytes one signature draws: RSA's blinding seed and salt.
 pub const max_noise = @max(Sign.P384.noise_length, Sign.rsa.noise_length);
-/// The longest signature `sign` writes: RSA's, 512 bytes for a 4096-bit key.
-pub const max_signature = Sign.max_signature;
+/// The longest signature `sign` writes: ML-DSA-87's, 4627 bytes.
+pub const max_signature = @max(Sign.max_signature, mldsa.Scheme(.mldsa87).signature_length);
 
 pub const SignError = error{ UnsupportedAlgorithm, InvalidNoise, SigningFailed };
 
 /// How many bytes of fresh noise one signature draws: ECDSA on P-256 and P-384 hedges its
-/// nonces with 32 or 48, Ed25519 is deterministic (zero), and RSA draws 96 for every scheme,
-/// a 32-byte blinding seed and room for the longest PSS salt.
+/// nonces with 32 or 48, Ed25519 is deterministic (zero), ML-DSA hedges with 32, and RSA draws
+/// 96 for every scheme, a 32-byte blinding seed and room for the longest PSS salt.
 pub fn noiseLength(key: PrivateKey) usize {
     @setRuntimeSafety(true);
     return switch (key.state.material.expose().*) {
@@ -80,15 +85,17 @@ pub fn noiseLength(key: PrivateKey) usize {
         .p256 => Sign.P256.noise_length,
         .p384 => Sign.P384.noise_length,
         .ed25519 => 0,
+        .mldsa => 32,
     };
 }
 
 /// Signs `message` under `algorithm`, which must be one this key's type and curve can make:
 /// ECDSA with SHA-256 on P-256, with SHA-384 on P-384, Ed25519, and for RSA `.pss` (MGF1 on
 /// the same hash, a salt as long as the hash, as TLS requires) or `.rsa` (PKCS#1 v1.5, for
-/// TLS 1.2) on SHA-256, SHA-384 or SHA-512. `noise` is exactly `noiseLength` fresh bytes.
-/// Returns the DER ECDSA-Sig-Value, the 64 Ed25519 bytes, or the modulus-sized RSA signature
-/// in `out`; an RSA signature is checked against the public key before it is returned.
+/// TLS 1.2) on SHA-256, SHA-384 or SHA-512, and ML-DSA of the key's parameter set (pure, an
+/// empty context, hedged). `noise` is exactly `noiseLength` fresh bytes. Returns the DER
+/// ECDSA-Sig-Value, the 64 Ed25519 bytes, the ML-DSA signature, or the modulus-sized RSA
+/// signature in `out`; an RSA signature is checked against the public key before it is returned.
 pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
     return aegis.secret.scrubbed(sign_stack, signMessage, .{ key, algorithm, message, noise, out });
 }
@@ -100,16 +107,26 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
         .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
             if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
-            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], out) catch error.SigningFailed;
+            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .p384 => |*pair| {
             if (algorithm != .ecdsa or algorithm.ecdsa != .sha384) return error.UnsupportedAlgorithm;
-            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], out) catch error.SigningFailed;
+            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .ed25519 => |*pair| {
             if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
             Sign.ed25519.sign(&pair.secret_key.bytes, message, out[0..Sign.ed25519.signature_length]) catch return error.SigningFailed;
             return out[0..Sign.ed25519.signature_length];
+        },
+        .mldsa => |*k| {
+            if (algorithm != .mldsa or algorithm.mldsa != k.level) return error.UnsupportedAlgorithm;
+            switch (k.level) {
+                inline else => |tag| {
+                    const M = mldsa.Scheme(tag);
+                    M.sign(k.secret[0..M.secret_key_length], message, "", noise[0..M.noise_length], out[0..M.signature_length]);
+                    return out[0..M.signature_length];
+                },
+            }
         },
     }
 }
@@ -132,14 +149,14 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
         .p256 => |*pair| {
             if (algorithm != .ecdsa or algorithm.ecdsa != .sha256) return error.UnsupportedAlgorithm;
             if (digest.len != 32) return error.InvalidDigest;
-            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], out) catch error.SigningFailed;
+            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
         },
         .p384 => |*pair| {
             if (algorithm != .ecdsa or algorithm.ecdsa != .sha384) return error.UnsupportedAlgorithm;
             if (digest.len != 48) return error.InvalidDigest;
-            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], out) catch error.SigningFailed;
+            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], out[0..Sign.max_signature]) catch error.SigningFailed;
         },
-        .ed25519 => error.UnsupportedAlgorithm,
+        .ed25519, .mldsa => error.UnsupportedAlgorithm,
     };
 }
 
@@ -161,7 +178,7 @@ fn rsaSign(comptime E: type, key: *const Sign.rsa.Key, algorithm: certificate.Al
                 if (input.len != Hash.digest_length) return error.InvalidDigest;
                 @memcpy(&digest, input);
             } else Hash.hash(input, &digest, .{});
-            const made = if (pss) Sign.rsa.pssDigest(Hash, key, &digest, noise, out) else Sign.rsa.pkcs1Digest(Hash, key, &digest, noise, out);
+            const made = if (pss) Sign.rsa.pssDigest(Hash, key, &digest, noise, out[0..Sign.max_signature]) else Sign.rsa.pkcs1Digest(Hash, key, &digest, noise, out[0..Sign.max_signature]);
             return made catch error.SigningFailed;
         },
     }
@@ -209,6 +226,9 @@ test "a parse and a signature reach less stack than the depths that erase it" {
         @embedFile("credentials/testdata/p384.pkcs8.pem"),
         @embedFile("credentials/testdata/p256.pkcs8.pem"),
         @embedFile("credentials/testdata/ed25519.pkcs8.pem"),
+        @embedFile("credentials/testdata/mldsa44.seed.pem"),
+        @embedFile("credentials/testdata/mldsa65.both.pem"),
+        @embedFile("credentials/testdata/mldsa87.expanded.pem"),
         @embedFile("credentials/testdata/rsa.enc-aes256-sha256.pem"),
         @embedFile("credentials/testdata/p384.enc-des3.pem"),
     };
@@ -226,10 +246,11 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             .p256 => &.{.{ .ecdsa = .sha256 }},
             .p384 => &.{.{ .ecdsa = .sha384 }},
             .ed25519 => &.{.ed25519},
+            .mldsa => |*k| &.{.{ .mldsa = k.level }},
         };
         for (algorithms) |algorithm| {
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signMessage, .{ key, algorithm, "message", noise[0..key.noiseLength()], &out }));
-            if (algorithm == .ed25519) continue;
+            if (algorithm == .ed25519 or algorithm == .mldsa) continue;
             const digest: [64]u8 = @splat(0x44);
             const length: usize = switch (algorithm) {
                 .pss => 64,

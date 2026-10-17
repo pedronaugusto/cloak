@@ -1,14 +1,18 @@
 const std = @import("std");
 const Der = @import("../wire/Der.zig");
+const mldsa = @import("../crypto/mldsa.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
-pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ed25519, unsupported: []const u8 };
+/// ML-DSA's parameter sets (FIPS 204): pure ML-DSA, an empty context, for keys and signatures.
+pub const MlDsa = mldsa.Level;
+pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
 pub const Curve = enum { p256, p384 };
 pub const PublicKey = union(enum) {
     rsa: struct { modulus: []const u8, exponent: []const u8, pss: ?Pss = null, pss_only: bool = false },
     ec: struct { curve: Curve, bytes: []const u8 },
     ed25519: []const u8,
+    mldsa: struct { level: MlDsa, bytes: []const u8 },
 };
 pub const rsa_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 pub const pss_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a";
@@ -16,6 +20,32 @@ const ed_oid = "\x2b\x65\x70";
 const ec_oid = "\x2a\x86\x48\xce\x3d\x02\x01";
 const p256_oid = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const p384_oid = "\x2b\x81\x04\x00\x22";
+/// id-ml-dsa-44, -65 and -87: 2.16.840.1.101.3.4.3.17 to .19 (RFC 9881), the last byte apart.
+const mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
+
+/// The ML-DSA parameter set an algorithm identifier names, if it names one.
+fn mldsaOf(id: []const u8) ?MlDsa {
+    if (id.len != 9 or !eql(id[0..8], mldsa_prefix)) return null;
+    return switch (id[8]) {
+        0x11 => .mldsa44,
+        0x12 => .mldsa65,
+        0x13 => .mldsa87,
+        else => null,
+    };
+}
+
+/// The length of a public key or signature of each ML-DSA parameter set.
+pub fn mldsaPublicKeyLength(level: MlDsa) usize {
+    return switch (level) {
+        inline else => |tag| mldsa.Scheme(tag).public_key_length,
+    };
+}
+
+pub fn mldsaSignatureLength(level: MlDsa) usize {
+    return switch (level) {
+        inline else => |tag| mldsa.Scheme(tag).signature_length,
+    };
+}
 pub fn eql(a: []const u8, b: []const u8) bool {
     @setRuntimeSafety(true);
     return std.mem.eql(u8, a, b);
@@ -31,6 +61,11 @@ pub fn signature(encoded: []const u8) Error!Signature {
         return .ed25519;
     }
     if (eql(id, pss_oid)) return .{ .pss = try pssParameters(param orelse return error.InvalidDer) };
+    if (mldsaOf(id)) |level| {
+        // The parameters are absent (RFC 9881 section 2).
+        if (param != null) return error.InvalidDer;
+        return .{ .mldsa = level };
+    }
     const rsa_prefix = "\x2a\x86\x48\x86\xf7\x0d\x01\x01";
     if (id.len == 9 and eql(id[0..8], rsa_prefix)) {
         if (param) |p| if (p.tag != 5 or p.value.len != 0) return error.InvalidDer;
@@ -135,6 +170,10 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
             },
         }
         return .{ .ec = .{ .curve = curve, .bytes = bytes } };
+    }
+    if (mldsaOf(id)) |level| {
+        if (param != null or bytes.len != mldsaPublicKeyLength(level)) return error.InvalidPublicKey;
+        return .{ .mldsa = .{ .level = level, .bytes = bytes } };
     }
     if (eql(id, ed_oid)) {
         if (param != null or bytes.len != 32) return error.InvalidPublicKey;

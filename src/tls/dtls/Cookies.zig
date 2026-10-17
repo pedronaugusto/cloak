@@ -93,7 +93,7 @@ pub fn check(self: *const Cookies, options: *const Datagram.ServerOptions, addre
     if (offset != 0 or fragment_len > body.len - 12 or fragment_len > length or length > 64 * 1024) return .drop;
     const fragment = body[12..][0..fragment_len];
     const seconds: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_s)));
-    const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid };
+    const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth };
     // A whole hello is read as such; the first fragment of a longer one can still carry its
     // cookie (in the cookie field or, early enough, the cookie extension).
     if (fragment_len < length) return self.checkFragment(&policy, address, seconds, fragment, header.sequence, datagram.len, out);

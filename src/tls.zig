@@ -91,6 +91,7 @@ test {
     _ = @import("tls/Ech_test.zig");
     _ = @import("tls/CertificateCompression_test.zig");
     _ = @import("tls/Pq_test.zig");
+    _ = @import("tls/MlDsa_test.zig");
     _ = @import("tls/Psk_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");

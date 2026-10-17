@@ -44,6 +44,11 @@ pub fn purpose(cert: *const C.Certificate, desired: T.Purpose, ca: bool) Error!v
     @setRuntimeSafety(true);
     if (cert.x509(15)) |ku| {
         const usage = try C.Extensions.keyUsage(ku.value);
+        // A signature-only key (Ed25519, RFC 8410 section 5; ML-DSA, RFC 9881 section 5)
+        // asserts no encipherment or agreement: keyEncipherment, dataEncipherment,
+        // keyAgreement, encipherOnly, decipherOnly.
+        const signing_only = cert.public_key == .ed25519 or cert.public_key == .mldsa;
+        if (signing_only and usage & 0x19c != 0) return error.InvalidPurpose;
         if (!ca and usage & (1 << 5) != 0) {
             const bc = cert.x509(19) orelse return error.InvalidPurpose;
             if (!(try C.Extensions.basic(bc.value)).ca) return error.InvalidPurpose;

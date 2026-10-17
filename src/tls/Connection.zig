@@ -83,6 +83,9 @@ pub const ClientOptions = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     auth: ?certificates.ClientAuth = null,
     /// TLS 1.3 session resumption from a ticket cache.
     resumption: ?Resumption = null,
@@ -232,6 +235,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .alpn = options.alpn,
             .require_alpn = options.require_alpn,
             .require_hybrid = options.require_hybrid,
+            .require_pq_auth = options.require_pq_auth,
             .certificate_compression = options.certificate_compression,
         },
         .resumption = options.resumption,
@@ -263,6 +267,9 @@ pub const ServerOptions = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
+    /// requiring it of clients needs a required, verified client certificate.
+    require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     /// How a presented client chain is checked; required for authenticated client identities.
     client_verify: Verify = .none,
@@ -295,6 +302,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .alpn = options.alpn,
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
+        .require_pq_auth = options.require_pq_auth,
         .credentials = options.credentials,
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,

@@ -15,7 +15,21 @@ const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
 const Ed25519 = std.crypto.sign.Ed25519;
 const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
-pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair };
+const mldsa = @import("../crypto/mldsa.zig");
+pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair, mldsa: MlDsa };
+/// An ML-DSA key: the expanded private key (FIPS 204 skEncode), checked against itself, and
+/// the public key it belongs to. The first `secretLength`/`publicLength` bytes are the key's.
+pub const MlDsa = struct {
+    level: mldsa.Level,
+    secret: [mldsa.Scheme(.mldsa87).secret_key_length]u8,
+    public: [mldsa.Scheme(.mldsa87).public_key_length]u8,
+
+    pub fn publicKey(self: *const MlDsa) []const u8 {
+        return switch (self.level) {
+            inline else => |tag| self.public[0..mldsa.Scheme(tag).public_key_length],
+        };
+    }
+};
 pub const Options = struct { passphrase: ?[]const u8 = null, bytes: usize = 65536, depth: usize = 24, elements: usize = 4096, iterations: usize = 1_000_000, salt_bytes: usize = 1024, password_bytes: usize = 4096 };
 pub const ParseError = Der.Error || Pem.Error || Rsa.Error || Cbc.Error || error{ UnsupportedKey, UnsupportedEncryption, PasswordRequired, KdfLimit };
 const oid_rsa = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
@@ -23,6 +37,8 @@ const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
 const oid_ed = "\x2b\x65\x70";
 const oid_p256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const oid_p384 = "\x2b\x81\x04\x00\x22";
+/// id-ml-dsa-44, -65 and -87 (RFC 9881), the last byte apart.
+const oid_mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
 /// Parses one private key into `out`, which holds it on success and nothing on failure: key
 /// material is written where it will live, never returned by value through the frames between.
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
@@ -129,6 +145,18 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
         if (p.tag != 6) return error.InvalidKey;
         return sec1(key, p.value, out);
     }
+    if (id.len == 9 and std.mem.eql(u8, id[0..8], oid_mldsa_prefix)) {
+        if (parameter != null) return error.InvalidKey;
+        const level: mldsa.Level = switch (id[8]) {
+            0x11 => .mldsa44,
+            0x12 => .mldsa65,
+            0x13 => .mldsa87,
+            else => return error.UnsupportedKey,
+        };
+        return switch (level) {
+            inline else => |tag| mldsaKey(tag, key, out),
+        };
+    }
     if (std.mem.eql(u8, id, oid_ed)) {
         if (parameter != null) return error.InvalidKey;
         const seed = (try Der.single(key, 4)).value;
@@ -142,6 +170,42 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
     }
     return error.UnsupportedKey;
 }
+/// An ML-DSA private key (RFC 9881 section 6): the seed ([0], 32 bytes), the expanded key, or
+/// both, whose expanded key must be the seed's. An expanded key without its seed is checked
+/// against itself (`Scheme.publicKey`). The key is written into `out` in place.
+fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    const M = mldsa.Scheme(level);
+    out.* = .{ .mldsa = .{ .level = level, .secret = @splat(0), .public = @splat(0) } };
+    errdefer std.crypto.secureZero(u8, std.mem.asBytes(out));
+    const key = &out.mldsa;
+    const sk = key.secret[0..M.secret_key_length];
+    const pk = key.public[0..M.public_key_length];
+    if (encoded.len == 0) return error.InvalidKey;
+    const element = try Der.single(encoded, encoded[0]);
+    switch (element.tag) {
+        0x80 => {
+            if (element.value.len != M.seed_length) return error.InvalidKey;
+            M.keyFromSeed(element.value[0..M.seed_length], pk, sk);
+        },
+        0x04 => {
+            if (element.value.len != M.secret_key_length) return error.InvalidKey;
+            sk.* = element.value[0..M.secret_key_length].*;
+            M.publicKey(sk, pk) catch return error.InvalidKey;
+        },
+        0x30 => {
+            var r = element.reader();
+            const seed = (try r.expect(4)).value;
+            const expanded = (try r.expect(4)).value;
+            try r.finish();
+            if (seed.len != M.seed_length or expanded.len != M.secret_key_length) return error.InvalidKey;
+            M.keyFromSeed(seed[0..M.seed_length], pk, sk);
+            if (!aegis.secret.equal(M.secret_key_length, sk, expanded[0..M.secret_key_length]).declassify("a seed whose key differs from the one beside it is refused")) return error.InvalidKey;
+        },
+        else => return error.InvalidKey,
+    }
+}
+
 fn attributes(bytes: []const u8) ParseError!void {
     @setRuntimeSafety(true);
     var set: Der.Reader = .{ .bytes = bytes };

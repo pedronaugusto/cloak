@@ -34,6 +34,9 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     InappropriateFallback,
     NoClientCertificate,
     BadBinder,
+    /// The peer's authentication is not post-quantum where the policy requires it
+    /// (`require_pq_auth`): a classical signature on its path.
+    PqAuthenticationRequired,
     /// The server did not accept Encrypted Client Hello: the connection ends with ech_required.
     EchRejected,
     /// A second ClientHelloOuter's payload does not open under the first one's HPKE context.

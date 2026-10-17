@@ -63,6 +63,10 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     require_alpn: bool = false,
     require_hybrid: bool = false,
+    /// The peer authenticates with ML-DSA (draft-ietf-tls-mldsa): its CertificateVerify, and
+    /// every certificate signature on its verified path up to the trust anchor. A hybrid key
+    /// exchange does not meet it; a provisioned PSK, a symmetric key, does. TLS 1.3 only.
+    require_pq_auth: bool = false,
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     parameters: []const u8 = "",
@@ -79,7 +83,7 @@ pub const Options = struct {
     /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
     /// TLS 1.2 has. The version follows from the suites and groups.
     pub fn allows12(options: Options) bool {
-        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid) return false;
+        if (options.min_version != .tls12 or options.transport == .quic or options.require_hybrid or options.require_pq_auth) return false;
         for (options.groups) |group| {
             if (group.classical()) break;
         } else return false;
@@ -118,6 +122,10 @@ pub const SignatureScheme = enum(u16) {
     rsa_pss_pss_sha256 = 0x0809,
     rsa_pss_pss_sha384 = 0x080a,
     rsa_pss_pss_sha512 = 0x080b,
+    /// ML-DSA (FIPS 204, pure, empty context), TLS 1.3 only (draft-ietf-tls-mldsa).
+    mldsa44 = 0x0904,
+    mldsa65 = 0x0905,
+    mldsa87 = 0x0906,
     _,
 
     /// Whether cloak signs or verifies with this scheme: one of the named ones.
@@ -125,10 +133,22 @@ pub const SignatureScheme = enum(u16) {
         return std.enums.tagName(SignatureScheme, scheme) != null;
     }
 };
+/// The schemes of both versions' handshakes.
+const classical = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
+/// ML-DSA's, TLS 1.3 only.
+pub const mldsa_schemes = [_]SignatureScheme{ .mldsa44, .mldsa65, .mldsa87 };
 /// Schemes a TLS 1.3 CertificateVerify may use.
-pub const schemes = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
-/// Schemes a TLS 1.2 ServerKeyExchange may use: the 1.3 set plus PKCS#1 v1.5 RSA.
-pub const schemes12 = schemes ++ [_]SignatureScheme{ .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 };
+pub const schemes = classical ++ mldsa_schemes;
+/// Schemes a TLS 1.2 ServerKeyExchange may use: the classical ones plus PKCS#1 v1.5 RSA.
+pub const schemes12 = classical ++ [_]SignatureScheme{ .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 };
+/// What a hello offering both versions lists: TLS 1.2's schemes and ML-DSA's.
+const schemes_both = schemes12 ++ mldsa_schemes;
+
+/// The schemes a CertificateVerify (TLS 1.3) may use under `options`: ML-DSA's alone when the
+/// policy requires post-quantum authentication.
+pub fn verifySchemes(options: Options) []const SignatureScheme {
+    return if (options.require_pq_auth) &mldsa_schemes else &schemes;
+}
 /// Schemes a TLS 1.2 CertificateVerify may use. It signs the transcript hash of the scheme's own
 /// hash, which cloak keeps for SHA-256 and SHA-384 only; Ed25519 signs the handshake messages
 /// themselves, which the transcript keeps whole when an Ed25519 signature may be needed.
@@ -149,7 +169,7 @@ pub fn validate(options: Options) ValidateError!void {
     if (@backingInt(options.min_version) > @backingInt(options.max_version)) return error.InvalidOptions;
     // Some version must be left, and QUIC and a hybrid-only policy need TLS 1.3.
     if (!options.allows13() and !options.allows12()) return error.InvalidOptions;
-    if ((options.transport == .quic or options.require_hybrid) and !options.allows13()) return error.InvalidOptions;
+    if ((options.transport == .quic or options.require_hybrid or options.require_pq_auth) and !options.allows13()) return error.InvalidOptions;
     for (options.groups, 0..) |group, i| for (options.groups[0..i]) |old| {
         if (old == group) return error.InvalidOptions;
     };
@@ -263,6 +283,10 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try w.put(&.{ 1, 0 });
     const ext_at = w.pos;
     try w.int(u16, 0);
+    // A datagram hello answering a retry request leads with its cookie, so that when the hello
+    // is cut to the path's MTU a stateless server finds the cookie in the first fragment, the
+    // only one it reads, whatever follows (no ECH over datagrams moves it).
+    if (datagram and cookie.len != 0) try cookieExtension(&w, cookie);
     if (sni.len != 0) try serverName(&w, sni);
     // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
     if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
@@ -276,10 +300,10 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (!compress) try extension(&w, 10, group_bytes[0..g.pos]);
     // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
     if (tls12) try extension(&w, 11, &.{ 1, 0 });
-    const offered: []const SignatureScheme = if (tls12) &schemes12 else &schemes;
-    var signature_bytes: [2 + schemes12.len * 2]u8 = undefined;
+    const offered: []const SignatureScheme = if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12;
+    var signature_bytes: [2 + schemes_both.len * 2]u8 = undefined;
     var s: Writer = .{ .bytes = &signature_bytes };
-    // safe: at most twelve two-byte schemes.
+    // safe: at most fifteen two-byte schemes.
     try s.int(u16, @intCast(offered.len * 2));
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
     if (!compress) try extension(&w, 13, signature_bytes[0..s.pos]);
@@ -308,12 +332,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         try extension(&w, 16, alpn[0..a.pos]);
     }
     if (datagram) try datagramOffer(&w, options);
-    if (cookie.len != 0 and !compress) {
-        try w.int(u16, 44);
-        // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
-        try w.int(u16, @intCast(cookie.len + 2));
-        try w.vector(u16, cookie);
-    }
+    if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;
         try w.put(&.{ 0, 51, 0, 0, 0, 0 });
@@ -364,6 +383,13 @@ fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
         for (options.srtp) |profile| try w.int(u16, @backingInt(profile));
         try w.int(u8, 0);
     }
+}
+
+fn cookieExtension(w: *Writer, cookie: []const u8) EncodeError!void {
+    try w.int(u16, 44);
+    // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
+    try w.int(u16, @intCast(cookie.len + 2));
+    try w.vector(u16, cookie);
 }
 
 fn serverName(w: *Writer, sni: []const u8) EncodeError!void {
