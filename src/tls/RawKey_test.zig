@@ -4,7 +4,7 @@ const std = @import("std");
 const certificates = @import("../certificates.zig");
 const Duo = @import("../testing/Duo.zig");
 const Pair = @import("../testing/Pair.zig").Pair;
-const Client = @import("handshake/Client.zig");
+const Possession = @import("handshake/Possession.zig");
 const Hello = @import("handshake/Hello.zig");
 const Ech = @import("handshake/Ech.zig");
 const Hpke = @import("crypto/Hpke.zig");
@@ -225,10 +225,10 @@ test "F89 catalogue_delegated_parent_expiry_and_raw_key_namespace (raw keys: a c
     // The pinned key itself, as a Certificate carries it: one entry, a SubjectPublicKeyInfo.
     const spki = (try certificates.certificate.parse(pki.p256, .{})).spki;
     const pins = [_][32]u8{ other, Duo.pinOf(pki.p256) };
-    try std.testing.expectEqual(@as(u16, 1), try Client.pinnedKey(&.{spki}, &pins));
-    try std.testing.expectError(error.IllegalParameter, Client.pinnedKey(&.{ spki, spki }, &pins));
-    try std.testing.expectError(error.InvalidCertificate, Client.pinnedKey(&.{pki.p256}, &pins));
-    try std.testing.expectError(error.PinMismatch, Client.pinnedKey(&.{spki}, &.{other}));
+    try std.testing.expectEqual(@as(u16, 1), try Possession.pinnedKey(&.{spki}, &pins));
+    try std.testing.expectError(error.IllegalParameter, Possession.pinnedKey(&.{ spki, spki }, &pins));
+    try std.testing.expectError(error.InvalidCertificate, Possession.pinnedKey(&.{pki.p256}, &pins));
+    try std.testing.expectError(error.PinMismatch, Possession.pinnedKey(&.{spki}, &.{other}));
 }
 
 test "C10 raw public keys: EncryptedExtensions answers only what was offered, with one type" {
@@ -325,7 +325,8 @@ fn withoutTypeAnswer(bytes: []u8) usize {
         const id = std.mem.readInt(u16, bytes[ext..][0..2], .big);
         const len = std.mem.readInt(u16, bytes[ext + 2 ..][0..2], .big);
         if (id == Hello.server_certificate_type) {
-            std.mem.copyForwards(u8, bytes[ext..], bytes[ext + 4 + len ..]);
+            const rest = bytes[ext + 4 + len ..];
+            @memmove(bytes[ext..][0..rest.len], rest);
             const cut: u16 = 4 + len;
             std.mem.writeInt(u16, bytes[3..5], std.mem.readInt(u16, bytes[3..5], .big) - cut, .big);
             std.mem.writeInt(u24, bytes[hello_at + 1 ..][0..3], std.mem.readInt(u24, bytes[hello_at + 1 ..][0..3], .big) - cut, .big);

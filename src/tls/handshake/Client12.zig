@@ -20,8 +20,6 @@ const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 
 const Error = @import("Errors.zig").Error;
-const pinnedKey = @import("Client.zig").pinnedKey;
-const peerKey = @import("Client.zig").peerKey;
 const Epoch = Flight.Epoch;
 
 /// Bits of `Scratch.cr_types`: the certificate types a CertificateRequest named.
@@ -113,7 +111,7 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
         if (spki.len == 0) return error.EmptyCertificate;
         scratch.chain[0] = spki;
         scratch.chain_len = 1;
-        self.raw_pin = try pinnedKey(scratch.chain[0..1], self.options.verify.raw_key.pins);
+        self.raw_pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.verify.raw_key.pins);
         try scratch.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .initial, .chain, true);
         self.authenticated = true;
@@ -148,7 +146,7 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     const scratch = self.scratch.?;
     const ske = try Messages12.serverKeyExchange(msg);
     if (!std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{ske.group})) return error.UnofferedSelection;
-    const key = try peerKey(scratch.chain[0], scratch.peer_raw);
+    const key = try Possession.peerKey(scratch.chain[0], scratch.peer_raw);
     try suiteKey(self.suite12.?, key);
     var content_buf: [Messages12.max_signed]u8 = undefined;
     const content = Messages12.signedParams(&content_buf, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), ske.params);

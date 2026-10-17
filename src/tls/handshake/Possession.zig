@@ -2,12 +2,16 @@
 //! scheme is bound to the key's type and curve here, separately from certificate policy.
 const std = @import("std");
 const certificates = @import("../../certificates.zig");
+const aegis = @import("aegis");
 const Scheme = @import("Hello.zig").SignatureScheme;
 
 const Algorithm = certificates.certificate.Algorithm;
 
 pub const SignError = error{SigningFailed};
 pub const Error = error{ UnofferedScheme, SchemeKeyMismatch, BadSignature, UnsupportedKey } || certificates.certificate.ParseError;
+/// A peer's key as its Certificate carries it: one entry where a raw key is expected, a key that
+/// parses, and a pin that names it.
+pub const KeyError = error{ IllegalParameter, InvalidCertificate, PinMismatch } || certificates.certificate.ParseError;
 
 /// Checks `signature` over `content` under `scheme` with the public key of `leaf_der`.
 /// `offered` is the schemes the local side advertised; TLS 1.3 forbids any other.
@@ -219,4 +223,24 @@ pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
 }
 test {
     _ = @import("Possession_test.zig");
+}
+
+/// The index of the pin naming the one raw public key a Certificate carries; shared by both roles.
+pub fn pinnedKey(entries: []const []const u8, pins: []const [32]u8) KeyError!u16 {
+    @setRuntimeSafety(true);
+    if (entries.len != 1) return error.IllegalParameter;
+    _ = certificates.certificate.parsePublicKey(entries[0]) catch return error.InvalidCertificate;
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(entries[0], &hash, .{});
+    for (pins, 0..) |*pin, i| {
+        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
+    }
+    return error.PinMismatch;
+}
+
+/// The key a peer's first Certificate entry carries: a leaf's, or a raw key's (RFC 7250).
+pub fn peerKey(entry: []const u8, raw: bool) KeyError!certificates.certificate.PublicKey {
+    @setRuntimeSafety(true);
+    if (raw) return certificates.certificate.parsePublicKey(entry) catch error.InvalidCertificate;
+    return (try certificates.certificate.parse(entry, .{})).public_key;
 }

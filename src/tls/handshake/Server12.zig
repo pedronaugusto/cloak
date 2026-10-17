@@ -24,8 +24,6 @@ const Ticket = @import("../resumption/Ticket.zig");
 const types = certificates.types;
 
 const Error = @import("Errors.zig").Error;
-const pinnedKey = @import("Client.zig").pinnedKey;
-const peerKey = @import("Client.zig").peerKey;
 const Epoch = Flight.Epoch;
 
 pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, epoch: Epoch, boundary: bool) Error!void {
@@ -383,7 +381,7 @@ fn onRawKey(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!
     self.held = try self.gpa.dupe(u8, spki);
     scratch.chain[0] = self.held;
     scratch.chain_len = 1;
-    self.raw_pin = try pinnedKey(scratch.chain[0..1], self.options.client_verify.raw_key.pins);
+    self.raw_pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.client_verify.raw_key.pins);
     try scratch.transcripts.commit(msg);
     try self.state.advance(.verify_chain, .initial, .chain, true);
     self.authenticated = true;
@@ -419,7 +417,7 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     const parsed = try Messages.certificateVerify(msg);
     const scheme: Hello.SignatureScheme = @fromBackingInt(parsed.scheme);
     if (!scheme.supported()) return error.UnofferedScheme;
-    const key = try peerKey(scratch.chain[0], scratch.peer_raw);
+    const key = try Possession.peerKey(scratch.chain[0], scratch.peer_raw);
     if (scheme == .ed25519) {
         // Ed25519 signs the handshake messages, which the transcript kept whole.
         if (scratch.transcripts.keeper == null) return error.UnofferedScheme;

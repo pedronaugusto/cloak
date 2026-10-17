@@ -1358,7 +1358,7 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     scratch.chain_len = reparsed.count;
     if (scratch.peer_raw) {
         // The raw key this server selected for the client (RFC 7250), one its policy pins.
-        self.raw_pin = try Client.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);
+        self.raw_pin = try Possession.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);
         try scratch.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .handshake, .chain, true);
         self.authenticated = true;
@@ -1383,7 +1383,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, false, scratch.transcripts.digest(&digest_buf));
-    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), try Client.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
+    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), try Possession.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;

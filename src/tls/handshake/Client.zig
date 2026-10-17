@@ -1501,7 +1501,7 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     self.scratch.?.chain_len = parsed.count;
     if (self.scratch.?.peer_raw) {
         // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
-        self.raw_pin = try pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
+        self.raw_pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
         try self.scratch.?.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .handshake, .chain, true);
         self.authenticated = true;
@@ -1516,26 +1516,6 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     }
 }
 
-/// The index of the pin naming the one raw public key a Certificate carries; shared by both roles.
-pub fn pinnedKey(entries: []const []const u8, pins: []const [32]u8) Error!u16 {
-    @setRuntimeSafety(true);
-    if (entries.len != 1) return error.IllegalParameter;
-    _ = certificates.certificate.parsePublicKey(entries[0]) catch return error.InvalidCertificate;
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(entries[0], &hash, .{});
-    for (pins, 0..) |*pin, i| {
-        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
-    }
-    return error.PinMismatch;
-}
-
-/// The public key a peer's CertificateVerify is checked against: its raw key, or its leaf's.
-pub fn peerKey(entry: []const u8, raw: bool) Error!certificates.certificate.PublicKey {
-    @setRuntimeSafety(true);
-    if (raw) return certificates.certificate.parsePublicKey(entry) catch error.InvalidCertificate;
-    return (try certificates.certificate.parse(entry, .{})).public_key;
-}
-
 fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
     if (self.state.phase() != .possession) return error.UnexpectedMessage;
@@ -1543,7 +1523,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, true, self.scratch.?.transcripts.digest(&digest_buf));
-    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
+    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
 }

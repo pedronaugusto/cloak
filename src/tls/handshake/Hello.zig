@@ -524,6 +524,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var types: CertificateTypes = .{};
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
+        only12 = only12 or answers12(item.id);
         switch (item.id) {
             connection_id_extension, srtp_extension => try answered.read(item.id, &value, options, retry),
             43 => {
@@ -554,38 +555,22 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 cookie = (try value.vector(u16)).bytes;
                 if (cookie.len == 0 or cookie.len > 4096) return error.InvalidHello;
             },
-            // The rest belong to a TLS 1.2 ServerHello.
-            client_certificate_type, server_certificate_type => {
-                only12 = true;
-                try types.read(item.id, item.bytes, options);
-                value.pos = item.bytes.len;
-            },
-            0 => {
-                only12 = true;
-                if (options.sni.len == 0) return error.UnsolicitedExtension;
-            },
+            // The rest belong to a TLS 1.2 ServerHello (`answers12`).
+            client_certificate_type, server_certificate_type => try types.read(item.id, &value, options),
+            0 => if (options.sni.len == 0) return error.UnsolicitedExtension,
             11 => {
-                only12 = true;
                 const formats = (try value.vector(u8)).bytes;
                 if (std.mem.findScalar(u8, formats, 0) == null) return error.InvalidHello;
             },
-            16 => {
-                only12 = true;
-                alpn = try selectedAlpn(&value, options);
-            },
-            23 => {
-                only12 = true;
-                ems = true;
-            },
+            16 => alpn = try selectedAlpn(&value, options),
+            23 => ems = true,
             35 => {
                 // An empty SessionTicket: a NewSessionTicket will follow.
-                only12 = true;
                 if (!sent.ticket12) return error.UnsolicitedExtension;
                 if (item.bytes.len != 0) return error.InvalidHello;
                 ticket = true;
             },
             0xff01 => {
-                only12 = true;
                 // The initial handshake's renegotiated_connection is empty (RFC 5746 section 3.4).
                 if ((try value.vector(u8)).bytes.len != 0) return error.NoSecureRenegotiation;
                 renegotiation = true;
@@ -665,18 +650,26 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
 
 const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes };
 
+/// The ServerHello extensions only a TLS 1.2 answer carries.
+fn answers12(id: u16) bool {
+    return switch (id) {
+        0, 11, 16, 23, 35, 0xff01, client_certificate_type, server_certificate_type => true,
+        else => false,
+    };
+}
+
 /// A server's answers to client_certificate_type and server_certificate_type (RFC 7250 section
 /// 4.2): one type each, among those offered, which is the raw key alone.
 const CertificateTypes = struct {
     raw_server_key: bool = false,
     raw_client_key: bool = false,
 
-    fn read(self: *CertificateTypes, id: u16, bytes: []const u8, options: Options) ParseError!void {
+    fn read(self: *CertificateTypes, id: u16, value: *Reader, options: Options) ParseError!void {
         @setRuntimeSafety(true);
         const offered = if (id == server_certificate_type) options.raw_server_key else options.raw_client_key;
         if (!offered) return error.UnsolicitedExtension;
-        if (bytes.len != 1) return error.DecodeError;
-        if (bytes[0] != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
+        if (value.bytes.len != 1) return error.DecodeError;
+        if (try value.int(u8) != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
         if (id == server_certificate_type) self.raw_server_key = true else self.raw_client_key = true;
     }
 };
@@ -744,7 +737,10 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     var srtp: ?Srtp = null;
     var types: CertificateTypes = .{};
     while (try ext.next()) |item| switch (item.id) {
-        client_certificate_type, server_certificate_type => try types.read(item.id, item.bytes, options),
+        client_certificate_type, server_certificate_type => {
+            var value: Reader = .{ .bytes = item.bytes };
+            try types.read(item.id, &value, options);
+        },
         srtp_extension => {
             var value: Reader = .{ .bytes = item.bytes };
             srtp = try selectedSrtp(&value, options);
