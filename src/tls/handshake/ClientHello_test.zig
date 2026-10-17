@@ -194,3 +194,59 @@ test "F104 catalogue_retry_hello_extension_order (the retry fingerprint covers t
         try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &descending.fingerprint()));
     }
 }
+
+/// A ClientHello with supported_versions, supported_groups listing `n` groups spread over every
+/// high byte and a key share (one byte) for each, the share of index `repeat` (if any) naming
+/// group 0's again and the one of index `outside` (if any) a group the list leaves out.
+fn sharesHello(out: []u8, n: usize, repeat: ?usize, outside: ?usize) ![]const u8 {
+    const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";
+    const versions = "\x00\x2b\x00\x03\x02\x03\x04";
+    var at: usize = 4 + prefix.len + 2;
+    @memcpy(out[at..][0..versions.len], versions);
+    at += versions.len;
+    const group = struct {
+        fn of(i: usize) u16 {
+            return @truncate(0x0100 + 0x0101 * i);
+        }
+    }.of;
+    std.mem.writeInt(u16, out[at..][0..2], 10, .big);
+    std.mem.writeInt(u16, out[at + 2 ..][0..2], @intCast(2 + 2 * n), .big);
+    std.mem.writeInt(u16, out[at + 4 ..][0..2], @intCast(2 * n), .big);
+    at += 6;
+    for (0..n) |i| {
+        std.mem.writeInt(u16, out[at..][0..2], group(i), .big);
+        at += 2;
+    }
+    std.mem.writeInt(u16, out[at..][0..2], 51, .big);
+    std.mem.writeInt(u16, out[at + 2 ..][0..2], @intCast(2 + 5 * n), .big);
+    std.mem.writeInt(u16, out[at + 4 ..][0..2], @intCast(5 * n), .big);
+    at += 6;
+    for (0..n) |i| {
+        const id = if (repeat == i) group(0) else if (outside == i) group(n) else group(i);
+        std.mem.writeInt(u16, out[at..][0..2], id, .big);
+        std.mem.writeInt(u16, out[at + 2 ..][0..2], 1, .big);
+        out[at + 4] = 'k';
+        at += 5;
+    }
+    out[0] = 1;
+    std.mem.writeInt(u24, out[1..4], @intCast(at - 4), .big);
+    @memcpy(out[4..][0..prefix.len], prefix);
+    std.mem.writeInt(u16, out[4 + prefix.len ..][0..2], @intCast(at - 6 - prefix.len), .big);
+    return out[0..at];
+}
+
+test "F107 catalogue_key_share_count_unbounded_unique (any number of key shares, each group once and among the groups)" {
+    // RFC 8446 section 4.2.8: client_shares<0..2^16-1> sets no count; a group shared twice is
+    // illegal_parameter, and so is a share outside supported_groups. tlsfuzzer's
+    // test-tls13-unrecognised-groups offers up to 246 (past 32 they were refused).
+    var buf: [16384]u8 = undefined;
+    for ([_]usize{ 3, 33, 246, 1000 }) |n| {
+        const hello = try ClientHello.parse(try sharesHello(&buf, n, null, null), .stream);
+        try std.testing.expect(!hello.sharesOutsideGroups());
+        for ([_]usize{ 1, n / 2, n - 1 }) |i| {
+            try std.testing.expectError(error.IllegalParameter, ClientHello.parse(try sharesHello(&buf, n, i, null), .stream));
+            const outside = try ClientHello.parse(try sharesHello(&buf, n, null, i), .stream);
+            try std.testing.expect(outside.sharesOutsideGroups());
+        }
+    }
+}

@@ -1,7 +1,9 @@
 //! Every ID, including unknown and GREASE, participates in duplicate rejection, however many
 //! extensions a block holds (a 64 KiB block holds up to 16,383). The first 64 IDs are checked
 //! against a table as they come; a block with more is checked whole once, 4,096 IDs at a time
-//! in a 512-byte bit set, sixteen passes: linear in the block, with bounded memory.
+//! in a 512-byte bit set, sixteen passes: linear in the block, with bounded memory. The same
+//! walk serves any list of entries tagged by a unique u16 with a u16 length: a key_share list
+//! (RFC 8446 section 4.2.8) is one.
 const std = @import("std");
 const R = @import("../../wire/Reader.zig");
 pub const Extension = struct { id: u16, bytes: []const u8 };

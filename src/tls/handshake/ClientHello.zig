@@ -216,17 +216,13 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         51 => {
             self.shares = (try value.vector(u16)).bytes;
             try value.finish();
-            var entries: Reader = .{ .bytes = self.shares };
-            var groups_seen: [32]u16 = undefined;
-            var count: usize = 0;
-            while (entries.pos != entries.bytes.len) {
-                const group = try entries.int(u16);
-                if ((try entries.vector(u16)).bytes.len == 0) return error.DecodeError;
-                if (std.mem.containsAtLeast(u16, groups_seen[0..count], 1, &.{group})) return error.IllegalParameter;
-                if (count == groups_seen.len) return error.IllegalParameter;
-                groups_seen[count] = group;
-                count += 1;
-            }
+            // Any number of shares, each group once (RFC 8446 section 4.2.8): entries shaped
+            // like extensions, so the same bounded walk refuses a repeat.
+            var entries: Extensions = .{ .reader = .{ .bytes = self.shares } };
+            while (entries.next() catch |err| return switch (err) {
+                error.DuplicateExtension => error.IllegalParameter,
+                else => |e| e,
+            }) |entry| if (entry.bytes.len == 0) return error.DecodeError;
             self.has_shares = true;
         },
         57 => self.parameters = bytes,
@@ -445,11 +441,29 @@ pub fn shareFor(self: *const ClientHello, group: Group) ?[]const u8 {
 /// Whether a share was sent for a group that supported_groups does not list (illegal).
 pub fn sharesOutsideGroups(self: *const ClientHello) bool {
     @setRuntimeSafety(true);
+    // Linear in both lists whatever their length: one pass per high nibble the shares use, the
+    // groups of that nibble in a 512-byte bit set.
+    var nibbles: std.bit_set.Static(16) = .empty;
     var entries: Reader = .{ .bytes = self.shares };
     while (entries.pos != entries.bytes.len) {
         const id = entries.int(u16) catch return true;
         _ = entries.vector(u16) catch return true;
-        if (!containsU16(self.groups, id)) return true;
+        nibbles.set(id >> 12);
+    }
+    var used = nibbles.iterator(.{});
+    while (used.next()) |nibble| {
+        var listed: std.bit_set.Static(4096) = .empty;
+        var at: usize = 0;
+        while (at + 2 <= self.groups.len) : (at += 2) {
+            const id = std.mem.readInt(u16, self.groups[at..][0..2], .big);
+            if (id >> 12 == nibble) listed.set(id & 0xfff);
+        }
+        entries = .{ .bytes = self.shares };
+        while (entries.pos != entries.bytes.len) {
+            const id = entries.int(u16) catch return true;
+            _ = entries.vector(u16) catch return true;
+            if (id >> 12 == nibble and !listed.isSet(id & 0xfff)) return true;
+        }
     }
     return false;
 }
