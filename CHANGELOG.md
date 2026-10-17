@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-10-17
+
 ### Fixed
 
 - A TLS 1.3 record whose inner plaintext (content, type and padding) would pass 2^14 + 1 bytes ends the connection with record_overflow (RFC 8446 sections 5.2, 5.4 and 6.2), decided by its length before any decryption; it was answered with bad_record_mac. F102.
