@@ -29,7 +29,7 @@ pub fn init(gpa: std.mem.Allocator, request: types.Request, chain: []const []con
 pub const CheckError = error{WrongVerificationRequest};
 pub fn check(path: Path, request: types.Request) CheckError!void {
     @setRuntimeSafety(true);
-    if (!aegis.secret.equal(32, &path.request_digest, &request.digest()).declassify("a request mismatch is refused") or path.token.generation != request.token.generation or path.token.id != request.token.id) return error.WrongVerificationRequest;
+    if (!aegis.secret.equal(32, &path.request_digest, &request.digest()).declassify("a request mismatch is refused") or !path.token.eql(request.token)) return error.WrongVerificationRequest;
 }
 pub fn deinit(path: *Path) void {
     @setRuntimeSafety(true);

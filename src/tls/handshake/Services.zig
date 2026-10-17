@@ -1,6 +1,7 @@
 //! The service requests of a client handshake and their answers. One gateway per
 //! connection issues tokens, so a stale or repeated answer cannot reach a newer request.
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Client = @import("Client.zig");
@@ -53,6 +54,7 @@ pub fn request(self: *Services, client: Machine) ?Request {
     const need = client.need();
     if (need == .none or need == .parameters) return null;
     if (self.open == null) {
+        aegis.assert.invariant(self.issued != std.math.maxInt(u64), "a connection's request numbers never repeat");
         self.issued += 1;
         self.open = .{ .generation = self.generation, .id = .fromRaw(self.issued) };
     }
@@ -75,7 +77,7 @@ pub fn request(self: *Services, client: Machine) ?Request {
 pub fn answer(self: *Services, client: Machine, token: types.Token, response: Answer) AnswerError!void {
     @setRuntimeSafety(true);
     const open = self.open orelse return error.NoRequest;
-    if (token.generation != open.generation or token.id != open.id) return error.StaleToken;
+    if (!token.eql(open)) return error.StaleToken;
     switch (response) {
         .entropy => |bytes| try client.provideEntropy(bytes),
         .time => |now| try client.provideTime(now),

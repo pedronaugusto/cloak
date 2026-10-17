@@ -19,7 +19,16 @@ pub fn seconds(t: std.Io.Timestamp) i64 {
 pub fn instant(s: i64) std.Io.Timestamp {
     return .fromNanoseconds(@as(i96, s) * std.time.ns_per_s);
 }
-pub const Token = struct { generation: ConnectionGeneration = .fromRaw(0), id: RequestId = .fromRaw(0) };
+/// One service request of one connection: its generation and the request's number within it. A
+/// connection issues each once, so an answer naming another is stale.
+pub const Token = struct {
+    generation: ConnectionGeneration = .fromRaw(0),
+    id: RequestId = .fromRaw(0),
+
+    pub fn eql(a: Token, b: Token) bool {
+        return a.generation == b.generation and a.id == b.id;
+    }
+};
 pub const Identity = union(enum) { none, dns: []const u8, ipv4: [4]u8, ipv6: [16]u8 };
 pub const Purpose = enum { server, client };
 pub const Mode = enum { full, none };
@@ -210,7 +219,7 @@ pub const Verification = struct {
     pub fn check(self: Verification, request: Request) CheckError!void {
         @setRuntimeSafety(true);
         if (request.chain.len == 0) return error.WrongVerificationRequest;
-        if (!aegis.secret.equal(32, &self.request_digest, &request.digest()).declassify("a request mismatch is refused") or self.token.generation != request.token.generation or self.token.id != request.token.id) return error.WrongVerificationRequest;
+        if (!aegis.secret.equal(32, &self.request_digest, &request.digest()).declassify("a request mismatch is refused") or !self.token.eql(request.token)) return error.WrongVerificationRequest;
         if (self.purpose != request.purpose or self.trust_generation != request.trust_generation or self.policy_generation != request.policy_generation or self.path.len == 0 or !std.mem.eql(u8, self.path[0], request.chain[0])) return error.WrongVerificationRequest;
         switch (self.identity) {
             .none => if (request.identity != .none) return error.WrongVerificationRequest,
