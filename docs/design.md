@@ -128,9 +128,18 @@ request-digest comparison. Hashing, verification, result cleanup and allocator
 calls occur outside the guard. Reference counts and detached executor completion
 ownership are independent of this lock and retain their existing reaping rules.
 
-Later aegis APIs are not dependencies: owned request/path/receipt values and
-checked token matching remain local pending published handle/own/input APIs.
-TLS-specific policy, refcount and job lifetime are not generic owner substitutes.
+The rest of aegis has no site here, by what each would add. Handles: cloak keeps no
+generational storage (one open request per connection, jobs counted by reference), and
+request tokens are typed aegis IDs compared by `Token.eql`. `Untrusted`: every parser
+reads peer bytes, or bytes cloak's own MAC or AEAD authenticated, and nothing else, so
+the marker would restate what each assumes; the refinement it stands for is the parsers'
+typed results, and an open code point becomes a negotiated value only through
+`supported()` and the offered list. `err.Context`: cloak's diagnostics are one flat
+typed record per connection (phase, reason, alerts sent and received), not a stack of
+frames. `own`: the owners that must not be copied (budget reservations, secrets) carry
+aegis's own exactly-once witness already. The session cache's bytes are an aegis budget,
+each kept ticket holding its reservation until it leaves its slot. TLS-specific policy,
+refcount and job lifetime are not generic owner substitutes.
 Existing fixed-width constant-time arithmetic/select and volatile spill barriers
 remain the reviewed local kernels pending published constant-time values.
 Secret owners erase their explicit storage on ordinary success/error cleanup;

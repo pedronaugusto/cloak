@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- The session cache's byte bound is an aegis budget: each kept ticket holds a reservation of its bytes and returns it as it leaves its slot (taken, expired, displaced or cleared), so the count is never adjusted by hand.
+
 ## [0.11.1] - 2026-10-17
 
 ### Added
