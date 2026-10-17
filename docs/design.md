@@ -213,8 +213,10 @@ group is its own instance with its own depth. `zig build timing` is the evidence
 ReleaseFast build: shakedown's leak test (dudect: a fixed and a random class of the
 secret, interleaved, Welch's t) per kernel. On an Apple M3 without the mode std's X25519
 was told apart by its secret (|t| 16 to 37) and the P-curves, ML-KEM, AES-GCM,
-ChaCha20-Poly1305, HMAC, the Choice comparison and the signatures were not; with the mode
-none was. A run finds a leak with some confidence and never proves there is none. The
+ChaCha20-Poly1305, HMAC, the Choice comparison and the signatures were not; on AArch64
+Linux on the same machine the Choice comparison was told apart by where its inputs
+differed (|t| 18 to 23), which is why the mode is set at the entry points and not only
+around the key exchanges; with the mode none was. A run finds a leak with some confidence and never proves there is none. The
 curve and RSA kernels keep their own masks (one value barrier per mask, reused across a
 table entry's limbs and vectors): aegis's `Choice` selects one integer per barrier and
 hands out no raw mask, so moving them would cost a barrier per word or widen `Choice` to
