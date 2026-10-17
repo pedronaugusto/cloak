@@ -44,6 +44,8 @@ pub const Entry = struct {
     auth_expires: i64,
     /// The server was authenticated under the key's verification policy.
     authenticated: bool,
+    /// Private: the entry's bytes in the cache's byte budget, held while a slot holds it.
+    charge: Bytes.Reservation = undefined,
 
     pub fn secretBytes(entry: *const Entry) []const u8 {
         return entry.secret.expose()[0..switch (entry.version) {
@@ -66,9 +68,12 @@ pub const Taken = struct {
 
 const SessionCache = @This();
 
+const Bytes = aegis.bounded.Budget(usize);
+
 const Table = struct {
     slots: []?*Entry,
-    bytes: usize = 0,
+    /// Bytes of the entries in slots, each charged by its own reservation.
+    bytes: Bytes,
     sequence: u64 = 0,
 };
 
@@ -84,7 +89,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!SessionCache {
     if (options.max_entries == 0 or options.max_entries > 1 << 20 or options.per_key == 0 or options.per_key > 16 or options.max_bytes < @sizeOf(Entry) + 64) return error.InvalidOptions;
     const slots = try gpa.alloc(?*Entry, options.max_entries);
     @memset(slots, null);
-    return .{ .gpa = gpa, .options = options, .table = .init(.{ .slots = slots }) };
+    return .{ .gpa = gpa, .options = options, .table = .init(.{ .slots = slots, .bytes = .init(options.max_bytes) }) };
 }
 
 /// Erases every ticket. No connection may be using the cache.
@@ -113,7 +118,7 @@ pub fn clear(self: *SessionCache) void {
                 if (n == dropped.len) break;
                 dropped[n] = entry;
                 n += 1;
-                table.bytes -= cost(entry);
+                entry.charge.release();
                 slot.* = null;
             };
         }
@@ -163,7 +168,7 @@ pub fn take(self: *SessionCache, key: *const [32]u8, version: suites.Version, no
                 if (expired_count < expired.len) {
                     expired[expired_count] = entry;
                     expired_count += 1;
-                    table.bytes -= cost(entry);
+                    entry.charge.release();
                     slot.* = null;
                 }
                 continue;
@@ -173,7 +178,7 @@ pub fn take(self: *SessionCache, key: *const [32]u8, version: suites.Version, no
         }
         if (best) |i| {
             found = table.slots[i];
-            table.bytes -= cost(found.?);
+            found.?.charge.release();
             table.slots[i] = null;
         }
     }
@@ -252,7 +257,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
             }
             const victim = if (same >= self.options.per_key)
                 oldest_same
-            else if (used >= table.slots.len or table.bytes + cost(entry) > self.options.max_bytes)
+            else if (used >= table.slots.len or table.bytes.remaining() < cost(entry))
                 oldest
             else
                 null;
@@ -260,12 +265,12 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
             if (displaced_count == displaced.len) break;
             displaced[displaced_count] = table.slots[i];
             displaced_count += 1;
-            table.bytes -= cost(table.slots[i].?);
+            table.slots[i].?.charge.release();
             table.slots[i] = null;
         }
-        if (table.bytes + cost(entry) <= self.options.max_bytes) for (table.slots) |*slot| if (slot.* == null) {
+        if (table.bytes.remaining() >= cost(entry)) for (table.slots) |*slot| if (slot.* == null) {
+            entry.charge = table.bytes.reserve(cost(entry)) catch break;
             slot.* = entry;
-            table.bytes += cost(entry);
             placed = true;
             break;
         };
