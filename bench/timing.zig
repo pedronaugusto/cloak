@@ -354,7 +354,7 @@ pub fn main(init: std.process.Init) !void {
         .{ Row{ .name = "ECDSA P-256 sign, noise", .measurements = 1 << 16, .batch = 1 }, pki.p256_pem, cloak.certificates.certificate.Algorithm.Signature{ .ecdsa = .sha256 }, false },
         .{ Row{ .name = "ECDSA P-384 sign, noise", .measurements = 1 << 15, .batch = 1 }, pki.p384_pem, cloak.certificates.certificate.Algorithm.Signature{ .ecdsa = .sha384 }, false },
         .{ Row{ .name = "Ed25519 sign (std), message", .measurements = 1 << 16, .batch = 1 }, pki.ed25519_pem, cloak.certificates.certificate.Algorithm.Signature.ed25519, true },
-        .{ Row{ .name = "RSA-2048 PKCS#1 sign, message", .measurements = 1 << 13, .batch = 1 }, pki.rsa_pem, cloak.certificates.certificate.Algorithm.Signature{ .rsa = .sha256 }, true },
+        .{ Row{ .name = "RSA-2048 PKCS#1 sign, message", .measurements = 1 << 14, .batch = 1 }, pki.rsa_pem, cloak.certificates.certificate.Algorithm.Signature{ .rsa = .sha256 }, true },
     };
     inline for (signers) |entry| {
         const row = entry[0];
@@ -364,7 +364,7 @@ pub fn main(init: std.process.Init) !void {
             const context = try gpa.create(Sign);
             defer gpa.destroy(context);
             context.* = .{ .key = key, .algorithm = entry[2], .over_message = entry[3] };
-            const r = try leak.run(gpa, io, context, .{ .measurements = row.measurements, .slots = @min(slots, row.measurements / 2), .batch = row.batch, .seed = 0x7175 });
+            const r = try leak.run(gpa, io, context, .{ .measurements = row.measurements, .slots = @min(slots, row.measurements / 4), .batch = row.batch, .seed = 0x7175 });
             if (context.failures != 0) return failed(out, row, context.failures);
             leaks += @intFromBool(r.leak);
             try report(out, row, r);
