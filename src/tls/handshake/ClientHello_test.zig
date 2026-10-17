@@ -277,3 +277,18 @@ fn undecodable(wire: []const u8) !void {
         else => return err,
     }
 }
+
+test "F111 catalogue_hello_version_tolerance (a stream hello naming any version above TLS 1.2 without supported_versions offers TLS 1.2, 0xfefe too)" {
+    // tlsfuzzer's test-version-numbers: RFC 5246 appendix E.1 and RFC 8446 section 4.2.1, a server
+    // answers a higher legacy_version with the highest version it speaks. A stream knows no DTLS
+    // numbering: 0xfefe is a version above TLS 1.2.
+    const tail = "\x00\x00\x02\xc0\x2f\x01\x00\x00\x00";
+    inline for (.{ "\x03\x03", "\x03\x04", "\x03\xfe", "\x04\x00", "\xfe\xfe", "\xff\xff" }) |version| {
+        const wire = "\x01\x00\x00\x2b" ++ version ++ @as([32]u8, @splat(0)) ++ tail;
+        const hello = try ClientHello.parse(wire, .stream);
+        try std.testing.expect(hello.offers12());
+        try std.testing.expect(!hello.offers13());
+    }
+    const old = try ClientHello.parse("\x01\x00\x00\x2b\x03\x02" ++ @as([32]u8, @splat(0)) ++ tail, .stream);
+    try std.testing.expect(!old.offers12());
+}
