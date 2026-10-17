@@ -1467,3 +1467,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F109 | `catalogue_hello_decoded_before_judged` | `tls/handshake/ClientHello_test.zig` | the null-method check before the extensions' framing, or an empty compression list taken (found by tlsfuzzer's test-invalid-client-hello-w-record-overflow) |
 | F110 | `catalogue_oversized_handshake_message_decode_error` | `tls/ServerConnection_test.zig` | HandshakeLimit answered with internal_error, as before (found by tlsfuzzer's test-truncating-of-client-hello) |
 | F111 | `catalogue_hello_version_tolerance` | `tls/handshake/ClientHello_test.zig` | the 0xfe00 cutoff on a stream's legacy_version, as before (found by tlsfuzzer's test-version-numbers) |
+| F112 | `catalogue_server_name_ranges_decode_error` | `tls/handshake/ClientHello_test.zig` | the empty list or name answered illegal_parameter, as before (found by tlsfuzzer's test-invalid-server-name-extension) |

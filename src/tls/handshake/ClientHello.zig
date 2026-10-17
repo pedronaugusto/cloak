@@ -165,11 +165,15 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         0 => {
             var list = try value.vector(u16);
             try value.finish();
+            // server_name_list<1..2^16-1> and HostName<1..2^16-1> (RFC 6066 section 3): out of
+            // range is decode_error; a name that decodes but is no host name is illegal_parameter.
+            if (list.bytes.len == 0) return error.DecodeError;
             var seen = false;
             while (list.pos != list.bytes.len) {
                 const kind = try list.int(u8);
                 const name = (try list.vector(u16)).bytes;
                 if (kind != 0) continue;
+                if (name.len == 0) return error.DecodeError;
                 if (seen or !hostName(name)) return error.IllegalParameter;
                 seen = true;
                 self.server_name = name;

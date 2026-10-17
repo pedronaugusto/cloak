@@ -292,3 +292,29 @@ test "F111 catalogue_hello_version_tolerance (a stream hello naming any version 
     const old = try ClientHello.parse("\x01\x00\x00\x2b\x03\x02" ++ @as([32]u8, @splat(0)) ++ tail, .stream);
     try std.testing.expect(!old.offers12());
 }
+
+/// A TLS 1.3 hello (one suite, null compression) carrying `extensions`, in `out`.
+fn helloWith(out: []u8, extensions: []const u8) []const u8 {
+    const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";
+    const body_len = prefix.len + 2 + extensions.len;
+    out[0] = 1;
+    std.mem.writeInt(u24, out[1..4], @intCast(body_len), .big);
+    @memcpy(out[4..][0..prefix.len], prefix);
+    std.mem.writeInt(u16, out[4 + prefix.len ..][0..2], @intCast(extensions.len), .big);
+    @memcpy(out[6 + prefix.len ..][0..extensions.len], extensions);
+    return out[0 .. 4 + body_len];
+}
+
+test "F112 catalogue_server_name_ranges_decode_error (an empty server_name list or host name is decode_error; a name that is no host name is illegal_parameter)" {
+    // tlsfuzzer's test-invalid-server-name-extension. RFC 6066 section 3: server_name_list<1..2^16-1>
+    // and HostName<1..2^16-1>; a vector out of its range is decode_error (RFC 8446 section 6).
+    var out: [256]u8 = undefined;
+    // An empty list.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x00\x00\x02\x00\x00"), .stream));
+    // One host_name entry, empty.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x00\x00\x05\x00\x03\x00\x00\x00"), .stream));
+    // A name with a space decodes and is refused as a value.
+    try std.testing.expectError(error.IllegalParameter, ClientHello.parse(helloWith(&out, "\x00\x00\x00\x0c\x00\x0a\x00\x00\x07a b c.d"), .stream));
+    const hello = try ClientHello.parse(helloWith(&out, "\x00\x00\x00\x0c\x00\x0a\x00\x00\x07a-b.c.d"), .stream);
+    try std.testing.expectEqualSlices(u8, "a-b.c.d", hello.server_name);
+}
