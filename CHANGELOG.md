@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-17
+
 ### Added
 
 - Kernel record layers (kTLS): after the handshake either direction of a `tls.Connection` moves to the kernel through `offload(direction, installer)`, which hands over that direction's keys and record number only at a clean boundary (every byte read given to `receive`, every record and message in it complete, every plaintext byte consumed, every byte of output acknowledged) and erases its copy once the kernel holds them; a kernel that refuses them leaves the direction in software as it was. The kernel then seals or opens application data, and the connection keeps the rest: records the kernel opens that are not application data come in through `receiveControl` (alerts, NewSessionTicket, KeyUpdate, a TLS 1.2 HelloRequest), records it sends go out through `control` and `acknowledgeControl` for the kernel to seal with their type, and `offloadRecords` keeps each epoch within its record limit from the kernel's counts (a TLS 1.3 key update a quarter before it; TLS 1.2 ends there). A TLS 1.3 key update in a kernel direction turns the epoch at once and gives the kernel the next keys through `offload` again (`offloadPending`); a kernel that refuses them ends the connection rather than go back to keys the peer has dropped. Under a kernel a KeyUpdate must be its record's only message, since Linux stops its receive path only after a record that starts with one. `send`, `output`, `acknowledge` and `receive` stop a caller that uses them on a direction the kernel holds.
