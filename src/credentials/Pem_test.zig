@@ -44,7 +44,7 @@ fn parse(gpa: std.mem.Allocator) !void {
     defer block.deinit(gpa);
 }
 
-test "catalogue_key_import_armor_limit_precedes_whitespace_scan" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (the armor limit precedes the whitespace scan)" {
     @setRuntimeSafety(true);
     var pem = Pem.init("                  ");
     try std.testing.expectError(error.InputLimit, pem.next(std.testing.failing_allocator, 8));
@@ -94,7 +94,7 @@ const Erasure = struct {
         owner.backing.rawFree(bytes, alignment, ret);
     }
 };
-test "catalogue_key_import_pem_owned_buffers_clear_before_raw_free" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (owned PEM buffers clear before their raw free)" {
     @setRuntimeSafety(true);
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var erasure: Erasure = .{ .backing = no_resize.allocator() };

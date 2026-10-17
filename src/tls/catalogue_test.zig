@@ -67,3 +67,103 @@ test "F27 catalogue_heartbeat_and_nested_length_overread across DER, hellos, cer
     defer server.deinit();
     try std.testing.expectError(error.UnexpectedRecord, server.receive("\x18\x03\x03\x00\x03\x01\x40\x00"));
 }
+
+const Duo = @import("../testing/Duo.zig");
+
+test "F01 catalogue_entropy_clone_and_unready_source (entropy failing at any request ends that end, nothing drawn for is sent, the peer never connects)" {
+    const gpa = std.testing.allocator;
+    const scenarios = [_]Duo.Options{
+        .{ .client_auth = .required, .client_cert = true },
+        .{ .client_auth = .required, .client_cert = true, .client_max = .tls12, .server_max = .tls12 },
+        .{ .client_auth = .required, .client_cert = true, .cert = .rsa },
+    };
+    for (scenarios) |scenario| for ([_]usize{ 0, 1 }) |end| {
+        // Every entropy request a clean handshake makes at this end.
+        const clean = try Duo.init(gpa, scenario);
+        defer clean.deinit();
+        try clean.handshake();
+        const requests = clean.entropy_drawn[end];
+        try std.testing.expect(requests >= 1);
+        for (0..requests) |at| {
+            var options = scenario;
+            options.entropy_fails = .{ .end = if (end == 0) .client else .server, .at = at };
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try std.testing.expectError(error.EntropyUnavailable, duo.handshake());
+            const failed = if (end == 0) &duo.client else &duo.server;
+            const peer = if (end == 0) &duo.server else &duo.client;
+            try std.testing.expectEqual(Connection.Phase.failed, failed.phase());
+            try std.testing.expect(failed.info() == null);
+            // Only an alert is left to send: no flight built from the missing draw.
+            const out = failed.output();
+            try std.testing.expect(out.len == 0 or (out[0] == 21 and out.len == 7));
+            try std.testing.expect(peer.phase() != .connected);
+        }
+    };
+    // cloak keeps no generator to clone: every random byte is the caller's draw for this
+    // connection. The same draws give the same first flight; fresh draws give a fresh random
+    // and fresh shares.
+    var flights: [3][]u8 = undefined;
+    for (&flights, [_]u64{ 1, 1, 2 }) |*flight, seed| {
+        const duo = try Duo.init(gpa, .{ .seed = seed });
+        defer duo.deinit();
+        try duo.serveClient();
+        flight.* = try gpa.dupe(u8, duo.client.output());
+    }
+    defer for (flights) |flight| gpa.free(flight);
+    try std.testing.expectEqualSlices(u8, flights[0], flights[1]);
+    try std.testing.expect(!std.mem.eql(u8, flights[0][11..43], flights[2][11..43]));
+    try std.testing.expect(flights[0].len == flights[2].len);
+    // The random, the session id and the shares (an ML-KEM-768 hybrid among them) all differ.
+    var differ: usize = 0;
+    for (flights[0], flights[2]) |a, b| differ += @intFromBool(a != b);
+    try std.testing.expect(differ > 32 + 32 + 1000);
+}
+
+test "F42 catalogue_mtls_builder_order_and_optional_usage (optional and required client authentication: a wrong-usage certificate never authenticates, absence never reports an identity)" {
+    const gpa = std.testing.allocator;
+    // The policy is one immutable options value given at creation: there is no setter order.
+    for ([_]bool{ false, true }) |tls12| {
+        const base: Duo.Options = if (tls12) .{ .client_max = .tls12, .server_max = .tls12 } else .{};
+        // A certificate for servers only, offered where a client's is asked for: refused under
+        // either policy, never a connection that reports the client authenticated.
+        for ([_]@TypeOf(base.client_auth){ .optional, .required }) |policy| {
+            var options = base;
+            options.client_auth = policy;
+            options.client_cert = true;
+            options.client_server_eku = true;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try std.testing.expectError(error.VerificationRejected, duo.handshake());
+            try std.testing.expectEqual(Connection.Phase.failed, duo.server.phase());
+            try std.testing.expect(duo.server.info() == null);
+        }
+        // No certificate: required fails, optional connects without an authenticated client.
+        {
+            var options = base;
+            options.client_auth = .required;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try std.testing.expect(std.meta.isError(duo.handshake()));
+            try std.testing.expect(duo.server.info() == null);
+        }
+        {
+            var options = base;
+            options.client_auth = .optional;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try duo.handshake();
+            try std.testing.expect(!duo.server.info().?.peer_authenticated);
+        }
+        // A client certificate fit for clients authenticates under either policy.
+        for ([_]@TypeOf(base.client_auth){ .optional, .required }) |policy| {
+            var options = base;
+            options.client_auth = policy;
+            options.client_cert = true;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try duo.handshake();
+            try std.testing.expect(duo.server.info().?.peer_authenticated);
+        }
+    }
+}

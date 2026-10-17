@@ -3,7 +3,7 @@ const shakedown = @import("shakedown");
 const inputs = @import("../../testing/inputs.zig");
 const E = @import("Extensions.zig");
 const R = @import("../../wire/Reader.zig");
-test "C2 catalogue_extension_uniqueness_and_negotiation_allowlist" {
+test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist" {
     for ([_]u16{ 0, 43, 51, 0x0a0a, 65535 }) |id| {
         var bytes: [8]u8 = @splat(0);
         std.mem.writeInt(u16, bytes[0..2], id, .big);
@@ -13,7 +13,7 @@ test "C2 catalogue_extension_uniqueness_and_negotiation_allowlist" {
         try std.testing.expectError(error.DuplicateExtension, ext.next());
     }
 }
-test "C2 catalogue_heartbeat_and_nested_length_overread" {
+test "F27 catalogue_heartbeat_and_nested_length_overread" {
     var reader: R = .{ .bytes = "\xff\xffx" };
     try std.testing.expectError(error.InvalidLength, reader.vector(u16));
     var ext: E = .{ .reader = .{ .bytes = "\x00\x33\xff\xffx" } };

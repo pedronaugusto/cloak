@@ -1,6 +1,6 @@
 const std = @import("std");
 const Der = @import("Der.zig");
-test "DER rejects nonminimal lengths integers and escaped children" {
+test "F07 catalogue_der_lengths_children_and_depth (nonminimal lengths, integers and escaped children are refused)" {
     for ([_][]const u8{ &.{ 4, 0x80, 0, 0 }, &.{ 4, 0x81, 1, 0 }, &.{ 4, 0x82, 0, 128 }, &.{ 0x30, 2, 4, 1 }, &.{ 2, 2, 0, 1 }, &.{ 3, 2, 7, 1 }, &.{ 6, 2, 0x80, 0 }, &.{ 0x31, 6, 2, 1, 2, 2, 1, 1 } }) |b| {
         try std.testing.expectError(error.InvalidDer, Der.validate(b, .{}));
     }
@@ -8,7 +8,7 @@ test "DER rejects nonminimal lengths integers and escaped children" {
     try std.testing.expectError(error.DerLimit, Der.validate(&.{ 0x30, 3, 2, 1, 1 }, .{ .depth = 1 }));
 }
 
-test "DER hard recursion cap survives an oversized caller depth in ReleaseFast" {
+test "F07 catalogue_der_lengths_children_and_depth (the hard recursion cap survives an oversized caller depth in ReleaseFast)" {
     var encoded: [512]u8 = undefined;
     encoded[0] = 5;
     encoded[1] = 0;

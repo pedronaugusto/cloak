@@ -33,7 +33,7 @@ fn fragment(out: []u8, kind: u8, length: u24, sequence: u16, offset: u24, bytes:
     return Record.plaintext(.handshake, record_sequence, body[0 .. 12 + bytes.len], out);
 }
 
-test "C8 catalogue_dtls_fragment_arithmetic_and_conflicting_total" {
+test "F77 catalogue_dtls_fragment_arithmetic_and_conflicting_total" {
     // F77: offsets past the end, totals that change between fragments, overlaps that disagree and
     // lengths past every bound are discarded before any byte is written or any buffer allocated;
     // the server's flight, in pieces and out of order, still makes whole messages.
@@ -85,7 +85,7 @@ test "C8 catalogue_dtls_fragment_arithmetic_and_conflicting_total" {
     }
 }
 
-test "C8 catalogue_dtls_duplicate_replay_and_message_order" {
+test "F78 catalogue_dtls_duplicate_replay_and_message_order" {
     // F78: a replayed record, a message already taken, one far ahead and a wrapping sequence are
     // discarded without touching the transcript or the keys; the association goes on.
     for (both) |list| {
@@ -117,7 +117,7 @@ test "C8 catalogue_dtls_duplicate_replay_and_message_order" {
     }
 }
 
-test "C8 catalogue_dtls_timer_during_suspended_flight" {
+test "F79 catalogue_dtls_timer_during_suspended_flight" {
     // F79: a flight cut short when the path's MTU drops, then its timer: what goes out is the
     // cached messages cut anew, the peer completes from it, and retransmissions stop at the limit.
     for (both) |list| {
@@ -155,7 +155,7 @@ test "C8 catalogue_dtls_timer_during_suspended_flight" {
     try std.testing.expectEqual(@as(usize, 8), sent);
 }
 
-test "C8 catalogue_dtls_client_random_cookie_and_amplification at the association: an unproven server sends at most three times what it received" {
+test "F80 catalogue_dtls_client_random_cookie_and_amplification at the association: an unproven server sends at most three times what it received" {
     // F80 (the cookie rows are in Cookies_test.zig): without a cookie the server's output before
     // the client's keys prove its address stays within three times its input, and two clients with
     // their own randomness against the same server draws derive their own keys.
@@ -178,7 +178,7 @@ test "C8 catalogue_dtls_client_random_cookie_and_amplification at the associatio
     }
 }
 
-test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival at the association: forged datagrams change nothing" {
+test "F81 catalogue_dtls_short_aead_ccm_tag_and_survival at the association: forged datagrams change nothing" {
     // F81 (the record rows are in Record_test.zig): short, truncated, tampered and foreign
     // datagrams to an established association are dropped; the next genuine one is read.
     for ([_][]const suites.Suite{ &.{.aes_128_ccm_sha256}, &.{.ecdhe_ecdsa_aes_128_ccm}, suites.Suite.tls13_only, &.{.ecdhe_ecdsa_chacha20_poly1305_sha256} }) |list| {
@@ -210,7 +210,7 @@ test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival at the association: forg
     }
 }
 
-test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival: a CCM_8 key ends its association at 2^7 failed records, the margin of every other cipher" {
+test "F81 catalogue_dtls_short_aead_ccm_tag_and_survival: a CCM_8 key ends its association at 2^7 failed records, the margin of every other cipher" {
     // F81 for the 8-byte tag (RFC 9147 appendix B.3): 127 forgeries are dropped and the
     // association reads on; the 128th ends it with ForgeryLimit, before a 2^-57 forgery margin is
     // spent. A 16-byte-tag key takes the same 128 and lives on.
@@ -247,7 +247,7 @@ test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival: a CCM_8 key ends its as
     }
 }
 
-test "C8 catalogue_dtls_corruption_renegotiation_and_reset" {
+test "F82 catalogue_dtls_corruption_renegotiation_and_reset" {
     // F82: a corrupted record, then a new hello on the established association: no renegotiation,
     // no reset; and a new association takes nothing of the old one's records.
     for (both) |list| {

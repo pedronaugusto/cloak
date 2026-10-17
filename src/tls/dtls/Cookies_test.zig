@@ -53,7 +53,7 @@ fn keyed() !Cookies {
     return cookies;
 }
 
-test "C8 catalogue_dtls_client_random_cookie_and_amplification: a cookie is answered statelessly, bound to its address and time" {
+test "F80 catalogue_dtls_client_random_cookie_and_amplification: a cookie is answered statelessly, bound to its address and time" {
     var cookies = try keyed();
     defer cookies.deinit();
     const now: std.Io.Timestamp = .fromNanoseconds(1000 * std.time.ns_per_s);

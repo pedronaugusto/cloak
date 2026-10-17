@@ -2,7 +2,7 @@
 const std = @import("std");
 const Montgomery = @import("Montgomery.zig");
 const shakedown = @import("shakedown");
-test "credential Montgomery carry reduction and alias properties" {
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (P-384 Montgomery carry, reduction and alias properties)" {
     @setRuntimeSafety(true);
     try shakedown.check(std.testing.allocator, {}, differential, .{ .cases = 1024, .seed = 0xc1ca77 });
 }

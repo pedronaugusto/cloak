@@ -30,7 +30,7 @@ test "C2 RFC8448 handshake secrets keys and IV" {
     try std.testing.expectEqualSlices(u8, &hex("3fce516009c21727d0f2e4e86ee403bc"), &key);
     try std.testing.expectEqualSlices(u8, &hex("5d313eb2671276ee13000b30"), &iv);
 }
-test "C2 catalogue_finished_entropy_failure_is_never_success" {
+test "F45 catalogue_finished_entropy_failure_is_never_success" {
     inline for (.{ std.crypto.hash.sha2.Sha256, std.crypto.hash.sha2.Sha384 }) |Hash| {
         const traffic: [Hash.digest_length]u8 = @splat(1);
         const transcript: [Hash.digest_length]u8 = @splat(2);

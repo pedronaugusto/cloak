@@ -30,7 +30,7 @@ test "service finite deadline rejects missing executor before copying" {
     try std.testing.expectError(error.ServiceExecutorRequired, Job.init(std.testing.failing_allocator, &budget, request(), .{ .timeout = .{ .duration = .{ .raw = .fromNanoseconds(1), .clock = .awake } } }));
     try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
 }
-test "service timeout late completion reaps only executor owned memory" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a late completion after abandonment is refused and reaps only executor-owned memory, its charge held until reaped)" {
     @setRuntimeSafety(true);
     var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
@@ -45,7 +45,7 @@ test "service timeout late completion reaps only executor owned memory" {
     try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
     try std.testing.expectEqual(@as(usize, 0), budget.counts().bytes);
 }
-test "service queued job every allocation failure without resize" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a queued job survives every allocation failure without resize)" {
     @setRuntimeSafety(true);
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(no_resize.allocator(), allocations, .{});
@@ -141,7 +141,7 @@ const Cleanup = struct {
         self.backing.rawFree(bytes, alignment, ret);
     }
 };
-test "catalogue_verify_job_path_cleanup_releases_spin_guard" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releases the spin guard)" {
     @setRuntimeSafety(true);
     const Path = @import("Path.zig");
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
@@ -174,7 +174,7 @@ test "catalogue_verify_job_path_cleanup_releases_spin_guard" {
     try std.testing.expectEqual(@as(usize, 0), cleanup.locked_frees);
 }
 
-test "catalogue_verify_job_native_abandon_during_evaluation_reaps_outside_guard" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (abandoned during evaluation, the result is reaped outside the guard)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     const root = @embedFile("../verify/fixtures/vectors/p256.der");
@@ -203,7 +203,7 @@ fn execute(job: Job) anyerror!void {
     defer job.deinit();
     job.run();
 }
-test "catalogue_verify_job_native_concurrent_abandon_retains_charge_until_reap" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abandon retains the charge until reaped)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .limited(1) });

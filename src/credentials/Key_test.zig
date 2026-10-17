@@ -32,14 +32,14 @@ test "credential key formats match modern certificate public keys" {
         try std.testing.expectEqual(case.passphrase != null, PrivateKey.isEncrypted(case.key));
     }
 }
-test "credential input and KDF bounds precede allocation and expensive work" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (input and KDF bounds precede allocation and expensive work)" {
     @setRuntimeSafety(true);
     try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.pkcs1.pem"), .{ .bytes = 8 }));
     try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = 1 }));
     try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{}));
     try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
 }
-test "credential final ownership survives original owner release and allocation faults" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (final ownership survives the original owner's release and allocation faults)" {
     @setRuntimeSafety(true);
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(no_resize.allocator(), allocation, .{});

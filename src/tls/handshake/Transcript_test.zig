@@ -37,7 +37,7 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
     var wire: [679]u8 = undefined;
     try std.testing.expectEqualSlices(u8, @embedFile("testdata/server-record.bin"), try tx.seal(.handshake, plain.bytes, 0, &wire));
 }
-test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation" {
+test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     // Transcript component of F31: exact synthetic message_hash, once only.
     // Group/CH2 validation awaits the ClientHello/ServerHello parser integration.
     inline for (.{ std.crypto.hash.sha2.Sha256, std.crypto.hash.sha2.Sha384 }) |H| {

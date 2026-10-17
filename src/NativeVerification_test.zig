@@ -4,7 +4,7 @@ const Native = @import("NativeVerification.zig");
 const services = @import("services.zig");
 const types = @import("types.zig");
 const shakedown = @import("shakedown");
-test "native verification receipt binds request and rechecks expiry at completion" {
+test "F23 catalogue_native_receipt_path_token_and_clock (a native receipt binds its request and rechecks expiry at completion)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
     const root = @embedFile("verify/fixtures/vectors/p256.der");
@@ -43,7 +43,7 @@ test "native verification checks a public server against the system's own author
     try std.testing.expect(std.meta.isError(refused.take(gpa, other, time)));
 }
 
-test "native verification late receipt rejects a backwards real clock" {
+test "F23 catalogue_native_receipt_path_token_and_clock (a late native receipt rejects a backwards real clock)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
     const request: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
@@ -53,7 +53,7 @@ test "native verification late receipt rejects a backwards real clock" {
     try std.testing.expectError(error.ValidationTimeChanged, native.take(std.testing.allocator, request, .fromNanoseconds(request.time.nanoseconds - 1)));
 }
 
-test "catalogue_native_completion_owned_allocation_failures_without_resize" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (native completion: owned allocation failures without resize)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
@@ -74,7 +74,7 @@ fn nativeAllocations(gpa: std.mem.Allocator) !void {
     try receipt.check(req);
 }
 
-test "catalogue_native_completion_repeated_release_keeps_owned_heap_and_budget_bounded" {
+test "F26 catalogue_verify_job_cancel_alloc_and_late_result (native completion: repeated release keeps the owned heap and budget bounded)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
     var counting = shakedown.alloc.Counting.init(std.testing.allocator);

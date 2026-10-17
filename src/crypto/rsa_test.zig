@@ -113,7 +113,7 @@ test "RSA private operation rejects a message at or above n and a wrong length" 
     try std.testing.expectError(error.SigningFailed, key.private(k.n[1..], &seed, out[1..]));
 }
 
-test "RSA fault check withholds a result whose CRT half or encoding was corrupted" {
+test "F02 catalogue_private_operation_blinding_and_fault (the RSA fault check withholds a result whose CRT half or encoding was corrupted)" {
     inline for (keys) |der| {
         var key: rsa.PrivateKey = undefined;
         const k = try load(der, &key);
@@ -130,7 +130,7 @@ test "RSA fault check withholds a result whose CRT half or encoding was corrupte
     }
 }
 
-test "RSA key shapes outside the kernel are refused" {
+test "F08 catalogue_signature_workspace_and_rsa_size (RSA private key shapes outside the kernel are refused)" {
     const k = try parts(keys[0]);
     var key: rsa.PrivateKey = undefined;
     // Even modulus, even exponent, exponent above 64 bits.
@@ -144,7 +144,7 @@ test "RSA key shapes outside the kernel are refused" {
     try std.testing.expectError(error.InvalidKey, key.init(k.n, k.e, &@as([257]u8, @splat(0xff)), k.q, k.dp, k.dq, k.qinv));
 }
 
-test "RSA blinding is real: r is fresh per seed and key, and the exponentiated value is m * r^e" {
+test "F02 catalogue_private_operation_blinding_and_fault (RSA blinding is real: r is fresh per seed and key, and the exponentiated value is m * r^e)" {
     var key_a: rsa.PrivateKey = undefined;
     const a = try load(keys[0], &key_a);
     var key_b: rsa.PrivateKey = undefined;

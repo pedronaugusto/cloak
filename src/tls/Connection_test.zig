@@ -92,7 +92,7 @@ fn fails(comptime suite: Suite13, config: peer_module.Config, options: Options, 
     try std.testing.expect(pair.conn.request() == null);
 }
 
-test "C2 catalogue_possession_verification_cannot_be_skipped" {
+test "F28 catalogue_possession_verification_cannot_be_skipped" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .missing_certificate_verify }, .{}, error.UnexpectedMessage, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .bad_signature }, .{}, error.BadSignature, .decrypt_error);
     try fails(.aes_128_gcm_sha256, .{ .cert = .ed25519, .tamper = .bad_signature }, .{}, error.BadSignature, .decrypt_error);
@@ -102,26 +102,26 @@ test "C2 catalogue_possession_verification_cannot_be_skipped" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .bad_signature }, .{ .verify_none = true }, error.BadSignature, .decrypt_error);
 }
 
-test "C2 catalogue_certificate_verify_scheme_restrictions" {
+test "F28 catalogue_possession_verification_cannot_be_skipped (CertificateVerify uses a scheme the client offered, matching the key's curve)" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .scheme_not_offered }, .{}, error.UnofferedScheme, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .scheme_curve_mismatch }, .{}, error.SchemeKeyMismatch, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .cert = .p384, .tamper = .scheme_curve_mismatch }, .{}, error.SchemeKeyMismatch, .illegal_parameter);
 }
 
-test "C2 catalogue_smack_authentication_skip_edges" {
+test "F29 catalogue_smack_authentication_skip_edges" {
     // A CertificateRequest after the Certificate, and application bytes before Finished.
     try fails(.aes_128_gcm_sha256, .{ .request_client_cert = true, .tamper = .certificate_request_late }, .{}, error.UnexpectedMessage, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .application_before_finished }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
-test "C2 catalogue_key_change_record_alignment" {
+test "F30 catalogue_key_change_record_alignment" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .encrypted_extensions_in_hello_record }, .{}, error.RecordAlignment, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .plaintext_encrypted_extensions }, .{}, error.UnexpectedRecord, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .finished_not_at_record_end }, .{}, error.RecordAlignment, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .finished_not_at_record_end, .layout = .{ .fragments = 5 } }, .{}, error.RecordAlignment, .unexpected_message);
 }
 
-test "C2 catalogue_extension_uniqueness_and_negotiation_allowlist" {
+test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .duplicate_extension_in_encrypted }, .{}, error.DuplicateExtension, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .alpn = "h2", .tamper = .unoffered_alpn }, .{ .alpn = &.{ "h2", "http/1.1" } }, error.UnofferedSelection, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .extension_in_certificate_entry }, .{}, error.UnsolicitedExtension, .unsupported_extension);
@@ -141,20 +141,20 @@ test "C2 a server answering with an older version is refused, and a downgrade se
     try fails(.aes_128_gcm_sha256, .{ .tamper = .downgrade_sentinel }, .{}, error.Downgrade, .illegal_parameter);
 }
 
-test "C2 catalogue_certificate_message_shapes" {
+test "F29 catalogue_smack_authentication_skip_edges (an empty certificate list or a nonempty request context is refused)" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .empty_certificate_list }, .{}, error.EmptyCertificate, .decode_error);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .nonempty_certificate_context }, .{}, error.IllegalParameter, .illegal_parameter);
 }
 
-test "C2 catalogue_ecdh_invalid_curve_and_noncontributory_share" {
+test "F33 catalogue_ecdh_invalid_curve_and_noncontributory_share" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .zero_key_share }, .{}, error.WeakKey, .illegal_parameter);
 }
 
-test "C2 catalogue_record_outer_type_and_wire_aad" {
+test "F35 catalogue_record_outer_type_and_wire_aad" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .bad_tag }, .{}, error.BadRecord, .bad_record_mac);
 }
 
-test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation" {
+test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     // A retry for a group already shared is invalid, a second retry is illegal.
     try fails(.aes_128_gcm_sha256, .{ .retry = .x25519 }, .{}, error.InvalidHello, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .retry = .p256, .group = .p256, .tamper = .second_retry }, .{}, error.UnexpectedMessage, .unexpected_message);
@@ -216,8 +216,19 @@ test "C2 client hello without compatibility mode sends no session id and no chan
     try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.ccs);
 }
 
-test "C2 server name and reference identity are separate" {
+test "F18 catalogue_reference_identity_required_and_separate (the reference identity is required for certificate authentication and apart from the server name)" {
     const P = Pair(.aes_128_gcm_sha256);
+    // Full verification without a reference identity is refused before any state exists.
+    try std.testing.expectError(error.InvalidOptions, Connection.client(std.testing.allocator, .{ .identity = .none, .verify = .{ .full = .{ .trust_generation = .fromRaw(1) } } }));
+    // The certificate is checked against the reference identity, never the name the hello
+    // carries: a hello naming a host the certificate covers does not stand in for it.
+    try fails(.aes_128_gcm_sha256, .{}, .{ .identity = .{ .dns = "other.test" }, .server_name = .{ .name = "www.example.org" } }, error.VerificationRejected, .bad_certificate);
+    {
+        const pair = try P.init(std.testing.allocator, .{}, .{ .server_name = .{ .name = "other.test" } });
+        defer pair.deinit();
+        try pair.handshake();
+        try std.testing.expectEqualSlices(u8, "other.test", pair.peer.seen.sni[0..pair.peer.seen.sni_len]);
+    }
     // An IP reference identity sends no SNI and matches the certificate's address entry.
     {
         const pair = try P.init(std.testing.allocator, .{}, .{ .identity = .{ .ipv4 = .{ 192, 0, 2, 7 } } });
@@ -274,7 +285,7 @@ test "C2 explicit no-verification yields an unauthenticated connection" {
     try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.sni_len);
 }
 
-test "C2 catalogue_alpaca_protocol_and_port_binding" {
+test "F41 catalogue_alpaca_protocol_and_port_binding" {
     const P = Pair(.aes_128_gcm_sha256);
     {
         const pair = try P.init(std.testing.allocator, .{ .alpn = "http/1.1" }, .{ .alpn = &.{ "h2", "http/1.1" }, .require_alpn = true });
@@ -292,7 +303,7 @@ test "C2 catalogue_alpaca_protocol_and_port_binding" {
     }
 }
 
-test "C2 require_hybrid refuses a classical selection" {
+test "F43 catalogue_hybrid_share_order_and_implicit_rejection (require_hybrid refuses a classical selection)" {
     try fails(.aes_128_gcm_sha256, .{ .group = .x25519 }, .{ .require_hybrid = true }, error.HybridRequired, .insufficient_security);
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .group = .x25519_mlkem768 }, .{ .require_hybrid = true });
     defer pair.deinit();
@@ -417,7 +428,7 @@ test "C2 key updates in both directions keep data flowing under fresh keys" {
     try std.testing.expectEqualSlices(u8, "reply after request", buf[0..try pair.read(&buf)]);
 }
 
-test "C2 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
+test "F34 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
     // A tiny record budget forces the client to update its write keys before it can wrap.
     const pair = try Pair(.chacha20_poly1305_sha256).init(std.testing.allocator, .{ .tickets = 0 }, .{ .limits = .{ .records = 16 } });
     defer pair.deinit();
@@ -461,7 +472,7 @@ test "C2 the peer exhausting its record budget is asked to update" {
     try std.testing.expect(count < 4096);
 }
 
-test "C2 catalogue_keyupdate_flood_and_step_budget" {
+test "F37 catalogue_keyupdate_flood_and_step_budget" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .ticket_flood }, .{}, error.ControlFlood, .unexpected_message);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .key_update_flood }, .{}, error.ControlFlood, .unexpected_message);
 }
@@ -470,7 +481,7 @@ test "C2 compatibility change_cipher_spec is tolerated once and nowhere else" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .ccs_after_finished }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
-test "C2 catalogue_eof_at_every_record_and_application_boundary" {
+test "F38 catalogue_eof_at_every_record_and_application_boundary" {
     // Truncate the server flight at many points: the client never connects and EOF is Truncated.
     const P = Pair(.aes_128_gcm_sha256);
     const probe = try P.init(std.testing.allocator, .{}, .{});
@@ -521,7 +532,7 @@ test "C2 transport end after the handshake is truncation unless close_notify arr
     }
 }
 
-test "C2 catalogue_clienthello_close_notify_no_spin" {
+test "F39 catalogue_clienthello_close_notify_no_spin" {
     // A clear alert instead of a ServerHello is a failure, and repeated calls then stay inert.
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
     defer pair.deinit();
@@ -543,7 +554,7 @@ test "C2 catalogue_clienthello_close_notify_no_spin" {
     try std.testing.expectEqual(@as(?Alert, null), fatal.conn.diagnostics().alert_sent);
 }
 
-test "C2 catalogue_finished_entropy_failure_is_never_success" {
+test "F45 catalogue_finished_entropy_failure_is_never_success" {
     const P = Pair(.aes_128_gcm_sha256);
     // Entropy failing at the first request ends the connection before a hello is sent.
     {
@@ -736,4 +747,76 @@ fn runFlight(flight: []const u8) !void {
     try std.testing.expect(pair.conn.phase() != .connected);
     try std.testing.expect(pair.conn.info() == null);
     try std.testing.expectEqual(@as(usize, 0), pair.conn.readable().len);
+}
+
+/// Drives `pair` until the client asks for a signature, and returns that request.
+fn untilSign(pair: anytype) !Connection.Request {
+    for (0..64) |_| {
+        if (pair.conn.request()) |request| if (request.service == .sign) return request;
+        if (!try pair.step()) return error.NeverAskedForSignature;
+    }
+    return error.NeverAskedForSignature;
+}
+
+fn clientSignature(content: []const u8, out: *[std.crypto.sign.ecdsa.EcdsaP256Sha256.Signature.der_encoded_length_max]u8) ![]const u8 {
+    const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    const kp = try Ecdsa.KeyPair.fromSecretKey(try Ecdsa.SecretKey.fromBytes(pki.client_secret[0..32].*));
+    return (try kp.sign(content, null)).toDer(out);
+}
+
+test "F40 catalogue_partial_output_identity_swap_and_late_sign (the caller's identity released mid-handshake, partial output kept exact, stale and late sign answers refused)" {
+    const gpa = std.testing.allocator;
+    {
+        var auth: ?certificates.ClientAuth = try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{});
+        defer if (auth) |held| held.deinit();
+        const pair = try Pair(.aes_128_gcm_sha256).init(gpa, .{ .request_client_cert = true }, .{ .client_auth = auth.?, .hold_sign = true });
+        defer pair.deinit();
+        const sign = try untilSign(pair);
+        var der: [std.crypto.sign.ecdsa.EcdsaP256Sha256.Signature.der_encoded_length_max]u8 = undefined;
+        const signature = try clientSignature(sign.service.sign.content, &der);
+        // An answer under another request's token, or another generation's, is refused and
+        // leaves the request open.
+        var stale = sign.token;
+        stale.id = .fromRaw(stale.id.raw() + 1);
+        try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .signature = signature }));
+        stale = sign.token;
+        stale.generation = .fromRaw(stale.generation.raw() + 1);
+        try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .signature = signature }));
+        try std.testing.expect(pair.conn.request().?.service == .sign);
+        // The caller releases its identity while the signature is owed: the connection holds its own.
+        auth.?.deinit();
+        auth = null;
+        try pair.conn.provide(sign.token, .{ .signature = signature });
+        // A late second answer to the same request is refused.
+        try std.testing.expectError(error.NoRequest, pair.conn.provide(sign.token, .{ .signature = signature }));
+        // The flight leaves a byte at a time: what is left is always exactly the rest.
+        const flight = try gpa.dupe(u8, pair.conn.output());
+        defer gpa.free(flight);
+        try std.testing.expect(flight.len > 2);
+        for (0..flight.len) |sent| {
+            try std.testing.expectEqualSlices(u8, flight[sent..], pair.conn.output());
+            try pair.peer.feed(flight[sent..][0..1]);
+            pair.conn.acknowledge(1);
+        }
+        try pair.handshake();
+        try std.testing.expect(pair.peer.client_finished_ok and pair.peer.client_signature_ok);
+        try std.testing.expectEqualSlices(u8, pki.client, pair.peer.client_chain.items);
+    }
+    // A sign answer after the connection failed is refused, and nothing more is sent.
+    {
+        const auth = try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{});
+        defer auth.deinit();
+        const pair = try Pair(.aes_128_gcm_sha256).init(gpa, .{ .request_client_cert = true }, .{ .client_auth = auth, .hold_sign = true });
+        defer pair.deinit();
+        const sign = try untilSign(pair);
+        var der: [std.crypto.sign.ecdsa.EcdsaP256Sha256.Signature.der_encoded_length_max]u8 = undefined;
+        const signature = try clientSignature(sign.service.sign.content, &der);
+        try std.testing.expectError(error.SigningFailed, pair.conn.provide(sign.token, .signing_failed));
+        try std.testing.expectEqual(Connection.Phase.failed, pair.conn.phase());
+        const left = pair.conn.output().len;
+        try std.testing.expectError(error.Closed, pair.conn.provide(sign.token, .{ .signature = signature }));
+        try std.testing.expectEqual(left, pair.conn.output().len);
+        try pair.flush();
+        try std.testing.expect(!pair.peer.client_finished_ok);
+    }
 }

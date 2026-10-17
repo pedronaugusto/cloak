@@ -57,7 +57,7 @@ test "C2 quic event order installs a level before data is sent at it" {
     try std.testing.expectEqualSlices(u8, "drwprdwa", pair.events.items);
 }
 
-test "C2 catalogue_quic_levels_hrr_parameters_and_secret_authority" {
+test "F44 catalogue_quic_levels_hrr_parameters_and_secret_authority" {
     const P = QuicPair(.aes_128_gcm_sha256);
     // Rejected parameters end the handshake with the chosen alert and no authentication.
     {

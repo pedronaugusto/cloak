@@ -164,7 +164,7 @@ test "C9 both directions move to a kernel mid-stream, every suite a kernel runs,
     }
 }
 
-test "C9 catalogue_ktls_partial_handoff_sequence_owner: a direction moves only at a clean boundary, whole, once" {
+test "F83 catalogue_ktls_partial_handoff_sequence_owner: a direction moves only at a clean boundary, whole, once" {
     var setup = try Setup.init(.aes_128_gcm_sha256, .{});
     defer setup.deinit();
     // Half a record read: the read keys stay, and the record completes in software.
@@ -272,7 +272,7 @@ test "C9 key updates both ways through a kernel that takes them" {
     }
 }
 
-test "C9 catalogue_ktls_rekey_failure_and_sendfile_immutability: a kernel without key updates ends the connection, never reverting" {
+test "F84 catalogue_ktls_rekey_failure_and_sendfile_immutability: a kernel without key updates ends the connection, never reverting" {
     // The peer's KeyUpdate: the old read keys are gone, the kernel refuses the next ones, and
     // the connection fails with a fatal alert under the write keys the kernel still holds.
     {

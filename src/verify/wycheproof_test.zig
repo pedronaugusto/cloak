@@ -64,10 +64,10 @@ test "Wycheproof P384 SHA512 signatures as r || s (P1363)" {
 test "Wycheproof Ed25519 strict public signature campaign" {
     try campaign("ed25519_test.json", .ed25519);
 }
-test "Wycheproof RSA PKCS1 SHA256 public signature campaign" {
+test "F09 catalogue_rsa_signature_full_encoding (Wycheproof RSA PKCS#1 v1.5 SHA-256 public signature campaign)" {
     try campaign("rsa_signature_2048_sha256_test.json", .{ .rsa = .sha256 });
 }
-test "Wycheproof RSA PSS SHA256 public signature campaign" {
+test "F09 catalogue_rsa_signature_full_encoding (Wycheproof RSA-PSS SHA-256 public signature campaign)" {
     try campaign("rsa_pss_2048_sha256_mgf1_32_test.json", .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } });
 }
 
@@ -237,7 +237,7 @@ test "Wycheproof rsa_pkcs1_4096_sig_gen_test: signatures equal the known answers
     try signatureGeneration("rsa_pkcs1_4096_sig_gen_test.json", 24);
 }
 
-test "Wycheproof rsa_signature_8192: an 8192-bit key is refused by policy" {
+test "F08 catalogue_signature_workspace_and_rsa_size (Wycheproof rsa_signature_8192: an 8192-bit key is refused by policy)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // The first group's key of rsa_signature_8192_sha256_test.json.

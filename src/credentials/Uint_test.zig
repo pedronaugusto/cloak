@@ -24,7 +24,7 @@ fn property(_: void, case: *shakedown.Case) !void {
     try std.testing.expectEqual(@as(u128, pair[0]), std.mem.readInt(u128, &encoded, .big));
 }
 
-test "credential fixed integer full width decoding and borrows agree with the public arithmetic oracle" {
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (fixed integer full-width decoding and borrows agree with the public arithmetic oracle)" {
     @setRuntimeSafety(true);
     try shakedown.check(std.testing.allocator, {}, wide, .{ .cases = 128 });
 }

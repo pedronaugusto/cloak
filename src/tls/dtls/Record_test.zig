@@ -43,7 +43,7 @@ test "C8 a DTLS 1.3 record number is masked: the wire never shows the sequence a
     try std.testing.expect(!seen_plain);
 }
 
-test "C8 catalogue_dtls_short_aead_ccm_tag_and_survival: a bad DTLS 1.3 record is dropped, the epoch lives on" {
+test "F81 catalogue_dtls_short_aead_ccm_tag_and_survival: a bad DTLS 1.3 record is dropped, the epoch lives on" {
     for (all13) |suite| {
         var ends = pair13(suite);
         defer for (&ends) |*e| e.deinit();

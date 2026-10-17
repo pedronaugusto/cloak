@@ -1,7 +1,7 @@
 const std = @import("std");
 const S = @import("State.zig");
 const at = @import("../../testing/StateAt.zig").at;
-test "C2 catalogue_smack_authentication_skip_edges" {
+test "F29 catalogue_smack_authentication_skip_edges" {
     // Independent oracle: next inbound action for the normal full client path.
     const phases = [_]S.Phase{ .hello, .extensions, .certificate, .chain, .possession, .finished };
     const allowed = [_]S.Action{ .server_hello, .encrypted_extensions, .certificate, .verify_chain, .certificate_verify, .finished };
@@ -17,7 +17,7 @@ test "C2 catalogue_smack_authentication_skip_edges" {
         }
     }
 }
-test "C2 catalogue_possession_verification_cannot_be_skipped" {
+test "F28 catalogue_possession_verification_cannot_be_skipped" {
     for ([_]S.Role{ .client, .server }) |role| {
         for ([_]S.Proof{ .parsed, .chain, .finished }) |bad_proof| {
             var state: S.State = at(role, .stream, .possession, .{});
@@ -29,7 +29,7 @@ test "C2 catalogue_possession_verification_cannot_be_skipped" {
         try std.testing.expectError(error.MissingProof, state.advance(action, .handshake, .parsed, true));
     }
 }
-test "C2 catalogue_key_change_record_alignment" {
+test "F30 catalogue_key_change_record_alignment" {
     for ([_]S.Role{ .client, .server }) |role| {
         var hello: S.State = at(role, .stream, .hello, .{});
         try std.testing.expectError(error.RecordAlignment, hello.advance(.server_hello, .initial, .parsed, false));

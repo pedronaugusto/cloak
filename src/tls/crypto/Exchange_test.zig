@@ -25,7 +25,7 @@ test "C2 exchange X25519 agrees with an independent peer and rejects a low-order
     try std.testing.expectError(error.InvalidShare, share.agree(server.public_key[0..31]));
 }
 
-test "C2 exchange hybrid share order and secret order follow the ML-KEM first layout" {
+test "F43 catalogue_hybrid_share_order_and_implicit_rejection (the hybrid share and secret follow the ML-KEM-first layout; a damaged ciphertext is implicitly rejected; swapped components never agree)" {
     var entropy: [Exchange.entropyLength(.x25519_mlkem768)]u8 = undefined;
     fill(&entropy, 5);
     var share = try Exchange.Share.init(.x25519_mlkem768, &entropy);
@@ -135,7 +135,7 @@ test "C2 exchange server response agrees with the client share for every group" 
     }
 }
 
-test "C2 exchange server response refuses small-order and invalid client shares" {
+test "F43 catalogue_hybrid_share_order_and_implicit_rejection (a server refuses small-order, off-curve and non-canonical ML-KEM client shares)" {
     var entropy: [32]u8 = undefined;
     fill(&entropy, 5);
     try std.testing.expectError(error.WeakKey, Exchange.respond(.x25519, &@as([32]u8, @splat(0)), &entropy));

@@ -18,7 +18,7 @@ const Seen = struct {
     }
 };
 
-test "a handshake's secret computations run under data-independent timing, client and server" {
+test "F03 catalogue_compiler_preserves_secret_operations (a handshake's secret computations run under data-independent timing, client and server; the built binary's evidence is `zig build timing`)" {
     const before = aegis.secret.Timing.active();
     {
         var seen: Seen = .{};

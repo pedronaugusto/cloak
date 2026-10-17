@@ -67,7 +67,7 @@ test "P-256 field arithmetic matches std's field" {
     }
 }
 
-test "P-256 field: the platform kernel equals the portable arithmetic" {
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (P-256 field: the platform kernel equals the portable arithmetic)" {
     var prng = std.Random.DefaultPrng.init(17);
     const edges = [_]u256{ 0, 1, 2, p - 1, p - 2, (1 << 255), (1 << 224), p >> 1 };
     for (0..20000 + edges.len * edges.len) |i| {
@@ -83,7 +83,7 @@ test "P-256 field: the platform kernel equals the portable arithmetic" {
     }
 }
 
-test "P-256 field: the platform kernel equals the portable arithmetic on limbs at or above p" {
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (P-256 field: the platform kernel equals the portable arithmetic on limbs at or above p)" {
     // Two operands near 2^256 overflowed a five-limb accumulator in the assembly's rows.
     const near_a: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff90fc3d64;
     const near_b: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff69c01f72;

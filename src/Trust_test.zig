@@ -4,7 +4,7 @@ const shakedown = @import("shakedown");
 const Trust = @import("Trust.zig");
 const builtin = @import("builtin");
 
-test "trust empty portable store fails closed" {
+test "F11 catalogue_untrusted_self_signed_and_verifier_error (an empty portable store fails closed)" {
     @setRuntimeSafety(true);
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
@@ -142,8 +142,7 @@ test "trust Linux system bundle freezes into the indexed explicit store" {
     try std.testing.expectEqual(Trust.System.portable, snapshot.systemPolicy());
 }
 
-// F25: workers retain one immutable snapshot while the builder replaces/releases its owner.
-test "catalogue_trust_snapshot_concurrent_verify_reload_release" {
+test "F25 catalogue_trust_snapshot_extension_race_and_time (workers keep one immutable snapshot while the builder reloads and releases its owner)" {
     @setRuntimeSafety(true);
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .limited(4) });
     defer threaded.deinit();

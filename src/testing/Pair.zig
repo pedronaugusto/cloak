@@ -18,6 +18,8 @@ pub const Options = struct {
     time: i64 = pki.time,
     /// Reference identity for the server certificate.
     identity: certificates.types.Identity = .{ .dns = "example.com" },
+    /// The name the hello carries, apart from the reference identity.
+    server_name: Connection.ServerName = .identity,
     client_auth: ?certificates.ClientAuth = null,
     sign_with: enum { p256, ed25519 } = .p256,
     verify_none: bool = false,
@@ -86,6 +88,7 @@ pub fn Pair(comptime suite: Suite13) type {
             errdefer self.peer.deinit();
             self.conn = try Connection.client(options.client_gpa orelse gpa, .{
                 .identity = options.identity,
+                .server_name = options.server_name,
                 .verify = if (options.raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins } },
                 .suites = options.offer orelse &.{comptime SuiteAll.from13(suite)},
                 .groups = options.groups,

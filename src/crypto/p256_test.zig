@@ -29,7 +29,7 @@ test "P-256 base comb equals the standard library's multiples" {
     }
 }
 
-test "P-256 signed recoding reconstructs the scalar" {
+test "F04 catalogue_scalar_nonce_length_and_tail_dispatch (P-256 signed recoding reconstructs the scalar)" {
     var prng = std.Random.DefaultPrng.init(3);
     for (0..500) |i| {
         var value: u256 = prng.random().int(u256) % p256.order;
@@ -52,11 +52,17 @@ test "P-256 signed recoding reconstructs the scalar" {
     }
 }
 
-test "P-256 base and variable-point multiplication agree with the standard library" {
+test "F04 catalogue_scalar_nonce_length_and_tail_dispatch (P-256 base and variable-point multiplication agree with the standard library for every leading-zero class)" {
     var prng = std.Random.DefaultPrng.init(11);
     const edges = [_]u256{ 1, 2, 3, 31, 32, 33, 63, 64, p256.order - 1, p256.order - 2, p256.order - 32, 1 << 255, (1 << 252) - 1 };
-    for (0..200 + edges.len) |i| {
-        const value = if (i < edges.len) edges[i] else 1 + prng.random().int(u256) % (p256.order - 1);
+    // Then each leading-zero class: a nonzero scalar below 2^(8 * (32 - z)) for z zero bytes.
+    for (0..edges.len + 32 + 200) |i| {
+        const value = if (i < edges.len) edges[i] else if (i < edges.len + 32) blk: {
+            const zeros = i - edges.len;
+            const width: u9 = 8 * @as(u9, @intCast(32 - zeros)); // safe: zeros is below 32
+            const bound: u256 = if (width == 256) p256.order else @as(u256, 1) << @intCast(width);
+            break :blk 1 + prng.random().int(u256) % (bound - 1);
+        } else 1 + prng.random().int(u256) % (p256.order - 1);
         const k = scalarBytes(value);
         const expected = try Std.basePoint.mul(k, .big);
         try sameAffine(p256.baseMul(&k).affine(), expected);

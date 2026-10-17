@@ -2,7 +2,7 @@ const std = @import("std");
 const Base64 = @import("Base64.zig");
 const shakedown = @import("shakedown");
 
-test "catalogue_key_import_base64_all_characters_match_standard" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: every character matches the standard decoder)" {
     @setRuntimeSafety(true);
     var source: [4]u8 = @splat('A');
     for (0..4) |position| {
@@ -33,7 +33,7 @@ fn compare(source: []const u8) !void {
     }
 }
 
-test "catalogue_key_import_base64_byte_roundtrip_and_erasure" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: byte round trip and erasure)" {
     @setRuntimeSafety(true);
     var input: [256]u8 = undefined;
     for (&input, 0..) |*byte, i| byte.* = @intCast(i); // safe: array positions cover exactly the byte range
@@ -50,7 +50,7 @@ test "catalogue_key_import_base64_byte_roundtrip_and_erasure" {
     try std.testing.expect(std.mem.allEqual(u8, &output, 0));
 }
 
-test "catalogue_key_import_base64_generated_roundtrip" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: generated round trip)" {
     @setRuntimeSafety(true);
     try shakedown.check(std.testing.allocator, {}, roundtrip, .{ .cases = 1024, .seed = 0xc1b640 });
 }

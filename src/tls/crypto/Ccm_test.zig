@@ -44,7 +44,7 @@ fn run(comptime A: type, gpa: std.mem.Allocator, v: Vector) !void {
     }
 }
 
-test "C8 AES-CCM with a 12-byte nonce and 16-byte tag passes Wycheproof" {
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (AES-CCM, cloak's own, with a 12-byte nonce and 16-byte tag passes Wycheproof's tails and lengths)" {
     const gpa = std.testing.allocator;
     const parsed = try std.json.parseFromSlice(struct { numberOfTests: usize, testGroups: []Group }, gpa, @embedFile("testdata/aes_ccm_test.json"), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();

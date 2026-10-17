@@ -3,7 +3,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const Sign = @import("Sign.zig");
 
-test "ecdsa signatures equal std's for the same key, message and noise" {
+test "F04 catalogue_scalar_nonce_length_and_tail_dispatch (ECDSA signatures and their nonces equal std's for the same key, message and noise)" {
     try shakedown.check(std.testing.allocator, {}, ecdsaDifferential, .{ .cases = 64, .seed = 0x51a9e });
 }
 

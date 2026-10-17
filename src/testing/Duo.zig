@@ -41,6 +41,8 @@ pub const Options = struct {
     client_ed25519: bool = false,
     /// That certificate is ML-DSA-65 under the ML-DSA root.
     client_mldsa: bool = false,
+    /// That certificate is the server's P-256 one: a server-only extended key usage.
+    client_server_eku: bool = false,
     /// Post-quantum authentication required of the server (client) and of the client (server).
     client_require_pq_auth: bool = false,
     server_require_pq_auth: bool = false,
@@ -108,6 +110,8 @@ pub const Options = struct {
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
     server_post_auth: bool = false,
+    /// The entropy request (counted from 0 at that end) the harness answers with a failure.
+    entropy_fails: ?struct { end: enum { client, server }, at: usize } = null,
 };
 
 /// The SHA-256 of a certificate's SubjectPublicKeyInfo: the pin of its key as a raw public key.
@@ -132,6 +136,8 @@ server_dc: ?Delegation.Credential = null,
 client_dc: ?Delegation.Credential = null,
 rng: std.Random.DefaultPrng,
 options: Options,
+/// Entropy requests answered so far, client and server.
+entropy_drawn: [2]usize = .{ 0, 0 },
 
 pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     const self = try gpa.create(Duo);
@@ -140,6 +146,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.gpa = gpa;
     self.options = options;
     self.rng = .init(options.seed);
+    self.entropy_drawn = .{ 0, 0 };
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
     try self.trust.addDer(pki.ca, .{});
@@ -190,9 +197,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.raw_identity) |raw| raw.deinit();
     self.auth = null;
     if (options.client_cert) {
-        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
+        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_server_eku) pki.p256_pem else if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
-        const chain: []const []const u8 = if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else if (options.client_delegated) &.{ pki.dc_client, pki.dc_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
+        const chain: []const []const u8 = if (options.client_server_eku) &.{ pki.p256, pki.ca } else if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else if (options.client_delegated) &.{ pki.dc_client, pki.dc_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
         self.auth = if (options.client_raw)
             try certificates.ClientAuth.initRawKey(gpa, (try certificates.certificate.parse(chain[0], .{})).spki, client_key, .{})
         else if (options.client_external)
@@ -285,6 +292,12 @@ fn delegate(self: *Duo, identity: certificates.Identity, role: Delegation.Role) 
 fn serve(self: *Duo, conn: *Connection) !void {
     while (conn.request()) |request| switch (request.service) {
         .entropy => |len| {
+            const end: usize = @intFromBool(conn == &self.server);
+            defer self.entropy_drawn[end] += 1;
+            if (self.options.entropy_fails) |fails| if (@backingInt(fails.end) == end and fails.at == self.entropy_drawn[end]) {
+                try conn.provide(request.token, .entropy_failed);
+                continue;
+            };
             var bytes: [512]u8 = undefined;
             self.rng.random().bytes(bytes[0..len]);
             conn.provide(request.token, .{ .entropy = bytes[0..len] }) catch |err| switch (err) {

@@ -15,7 +15,7 @@ test "receipt owns path and reference and rejects another pending request" {
     try std.testing.expectError(error.WrongVerificationRequest, receipt.check(request));
 }
 
-test "receipt bounds include DNS and descriptors and none cannot claim authentication" {
+test "F11 catalogue_untrusted_self_signed_and_verifier_error (receipts are bounded, and verification none never claims authentication)" {
     const request: T.Request = .{ .chain = &.{"ab"}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(1 * std.time.ns_per_s), .trust_generation = .fromRaw(2), .policy_generation = .fromRaw(3), .mode = .none };
     var receipt = try V.init(std.testing.allocator, request, request.chain, true, .fromNanoseconds(2 * std.time.ns_per_s));
     defer receipt.deinit();

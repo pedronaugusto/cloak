@@ -20,4 +20,5 @@ test {
     _ = @import("certificate/Name_test.zig");
     _ = @import("certificate/Extensions_test.zig");
     _ = @import("certificate/Issuers_test.zig");
+    _ = @import("certificate/Algorithm_test.zig");
 }

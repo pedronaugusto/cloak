@@ -4,7 +4,7 @@ const aegis = @import("aegis");
 const R = @import("Epoch.zig");
 const S = @import("../crypto/Suite.zig");
 
-test "C2 catalogue_record_outer_type_and_wire_aad" {
+test "F35 catalogue_record_outer_type_and_wire_aad" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(7), @splat(9), .{});
@@ -23,7 +23,7 @@ test "C2 catalogue_record_outer_type_and_wire_aad" {
         }
     }
 }
-test "C2 catalogue_bad_tag_no_plaintext_or_alias_damage" {
+test "F36 catalogue_bad_tag_no_plaintext_or_alias_damage" {
     const E = R.Epoch(.aes_128_gcm_sha256);
     var tx = try E.init(@splat(1), @splat(2), .{});
     defer tx.deinit();
@@ -41,7 +41,7 @@ test "C2 catalogue_bad_tag_no_plaintext_or_alias_damage" {
     const plain = try rx.open(sealed, wire[5..]);
     try std.testing.expectEqualSlices(u8, "hello", plain.bytes);
 }
-test "C2 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
+test "F34 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
         var tx = try E.init(@splat(1), @splat(2), .{ .records = 2, .bytes = 30 });

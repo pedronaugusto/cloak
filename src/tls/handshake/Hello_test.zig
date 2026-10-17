@@ -46,7 +46,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
     try std.testing.expectEqualSlices(u16, &.{ 0, 10, 11, 13, 23, 0xff01, 43, 16, 51 }, ids[0..count]);
     try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", "", &shares, "", .{}, .{}));
 }
-test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
+test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
     var hrr = fixture.*;
     @memcpy(hrr[6..38], &H.retry_random);
     // Replace the key-share body with selected_group while retaining supported_versions.
@@ -71,7 +71,7 @@ test "C2 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {
     duplicate[56..].* = .{ 0, 43, 0, 2, 3, 4 };
     try std.testing.expectError(error.DuplicateExtension, H.server(&duplicate, "", &shares, .{}, .{}));
 }
-test "C2 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
+test "F41 catalogue_alpaca_protocol_and_port_binding: required ALPN" {
     const ee = "\x08\x00\x00\x0b\x00\x09\x00\x10\x00\x05\x00\x03\x02h2";
     const parsed = try H.encrypted(ee, .{ .alpn = &.{"h2"}, .require_alpn = true }, false);
     try std.testing.expectEqualSlices(u8, "h2", parsed.alpn);

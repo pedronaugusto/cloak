@@ -16,7 +16,7 @@ test "service Windows scoped offline policy chain and wrong identity rejection" 
     try std.testing.expectError(error.NativePolicyFailure, Native.evaluate(std.testing.allocator, request, &.{root}));
 }
 
-test "catalogue_native_windows_wrong_scoped_anchor_rejects" {
+test "F23 catalogue_native_receipt_path_token_and_clock (Windows: a wrong scoped anchor is refused)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     const request: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = types.instant(try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };

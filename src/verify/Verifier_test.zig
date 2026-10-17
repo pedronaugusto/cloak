@@ -72,7 +72,7 @@ test "portable indexed verification accepts large stores within discovery budget
     try std.testing.expectError(error.VerificationLimit, V.indexed(std.testing.allocator, limited, &index));
 }
 
-test "portable and native selected leaf share strict serial and issuer metadata floors" {
+test "F23 catalogue_native_receipt_path_token_and_clock (portable and native selected leaves share strict serial and issuer metadata floors)" {
     const zero = @embedFile("fixtures/limbo-zero-serial.der");
     const cert = try C.parse(zero, .{});
     const req: T.Request = .{ .chain = &.{zero}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, cert.not_before) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
@@ -81,7 +81,7 @@ test "portable and native selected leaf share strict serial and issuer metadata 
     try std.testing.expectError(error.InvalidCertificate, V.nativePath(std.testing.allocator, req, &.{zero}));
 }
 
-test "portable native selected scratch covers OS intermediates absent from request" {
+test "F23 catalogue_native_receipt_path_token_and_clock (a native selected path may hold intermediates absent from the request and still meets the floors)" {
     const selected_leaf = @embedFile("fixtures/offline/leaf.der");
     const selected = &.{ selected_leaf, @embedFile("fixtures/offline/rollover.der"), @embedFile("fixtures/offline/ca.der") };
     const req: T.Request = .{ .chain = &.{selected_leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("fixtures/offline/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
@@ -91,8 +91,7 @@ test "portable native selected scratch covers OS intermediates absent from reque
     try receipt.check(req);
 }
 
-// F14: signed public inputs within the wire cap cannot evade comparison limits.
-test "catalogue_verification_constraint_flood_is_bounded" {
+test "F14 catalogue_verification_flood_charges_every_branch (signed inputs within the wire cap cannot evade comparison limits)" {
     inline for (.{ 1, 1900 }) |count| {
         const flood_leaf = @embedFile(std.fmt.comptimePrint("fixtures/work/work-leaf-{d}.der", .{count}));
         const issuer = @embedFile(std.fmt.comptimePrint("fixtures/work/work-inter-{d}.der", .{count}));

@@ -39,7 +39,7 @@ fn keyInput(_: void, case: *shakedown.Case) !void {
     var storage: [65536]u8 = undefined;
     parseKey(inputs.draw(case, &storage, &key_examples, 48));
 }
-test "credential KDF parser fuzz rejects hostile work before decrypt" {
+test "F06 catalogue_key_import_failure_and_kdf_budget (fuzz: the KDF parser rejects hostile work before decrypting)" {
     @setRuntimeSafety(true);
     try shakedown.check(std.testing.allocator, {}, encryptedInput, .{ .cases = 64 });
 }

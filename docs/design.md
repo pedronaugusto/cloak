@@ -214,8 +214,8 @@ of its keys (TLS 1.2 edges sit beside the TLS 1.3 ones). A resumed TLS 1.3 hands
 has edges of its own, chosen by a flag set once, as the ServerHello accepts a PSK: no
 certificate flight in either direction. ECH and DTLS branches are absent until their phases. The table alone is
 not a certificate/signature verifier: its internal proof arguments must be
-issued by the crypto/verification driver. Named tests cover individual catalogue
-components; the complete F27–F45 rows remain open until integration and campaigns.
+issued by the crypto/verification driver. Each catalogue row's tests are listed in
+"Failure catalogue: the test map" below.
 
 Every comparison of a secret or a MAC runs aegis's `Choice` kernels (Finished, binders,
 the CCM tag, ECH confirmations, DTLS cookies, pins, request digests, the curve-scalar
@@ -1317,3 +1317,120 @@ certificate is then required and verified. A hybrid key exchange does not meet i
 provisioned PSK, being symmetric, does. The policy is TLS 1.3's, binds the session cache key,
 and fails with `PqAuthenticationRequired` (insufficient_security). A client's handshake memory
 with an ML-DSA-87 chain (13 KiB of certificates) peaks at 81 KiB (82,752 bytes).
+
+## Failure catalogue: the test map
+
+The design book's failure catalogue lists each known TLS and X.509 failure class with its
+evidence, the guard and the assertion its test must make; the repo carries the tests. Every
+catalogue test is named `Fnn catalogue_<name> (what it checks)`, so `-Dtest-filter="Fnn "` runs
+one row's guards (the files below are under `src/`). The mutation column records a change to the
+guard that its named tests were run against and failed on; a row without one has tests but no
+recorded mutation.
+
+What a row cannot assert stays named: the caller cloning its own generator (F01), naming the
+logical origin as the reference (F18) and authorizing actions from the receipt (F42) are the
+caller's; physical fault injection (F02) is out of scope; the compiler campaign (F03) and
+constant-time behaviour (F04) rest on the built binary's evidence (`zig build timing`), not on a
+source test; a native platform's own policy (F23) is the operating system's. F42's setter order
+is absent by construction: options are one immutable value given at creation. F40's lock across
+a wait: `Connection` holds none, it asks and returns; a `Session` signs on the task that reads
+and takes its write lock only to send the answer. Corpus rows (F10–F13, F16, F17, F19, F20, F24)
+name the x509-limbo cases they rest on; the batches run the whole corpus.
+
+| Id | Catalogue test | Files | A mutation its named tests catch |
+|---|---|---|---|
+| F01 | `catalogue_entropy_clone_and_unready_source` | `tls/catalogue_test.zig` | a weak fixed fallback answering a failed draw |
+| F02 | `catalogue_private_operation_blinding_and_fault` | `crypto/rsa_test.zig` | the fault check skipped; the seed left out of the blinding draw |
+| F03 | `catalogue_compiler_preserves_secret_operations` | `tls/Timing_test.zig` | `receive` run outside data-independent timing |
+| F04 | `catalogue_scalar_nonce_length_and_tail_dispatch` | `crypto/p256_test.zig`, `credentials/Sign_test.zig` | a zero window selecting the base multiple instead of the identity |
+| F05 | `catalogue_kernel_carries_lengths_and_dispatch` | `crypto/p256/Montgomery_test.zig`, `credentials/Uint_test.zig`, `credentials/curve/Montgomery_test.zig`, `tls/crypto/Ccm_test.zig` | the portable field addition dropping its carry |
+| F06 | `catalogue_key_import_failure_and_kdf_budget` | `credentials/Key_test.zig`, `credentials/Parser_test.zig`, `credentials/Pem_test.zig`, `credentials/Base64_test.zig` | the KDF iteration bound removed |
+| F07 | `catalogue_der_lengths_children_and_depth` | `wire/Der_test.zig` | a nonminimal long-form length accepted; the hard depth ceiling removed |
+| F08 | `catalogue_signature_workspace_and_rsa_size` | `crypto/rsa_test.zig`, `verify/signature_test.zig`, `verify/wycheproof_test.zig` | the RSA signature length check removed |
+| F09 | `catalogue_rsa_signature_full_encoding` | `verify/signature_test.zig`, `verify/wycheproof_test.zig` | the DigestInfo compared by its first byte; the PSS trailer unchecked |
+| F10 | `catalogue_ca_bit_usage_and_pathlen` | `certificate/Extensions_test.zig`, `verify/limbo_test.zig` | path length unenforced on intermediates; an intermediate without the CA bit accepted |
+| F11 | `catalogue_untrusted_self_signed_and_verifier_error` | `Trust_test.zig`, `verify/limbo_test.zig`, `verify/Verification_test.zig` | verification none claiming authentication |
+| F12 | `catalogue_alternate_chain_rechecks_constraints` | `verify/limbo_test.zig` | no alternate path tried after a rejected candidate |
+| F13 | `catalogue_cross_signed_cycles_and_chain_depth` | `verify/limbo_test.zig` | cycle detection removed; the intermediate count limit removed |
+| F14 | `catalogue_verification_flood_charges_every_branch` | `verify/constraints_test.zig`, `verify/Verifier_test.zig` |  |
+| F15 | `catalogue_constraints_across_all_cas` | `verify/constraints_test.zig` |  |
+| F16 | `catalogue_wildcard_constraint_intersection_and_case` | `verify/constraints_test.zig`, `verify/limbo_test.zig` | a wildcard matching across labels |
+| F17 | `catalogue_nul_san_and_no_cn_fallback` | `certificate/Name_test.zig`, `verify/limbo_test.zig` | any byte allowed in a DNS label |
+| F18 | `catalogue_reference_identity_required_and_separate` | `tls/Connection_test.zig` | full verification allowed without a reference identity |
+| F19 | `catalogue_general_name_syntax_and_constraint_forms` | `certificate/Extensions_test.zig`, `verify/constraints_test.zig`, `verify/limbo_test.zig` | IP constraints ignoring their mask |
+| F20 | `catalogue_crldp_generalname_and_expansion_budget` | `certificate/Extensions_test.zig`, `verify/limbo_test.zig` | an unknown critical CRL extension accepted; critical distribution points accepted |
+| F21 | `catalogue_policy_leaf_mapping_and_enablement` | `verify/policy_test.zig` |  |
+| F22 | `catalogue_revocation_matching_entry_and_responder` | `verify/revocation_test.zig` |  |
+| F23 | `catalogue_native_receipt_path_token_and_clock` | `NativeVerification_test.zig`, `verify/Verifier_test.zig`, `services/windows_test.zig` | expiry not rechecked at completion; a backwards clock accepted |
+| F24 | `catalogue_algorithm_identifier_and_empty_point` | `certificate/Algorithm_test.zig`, `verify/limbo_test.zig` | inner and outer algorithms not compared; Ed25519 parameters accepted |
+| F25 | `catalogue_trust_snapshot_extension_race_and_time` | `Trust_test.zig` |  |
+| F26 | `catalogue_verify_job_cancel_alloc_and_late_result` | `NativeVerification_test.zig`, `services/Job_test.zig` | a released job returning its charge before it is reaped |
+| F27 | `catalogue_heartbeat_and_nested_length_overread` | `tls/catalogue_test.zig`, `tls/wire/Extensions_test.zig` |  |
+| F28 | `catalogue_possession_verification_cannot_be_skipped` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig`, `tls/handshake/State_test.zig` |  |
+| F29 | `catalogue_smack_authentication_skip_edges` | `tls/Connection_test.zig`, `tls/handshake/State_test.zig` |  |
+| F30 | `catalogue_key_change_record_alignment` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig`, `tls/handshake/State_test.zig` |  |
+| F31 | `catalogue_hrr_illegal_group_ch2_and_reallocation` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig`, `tls/handshake/Transcript_test.zig`, `tls/handshake/Hello_test.zig` |  |
+| F32 | `catalogue_extension_uniqueness_and_negotiation_allowlist` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig`, `tls/CodePoints_test.zig`, `tls/dtls/Cookies_test.zig`, `tls/wire/Extensions_test.zig` |  |
+| F33 | `catalogue_ecdh_invalid_curve_and_noncontributory_share` | `tls/Connection_test.zig` |  |
+| F34 | `catalogue_nonce_uniqueness_partial_retry_and_wrap` | `tls/Connection_test.zig`, `tls/record/Epoch_test.zig` |  |
+| F35 | `catalogue_record_outer_type_and_wire_aad` | `tls/Connection_test.zig`, `tls/record/Epoch_test.zig` |  |
+| F36 | `catalogue_bad_tag_no_plaintext_or_alias_damage` | `tls/record/Epoch_test.zig` |  |
+| F37 | `catalogue_keyupdate_flood_and_step_budget` | `tls/Connection_test.zig` |  |
+| F38 | `catalogue_eof_at_every_record_and_application_boundary` | `tls/Connection_test.zig` |  |
+| F39 | `catalogue_clienthello_close_notify_no_spin` | `tls/Connection_test.zig` |  |
+| F40 | `catalogue_partial_output_identity_swap_and_late_sign` | `tls/Connection_test.zig` | a stale token answering the request; the caller's client identity borrowed, not retained |
+| F41 | `catalogue_alpaca_protocol_and_port_binding` | `tls/Connection_test.zig`, `tls/handshake/Hello_test.zig` |  |
+| F42 | `catalogue_mtls_builder_order_and_optional_usage` | `tls/catalogue_test.zig` | a leaf's extended key usage unchecked |
+| F43 | `catalogue_hybrid_share_order_and_implicit_rejection` | `tls/Connection_test.zig`, `tls/crypto/Exchange_test.zig` | require_hybrid unchecked at the client; the X25519 secret placed before ML-KEM's |
+| F44 | `catalogue_quic_levels_hrr_parameters_and_secret_authority` | `tls/quic/Handshake_test.zig` |  |
+| F45 | `catalogue_finished_entropy_failure_is_never_success` | `tls/Connection_test.zig`, `tls/crypto/Labels_test.zig` |  |
+| F46 | `catalogue_ccs_injection_all_reachable_states` | `tls/Tls12_test.zig` |  |
+| F47 | `catalogue_freak_export_rsa_and_unoffered_exchange` | `tls/catalogue12_test.zig` |  |
+| F48 | `catalogue_logjam_export_and_weak_dh` | `tls/catalogue12_test.zig` |  |
+| F49 | `catalogue_raccoon_secret_encoding_and_ephemeral_reuse` | `tls/catalogue12_test.zig` |  |
+| F50 | `catalogue_poodle_ssl3_and_cbc_fallback` | `tls/catalogue12_test.zig` |  |
+| F51 | `catalogue_beast_chained_iv_profile_refused` | `tls/catalogue12_test.zig` |  |
+| F52 | `catalogue_cbc_oracle_absence_and_aead_failure_work` | `tls/catalogue12_test.zig` |  |
+| F53 | `catalogue_robot_rsa_kex_and_rsa_psk_refused` | `tls/catalogue12_test.zig` |  |
+| F54 | `catalogue_drown_ssl2_and_shared_service_boundary` | `tls/catalogue12_test.zig` |  |
+| F55 | `catalogue_sweet32_suite_and_usage_limits` | `tls/catalogue12_test.zig` |  |
+| F56 | `catalogue_null_rc4_and_obsolete_hash_policy` | `tls/catalogue12_test.zig` |  |
+| F57 | `catalogue_renegotiation_prefix_and_initial_signal` | `tls/catalogue12_test.zig` |  |
+| F58 | `catalogue_triple_handshake_ems_and_exporter_context` | `tls/catalogue12_test.zig` |  |
+| F59 | `catalogue_version_rollback_sentinel_and_scsv` | `tls/catalogue12_test.zig` |  |
+| F60 | `catalogue_sloth_signature_hash_and_context_downgrade` | `tls/catalogue12_test.zig` |  |
+| F61 | `catalogue_kci_static_dh_and_role_reflection` | `tls/catalogue12_test.zig` |  |
+| F62 | `catalogue_crime_record_compression_refused` | `tls/catalogue12_test.zig` |  |
+| F63 | `catalogue_breach_consumer_compression_policy` | `tls/catalogue12_test.zig` |  |
+| F64 | `catalogue_starttls_strip_and_plaintext_fallback` | `tls/catalogue12_test.zig` |  |
+| F65 | `catalogue_ticket_supplied_key_and_derivation_failure` | `tls/Resumption_test.zig` |  |
+| F66 | `catalogue_ticket_workers_rotation_restart_and_nonce` | `tls/Resumption_test.zig` |  |
+| F67 | `catalogue_ticket_age_add_and_identifier_privacy` | `tls/Resumption_test.zig` |  |
+| F68 | `catalogue_psk_binder_lengths_index_and_retry` | `tls/Resumption_test.zig`, `tls/handshake/Hello_test.zig` |  |
+| F69 | `catalogue_resume_after_cloned_policy_mutation` | `tls/Resumption_test.zig` |  |
+| F70 | `catalogue_tls13_ticket_hrr_missing_versions` | `tls/Resumption_test.zig` |  |
+| F71 | `catalogue_early_data_replay_rejection_budget` | `tls/Resumption_test.zig` |  |
+| F72 | `catalogue_ticket_ems_derivation_and_callback_errors` | `tls/Resumption_test.zig` |  |
+| F73 | `catalogue_session_serialization_tamper_and_reset` | `tls/Resumption_test.zig` |  |
+| F74 | `catalogue_resumed_mtls_evidence_expiry_and_refresh` | `tls/Resumption_test.zig` |  |
+| F75 | `catalogue_ech_rejection_no_target_authority` | `tls/Ech_test.zig` |  |
+| F76 | `catalogue_ech_outer_psk_identity_and_guess_oracle` | `tls/Ech_test.zig` |  |
+| F77 | `catalogue_dtls_fragment_arithmetic_and_conflicting_total` | `tls/dtls/catalogue_test.zig` |  |
+| F78 | `catalogue_dtls_duplicate_replay_and_message_order` | `tls/dtls/catalogue_test.zig` |  |
+| F79 | `catalogue_dtls_timer_during_suspended_flight` | `tls/dtls/catalogue_test.zig` |  |
+| F80 | `catalogue_dtls_client_random_cookie_and_amplification` | `tls/dtls/Cookies_test.zig`, `tls/dtls/catalogue_test.zig` |  |
+| F81 | `catalogue_dtls_short_aead_ccm_tag_and_survival` | `tls/dtls/Record_test.zig`, `tls/dtls/catalogue_test.zig` |  |
+| F82 | `catalogue_dtls_corruption_renegotiation_and_reset` | `tls/dtls/catalogue_test.zig` |  |
+| F83 | `catalogue_ktls_partial_handoff_sequence_owner` | `tls/offload/Offload_test.zig` |  |
+| F84 | `catalogue_ktls_rekey_failure_and_sendfile_immutability` | `tls/offload/Offload_test.zig` |  |
+| F85 | `catalogue_selfie_psk_role_reflection_and_context` | `tls/Psk_test.zig` |  |
+| F86 | `catalogue_external_psk_embedded_nul_identity` | `tls/Psk_test.zig` |  |
+| F87 | `catalogue_certificate_compression_bomb_and_transcript` | `tls/CertificateCompression_test.zig`, `tls/handshake/Compression_test.zig` |  |
+| F88 | `catalogue_ct_sct_lengths_wrong_entry_and_log_generation` | `verify/transparency_test.zig`, `tls/Transparency_test.zig` |  |
+| F89 | `catalogue_delegated_parent_expiry_and_raw_key_namespace` | `tls/handshake/Delegation_test.zig`, `tls/RawKey_test.zig`, `tls/Delegated_test.zig` |  |
+| F90 | `catalogue_post_handshake_auth_context_and_action_gate` | `tls/PostAuth_test.zig` |  |
+| F91 | `catalogue_pq_group_specific_layout_and_auth_policy` | `tls/Pq_test.zig`, `tls/crypto/Exchange_test.zig`, `tls/MlDsa_test.zig` |  |
+| F92 | `catalogue_quic_transport_admission_boundary` | none yet (C7) |  |
+| F93 | `catalogue_secret_diagnostics_and_release_campaign` | none yet (C7) |  |
+| F94 | `catalogue_roca_fingerprinted_rsa_key_refused` | `Roca_test.zig` |  |
+| F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |

@@ -133,7 +133,7 @@ fn fails(comptime suite: Suite13, config: Config, options: Options, expected: an
     try std.testing.expect(pair.conn.request() == null);
 }
 
-test "C3 catalogue_extension_uniqueness_and_negotiation_allowlist" {
+test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .duplicate_extension }, .{}, error.DuplicateExtension, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .bad_compression }, .{}, error.IllegalParameter, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .share_outside_groups }, .{}, error.IllegalParameter, .illegal_parameter);
@@ -243,14 +243,14 @@ test "C3 client chains from an untrusted root fail with unknown_ca" {
     try std.testing.expect(pair.conn.info() == null);
 }
 
-test "C3 catalogue_possession_verification_cannot_be_skipped" {
+test "F28 catalogue_possession_verification_cannot_be_skipped" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .bad_finished }, .{}, error.BadFinished, .decrypt_error);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .finished_early }, .{}, error.BadFinished, .decrypt_error);
     // A bad signature from the signer never reaches the wire.
     try fails(.aes_128_gcm_sha256, .{}, .{ .bad_signature = true }, error.BadSignature, .decrypt_error);
 }
 
-test "C3 catalogue_key_change_record_alignment" {
+test "F30 catalogue_key_change_record_alignment" {
     // Application data before the client Finished is not accepted at the handshake epoch.
     try fails(.aes_128_gcm_sha256, .{ .tamper = .application_early }, .{}, error.UnexpectedRecord, .unexpected_message);
     // A second change_cipher_spec, a second hello after the keys changed.
@@ -258,7 +258,7 @@ test "C3 catalogue_key_change_record_alignment" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .two_hellos }, .{}, error.UnexpectedRecord, .unexpected_message);
 }
 
-test "C3 catalogue_hrr_illegal_group_ch2_and_reallocation" {
+test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     // The second hello must repeat the first except for the key share.
     try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .changed_second_hello }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .second_without_share }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);

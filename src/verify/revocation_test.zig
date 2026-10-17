@@ -53,8 +53,7 @@ test "offline delegated responders require their own valid evidence and CRLs cov
     try std.testing.expectError(error.StaleRevocation, R.check(&path, deadline + 1, .{}, .{ .crls = &.{crl} }));
 }
 
-// F22: signed responses must select the target, regardless of entry order.
-test "catalogue_revocation_multi_entry_target_and_order" {
+test "F22 catalogue_revocation_matching_entry_and_responder (signed responses select the target, regardless of entry order)" {
     const now = try std.fmt.parseInt(i64, @embedFile("fixtures/catalogue/time.txt"), 10);
     const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/catalogue/target.der"), .{}), try C.parse(@embedFile("fixtures/catalogue/ca.der"), .{}) };
     try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{@embedFile("fixtures/catalogue/good-neighbor.ocsp")} })).status);

@@ -39,8 +39,7 @@ test "anyPolicy cannot bridge disjoint request and anchor policies" {
     try P.check(std.testing.allocator, &path, .{ .required_policies = &.{C.Extensions.any_policy} }, &.{b}, 256, &work);
 }
 
-// F14/F21: storage capacity does not stand in for cumulative comparison work.
-test "catalogue_policy_comparisons_and_mapping_work_are_bounded" {
+test "F21 catalogue_policy_leaf_mapping_and_enablement (F14: policy comparisons and mapping work are bounded, storage never standing in for work)" {
     var path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p384.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p256.der"), .{}) };
     extension(&path[0], 32, policy_b);
     extension(&path[1], 32, policy_a);

@@ -52,7 +52,7 @@ test "C10 ML-DSA client certificates" {
     try connect(.{ .cert = .p256, .client_auth = .required, .client_cert = true, .client_mldsa = true });
 }
 
-test "C10 catalogue_pq_group_specific_layout_and_auth_policy: post-quantum authentication is the whole path's, never the key exchange's" {
+test "F91 catalogue_pq_group_specific_layout_and_auth_policy: post-quantum authentication is the whole path's, never the key exchange's" {
     // ML-DSA from the leaf's CertificateVerify to the root's signature: met.
     for ([_]Duo.Cert{ .mldsa44, .mldsa65, .mldsa87 }) |cert| try connect(.{ .cert = cert, .client_require_pq_auth = true });
     // A classical signature on the path, with a hybrid key exchange: refused, insufficient_security.
