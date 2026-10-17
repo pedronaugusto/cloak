@@ -15,7 +15,8 @@ pub const InitError = error{InvalidLimits};
 pub const SealError = error{ Closed, RecordLimit, BufferTooSmall, InvalidLength, PartialOverlap };
 /// `BadRecord` is a record that fails its tag (or is no TLS 1.3 ciphertext); `UnexpectedRecord` an
 /// authenticated one whose inner plaintext names no content type or an unknown one, or is an empty
-/// alert or handshake fragment (RFC 8446 sections 5.1, 5.4: unexpected_message, not bad_record_mac).
+/// alert or handshake fragment (RFC 8446 sections 5.1, 5.4: unexpected_message, not bad_record_mac);
+/// `RecordOverflow` one whose inner plaintext would pass 2^14 + 1 bytes (section 5.4).
 pub const OpenError = error{ Closed, RecordLimit, BufferTooSmall, BadRecord, UnexpectedRecord, PartialOverlap, RecordOverflow };
 pub const Plaintext = struct { content: Content, bytes: []u8 };
 pub const TrialError = OpenError || error{Undecryptable};
@@ -191,10 +192,16 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         fn openChecked(self: *Self, wire: []const u8, out: []u8, trial: bool) TrialError!Plaintext {
             @setRuntimeSafety(true);
             if (self.closed or self.owner != .software) return error.Closed;
-            if (wire.len < 5 + 17 or wire.len > 5 + max_ciphertext) return self.bad();
+            if (wire.len < 5 + 17) return self.bad();
             if (!std.mem.eql(u8, wire[0..3], &.{ 23, 3, 3 }) or std.mem.readInt(u16, wire[3..5], .big) != wire.len - 5) return self.bad();
             const len = wire.len - 5 - A.tag_length;
-            if (len > max_inner) return self.bad();
+            // A ciphertext past 2^14 + 256 bytes, or one whose inner plaintext (content, type and
+            // padding) would pass 2^14 + 1 bytes, is record_overflow (RFC 8446 sections 5.2, 5.4
+            // and 6.2): its length says so before any decryption work.
+            if (len > max_inner) {
+                self.deinit();
+                return error.RecordOverflow;
+            }
             if (out.len < len) return error.BufferTooSmall;
             const plain = out[0..len];
             const cipher = wire[5..][0..len];

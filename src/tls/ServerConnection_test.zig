@@ -186,6 +186,33 @@ test "F101 catalogue_extension_count_unbounded_unique (a hello with a thousand u
     }
 }
 
+test "F102 catalogue_inner_plaintext_overflow (an inner plaintext past 2^14 + 1 bytes ends with record_overflow, not bad_record_mac)" {
+    // RFC 8446 section 5.4: the encoded TLSInnerPlaintext, padding included, is at most 2^14 + 1
+    // bytes; section 6.2: a record that decrypts past the limit is record_overflow. A ciphertext
+    // up to 2^14 + 256 bytes can carry more, as tlsfuzzer's test-tls13-record-layer-limits sends.
+    var inner: [(1 << 14) + 2]u8 = @splat('x');
+    var wire: [5 + inner.len + 16]u8 = undefined;
+    // Content past 2^14 bytes, and 2^14 bytes of content with one byte of padding.
+    for ([_][]const u8{ "\x17", "\x17\x00" }) |tail| {
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+        defer pair.deinit();
+        try pair.run();
+        const content = (1 << 14) + 2 - tail.len;
+        @memcpy(inner[content..], tail);
+        try std.testing.expectError(error.RecordOverflow, pair.conn.receive(pair.client.forge(&inner, &wire)));
+        try std.testing.expectEqual(Alert.record_overflow, pair.conn.diagnostics().alert_sent.?);
+        try std.testing.expectEqual(@as(usize, 0), pair.conn.readable().len);
+        inner[content] = 'x';
+    }
+    // 2^14 bytes of content and its type: the limit itself is read.
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+    defer pair.deinit();
+    try pair.run();
+    inner[1 << 14] = 0x17;
+    _ = try pair.conn.receive(pair.client.forge(inner[0 .. (1 << 14) + 1], &wire));
+    try std.testing.expectEqual(@as(usize, 1 << 14), pair.conn.readable().len);
+}
+
 fn fails(comptime suite: Suite13, config: Config, options: Options, expected: anyerror, alert: ?Alert) !void {
     const pair = try ServerPair(suite).init(std.testing.allocator, config, options);
     defer pair.deinit();
