@@ -741,7 +741,7 @@ The wire is RFC 4279's: the server sends ServerHello and ServerHelloDone, no Cer
 ServerKeyExchange (no identity hint: keys are named by the client alone); a client ignores a
 hint a server sends, unsigned, in a ServerKeyExchange; the client names its key in
 ClientKeyExchange (`opaque psk_identity<0..2^16-1>`), then ChangeCipherSpec and Finished. The
-extended master secret and the renegotiation indication are required as for every TLS 1.2
+extended master secret is required and the renegotiation indication treated as for every TLS 1.2
 handshake; neither side presents or requests a certificate, so the server answers no certificate
 types and no point formats, and a ServerHello choosing a PSK suite that answers certificate types
 is refused. In the state table the decision is an event, `psk12`, taken before the ServerHello's
@@ -987,7 +987,12 @@ group is TLS 1.3's), with a fresh share per connection, except for the provision
 of the IoT profiles (above), which have none; the record ciphers are AES-128-GCM,
 AES-256-GCM and ChaCha20-Poly1305 (RFC 5288, RFC 7905), the GCM explicit nonce being the
 record sequence; the master secret is always the extended one (RFC 7627), and a peer
-without it is refused, as is one without the secure renegotiation indication (RFC 5746).
+without it is refused. A client requires the server's secure renegotiation indication
+(RFC 5746): a legacy server could be spliced into a renegotiation it does not know is one, and
+only the client can tell. A server answers the indication when the client sends it (the
+extension or the SCSV) and goes on without it (RFC 5746 section 4.4): the splice needs a server
+that renegotiates, and this one never does, so requiring it bought nothing and turned away
+clients built without it (wolfSSL's default build among them).
 No suite of RSA key exchange, finite-field DHE, static ECDH, CBC, RC4, 3DES or NULL exists
 to be negotiated; compression other than null, SSLv2 hellos, MD5 and SHA-1 signatures,
 renegotiation (a HelloRequest or a second ClientHello) is refused; resumption is the session
@@ -1469,3 +1474,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F111 | `catalogue_hello_version_tolerance` | `tls/handshake/ClientHello_test.zig` | the 0xfe00 cutoff on a stream's legacy_version, as before (found by tlsfuzzer's test-version-numbers) |
 | F112 | `catalogue_server_name_ranges_decode_error` | `tls/handshake/ClientHello_test.zig` | the empty list or name answered illegal_parameter, as before (found by tlsfuzzer's test-invalid-server-name-extension) |
 | F113 | `catalogue_fallback_scsv_before_version` | `tls/catalogue12_test.zig` | the version refusal before the fallback check, as before (found by tlsfuzzer's test-fallback-scsv) |
+| F114 | `catalogue_server_without_renegotiation_indication` | `tls/catalogue12_test.zig` | the indication answered whether or not the client sent it (a policy change, main's call 2026-10-18: a server that never renegotiates refused hellos without it; tlsfuzzer's test-aesccm, test-cve-2016-6309, test-cve-2016-7054, test-ssl-death-alert and wolfSSL's default build send none) |

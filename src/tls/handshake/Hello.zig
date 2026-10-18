@@ -900,16 +900,18 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
     return out[0..w.pos];
 }
 
+/// The longest SignedCertificateTimestampList a server sends.
+pub const max_scts = 2048;
 /// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
 /// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
+/// `renegotiation_info`: the client signalled secure renegotiation, by the extension or the SCSV
+/// (RFC 5746 section 3.6).
 /// DTLS: `connection_id` the connection ID the server receives on, `srtp` the profile it chose.
 /// `client_certificate_type`, `server_certificate_type`: the types selected (RFC 7250), answered
 /// when the client sent the extension.
 /// `scts`: the certificate's SignedCertificateTimestampList, for a client that asked (RFC 6962
 /// section 3.3.1), at most `max_scts` bytes.
-/// The longest SignedCertificateTimestampList a server sends.
-pub const max_scts = 2048;
-pub const Echo12 = struct { server_name: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
+pub const Echo12 = struct { server_name: bool, renegotiation_info: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -928,7 +930,7 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     if (echo.server_name) try w.put(&.{ 0, 0, 0, 0 });
     if (echo.point_formats) try w.put(&.{ 0, 11, 0, 2, 1, 0 });
     try w.put(&.{ 0, 23, 0, 0 });
-    try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
+    if (echo.renegotiation_info) try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
     if (echo.ticket) try w.put(&.{ 0, 35, 0, 0 });
     if (echo.connection_id) |cid| try connectionIdAnswer(&w, cid);
     if (echo.srtp) |profile| try srtpAnswer(&w, profile);

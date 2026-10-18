@@ -173,9 +173,9 @@ test "F56 catalogue_null_rc4_and_obsolete_hash_policy" {
 
 test "F57 catalogue_renegotiation_prefix_and_initial_signal" {
     var hello: [512]u8 = undefined;
-    // The initial hello must signal secure renegotiation, with an empty renegotiated_connection.
+    // An initial hello's renegotiated_connection is empty. (A server takes a hello without the
+    // indication and never renegotiates: F114.)
     const no_signal = "\x00\x0a\x00\x04\x00\x02\x00\x1d" ++ "\x00\x0d\x00\x04\x00\x02\x04\x03" ++ "\x00\x17\x00\x00";
-    try std.testing.expectEqual(error.NoSecureRenegotiation, serverRefuses(clientHello12(&hello, &.{0xc02b}, &.{0}, no_signal)));
     // A non-empty renegotiated_connection in an initial hello is handshake_failure (RFC 5746
     // section 3.6).
     const prefixed = no_signal ++ "\xff\x01\x00\x0d\x0c" ++ "verify_data!";
@@ -184,7 +184,8 @@ test "F57 catalogue_renegotiation_prefix_and_initial_signal" {
     var scsv_hello: [512]u8 = undefined;
     const scsv = clientHello12(&scsv_hello, &.{ 0xc02b, 0x00ff }, &.{0}, no_signal);
     _ = try ClientHello.parse(scsv, .stream);
-    // A server answer without it, or with a prefix, is refused by the client.
+    // A server answer without it, or with a prefix, is refused by the client: only the client can
+    // tell a legacy server that might be spliced.
     var buffer: [256]u8 = undefined;
     try std.testing.expectError(error.NoSecureRenegotiation, answer(serverHello12(&buffer, 0xc02b, 0, "\x00\x17\x00\x00", &random), client12));
     try std.testing.expectError(error.NoSecureRenegotiation, answer(serverHello12(&buffer, 0xc02b, 0, "\x00\x17\x00\x00\xff\x01\x00\x02\x01\x00", &random), client12));
@@ -320,4 +321,52 @@ test "F113 catalogue_fallback_scsv_before_version (a fallback hello below the se
     // (P-256 listed: the server's certificate is on it.)
     const with_p256 = "\x00\x0a\x00\x06\x00\x04\x00\x1d\x00\x17" ++ modern[8..];
     try std.testing.expectEqual(error.NoFailure, serverRefusesWith(.{ .server_max = .tls12 }, clientHello12(&at_max, &.{ 0xc02b, 0x5600 }, &.{0}, with_p256)));
+}
+
+/// The extension types of the first ServerHello in a server's output records.
+fn serverHelloExtensions(output: []const u8, types: []u16) ![]u16 {
+    // Record header, handshake header, version, random.
+    var at: usize = 5 + 4 + 2 + 32;
+    if (output.len < at + 1 or output[5] != 2) return error.NoServerHello;
+    at += 1 + output[at];
+    at += 2 + 1;
+    const end = at + 2 + std.mem.readInt(u16, output[at..][0..2], .big);
+    at += 2;
+    var n: usize = 0;
+    while (at < end) : (n += 1) {
+        types[n] = std.mem.readInt(u16, output[at..][0..2], .big);
+        at += 4 + std.mem.readInt(u16, output[at + 2 ..][0..2], .big);
+    }
+    return types[0..n];
+}
+
+test "F114 catalogue_server_without_renegotiation_indication (a TLS 1.2 server takes a hello without the renegotiation indication and answers none; one that signals it, by extension or SCSV, is answered)" {
+    // tlsfuzzer's test-aesccm, test-cve-2016-6309, test-cve-2016-7054, test-ssl-death-alert and
+    // wolfSSL's default build send neither renegotiation_info nor the SCSV. RFC 5746 section 4.4
+    // lets a server go on with such a client; the attack the indication guards needs a server
+    // that renegotiates, and cloak's refuses every renegotiation. A ServerHello may carry only
+    // extensions the client sent (RFC 5246 section 7.4.1.4), so this one carries none.
+    const no_signal = "\x00\x0a\x00\x06\x00\x04\x00\x1d\x00\x17" ++ "\x00\x0d\x00\x04\x00\x02\x04\x03" ++ "\x00\x17\x00\x00";
+    const Case = struct { suites: []const u16, extensions: []const u8, answered: bool };
+    const cases = [_]Case{
+        .{ .suites = &.{0xc02b}, .extensions = no_signal, .answered = false },
+        .{ .suites = &.{ 0xc02b, 0x00ff }, .extensions = no_signal, .answered = true },
+        .{ .suites = &.{0xc02b}, .extensions = no_signal ++ "\xff\x01\x00\x01\x00", .answered = true },
+    };
+    for (cases) |case| {
+        const duo = try Duo.init(std.testing.allocator, .{ .server_max = .tls12 });
+        defer duo.deinit();
+        var hello: [512]u8 = undefined;
+        const message = clientHello12(&hello, case.suites, &.{0}, case.extensions);
+        var record: [1024]u8 = undefined;
+        record[0..5].* = .{ 22, 3, 3, 0, 0 };
+        std.mem.writeInt(u16, record[3..5], @intCast(message.len), .big);
+        @memcpy(record[5..][0..message.len], message);
+        _ = try duo.server.receive(record[0 .. 5 + message.len]);
+        try duo.serveServer();
+        try std.testing.expectEqual(@as(?anyerror, null), duo.server.diagnostics().reason);
+        var types: [16]u16 = undefined;
+        const answered = try serverHelloExtensions(duo.server.output(), &types);
+        try std.testing.expectEqual(case.answered, std.mem.findScalar(u16, answered, 0xff01) != null);
+    }
 }

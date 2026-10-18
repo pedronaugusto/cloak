@@ -410,10 +410,10 @@ test "C10 raw public keys over TLS 1.2: a ServerHello answers only what was offe
     var buf: [256]u8 = undefined;
     const random: [32]u8 = @splat(3);
     const raw: Hello.Options = .{ .raw_server_key = true, .max_version = .tls12, .suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256} };
-    const answer = try Hello.buildServer12(&buf, .stream, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false, .server_certificate_type = .raw_public_key });
+    const answer = try Hello.buildServer12(&buf, .stream, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .renegotiation_info = true, .point_formats = false, .server_certificate_type = .raw_public_key });
     try std.testing.expect((try Hello.server(answer, "", &.{}, raw, .{})).tls12.raw_server_key);
     try std.testing.expectError(error.UnsolicitedExtension, Hello.server(answer, "", &.{}, .{ .max_version = .tls12, .suites = raw.suites }, .{}));
     var buf2: [256]u8 = undefined;
-    const x509 = try Hello.buildServer12(&buf2, .stream, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false, .server_certificate_type = .x509 });
+    const x509 = try Hello.buildServer12(&buf2, .stream, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .renegotiation_info = true, .point_formats = false, .server_certificate_type = .x509 });
     try std.testing.expectError(error.UnofferedSelection, Hello.server(x509, "", &.{}, raw, .{}));
 }

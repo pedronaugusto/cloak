@@ -220,6 +220,8 @@ const Scratch = struct {
     server_name_len: u8 = 0,
     /// TLS 1.2: the client sent ec_point_formats, so the ServerHello answers it.
     point_formats: bool = false,
+    /// TLS 1.2: the client signalled secure renegotiation (RFC 5746), so the ServerHello answers it.
+    renegotiation_info: bool = false,
     /// The client's key share for the chosen group.
     share: [Exchange.max_share]u8 = undefined,
     share_len: usize = 0,

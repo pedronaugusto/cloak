@@ -241,7 +241,7 @@ test "C8 connection_id and use_srtp answers: only what was offered, one profile,
     offering.srtp = &.{ .aead_aes_128_gcm, .aes128_cm_hmac_sha1_80 };
     var buffer: [512]u8 = undefined;
     const random: [32]u8 = @splat(3);
-    const hello = try Hello.buildServer12(&buffer, .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false, .connection_id = "server-id", .srtp = .aes128_cm_hmac_sha1_80 });
+    const hello = try Hello.buildServer12(&buffer, .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .renegotiation_info = true, .point_formats = false, .connection_id = "server-id", .srtp = .aes128_cm_hmac_sha1_80 });
     const answer = (try Hello.server(hello, "", &.{}, offering, .{})).tls12;
     try std.testing.expectEqualSlices(u8, "server-id", answer.connection_id.?);
     try std.testing.expectEqual(Hello.Srtp.aes128_cm_hmac_sha1_80, answer.srtp.?);
@@ -255,7 +255,7 @@ test "C8 connection_id and use_srtp answers: only what was offered, one profile,
     other.srtp = &.{.aead_aes_256_gcm};
     try std.testing.expectError(error.UnofferedSelection, Hello.server(hello, "", &.{}, other, .{}));
     // A server MKI differs from the client's (none): illegal_parameter (RFC 5764 section 4.1.3).
-    const plain = try Hello.buildServer12(buffer[256..], .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .point_formats = false });
+    const plain = try Hello.buildServer12(buffer[256..], .datagram, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .renegotiation_info = true, .point_formats = false });
     var spliced: [512]u8 = undefined;
     try std.testing.expectError(error.InvalidHello, Hello.server(appended(&spliced, plain, 0, &.{ 0, 14, 0, 6, 0, 2, 0, 1, 1, 7 }), "", &.{}, offering, .{}));
     // Two profiles in an answer.

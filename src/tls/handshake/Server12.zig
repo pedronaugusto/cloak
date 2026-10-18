@@ -2,8 +2,9 @@
 //! flight of ServerHello, Certificate, a signed ECDHE ServerKeyExchange, an optional
 //! CertificateRequest and ServerHelloDone; then the client's certificate, ClientKeyExchange,
 //! CertificateVerify, ChangeCipherSpec and Finished; then the server's ChangeCipherSpec and
-//! Finished. ECDHE with AEAD suites only, extended master secret and secure renegotiation
-//! indication required, no renegotiation. With TLS 1.2 tickets on, a client's session ticket may
+//! Finished. ECDHE with AEAD suites only, extended master secret required, no renegotiation: the
+//! renegotiation indication (RFC 5746) is answered when the client sends it and not required,
+//! since the splice it guards needs a server that renegotiates. With TLS 1.2 tickets on, a client's session ticket may
 //! resume its session (RFC 5077): the ServerHello echoes its session id, then this server's
 //! ChangeCipherSpec and Finished, then the client's; a NewSessionTicket goes before this server's
 //! ChangeCipherSpec, in either handshake, to a client that asked. The server random carries the
@@ -37,7 +38,8 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     self.state.version = .tls12;
     const scratch = self.scratch.?;
     if (!hello.extended_master_secret) return error.NoExtendedMasterSecret;
-    if (!hello.secureRenegotiation()) return error.NoSecureRenegotiation;
+    // RFC 5746 section 4.4: a server that never renegotiates may go on without the indication.
+    scratch.renegotiation_info = hello.secureRenegotiation();
     if (!hello.uncompressed_points) return error.IllegalParameter;
     if (self.tls12 == null) self.tls12 = try @import("Flight.zig").Secrets12.create(self.gpa);
     scratch.client_random = hello.random[0..32].*;
@@ -242,7 +244,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [1024 + Hello.max_scts]u8 = undefined;
     const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential].scts else null;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential].identity;
@@ -276,7 +278,7 @@ fn sendPskFlight(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = false, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .point_formats = false, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const done = try Messages12.buildServerHelloDone(try self.reserve(4));
@@ -291,7 +293,7 @@ fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     if (self.state.ticket12) try sendTicket(self);

@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- A (D)TLS 1.2 server takes a ClientHello without the secure renegotiation indication (RFC 5746 section 4.4) and answers renegotiation_info only to a client that sent it or the SCSV; it refused such a hello with handshake_failure. Every renegotiation is still refused, and a non-empty renegotiated_connection in an initial hello still ends the handshake. A client still requires the server's indication. F114.
+
 ## [0.17.4] - 2026-10-18
 
 ### Fixed
