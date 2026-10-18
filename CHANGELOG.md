@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.6] - 2026-10-18
+
 ### Fixed
 
 - A server compares a retry's second ClientHello with the first by what it offers, not the order of its extensions: the fingerprint takes them in ascending type order. Since 0.17.3 a reordered second hello was refused with illegal_parameter, which refused wolfSSL 5.9.4's DTLS 1.3 client after every retry request (its second hello moves supported_versions). RFC 8446 section 4.1.2's MUST binds the client; BoringSSL, OpenSSL and rustls compare content too. F104, F115.
