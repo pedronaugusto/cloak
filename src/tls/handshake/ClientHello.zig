@@ -518,8 +518,12 @@ fn containsU16(list: []const u8, id: u16) bool {
 /// A digest of everything a retry's second ClientHello may not change: the random, session id,
 /// suites and every extension except the key share, cookie, early data, PSK and padding
 /// (RFC 8446 section 4.1.2), and encrypted_client_hello, whose second payload is a new
-/// encryption (RFC 9849 section 6.1.5). The other extensions keep their order: reordering is a
-/// modification too.
+/// encryption (RFC 9849 section 6.1.5). The extensions go in ascending type order, not the order
+/// sent: section 4.1.2's MUST is the client's, and a server compares what the second hello offers
+/// (wolfSSL's second DTLS 1.3 hello reorders). Types are unique (checked at parsing), so the order
+/// is one per hello and each entry is hashed with its type and length. The sort is by buckets,
+/// 4,096 types at a time, one pass over the block per top nibble in use: linear in the block,
+/// with 8 KiB of entry starts and a 512-byte set for a block of any size.
 pub fn fingerprint(self: *const ClientHello) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -527,17 +531,39 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     h.update(&.{@intCast(self.session.len)}); // safe: parsing bounds the session id at 32 bytes
     h.update(self.session);
     h.update(self.suites);
-    // The block was validated when parsed; a malformed entry cannot occur and would end the walk.
+    // The block was validated when parsed; a malformed entry cannot occur and would end a pass.
+    var nibbles: std.bit_set.Static(16) = .empty;
     var all: Reader = .{ .bytes = self.extensions };
     while (all.pos < all.bytes.len) {
         const id = all.int(u16) catch break;
-        const bytes = (all.vector(u16) catch break).bytes;
-        if (exempt(id)) continue;
-        var head: [6]u8 = undefined;
-        std.mem.writeInt(u16, head[0..2], id, .big);
-        std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // safe: an extension is at most 65,535 bytes
-        h.update(&head);
-        h.update(bytes);
+        _ = all.vector(u16) catch break;
+        if (!exempt(id)) nibbles.set(id >> 12);
+    }
+    var in_use = nibbles.iterator(.{});
+    while (in_use.next()) |nibble| {
+        var present: std.bit_set.Static(4096) = .empty;
+        // Read only where `present` is set.
+        var starts: [4096]u16 = undefined;
+        var pass: Reader = .{ .bytes = self.extensions };
+        while (pass.pos < pass.bytes.len) {
+            const start = pass.pos;
+            const id = pass.int(u16) catch break;
+            _ = pass.vector(u16) catch break;
+            if (id >> 12 != nibble or exempt(id)) continue;
+            present.set(id & 0xfff);
+            starts[id & 0xfff] = @intCast(start); // safe: a block is at most 65,535 bytes
+        }
+        var ids = present.iterator(.{});
+        while (ids.next()) |low| {
+            var entry: Reader = .{ .bytes = self.extensions[starts[low]..] };
+            const id = entry.int(u16) catch break;
+            const bytes = (entry.vector(u16) catch break).bytes;
+            var head: [6]u8 = undefined;
+            std.mem.writeInt(u16, head[0..2], id, .big);
+            std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // safe: an extension is at most 65,535 bytes
+            h.update(&head);
+            h.update(bytes);
+        }
     }
     return h.finalResult();
 }

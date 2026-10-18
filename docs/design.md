@@ -1229,9 +1229,10 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   suite and group the retry request named, whether it asked for a share and the hello's
   fingerprint, from which the admitted association resumes (`Server.resumeRetry`: the
   transcript holds the hello's hash and the request, and the second hello must match the
-  first, offer the suite and bring the share); for DTLS 1.2 the hello's random, session id
-  and suites, in 32 bytes (DTLS 1.0's limit, which wolfSSL keeps: it sent back an empty
-  cookie for a longer one). A hello that does not fit one datagram is checked only by a
+  first by content, its extensions in ascending type order, not as sent (F104, F115), offer
+  the suite and bring the share); for DTLS 1.2 the hello's random, session id and suites,
+  in 32 bytes (DTLS 1.0's limit, which wolfSSL keeps: it sent back an empty cookie for a
+  longer one). A hello that does not fit one datagram is checked only by a
   cookie its first fragment carries, so a client's first DTLS hello offers at most one
   classical share (X25519 when listed) and none for a hybrid-only or post-quantum-only list,
   whose shares do not fit beside the hello (wolfSSL's client empties its first key share
@@ -1512,7 +1513,7 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F101 | `catalogue_extension_count_unbounded_unique` | `wire/Extensions_test.zig`, `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the whole-block check skipped; its passes keyed by 13 bits (found by tlsfuzzer's test-tls13-large-number-of-extensions: hellos past 64 extensions were refused) |
 | F102 | `catalogue_inner_plaintext_overflow` | `tls/ServerConnection_test.zig` | the overflow answered as a tag failure (bad_record_mac), as before (found by tlsfuzzer's test-tls13-record-layer-limits) |
 | F103 | `catalogue_plaintext_alert_answering_server_hello` | `tls/ServerConnection_test.zig` | the check left out: the client's plaintext alert refused as an unexpected record (found by tlsfuzzer's test-tls13-unencrypted-alert) |
-| F104 | `catalogue_retry_hello_extension_order` | `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the fingerprint taking the extensions in ID order, as before (found by tlsfuzzer's test-tls13-shuffled-extentions) |
+| F104 | `catalogue_retry_hello_extension_order` | `tls/handshake/ClientHello_test.zig`, `tls/ServerConnection_test.zig` | the fingerprint taking the extensions in the order sent, as 0.17.3 to 0.17.5 did (tlsfuzzer's test-tls13-shuffled-extentions asks a reordered second hello refused; RFC 8446 4.1.2 binds the client, so cloak compares content: main's call 2026-10-18) |
 | F105 | `catalogue_ccs_without_compatibility_mode` | `tls/ServerConnection_test.zig`, `tls/Connection_test.zig` | the change_cipher_spec held to a hello with a session id, and its record version to 03,03 after the keys, as before (found by tlsfuzzer's test-tls13-multiple-ccs-messages) |
 | F106 | `catalogue_psk_hello_without_signature_algorithms` | `tls/Psk_test.zig` | signature_algorithms required of every TLS 1.3 hello, as before (found by tlsfuzzer's test-tls13-psk_dhe_ke) |
 | F107 | `catalogue_key_share_count_unbounded_unique` | `tls/handshake/ClientHello_test.zig` | the 32-share table, as before (found by tlsfuzzer's test-tls13-unrecognised-groups) |
@@ -1523,3 +1524,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F112 | `catalogue_server_name_ranges_decode_error` | `tls/handshake/ClientHello_test.zig` | the empty list or name answered illegal_parameter, as before (found by tlsfuzzer's test-invalid-server-name-extension) |
 | F113 | `catalogue_fallback_scsv_before_version` | `tls/catalogue12_test.zig` | the version refusal before the fallback check, as before (found by tlsfuzzer's test-fallback-scsv) |
 | F114 | `catalogue_server_without_renegotiation_indication` | `tls/catalogue12_test.zig` | the indication answered whether or not the client sent it (a policy change, main's call 2026-10-18: a server that never renegotiates refused hellos without it; tlsfuzzer's test-aesccm, test-cve-2016-6309, test-cve-2016-7054, test-ssl-death-alert and wolfSSL's default build send none) |
+| F115 | `catalogue_dtls_retry_reordered_hello` | `tls/dtls/catalogue_test.zig` | the fingerprint taking the extensions in the order sent, as 0.17.3 to 0.17.5 did (found by wolfSSL 5.9.4's DTLS 1.3 client, refused after every retry request) |

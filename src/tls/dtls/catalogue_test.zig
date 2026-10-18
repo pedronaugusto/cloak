@@ -282,3 +282,58 @@ test "F82 catalogue_dtls_corruption_renegotiation_and_reset" {
         try std.testing.expectEqual(Datagram.Phase.handshaking, other.phase());
     }
 }
+
+/// Swaps the first two adjacent extensions of a plaintext DTLS ClientHello record that a retry's
+/// second hello must keep (none of key_share, cookie, early_data, pre_shared_key, padding or
+/// encrypted_client_hello), as wolfSSL's second hello moves supported_versions.
+fn swapKeptExtensions(record: []u8) !void {
+    const exempt = [_]u16{ 51, 44, 42, 41, 21, 0xfe0d };
+    var at: usize = Record.header12 + 12 + 2 + 32;
+    at += 1 + record[at]; // session id
+    at += 1 + record[at]; // legacy cookie
+    at += 2 + std.mem.readInt(u16, record[at..][0..2], .big); // suites
+    at += 1 + record[at]; // compression methods
+    at += 2;
+    var previous: ?usize = null;
+    while (at + 4 <= record.len) {
+        const id = std.mem.readInt(u16, record[at..][0..2], .big);
+        const end = at + 4 + std.mem.readInt(u16, record[at + 2 ..][0..2], .big);
+        if (std.mem.findScalar(u16, &exempt, id) != null) {
+            previous = null;
+        } else if (previous) |first| {
+            var both_entries: [1024]u8 = undefined;
+            const second_len = end - at;
+            @memcpy(both_entries[0..second_len], record[at..end]);
+            @memcpy(both_entries[second_len..][0 .. at - first], record[first..at]);
+            @memcpy(record[first..end], both_entries[0 .. end - first]);
+            return;
+        } else previous = at;
+        at = end;
+    }
+    return error.NoAdjacentKeptExtensions;
+}
+
+test "F115 catalogue_dtls_retry_reordered_hello (a DTLS 1.3 server takes a second hello that reorders its extensions after the stateless retry)" {
+    // wolfSSL 5.9.4's second DTLS 1.3 hello moves supported_versions ahead of
+    // psk_key_exchange_modes; 0.17.3 to 0.17.5 refused it at the retry fingerprint.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{.x25519} });
+    defer pair.deinit();
+    // The first hello, answered statelessly with a retry request that carries the cookie.
+    _ = try pair.step();
+    try std.testing.expectEqual(@as(usize, 1), pair.cookie_answers);
+    const answer = pair.client.inbox.orderedRemove(0);
+    defer gpa.free(answer.bytes);
+    try pair.client.dtls.receive(answer.bytes, pair.now);
+    try pair.serveClient();
+    var buffer: [16 * 1024]u8 = undefined;
+    const second = (try pair.client.dtls.send(&buffer, pair.now)).?;
+    try swapKeptExtensions(second);
+    try pair.server.inbox.append(gpa, .{ .bytes = try gpa.dupe(u8, second) });
+    // The cookie admits it and the association answers with its ServerHello.
+    _ = try pair.step();
+    try std.testing.expect(pair.server_ready);
+    try std.testing.expect(pair.server.dtls.failure() == null);
+    const flight = pair.client.inbox.items[0].bytes;
+    try std.testing.expectEqual(@as(u8, 22), flight[0]);
+    try std.testing.expectEqual(@as(u8, 2), flight[Record.header12]);
+}

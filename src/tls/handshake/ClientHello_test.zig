@@ -184,14 +184,20 @@ test "F101 catalogue_extension_count_unbounded_unique (the retry fingerprint cov
     }
 }
 
-test "F104 catalogue_retry_hello_extension_order (the retry fingerprint covers the extensions' order)" {
-    // RFC 8446 section 4.1.2: reordering is a modification the second hello may not make.
+test "F104 catalogue_retry_hello_extension_order (the retry fingerprint binds every extension's content, in ascending type order, not the order sent)" {
+    // RFC 8446 section 4.1.2's MUST is the client's; the server compares what the second hello
+    // offers, as BoringSSL, OpenSSL and rustls do: wolfSSL's second DTLS 1.3 hello reorders.
     var a: [8192]u8 = undefined;
     var b: [8192]u8 = undefined;
     for ([_]usize{ 3, 64, 1000 }) |n| {
         const ascending = try ClientHello.parse(try spreadHello(&a, n, 0, null), .stream);
         const descending = try ClientHello.parse(try spreadHello(&b, n, 1, null), .stream);
-        try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &descending.fingerprint()));
+        try std.testing.expectEqual(ascending.fingerprint(), descending.fingerprint());
+        // Reordered and changed is still a different hello, wherever the change sits.
+        for ([_]usize{ 0, n / 2, n - 1 }) |i| {
+            const changed = try ClientHello.parse(try spreadHello(&b, n, 1, i), .stream);
+            try std.testing.expect(!std.mem.eql(u8, &ascending.fingerprint(), &changed.fingerprint()));
+        }
     }
 }
 

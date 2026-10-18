@@ -245,10 +245,10 @@ test "F103 catalogue_plaintext_alert_answering_server_hello (the client's plaint
     try std.testing.expectEqual(Alert.unexpected_message, pair.conn.diagnostics().alert_sent.?);
 }
 
-test "F104 catalogue_retry_hello_extension_order (a second hello with its extensions reordered ends with illegal_parameter)" {
-    // RFC 8446 section 4.1.2: the second ClientHello is the first without modification but for
-    // the listed changes; reordering is none of them (tlsfuzzer's test-tls13-shuffled-extentions).
-    try fails(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .reordered_second_hello }, .{ .groups = &.{.p256} }, error.IllegalParameter, .illegal_parameter);
+test "F104 catalogue_retry_hello_extension_order (a second hello with its extensions reordered completes)" {
+    // RFC 8446 section 4.1.2 binds the client, not the server: the second hello's extensions are
+    // compared by content, not order (tlsfuzzer's test-tls13-shuffled-extentions disagrees).
+    try run(.aes_128_gcm_sha256, .{ .shares = &.{.x25519}, .tamper = .reordered_second_hello }, .{ .groups = &.{.p256} }, .p256);
 }
 
 test "F105 catalogue_ccs_without_compatibility_mode (one change_cipher_spec is dropped whether or not the hello carried a session id)" {
