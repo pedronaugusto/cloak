@@ -73,10 +73,6 @@ const Modulus = struct {
         out.mul(out.rrr[0..len], rr, rr);
     }
 
-    fn slice(self: *const Modulus) []const u64 {
-        return self.m[0..self.len];
-    }
-
     /// `out = t - m` when `high:t` is at least m, else `t`; `high:t` must be below 2m.
     fn reduceOnce(self: *const Modulus, out: []u64, t: []const u64, high: u64) void {
         @setRuntimeSafety(true);

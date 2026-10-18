@@ -19,7 +19,6 @@ pub const Scalar = Montgomery.Field(0xffffffff00000000ffffffffffffffffbce6faada7
 pub const order: u256 = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551;
 
 const b = Fe.constant(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b);
-const three_b = Fe.constant(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b * 3 % 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff);
 
 pub const scalar_length = 32;
 pub const public_length = 65;
@@ -27,7 +26,6 @@ pub const public_length = 65;
 /// Comb parameters of the base table: signed six-bit windows.
 pub const comb_bits = table.bits;
 pub const comb_windows = table.windows;
-const comb_entries = 1 << (comb_bits - 1);
 
 /// x^(p-2) by the usual P-256 addition chain: 255 squarings and 12 multiplications.
 pub fn invert(x: Fe) Fe {
