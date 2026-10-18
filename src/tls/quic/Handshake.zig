@@ -434,7 +434,7 @@ fn advance(self: *Handshake) void {
             return;
         },
         .ticket => {},
-        .compat_ccs, .key_update, .keys12, .change_cipher_spec, .refuse_renegotiation, .auth_response, .auth_finished => {
+        .compat_ccs, .key_update, .keys12, .change_cipher_spec, .refuse_renegotiation, .auth_response, .auth_finished, .record_limits => {
             // None exists in QUIC: the state table rejects them before they can be queued, and
             // post-handshake authentication is never offered or kept (RFC 9001 section 4.4).
             self.fail(.internal_error);

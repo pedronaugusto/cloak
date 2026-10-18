@@ -87,6 +87,9 @@ post_handshake_auth: bool,
 /// one byte each in its order, when sent. Absent means X.509 alone.
 server_certificate_types: ?[]const u8,
 client_certificate_types: ?[]const u8,
+/// record_size_limit (RFC 8449): the most a protected record sent to the client may carry, when
+/// sent; at least 64.
+record_size_limit: ?u16,
 
 pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
@@ -143,6 +146,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.srtp = null;
     self.server_certificate_types = null;
     self.client_certificate_types = null;
+    self.record_size_limit = null;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -241,10 +245,8 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         34 => self.delegated = try schemeList(&value),
         18 => self.scts = try empty(bytes),
         49 => self.post_handshake_auth = try empty(bytes),
-        54 => {
-            self.connection_id = (try value.vector(u8)).bytes;
-            try value.finish();
-        },
+        54 => self.connection_id = try whole8(&value),
+        28 => self.record_size_limit = try recordSizeLimit(&value),
         14 => {
             const profiles = (try value.vector(u16)).bytes;
             _ = try value.vector(u8);
@@ -272,6 +274,22 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         else => {},
     }
+}
+
+/// A vector<0..255> filling its extension.
+fn whole8(value: *Reader) ParseError![]const u8 {
+    const bytes = (try value.vector(u8)).bytes;
+    try value.finish();
+    return bytes;
+}
+
+/// RecordSizeLimit, a uint16 of at least 64 (RFC 8449 section 4). One past the version's maximum
+/// is the client's to name: a server takes it as that maximum, never refuses it.
+fn recordSizeLimit(value: *Reader) ParseError!u16 {
+    if (value.bytes.len != 2) return error.DecodeError;
+    const limit = try value.int(u16);
+    if (limit < 64) return error.IllegalParameter;
+    return limit;
 }
 
 /// An extension whose presence says it all: its body must be empty.

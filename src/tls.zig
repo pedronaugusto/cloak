@@ -112,6 +112,7 @@ test {
     _ = @import("tls/MlDsa_test.zig");
     _ = @import("tls/Psk_test.zig");
     _ = @import("tls/Psk12_test.zig");
+    _ = @import("tls/RecordSizeLimit_test.zig");
     _ = @import("tls/RawKey_test.zig");
     _ = @import("tls/Delegated_test.zig");
     _ = @import("tls/Transparency_test.zig");

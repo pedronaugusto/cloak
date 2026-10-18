@@ -24,6 +24,7 @@ const Services = @import("../handshake/Services.zig");
 const Messages = @import("../handshake/Messages.zig");
 const Alert = @import("../wire/Alert.zig").Alert;
 const Record = @import("Record.zig");
+const RecordLimits = @import("../handshake/RecordLimits.zig");
 const Hello = @import("../handshake/Hello.zig");
 const Psk = @import("../handshake/Psk.zig");
 pub const Admission = @import("Admission.zig");
@@ -93,6 +94,11 @@ pub const Options = struct {
     /// The largest datagram this end sends, without IP and UDP headers.
     mtu: u16 = 1200,
     timing: Timing = .{},
+    /// record_size_limit (RFC 8449): the most plaintext a protected record sent to this end may
+    /// carry, as the extension counts it (64 to 2^14 + 1; TLS 1.3 counts the inner content type).
+    /// Always offered; null names the version's maximum. Records are held to it only when the
+    /// server answers the extension; the peer's bounds this end's records; both stand beside the MTU to the limit the peer names.
+    record_size_limit: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -131,6 +137,11 @@ pub const ServerOptions = struct {
     external_psk: ?Psk.Lookup = null,
     mtu: u16 = 1200,
     timing: Timing = .{},
+    /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
+    /// protected record sent to this server may carry, as the extension counts it (64 to
+    /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
+    /// this server seals for it.
+    record_size_limit: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -260,6 +271,9 @@ role: Machine.Role,
 mtu: u16,
 timing: Timing,
 limits: Limits,
+/// RFC 8449: what protected records may carry each way, as the handshake negotiated; beside the
+/// MTU, which bounds whole datagrams.
+record_limits: RecordLimits = .{},
 phase_now: Phase = .handshaking,
 failure_now: ?Error = null,
 alert_sent: ?Alert = null,
@@ -367,6 +381,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .accept_delegated = options.accept_delegated,
             .connection_id = options.connection_id,
             .srtp = options.srtp,
+            .record_size_limit = options.record_size_limit,
         },
         .resumption = options.resumption,
         .external_psk = options.external_psk,
@@ -423,6 +438,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .generation = options.generation,
         .connection_id = options.connection_id,
         .srtp = options.srtp,
+        .record_size_limit = options.record_size_limit,
     });
     var self: Datagram = .{
         .gpa = gpa,
@@ -709,6 +725,7 @@ fn drainEngine(self: *Datagram) Error!void {
             .compat_ccs => return error.UnexpectedMessage,
             .key_update => |u| try self.onPeerKeyUpdate(u.request_peer),
             .ticket => {},
+            .record_limits => |limits| self.record_limits = limits,
             .refuse_renegotiation => {},
             // Post-handshake authentication is a stream's: a datagram never offers or keeps it.
             .auth_response, .auth_finished => return error.UnexpectedMessage,
@@ -977,6 +994,30 @@ pub fn receive(self: *Datagram, datagram: []u8, now: std.Io.Timestamp) Error!voi
     }
 }
 
+/// RFC 8449: a protected record whose plaintext would pass the record_size_limit this end named,
+/// told by its length; DTLS may drop it (section 4), as it drops any record it cannot take.
+fn overLimit(self: *const Datagram, keys: *const Record.Epoch, body_len: usize) bool {
+    const explicit = if (keys.version == .dtls12) keys.cipher.explicitNonceLength12() else 0;
+    return body_len > explicit + keys.cipher.tagLength() + self.record_limits.receive;
+}
+
+/// The most content a record of write epoch `epoch` carries: 2^14 bytes, or what the peer's
+/// record_size_limit leaves (RFC 8449), which binds protected records only. DTLS 1.3 records, and
+/// DTLS 1.2 records with a connection ID (RFC 9146), carry their content type inside.
+fn sealLimit(self: *const Datagram, epoch: u64) usize {
+    if (epoch == 0) return Record.max_content;
+    const keys = for (&self.writers) |*slot| {
+        if (slot.*) |*e| if (e.number == epoch) break e;
+    } else return Record.max_content;
+    return RecordLimits.content(self.record_limits.send, keys.version == .dtls13 or self.sendCid().len != 0);
+}
+
+/// The most plaintext one `write` takes: 2^14 bytes, or fewer under the peer's record_size_limit
+/// (RFC 8449). The MTU bounds it too: the record is the whole of a datagram.
+pub fn writeLimit(self: *const Datagram) usize {
+    return self.sealLimit(self.write_current);
+}
+
 fn onRecord(self: *Datagram, next: Record.Split, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
     switch (next.kind) {
@@ -986,7 +1027,7 @@ fn onRecord(self: *Datagram, next: Record.Split, now: std.Io.Timestamp) Error!vo
             // it, and never one without (RFC 9146 section 3).
             if (header.cid_len != self.receiveCidLen()) return;
             const keys = find(&self.readers, header.epoch) orelse return;
-            if (keys.version != .dtls12) return;
+            if (keys.version != .dtls12 or self.overLimit(keys, next.record.len - header.length)) return;
             const opened = keys.open12(next.record, header) catch {
                 if (keys.exhausted()) return error.ForgeryLimit;
                 return;
@@ -1007,6 +1048,7 @@ fn onRecord(self: *Datagram, next: Record.Split, now: std.Io.Timestamp) Error!vo
                 }
                 return;
             };
+            if (self.overLimit(keys, next.record.len - header.length)) return;
             const opened = keys.open13(next.record, header) catch {
                 if (keys.exhausted()) return error.ForgeryLimit;
                 return;
@@ -1633,7 +1675,7 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8) Error!usize {
                     const left = body.len - entry.cursor;
                     // A fragment worth sending: the rest, or at least 64 bytes of it.
                     if (room <= overhead + 12 or (room - overhead - 12 < left and room - overhead - 12 < 64)) return used;
-                    const n = @min(left, room - overhead - 12, Record.max_content - 12);
+                    const n = @min(left, room - overhead - 12, self.sealLimit(entry.epoch) - 12);
                     var fragment: [12]u8 = undefined;
                     fragment[0] = entry.bytes[0];
                     fragment[1..4].* = entry.bytes[1..4].*;
@@ -1716,7 +1758,7 @@ fn writeAck(self: *Datagram, out: []u8) Error!usize {
     const keys = find(&self.writers, self.write_current) orelse return 0;
     const overhead = Record.overhead13(self.sendCid().len);
     if (out.len < overhead + 2 + 16) return 0;
-    const count = @min(self.acks.items.len, (out.len - overhead - 2) / 16);
+    const count = @min(self.acks.items.len, (out.len - overhead - 2) / 16, (self.sealLimit(self.write_current) - 2) / 16);
     const listed = self.acks.items[self.acks.items.len - count ..];
     var body: [2 + 16 * 64]u8 = undefined;
     // safe: at most 64 records.
@@ -1775,6 +1817,7 @@ pub fn write(self: *Datagram, plaintext: []const u8, out: []u8) Error![]u8 {
         else => |e| return e,
     };
     const keys = find(&self.writers, self.write_current) orelse return error.NotConnected;
+    if (plaintext.len > self.writeLimit()) return error.InvalidLength;
     return switch (keys.version) {
         .dtls13 => keys.seal13(.application, plaintext, self.sendCid(), out),
         .dtls12 => keys.seal12(.application, plaintext, self.sendCid(), out),

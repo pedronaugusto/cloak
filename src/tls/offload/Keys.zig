@@ -57,6 +57,10 @@ key: aegis.Secret([32]u8),
 iv: aegis.Secret([12]u8),
 /// The number of the next record in this direction.
 sequence: u64,
+/// The write direction's first install: the most plaintext a record the kernel seals may carry,
+/// when the peer named a record_size_limit below the version's maximum (RFC 8449); null for
+/// 2^14 bytes. The kernel must take it before the keys, or the keys stay here.
+max_payload: ?u16 = null,
 
 pub fn keyBytes(self: *const Keys) []const u8 {
     return self.key.expose()[0..self.cipher.keyLength()];

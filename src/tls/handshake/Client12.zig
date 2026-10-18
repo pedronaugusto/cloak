@@ -74,6 +74,7 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
     };
     self.srtp = hello.srtp;
     self.noteConnectionId(hello.connection_id);
+    try self.limitRecords(hello.record_size_limit, .tls12);
     // The TLS 1.3 key shares play no part in a TLS 1.2 exchange.
     self.eraseShares();
     // A datagram client that offered both versions hashed its hello both ways until now.

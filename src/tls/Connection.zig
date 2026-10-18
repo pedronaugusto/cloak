@@ -37,6 +37,7 @@ const Ech = @import("handshake/Ech.zig");
 const Compression = @import("handshake/Compression.zig");
 const Psk = @import("handshake/Psk.zig");
 const Keys = @import("offload/Keys.zig");
+const RecordLimits = @import("handshake/RecordLimits.zig");
 
 pub const Epoch = Client.Epoch;
 pub const Verify = Client.Verify;
@@ -106,6 +107,11 @@ pub const ClientOptions = struct {
     /// A provisioned key to offer, borrowed: TLS 1.3 PSK-DHE, or TLS 1.2 plain PSK with its
     /// suites listed (no forward secrecy).
     external_psk: ?Psk.External = null,
+    /// record_size_limit (RFC 8449): the most plaintext a protected record sent to this end may
+    /// carry, as the extension counts it (64 to 2^14 + 1; TLS 1.3 counts the inner content type).
+    /// Always offered; null names the version's maximum. Records are held to it only when the
+    /// server answers the extension; this end holds its own records to the limit the peer names.
+    record_size_limit: ?u16 = null,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -161,6 +167,8 @@ rx: ?Protection = null,
 tx: ?Protection = null,
 rx_epoch: Epoch = .initial,
 tx_epoch: Epoch = .initial,
+/// RFC 8449: what protected records may carry each way, as the handshake negotiated.
+record_limits: RecordLimits = .{},
 phase_now: std.atomic.Value(Phase) = .init(.handshaking),
 /// Set once the handshake completes: from then on the halves may run on two tasks.
 split: bool = false,
@@ -251,6 +259,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .accept_delegated = options.accept_delegated,
             .certificate_compression = options.certificate_compression,
             .post_handshake_auth = options.post_handshake_auth,
+            .record_size_limit = options.record_size_limit,
         },
         .resumption = options.resumption,
         .ech = options.ech,
@@ -306,6 +315,11 @@ pub const ServerOptions = struct {
     /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
     /// when its suites are listed. With them a server needs no credential.
     external_psk: ?Psk.Lookup = null,
+    /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
+    /// protected record sent to this server may carry, as the extension counts it (64 to
+    /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
+    /// this server seals for it.
+    record_size_limit: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -336,6 +350,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
+        .record_size_limit = options.record_size_limit,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
         .generation = options.generation,
@@ -627,12 +642,26 @@ fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void 
     if (epoch == .initial) self.sent_hello = true;
 }
 
-/// Handshake bytes in records of the current write epoch, at most 2^14 bytes each.
+/// The most plaintext one record of the current write epoch carries: 2^14 bytes, or fewer when the
+/// peer named a record_size_limit (RFC 8449), which binds protected records only.
+fn sealLimit(self: *const Connection) usize {
+    const protection = if (self.tx) |*p| p else return max_content;
+    return RecordLimits.content(self.record_limits.send, !protection.tls12());
+}
+
+/// A protected record whose plaintext would pass the record_size_limit this end named is
+/// record_overflow (RFC 8449 section 4), told by its length before any decryption.
+fn checkLimit(self: *const Connection, protection: *const Protection, record_len: usize) Error!void {
+    if (record_len - 5 > protection.expansion() + self.record_limits.receive) return error.RecordOverflow;
+}
+
+/// Handshake bytes in records of the current write epoch, at most `sealLimit` bytes each.
 fn sealHandshake(self: *Connection, bytes: []const u8, legacy: bool) Error!void {
     @setRuntimeSafety(true);
     var rest = bytes;
+    const limit = self.sealLimit();
     while (rest.len != 0) {
-        const n = @min(rest.len, max_content);
+        const n = @min(rest.len, limit);
         const dst = try self.outbox.tail(self.gpa, n + record_overhead, self.limits.output + max_record);
         const wire = try self.sealRecord(.handshake, rest[0..n], dst);
         if (legacy) dst[1..3].* = .{ 3, 1 };
@@ -707,6 +736,7 @@ fn drain(self: *Connection) Error!void {
                 try self.owe(owe_auth);
             },
             .auth_finished => try self.checkAuthFinished(),
+            .record_limits => |limits| self.record_limits = limits,
             .refuse_renegotiation => {
                 try self.onControl();
                 try self.owe(owe_no_renegotiation);
@@ -860,7 +890,7 @@ pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     if (self.phase() != .connected) return error.NotConnected;
     if (self.write_done.load(.acquire)) return error.WriteClosed;
     if (plaintext.len == 0) return 0;
-    const n = @min(plaintext.len, max_content);
+    const n = @min(plaintext.len, self.sealLimit());
     if (self.outbox.pending().len + n + record_overhead > self.limits.output) return 0;
     self.budgetWrite(4, 2 * max_content) catch |err| return self.writeFailed(err);
     const dst = self.outbox.tail(self.gpa, n + record_overhead, self.limits.output + max_record) catch |err| return self.writeFailed(err);
@@ -948,6 +978,10 @@ pub const OffloadError = Keys.InstallError || error{
 /// through this call. A kernel that refuses them (`RekeyUnsupported`: before Linux 6.14) ends
 /// the connection, since the old keys are gone and records under them would be refused by the
 /// peer or forged by anyone reusing them.
+///
+/// record_size_limit (RFC 8449): the write direction hands the kernel the peer's limit, which it
+/// must take before the keys; a read direction under a limit of this end's own below the version's
+/// maximum stays here (`Unsupported`): the kernel opens records of any size the protocol allows.
 pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installer) OffloadError!void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
@@ -978,6 +1012,15 @@ pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installe
     }
     var keys: Keys = .{ .version = .tls13, .cipher = .aes_128_gcm, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
     defer keys.deinit();
+    // RFC 8449 under a kernel: it opens records up to 2^14 bytes whatever this end named, so a
+    // read direction under a lower limit stays here; the write direction takes the peer's.
+    const max = RecordLimits.max(if (protection.tls12()) .tls12 else .tls13);
+    switch (direction) {
+        .read => if (self.record_limits.receive < max) return error.Unsupported,
+        .write => if (!rekey and self.record_limits.send < max) {
+            keys.max_payload = @intCast(RecordLimits.content(self.record_limits.send, !protection.tls12())); // safe: at most 2^14
+        },
+    }
     protection.exportKeys(&keys);
     installer.install(direction, &keys) catch |err| {
         if (rekey) self.failRekey(direction);
@@ -1347,6 +1390,7 @@ fn openRecord(self: *Connection) Error!void {
                     self.plain_end = wire.len;
                     return;
                 }
+                try self.checkLimit(protection, wire.len);
                 const plain = try protection.open(wire, self.record[5..]);
                 self.plain_kind = plain.content;
                 self.plain_pos = self.offsetOf(plain.bytes);
@@ -1373,8 +1417,12 @@ fn openRecord(self: *Connection) Error!void {
                     else => |e| return e,
                 };
                 self.early_done = true;
+                try self.checkLimit(protection, wire.len);
                 break :trial opened;
-            } else try protection.open(wire, self.record[5..]);
+            } else open: {
+                try self.checkLimit(protection, wire.len);
+                break :open try protection.open(wire, self.record[5..]);
+            };
             if (plain.content == .application) {
                 // Nothing comes between a handshake message's fragments (RFC 8446 section 5.1).
                 if (self.phase() != .connected or self.midAuth() or self.message_total != 0 or self.header_have != 0) return error.UnexpectedRecord;

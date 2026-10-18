@@ -933,6 +933,15 @@ pub fn recycle(self: *Client) void {
     if (self.scratch) |scratch| scratch.flight.recycle();
 }
 
+/// RFC 8449: a server that answered record_size_limit bounds the records sealed for it, and the
+/// limit this client named bounds the ones it opens from the record after the answer. One that
+/// did not answer is held to neither: the extension is not negotiated.
+pub fn limitRecords(self: *Client, answer: ?u16, version: suites.Version) Error!void {
+    const peer = answer orelse return;
+    const max = Flight.RecordLimits.max(version);
+    try self.push(.{ .record_limits = .{ .send = @min(peer, max), .receive = @min(self.options.hello.recordSizeLimit(), max) } });
+}
+
 pub fn push(self: *Client, emit: Emit) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
@@ -1475,6 +1484,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
         self.alpn = offered;
     };
     self.srtp = parsed.srtp;
+    try self.limitRecords(parsed.record_size_limit, .tls13);
     // RFC 7250: a client that asked for the raw key alone takes no certificate (a server that
     // does not answer the extension means X.509); the types answered say what each side sends.
     // A PSK handshake has no Certificate, and so no type to answer.

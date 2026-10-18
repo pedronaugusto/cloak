@@ -18,6 +18,9 @@ const linux = std.os.linux;
 pub const sol_tls = linux.SOL.TLS;
 pub const tls_tx = 1;
 pub const tls_rx = 2;
+/// The most plaintext a record the kernel sends carries (Linux 6.18; RFC 8449's limit, less TLS
+/// 1.3's content type).
+pub const tls_tx_max_payload_len = 5;
 /// The control message types, at level `sol_tls`, that carry a record's type.
 pub const set_record_type = 1;
 pub const get_record_type = 2;
@@ -116,6 +119,7 @@ pub const Socket = struct {
     pub fn install(self: Socket, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
         @setRuntimeSafety(true);
         try self.attach();
+        if (keys.max_payload) |payload| try self.limitPayload(payload);
         var info = CryptoInfo.encode(keys);
         defer info.deinit();
         const bytes = info.slice();
@@ -124,6 +128,20 @@ pub const Socket = struct {
         return switch (linux.errno(rc)) {
             .SUCCESS => {},
             .BUSY => error.RekeyUnsupported,
+            .NOMEM, .NOBUFS => error.OutOfMemory,
+            .BADF, .NOTSOCK, .NOTCONN => error.InvalidSocket,
+            else => error.Unsupported,
+        };
+    }
+
+    /// Holds the records the kernel will send to `payload` plaintext bytes, before it has their
+    /// keys: a kernel without the option refuses, and the keys stay in software.
+    fn limitPayload(self: Socket, payload: u16) Keys.InstallError!void {
+        @setRuntimeSafety(true);
+        const value: u16 = payload;
+        const rc = linux.setsockopt(self.fd, sol_tls, tls_tx_max_payload_len, std.mem.asBytes(&value), @sizeOf(u16));
+        return switch (linux.errno(rc)) {
+            .SUCCESS => {},
             .NOMEM, .NOBUFS => error.OutOfMemory,
             .BADF, .NOTSOCK, .NOTCONN => error.InvalidSocket,
             else => error.Unsupported,

@@ -124,6 +124,8 @@ pub const Secrets12 = struct {
     }
 };
 
+pub const RecordLimits = @import("RecordLimits.zig");
+
 pub const Emit = union(enum) {
     /// A complete handshake message at `start` in the flight buffer.
     message: struct { epoch: Epoch, start: u32, len: u32 },
@@ -141,6 +143,9 @@ pub const Emit = union(enum) {
     /// TLS 1.2: the peer asked to renegotiate after the handshake. Answer with a warning
     /// no_renegotiation (always a warning, RFC 5246 section 7.2.2) and go on.
     refuse_renegotiation,
+    /// RFC 8449: the record size limits this handshake negotiated, before the first record
+    /// they bound.
+    record_limits: RecordLimits,
     /// Everything this side owes has been queued and the peer is authenticated.
     complete,
     /// A client's answer to a post-handshake CertificateRequest is ready for the write half,

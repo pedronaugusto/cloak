@@ -145,7 +145,7 @@ fn drain(self: *Pair, side: *Side, other: *Side) !bool {
             // A stream's compatibility record carries nothing; a datagram must never have one.
             .compat_ccs => if (self.transport != .stream) return error.CompatChangeCipherSpec,
             .complete => side.complete = true,
-            .secret, .keys12, .key_update, .ticket, .refuse_renegotiation, .auth_response, .auth_finished => {},
+            .secret, .keys12, .key_update, .ticket, .refuse_renegotiation, .auth_response, .auth_finished, .record_limits => {},
         }
     }
     side.machine.recycle();

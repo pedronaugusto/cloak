@@ -422,3 +422,31 @@ test "C9 TLS 1.2 control records through a kernel: a warning passes, application
     try std.testing.expectError(error.UnexpectedRecord, setup.server().receiveControl(23, "data"));
     try std.testing.expectEqual(Connection.Phase.failed, setup.server().phase());
 }
+
+test "C7 record_size_limit under a kernel: the write direction takes the peer's limit, a read direction under a lower own limit stays in software" {
+    for ([_]Suite{ .aes_128_gcm_sha256, .ecdhe_ecdsa_aes_128_gcm_sha256 }) |suite| {
+        const listed: [1]Suite = .{suite};
+        var options = duoOptions(&listed);
+        options.client_record_size_limit = 500;
+        options.server_record_size_limit = 600;
+        const duo = try Duo.init(gpa, options);
+        defer duo.deinit();
+        try duo.handshake();
+        var kernel: Kernel = .{};
+        defer kernel.deinit();
+        try duo.server.offload(.write, kernel.installer());
+        // TLS 1.3 counts the content type in the limit; the kernel's payload is the rest.
+        const tls13 = suite.tls12() == null;
+        try std.testing.expectEqual(@as(?u16, if (tls13) 499 else 500), kernel.last.?.max_payload);
+        // The kernel opens up to 2^14 bytes whatever this end named: the read keys stay here.
+        try std.testing.expectError(error.Unsupported, duo.server.offload(.read, kernel.installer()));
+        try std.testing.expect(!duo.server.offloaded(.read));
+    }
+    // Under the version's maximum nothing is limited, and both directions move.
+    const listed: [1]Suite = .{.aes_128_gcm_sha256};
+    var plain = try Setup.init(listed[0], .{});
+    defer plain.deinit();
+    try plain.server().offload(.write, plain.kernel.installer());
+    try std.testing.expectEqual(@as(?u16, null), plain.kernel.last.?.max_payload);
+    try plain.server().offload(.read, plain.kernel.installer());
+}

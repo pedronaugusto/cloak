@@ -112,6 +112,9 @@ pub const Options = struct {
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
     server_post_auth: bool = false,
+    /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
+    client_record_size_limit: ?u16 = null,
+    server_record_size_limit: ?u16 = null,
     /// The entropy request (counted from 0 at that end) the harness answers with a failure.
     entropy_fails: ?struct { end: enum { client, server }, at: usize } = null,
 };
@@ -144,6 +147,9 @@ rng: std.Random.DefaultPrng,
 options: Options,
 /// Entropy requests answered so far, client and server.
 entropy_drawn: [2]usize = .{ 0, 0 },
+/// The longest protected record body (content type 23) each end has sent, client first: what
+/// the peer's record_size_limit bounds (RFC 8449).
+longest_protected: [2]usize = .{ 0, 0 },
 
 pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     const self = try gpa.create(Duo);
@@ -153,6 +159,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.options = options;
     self.rng = .init(options.seed);
     self.entropy_drawn = .{ 0, 0 };
+    self.longest_protected = .{ 0, 0 };
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
     try self.trust.addDer(pki.ca, .{});
@@ -201,6 +208,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .external_psk = options.client_psk,
+        .record_size_limit = options.client_record_size_limit,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
@@ -235,6 +243,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .ech_keys = options.server_ech,
         .certificate_compression = options.server_codecs,
         .external_psk = options.server_psk,
+        .record_size_limit = options.server_record_size_limit,
         .accept_delegated = options.server_accept_delegated,
         .post_handshake_auth = options.server_post_auth,
     });
@@ -362,6 +371,13 @@ fn serve(self: *Duo, conn: *Connection) !void {
 fn move(self: *Duo, from: *Connection, to: *Connection) !bool {
     const bytes = from.output();
     if (bytes.len == 0) return false;
+    var record: usize = 0;
+    while (record + 5 <= bytes.len) {
+        const len = std.mem.readInt(u16, bytes[record + 3 ..][0..2], .big);
+        const longest = &self.longest_protected[@intFromBool(from == &self.server)];
+        if (bytes[record] == 23) longest.* = @max(longest.*, len);
+        record += 5 + len;
+    }
     var at: usize = 0;
     while (at < bytes.len) {
         const end = @min(bytes.len, at + self.options.chunk);

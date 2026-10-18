@@ -150,6 +150,11 @@ pub const Options = struct {
     /// suites listed (no forward secrecy). A server that selects it is authenticated by it, with
     /// no certificate.
     external_psk: ?@import("handshake/Psk.zig").External = null,
+    /// record_size_limit (RFC 8449): the most plaintext a protected record sent to this end may
+    /// carry, as the extension counts it (64 to 2^14 + 1; TLS 1.3 counts the inner content type).
+    /// Always offered; null names the version's maximum. Records are held to it only when the
+    /// server answers the extension; this end holds its own records to the limit the peer names.
+    record_size_limit: ?u16 = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -231,6 +236,7 @@ pub fn open(
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
+        .record_size_limit = options.record_size_limit,
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -316,6 +322,11 @@ pub const ServerOptions = struct {
     /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
     /// when its suites are listed. With them `credentials` may be empty.
     external_psk: ?@import("handshake/Psk.zig").Lookup = null,
+    /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
+    /// protected record sent to this server may carry, as the extension counts it (64 to
+    /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
+    /// this server seals for it.
+    record_size_limit: ?u16 = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -365,6 +376,7 @@ pub fn accept(
         .ech_keys = options.ech_keys,
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
+        .record_size_limit = options.record_size_limit,
         .limits = options.limits,
         .key_log = options.key_log,
     });

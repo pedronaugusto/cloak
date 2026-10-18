@@ -18,7 +18,7 @@ rekeys: bool = true,
 refuse: ?Keys.InstallError = null,
 installs: usize = 0,
 /// What the last install carried, for the tests that check the hand-over itself.
-last: ?struct { version: Keys.Version, cipher: Keys.Cipher, sequence: u64, iv: [12]u8 } = null,
+last: ?struct { version: Keys.Version, cipher: Keys.Cipher, sequence: u64, iv: [12]u8, max_payload: ?u16 } = null,
 
 pub fn deinit(self: *Kernel) void {
     if (self.rx) |*p| p.deinit();
@@ -45,7 +45,7 @@ fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Ke
     if (slot.*) |*old| old.deinit();
     slot.* = fresh;
     self.installs += 1;
-    self.last = .{ .version = keys.version, .cipher = keys.cipher, .sequence = keys.sequence, .iv = keys.iv.expose().* };
+    self.last = .{ .version = keys.version, .cipher = keys.cipher, .sequence = keys.sequence, .iv = keys.iv.expose().*, .max_payload = keys.max_payload };
 }
 
 fn suiteOf(comptime cipher: Keys.Cipher) suites.Suite13 {

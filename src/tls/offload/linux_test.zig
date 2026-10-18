@@ -310,3 +310,55 @@ test "C9 TLS 1.2 on the Linux kernel record layer, every cipher it has" {
         };
     }
 }
+
+test "C7 record_size_limit through the Linux kernel: the kernel seals within the client's limit (TLS_TX_MAX_PAYLOAD_LEN)" {
+    for ([_]Suite{ .aes_128_gcm_sha256, .ecdhe_ecdsa_aes_128_gcm_sha256 }) |suite| {
+        const version: Keys.Version = suite.version().?;
+        if (!capabilities().supports(version, .aes_128_gcm, .write)) return error.SkipZigTest;
+        var duo = try Duo.init(gpa, .{ .client_suites = &.{suite}, .server_suites = &.{suite}, .client_record_size_limit = 200 });
+        defer duo.deinit();
+        try duo.handshake();
+        const tcp = try Tcp.open();
+        defer tcp.close();
+        var socket: ktls.Socket = .{ .fd = tcp.server };
+        // A kernel before 6.18 has no payload limit: the keys stay in software.
+        duo.server.offload(.write, socket.installer()) catch |err| switch (err) {
+            error.Unsupported => return error.SkipZigTest,
+            else => return err,
+        };
+        var message: [3000]u8 = undefined;
+        for (&message, 0..) |*b, i| b.* = @truncate(i);
+        try writeAll(tcp.server, &message);
+        // Every record the kernel wrote: TLS 1.3's inner plaintext within 200 bytes and its tag;
+        // TLS 1.2's 200 bytes of plaintext, its explicit nonce and its tag.
+        var wire: [8192]u8 = undefined;
+        var have: usize = 0;
+        var records: usize = 0;
+        var at: usize = 0;
+        var plaintext: usize = 0;
+        while (plaintext < message.len) {
+            while (have - at < 5 or have - at < 5 + @as(usize, std.mem.readInt(u16, wire[at + 3 ..][0..2], .big))) {
+                const n = try check(linux.read(tcp.client, wire[have..].ptr, wire.len - have));
+                if (n == 0) return error.EndOfStream;
+                have += n;
+            }
+            const len = std.mem.readInt(u16, wire[at + 3 ..][0..2], .big);
+            try std.testing.expect(len <= @as(usize, if (version == .tls13) 200 + 16 else 200 + 8 + 16));
+            plaintext += len - @as(usize, if (version == .tls13) 17 else 24);
+            records += 1;
+            at += 5 + len;
+        }
+        try std.testing.expect(records >= message.len / 200);
+        var out: [4096]u8 = undefined;
+        var fed: usize = 0;
+        var got: usize = 0;
+        while (fed < have) {
+            fed += try duo.client.receive(wire[fed..have]);
+            const view = duo.client.readable();
+            @memcpy(out[got..][0..view.len], view);
+            got += view.len;
+            duo.client.consume(view.len);
+        }
+        try std.testing.expectEqualSlices(u8, &message, out[0..got]);
+    }
+}

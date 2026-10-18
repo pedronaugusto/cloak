@@ -126,6 +126,9 @@ pub const Options = struct {
     /// DTLS: the SRTP profiles accepted (RFC 5764), in preference order: the first the client
     /// offered is chosen. None answers no use_srtp.
     srtp: []const Hello.Srtp = &.{},
+    /// record_size_limit (RFC 8449), answered to a client that sends one: the most a protected
+    /// record sent to this server may carry (64 to 2^14 + 1). Null names the version's maximum.
+    record_size_limit: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -220,6 +223,8 @@ const Scratch = struct {
     server_name_len: u8 = 0,
     /// TLS 1.2: the client sent ec_point_formats, so the ServerHello answers it.
     point_formats: bool = false,
+    /// RFC 8449: this server's record_size_limit, answering the client's.
+    record_size_answer: ?u16 = null,
     /// TLS 1.2: the client signalled secure renegotiation (RFC 5746), so the ServerHello answers it.
     renegotiation_info: bool = false,
     /// The client's key share for the chosen group.
@@ -304,7 +309,7 @@ const Keys = union(Suite13) {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     @setRuntimeSafety(true);
-    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp });
+    try Hello.validate(.{ .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .alpn = options.alpn, .require_alpn = options.require_alpn or options.transport == .quic, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth, .transport = options.transport, .parameters = options.parameters, .connection_id = options.connection_id, .srtp = options.srtp, .record_size_limit = options.record_size_limit });
     // Provisioned keys may be a server's only authentication; otherwise it needs a credential.
     if (options.credentials.len > 32 or (options.credentials.len == 0 and options.external_psk == null)) return error.InvalidOptions;
     if (options.require_pq_auth and (options.client_auth != .required or options.client_verify == .none)) return error.InvalidOptions;
@@ -737,6 +742,21 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
     return refusal;
 }
 
+/// RFC 8449 for the hello this server answers: the client's record_size_limit bounds the records
+/// sealed for it from the first, and this server answers with its own, which bounds the records it
+/// opens. A value past the version's maximum is taken as the maximum (section 4: a server must not
+/// refuse it). The limits go to the carrier before any protected record; QUIC has none.
+pub fn limitRecords(self: *Server, hello: *const ClientHello) Client.Error!void {
+    @setRuntimeSafety(true);
+    self.scratch.?.record_size_answer = null;
+    if (self.options.transport == .quic) return;
+    const peer = hello.record_size_limit orelse return;
+    const max = Flight.RecordLimits.max(self.version);
+    const own = @min(self.options.record_size_limit orelse max, max);
+    self.scratch.?.record_size_answer = own;
+    try self.push(.{ .record_limits = .{ .send = @min(peer, max), .receive = own } });
+}
+
 /// Whether `credential` answers for `name`: it has no names, or one matches.
 fn answers(credential: Credential, name: []const u8) bool {
     if (credential.names.len == 0) return true;
@@ -881,6 +901,7 @@ pub fn holdHello(self: *Server, msg: []const u8) Client.Error!void {
 fn answerHello(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
+    try self.limitRecords(hello);
     if (hello.has_psk and hello.psk_dhe) try self.choosePsk(msg, hello);
     // A PSK authenticates the handshake: only without one is a credential chosen.
     if (!self.pskMode()) try self.chooseAuthentication(hello);
@@ -1283,6 +1304,7 @@ fn sendEncrypted(self: *Server) Client.Error!void {
         // A PSK handshake sends no certificate either way: no type to answer.
         .server_certificate_type = if (self.pskMode()) null else scratch.server_type,
         .client_certificate_type = if (self.pskMode()) null else scratch.client_type,
+        .record_size_limit = scratch.record_size_answer,
     });
     try self.state.advance(.encrypted_extensions, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);

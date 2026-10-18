@@ -97,6 +97,9 @@ pub const Config = struct {
     unknown_extensions: usize = 0,
     /// Offer post_handshake_auth (RFC 8446 section 4.2.6).
     post_handshake_auth: bool = false,
+    /// Offer record_size_limit (RFC 8449) with this value; the client seals as it likes, whatever
+    /// the server answers.
+    record_size_limit: ?u16 = null,
 };
 
 /// How the scripted client answers a post-handshake CertificateRequest, faithfully or not.
@@ -154,6 +157,8 @@ pub fn ClientPeer(comptime suite: Suite13) type {
         session_echo_ok: bool = false,
         alpn: [32]u8 = undefined,
         alpn_len: usize = 0,
+        /// The server's record_size_limit (RFC 8449), when it answered one.
+        record_size_answer: ?u16 = null,
         server_name_ack: bool = false,
         quic_parameters: [64]u8 = undefined,
         quic_parameters_len: usize = 0,
@@ -335,6 +340,11 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             }
             if (t == .cookie_in_first and !second) try Ext.put(&ext, gpa, 44, &.{ 0, 1, 'x' });
             if (self.config.post_handshake_auth) try Ext.put(&ext, gpa, 49, &.{});
+            if (self.config.record_size_limit) |limit| {
+                var value: [2]u8 = undefined;
+                std.mem.writeInt(u16, &value, limit, .big);
+                try Ext.put(&ext, gpa, 28, &value);
+            }
             if (t == .duplicate_extension) try Ext.put(&ext, gpa, 43, &.{ 2, 3, 4 });
             if (self.config.early_data and (!second or t == .early_data_in_second)) try Ext.put(&ext, gpa, 42, &.{});
             // Key shares: the first hello sends the configured groups, the second only the requested one.
@@ -583,6 +593,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
                 at += 4 + len;
                 switch (id) {
                     0 => self.server_name_ack = true,
+                    28 => self.record_size_answer = std.mem.readInt(u16, ext_body[0..2], .big),
                     16 => {
                         const n = ext_body[2];
                         self.alpn_len = n;

@@ -29,7 +29,8 @@ test "C2 hello codec RFC server selection and bounded client offer" {
         ids[count] = item.id;
         count += 1;
     }
-    try std.testing.expectEqualSlices(u16, &.{ 0, 10, 13, 43, 16, 51 }, ids[0..count]);
+    // record_size_limit (28) ahead of the run an ECH outer hello shares.
+    try std.testing.expectEqualSlices(u16, &.{ 0, 28, 10, 13, 43, 16, 51 }, ids[0..count]);
     // With TLS 1.2 offered too: point formats, extended master secret and renegotiation_info.
     const both = try H.client(&out, &@as([32]u8, @splat(2)), "", "", &shares, "", .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" } }, .{});
     var rb: Reader = .{ .bytes = both[4..] };
@@ -43,7 +44,7 @@ test "C2 hello codec RFC server selection and bounded client offer" {
         ids[count] = item.id;
         count += 1;
     }
-    try std.testing.expectEqualSlices(u16, &.{ 0, 10, 11, 13, 23, 0xff01, 43, 16, 51 }, ids[0..count]);
+    try std.testing.expectEqualSlices(u16, &.{ 0, 28, 10, 11, 13, 23, 0xff01, 43, 16, 51 }, ids[0..count]);
     try std.testing.expectError(error.BufferTooSmall, H.client(out[0..10], &@as([32]u8, @splat(2)), "", "", &shares, "", .{}, .{}));
 }
 test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation: hello selection" {

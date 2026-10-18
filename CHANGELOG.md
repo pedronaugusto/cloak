@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- record_size_limit (RFC 8449), both roles, TLS 1.3 and 1.2, streams and datagrams: a client offers it (the `record_size_limit` option of every client's options, or the maximum of its versions), a server answers a client that sent it (its option of the same name, or the version's maximum), and each end seals its protected records within the limit the peer named and refuses one past its own (record_overflow; a datagram drops it). `Datagram.writeLimit` is the most one `write` takes. Under the Linux kernel record layer the write direction carries the peer's limit as TLS_TX_MAX_PAYLOAD_LEN (Linux 6.18; an older kernel refuses the move), and a read direction under a lower limit of its own stays in software. Not in QUIC.
+
 ### Changed
 
 - A (D)TLS 1.2 server takes a ClientHello without the secure renegotiation indication (RFC 5746 section 4.4) and answers renegotiation_info only to a client that sent it or the SCSV; it refused such a hello with handshake_failure. Every renegotiation is still refused, and a non-empty renegotiated_connection in an initial hello still ends the handshake. A client still requires the server's indication. F114.

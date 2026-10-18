@@ -971,6 +971,50 @@ application without the connection, so an answer with application data inside it
 as such there; its messages and Finished are still checked. Peers: OpenSSL 4.0.3 (`s_client
 -enable_pha`, and `s_server`'s `c` command) and NSS (`tstclnt -E`, `selfserv -E` with three `-r`).
 
+## Record size limit (RFC 8449)
+
+A constrained peer says how large a protected record it can take: record_size_limit, the most
+plaintext a record sent to it may carry, counted as the RFC counts it (TLS 1.3's inner content
+type and padding in it, TLS 1.2's plaintext alone). The CoAP and LwM2M devices of the CCM_8
+profiles send it; cloak honors it in both roles and both versions, over streams and datagrams.
+QUIC has no TLS records, so it is neither offered nor answered there.
+
+A client always offers it (RFC 8449 section 4: it SHOULD, so a server may name a limit of its
+own), with the `record_size_limit` option or the maximum of the versions it offers: 2^14 + 1
+with TLS 1.3, 2^14 for TLS 1.2 alone. A server answers it only to a client that sent it, in
+EncryptedExtensions (TLS 1.3) or the ServerHello (TLS 1.2), with its own option or the
+negotiated version's maximum. A value under 64 is illegal_parameter either way, and a length
+other than two bytes decode_error. A value past the negotiated version's maximum is taken as
+that maximum: a server must not refuse it (the client may speak a version the server does
+not), and a client takes it too rather than using the RFC's MAY to abort, since a server may
+name its TLS 1.3 value in a TLS 1.2 answer. Options take 64 to the maximum of the versions the
+end allows.
+
+The handshake tells the carrier what it negotiated (`Flight.RecordLimits`, an emit before the
+first record it binds): what this end may seal, the peer's value, and what it opens, its own,
+each clamped to the version's maximum. A server knows both from the ClientHello, before any
+protected record of its own; a TLS 1.3 client learns the server's in EncryptedExtensions, before
+it seals anything, and holds the server to its own limit from the record after that answer; a
+TLS 1.2 client learns it in the ServerHello. Without an answer the extension is not negotiated
+and neither end is held to anything but the protocol (section 4).
+
+Sealing splits protected records to the peer's limit: application data (`send` takes at most
+one record's worth), handshake messages under keys and post-handshake messages. Plaintext
+records (the hellos, a TLS 1.2 server's certificate flight) are not bound by it. A protected
+record whose plaintext would pass this end's limit is record_overflow on a stream, told by the
+record's length before any decryption (its body less the tag and TLS 1.2's explicit nonce);
+DTLS drops it, as section 4 allows and as it drops any record it cannot take. Declined early
+data a server skips is not checked: it is skipped unopened. In DTLS the limit stands beside the
+MTU: a handshake fragment and an ACK fit both, and `Datagram.write` refuses plaintext past
+`writeLimit`. DTLS 1.2 records with a connection ID carry their content type inside, as DTLS
+1.3 records do, and count it. Resumption negotiates the limit anew, as every handshake does.
+
+Under a kernel record layer (C9) the write direction takes the peer's limit as
+TLS_TX_MAX_PAYLOAD_LEN (Linux 6.18; the limit less TLS 1.3's content type), set before the keys:
+a kernel without it refuses, and the direction stays in software. A kernel opens records up to
+2^14 bytes whatever this end named, so a read direction under a limit below the version's
+maximum stays in software (`Unsupported`).
+
 ## TLS 1.2
 
 TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)
@@ -1295,7 +1339,8 @@ included, which are erased); `probe` installs throwaway keys on loopback connect
 version, cipher and direction, and installs TLS 1.3 again as a key update would, so what a
 kernel takes is a probe's verdict, never its version string. The control-message I/O, sendfile
 and the wait when the receive path stops for new keys are the caller's (reactor's, in the
-family). TLS_TX_ZEROCOPY_RO is never set, so a file sent is sealed as it was when sent. Tests
+family). TLS_TX_ZEROCOPY_RO is never set, so a file sent is sealed as it was when sent; a peer's
+record_size_limit is TLS_TX_MAX_PAYLOAD_LEN ("Record size limit"). Tests
 play a kernel in software (every OS) and run the real one in Linux VMs on 6.8 and 7.0.
 
 ## ML-DSA (C10)

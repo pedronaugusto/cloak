@@ -7,6 +7,7 @@ const Ech = @import("Ech.zig");
 const Compression = @import("Compression.zig");
 const Messages = @import("Messages.zig");
 const suites = @import("../crypto/Suite.zig");
+const RecordLimits = @import("RecordLimits.zig");
 const Suite = suites.Suite;
 const Suite13 = suites.Suite13;
 const Suite12 = suites.Suite12;
@@ -101,6 +102,16 @@ pub const Options = struct {
     /// DTLS: use_srtp (RFC 5764), the SRTP profiles offered (client) or accepted (server), in
     /// preference order, borrowed. Empty offers or answers none.
     srtp: []const Srtp = &.{},
+    /// record_size_limit (RFC 8449): the most a protected record sent to this end may carry, the
+    /// extension's value (64 to 2^14 + 1; TLS 1.3 counts the inner content type in it). Null
+    /// names the version's maximum. Offered by a client and answered by a server on streams and
+    /// datagrams; QUIC has no records.
+    record_size_limit: ?u16 = null,
+
+    /// The record_size_limit this end names: its own, or the most the versions it allows take.
+    pub fn recordSizeLimit(options: Options) u16 {
+        return options.record_size_limit orelse if (options.allows13()) RecordLimits.max13 else RecordLimits.max12;
+    }
 
     /// Whether TLS 1.2 is offered or accepted: it is allowed, the policy does not need TLS 1.3
     /// (QUIC, hybrid-only), a TLS 1.2 suite is listed and so is a classical group, the only kind
@@ -243,6 +254,7 @@ pub fn validate(options: Options) ValidateError!void {
         if (old == profile) return error.InvalidOptions;
     };
     if (options.post_handshake_auth and (options.transport != .stream or !options.allows13())) return error.InvalidOptions;
+    if (options.record_size_limit) |limit| if (options.transport == .quic or limit < RecordLimits.min or limit > (if (options.allows13()) RecordLimits.max13 else RecordLimits.max12)) return error.InvalidOptions;
     if (options.sni.len > 253) return error.InvalidOptions;
     if (options.sni.len != 0) {
         var label: usize = 0;
@@ -343,8 +355,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (datagram and cookie.len != 0) try cookieExtension(&w, cookie);
     if (sni.len != 0) try serverName(&w, sni);
     // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
-    if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(&w, options.certificate_compression);
-    try evidenceExtensions(&w, options, tls13);
+    try leadingOffers(&w, options, tls13);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
     var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
@@ -420,6 +431,19 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// What the hello offers ahead of the extensions an ECH outer hello may share: certificate
+/// decoders (TLS 1.3), the evidence `evidenceExtensions` asks for, and record_size_limit, which a
+/// record layer of streams or datagrams takes (RFC 8449).
+fn leadingOffers(w: *Writer, options: Options, tls13: bool) EncodeError!void {
+    if (tls13 and options.certificate_compression.len != 0) try Compression.writeExtension(w, options.certificate_compression);
+    try evidenceExtensions(w, options, tls13);
+    if (options.transport != .quic) {
+        var value: [2]u8 = undefined;
+        std.mem.writeInt(u16, &value, options.recordSizeLimit(), .big);
+        try extension(w, RecordLimits.extension, &value);
+    }
+}
+
 /// What this client takes to authenticate the server beyond its certificate's key: a delegated
 /// credential (RFC 9345, TLS 1.3) and SCTs (RFC 6962), each asked for only when policy says so.
 fn evidenceExtensions(w: *Writer, options: Options, tls13: bool) EncodeError!void {
@@ -565,6 +589,8 @@ pub const ServerHello12 = struct {
     raw_client_key: bool = false,
     /// The server's SignedCertificateTimestampList (RFC 6962 section 3.3.1), when the client asked.
     scts: ?[]const u8 = null,
+    /// The server's record_size_limit (RFC 8449), when it answered the client's.
+    record_size_limit: ?u16 = null,
 };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
@@ -599,6 +625,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var answered: DatagramAnswer = .{};
     var types: CertificateTypes = .{};
     var scts: ?[]const u8 = null;
+    var record_size_limit: ?u16 = null;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         only12 = only12 or answers12(item.id);
@@ -641,6 +668,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             },
             16 => alpn = try selectedAlpn(&value, options),
             23 => ems = true,
+            RecordLimits.extension => record_size_limit = try recordSizeAnswer(&value, options),
             Messages.signed_certificate_timestamp => {
                 if (!options.request_scts) return error.UnsolicitedExtension;
                 if (item.bytes.len == 0) return error.DecodeError;
@@ -667,7 +695,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = scts }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = scts, .record_size_limit = record_size_limit }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
     if (only12 or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
@@ -721,6 +749,17 @@ fn selectedSrtp(value: *Reader, options: Options) ParseError!Srtp {
     for (options.srtp) |offered| if (@backingInt(offered) == id) return offered;
     return error.UnofferedSelection;
 }
+/// A server's record_size_limit (RFC 8449 section 4): one this client offered (streams and
+/// datagrams), at least 64. A value past the version's maximum is taken as that maximum, the RFC's
+/// MAY of refusing it not taken: a server may name the larger value of another version.
+fn recordSizeAnswer(value: *Reader, options: Options) ParseError!u16 {
+    if (options.transport == .quic) return error.UnsolicitedExtension;
+    if (value.bytes.len != 2) return error.DecodeError;
+    const limit = try value.int(u16);
+    if (limit < RecordLimits.min) return error.InvalidHello;
+    return limit;
+}
+
 /// The one protocol an ALPN answer selects, which must be one this client offered.
 fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     @setRuntimeSafety(true);
@@ -731,12 +770,13 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     return error.UnofferedSelection;
 }
 
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes, scts: ?[]const u8 };
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes, scts: ?[]const u8, record_size_limit: ?u16 };
 
 /// The ServerHello extensions only a TLS 1.2 answer carries.
 fn answers12(id: u16) bool {
     return switch (id) {
-        0, 11, 16, 18, 23, 35, 0xff01, client_certificate_type, server_certificate_type => true,
+        // record_size_limit: a TLS 1.3 server answers it in EncryptedExtensions (RFC 8449 section 4).
+        0, 11, 16, 18, 23, 35, 0xff01, client_certificate_type, server_certificate_type, RecordLimits.extension => true,
         else => false,
     };
 }
@@ -773,7 +813,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key, .scts = seen.scts } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key, .scts = seen.scts, .record_size_limit = seen.record_size_limit } };
 }
 /// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
 /// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
@@ -805,7 +845,7 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
 /// `srtp`: DTLS 1.3, the SRTP profile the server chose.
 /// `raw_server_key`, `raw_client_key`: the server selected the raw public key type (RFC 7250)
 /// for its own Certificate, and for the client's.
-pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null, srtp: ?Srtp = null, raw_server_key: bool = false, raw_client_key: bool = false };
+pub const EncryptedExtensions = struct { alpn: []const u8, parameters: []const u8, ech: ?[]const u8 = null, srtp: ?Srtp = null, raw_server_key: bool = false, raw_client_key: bool = false, record_size_limit: ?u16 = null };
 /// `ech_sent`: the hello carried encrypted_client_hello, real or GREASE, so the server may answer it.
 pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseError!EncryptedExtensions {
     @setRuntimeSafety(true);
@@ -819,14 +859,15 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     var ech: ?[]const u8 = null;
     var srtp: ?Srtp = null;
     var types: CertificateTypes = .{};
+    var record_size_limit: ?u16 = null;
     while (try ext.next()) |item| switch (item.id) {
         client_certificate_type, server_certificate_type => {
             var value: Reader = .{ .bytes = item.bytes };
             try types.read(item.id, &value, options);
         },
-        srtp_extension => {
+        srtp_extension, RecordLimits.extension => {
             var value: Reader = .{ .bytes = item.bytes };
-            srtp = try selectedSrtp(&value, options);
+            if (item.id == srtp_extension) srtp = try selectedSrtp(&value, options) else record_size_limit = try recordSizeAnswer(&value, options);
             try value.finish();
         },
         Ech.extension_id => {
@@ -864,7 +905,7 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;
-    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp, .raw_server_key = types.raw_server_key, .raw_client_key = types.raw_client_key };
+    return .{ .alpn = alpn, .parameters = parameters, .ech = ech, .srtp = srtp, .raw_server_key = types.raw_server_key, .raw_client_key = types.raw_client_key, .record_size_limit = record_size_limit };
 }
 
 /// A ServerHello selecting `suite`, answering the client's share for `group`, when `psk`
@@ -905,13 +946,13 @@ pub const max_scts = 2048;
 /// What a TLS 1.2 ServerHello answers because the client sent it: no extension appears in a
 /// ServerHello unless the ClientHello carried it (RFC 5246 section 7.4.1.4).
 /// `renegotiation_info`: the client signalled secure renegotiation, by the extension or the SCSV
-/// (RFC 5746 section 3.6).
+/// (RFC 5746 section 3.6). `record_size_limit`: this server's, answering the client's (RFC 8449).
 /// DTLS: `connection_id` the connection ID the server receives on, `srtp` the profile it chose.
 /// `client_certificate_type`, `server_certificate_type`: the types selected (RFC 7250), answered
 /// when the client sent the extension.
 /// `scts`: the certificate's SignedCertificateTimestampList, for a client that asked (RFC 6962
 /// section 3.3.1), at most `max_scts` bytes.
-pub const Echo12 = struct { server_name: bool, renegotiation_info: bool, point_formats: bool, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
+pub const Echo12 = struct { server_name: bool, renegotiation_info: bool, point_formats: bool, record_size_limit: ?u16 = null, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -932,6 +973,7 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     try w.put(&.{ 0, 23, 0, 0 });
     if (echo.renegotiation_info) try w.put(&.{ 0xff, 0x01, 0, 1, 0 });
     if (echo.ticket) try w.put(&.{ 0, 35, 0, 0 });
+    if (echo.record_size_limit) |limit| try recordSizeExtension(&w, limit);
     if (echo.connection_id) |cid| try connectionIdAnswer(&w, cid);
     if (echo.srtp) |profile| try srtpAnswer(&w, profile);
     if (echo.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
@@ -1006,7 +1048,14 @@ pub const EncryptedParts = struct {
     /// RFC 7250: the certificate types selected, answering the client's lists.
     server_certificate_type: ?CertificateType = null,
     client_certificate_type: ?CertificateType = null,
+    /// This server's record_size_limit, answering the client's (RFC 8449).
+    record_size_limit: ?u16 = null,
 };
+
+fn recordSizeExtension(w: *Writer, limit: u16) Writer.WriteError!void {
+    try w.put(&.{ 0, RecordLimits.extension, 0, 2 });
+    try w.int(u16, limit);
+}
 
 fn connectionIdAnswer(w: *Writer, cid: []const u8) Writer.WriteError!void {
     if (cid.len > 255) return error.BufferTooSmall;
@@ -1043,6 +1092,7 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
     if (parts.srtp) |profile| try srtpAnswer(&w, profile);
     if (parts.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
     if (parts.server_certificate_type) |kind| try extension(&w, server_certificate_type, &.{@backingInt(kind)});
+    if (parts.record_size_limit) |limit| try recordSizeExtension(&w, limit);
     var retry_len: usize = 0;
     for (parts.ech_retry) |key| if (key.retry) {
         retry_len += key.config.len;

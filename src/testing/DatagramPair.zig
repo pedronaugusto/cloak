@@ -53,6 +53,9 @@ pub const Options = struct {
     /// Raw public keys (RFC 7250): the server presents its key, which the client pins; with
     /// `mutual`, the client presents its key too, which the server pins.
     raw_keys: bool = false,
+    /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
+    client_record_size_limit: ?u16 = null,
+    server_record_size_limit: ?u16 = null,
     /// Provisioned keys: the client's and the server's lookup; with `psk_only` the server holds
     /// no credential and the client verifies nothing but the key.
     client_psk: ?Psk.External = null,
@@ -129,6 +132,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .identity = .{ .dns = "example.com" },
         .verify = if (options.psk_only) .none else if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
         .external_psk = options.client_psk,
+        .record_size_limit = options.client_record_size_limit,
         .suites = options.client_suites,
         .min_version = options.client_min,
         .max_version = options.client_max,
@@ -153,6 +157,7 @@ pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
     return .{
         .credentials = if (self.options.psk_only) &.{} else &self.credential,
         .external_psk = self.options.server_psk,
+        .record_size_limit = self.options.server_record_size_limit,
         .suites = self.options.server_suites,
         .groups = self.options.server_groups orelse self.options.groups,
         .client_auth = if (self.options.mutual) .required else .none,

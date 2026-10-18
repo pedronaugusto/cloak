@@ -69,6 +69,18 @@ pub fn tls12(self: *const Protection) bool {
     };
 }
 
+/// What a record's body adds around the plaintext it protects: the AEAD tag, and TLS 1.2's explicit
+/// nonce. RFC 8449's limit counts the rest.
+pub fn expansion(self: *const Protection) usize {
+    return switch (self.state) {
+        inline else => |_, tag| comptime blk: {
+            const cipher = cipherOfTag(tag);
+            const explicit = if (std.mem.startsWith(u8, @tagName(tag), "tls12_")) cipher.explicitNonceLength12() else 0;
+            break :blk explicit + cipher.tagLength();
+        },
+    };
+}
+
 /// Who seals or opens this direction's records now.
 pub fn owner(self: *const Protection) Owner {
     return switch (self.state) {
