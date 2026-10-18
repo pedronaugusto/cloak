@@ -150,6 +150,8 @@ entropy_drawn: [2]usize = .{ 0, 0 },
 /// The longest protected record body (content type 23) each end has sent, client first: what
 /// the peer's record_size_limit bounds (RFC 8449).
 longest_protected: [2]usize = .{ 0, 0 },
+/// The longest record of any type each end has sent.
+longest_record: [2]usize = .{ 0, 0 },
 
 pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     const self = try gpa.create(Duo);
@@ -160,6 +162,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.rng = .init(options.seed);
     self.entropy_drawn = .{ 0, 0 };
     self.longest_protected = .{ 0, 0 };
+    self.longest_record = .{ 0, 0 };
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
     try self.trust.addDer(pki.ca, .{});
@@ -376,6 +379,8 @@ fn move(self: *Duo, from: *Connection, to: *Connection) !bool {
         const len = std.mem.readInt(u16, bytes[record + 3 ..][0..2], .big);
         const longest = &self.longest_protected[@intFromBool(from == &self.server)];
         if (bytes[record] == 23) longest.* = @max(longest.*, len);
+        const any = &self.longest_record[@intFromBool(from == &self.server)];
+        any.* = @max(any.*, len);
         record += 5 + len;
     }
     var at: usize = 0;

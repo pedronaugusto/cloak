@@ -131,11 +131,13 @@ fn transfer(from: *Connection, to: *Connection, message: []const u8, out: []u8) 
 }
 
 /// A handshake and data both ways under these limits; returns each end's longest protected
-/// record body, client first.
+/// record body, client first. The server's plaintext records (TLS 1.2's certificate flight among
+/// them) come after the client named its limit and stay within it as well.
 fn exchange(options: Duo.Options) ![2]usize {
     const duo = try Duo.init(gpa, options);
     defer duo.deinit();
     try duo.handshake();
+    if (options.client_record_size_limit) |limit| try std.testing.expect(duo.longest_record[1] <= limit + 24);
     var message: [5000]u8 = undefined;
     for (&message, 0..) |*byte, i| byte.* = @truncate(i);
     var out: [5000]u8 = undefined;

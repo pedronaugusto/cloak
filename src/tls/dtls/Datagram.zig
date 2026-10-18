@@ -1005,7 +1005,8 @@ fn overLimit(self: *const Datagram, keys: *const Record.Epoch, body_len: usize) 
 /// record_size_limit leaves (RFC 8449), which binds protected records only. DTLS 1.3 records, and
 /// DTLS 1.2 records with a connection ID (RFC 9146), carry their content type inside.
 fn sealLimit(self: *const Datagram, epoch: u64) usize {
-    if (epoch == 0) return Record.max_content;
+    // Plaintext records are cut to the peer's limit too, once it is known (`Connection.sealLimit`).
+    if (epoch == 0) return RecordLimits.content(self.record_limits.send, false);
     const keys = for (&self.writers) |*slot| {
         if (slot.*) |*e| if (e.number == epoch) break e;
     } else return Record.max_content;

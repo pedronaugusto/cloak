@@ -643,9 +643,12 @@ fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void 
 }
 
 /// The most plaintext one record of the current write epoch carries: 2^14 bytes, or fewer when the
-/// peer named a record_size_limit (RFC 8449), which binds protected records only.
+/// peer named a record_size_limit (RFC 8449). The RFC binds protected records only; plaintext
+/// ones sent once the peer's limit is known (a server's after the ClientHello, a TLS 1.2 client's
+/// after the ServerHello) are cut to it too, for a constrained peer's buffer takes no larger
+/// record whatever protects it, and GnuTLS refuses one.
 fn sealLimit(self: *const Connection) usize {
-    const protection = if (self.tx) |*p| p else return max_content;
+    const protection = if (self.tx) |*p| p else return RecordLimits.content(self.record_limits.send, false);
     return RecordLimits.content(self.record_limits.send, !protection.tls12());
 }
 

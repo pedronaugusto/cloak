@@ -998,9 +998,12 @@ it seals anything, and holds the server to its own limit from the record after t
 TLS 1.2 client learns it in the ServerHello. Without an answer the extension is not negotiated
 and neither end is held to anything but the protocol (section 4).
 
-Sealing splits protected records to the peer's limit: application data (`send` takes at most
-one record's worth), handshake messages under keys and post-handshake messages. Plaintext
-records (the hellos, a TLS 1.2 server's certificate flight) are not bound by it. A protected
+Sealing splits records to the peer's limit: application data (`send` takes at most one
+record's worth), handshake messages and post-handshake messages. The RFC binds protected records
+only, but plaintext records sent once the peer's limit is known (a server's after the
+ClientHello, a TLS 1.2 client's after the ServerHello; a datagram's epoch 0) are cut to it too:
+a constrained peer's buffer takes no larger record whatever protects it, and GnuTLS's client
+refuses a TLS 1.2 certificate flight past its limit. A protected
 record whose plaintext would pass this end's limit is record_overflow on a stream, told by the
 record's length before any decryption (its body less the tag and TLS 1.2's explicit nonce);
 DTLS drops it, as section 4 allows and as it drops any record it cannot take. Declined early
