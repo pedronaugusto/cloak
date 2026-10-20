@@ -340,7 +340,10 @@ test "F41 catalogue_alpaca_protocol_and_port_binding" {
 }
 
 test "F43 catalogue_hybrid_share_order_and_implicit_rejection (require_hybrid refuses a classical selection)" {
-    try fails(.aes_128_gcm_sha256, .{ .group = .x25519 }, .{ .require_hybrid = true }, error.HybridRequired, .insufficient_security);
+    // Under require_hybrid the client shares the hybrid alone, so a server wanting X25519 asks
+    // for it with a retry request, which the policy refuses (a ServerHello selecting it is
+    // refused alike: Hello_test).
+    try fails(.aes_128_gcm_sha256, .{ .group = .x25519, .retry = .x25519 }, .{ .require_hybrid = true }, error.HybridRequired, .insufficient_security);
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .group = .x25519_mlkem768 }, .{ .require_hybrid = true });
     defer pair.deinit();
     try pair.handshake();

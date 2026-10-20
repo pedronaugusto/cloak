@@ -335,9 +335,13 @@ is signed inside the engine; one held elsewhere is signed through a request, and
 engine verifies the answer against the identity's public key before it leaves, so a
 bad signer cannot put a bad CertificateVerify on the wire.
 
-Key shares are fresh per hello and per retry. The default offer is X25519MLKEM768
-plus an independent X25519 share; P-256 and P-384 are obtained through
-HelloRetryRequest. Group 4588 sends the ML-KEM encapsulation key first, and its
+Key shares are fresh per hello and per retry. The caller's group order decides which go in the
+first hello: a share for the first post-quantum or hybrid group listed and one for the first
+classical group, at most two, in supported_groups' order (RFC 8446 section 4.2.8 lets a client
+send any subset); under `require_hybrid`, the first hybrid alone. The default order gives
+X25519MLKEM768 plus an independent X25519 share; a list led by MLKEM1024 shares MLKEM1024 and the
+first classical group. Any other listed group a server prefers, P-256 and P-384 by default, is
+obtained through HelloRetryRequest. Group 4588 sends the ML-KEM encapsulation key first, and its
 secret is the ML-KEM secret then the X25519 secret. SecP256r1MLKEM768 (4587) and SecP384r1MLKEM1024 (4589), the
 NIST-curve hybrids of draft-ietf-tls-ecdhe-mlkem, go the other way: the uncompressed ECDH point
 then the ML-KEM key (or ciphertext), and the ECDH secret then the ML-KEM one. They are offered only

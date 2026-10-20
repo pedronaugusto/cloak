@@ -8,6 +8,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 - `Alert.decompression_failure` (30), TLS 1.2's (RFC 5246 section 7.2.2), so a peer's alert of it is named in `Diagnostics`; cloak compresses no records and never sends it.
 
+### Changed
+
+- A client's initial key shares follow the caller's group order: one for the first post-quantum or hybrid group listed and one for the first classical group, at most two, in supported_groups' order (RFC 8446 section 4.2.8). They were X25519MLKEM768 and X25519 when listed, else the first group, so a list led by MLKEM1024 shared only X25519 and the hybrid it listed. The default order shares as before. Under `require_hybrid` only the first hybrid is shared, since a server could take no other.
+
 ### Fixed
 
 - Declined early data is skipped only between handshake messages: a record of it between the fragments of the hello that answers a retry request is unexpected_message (RFC 8446 section 5.1). It was skipped. F132.

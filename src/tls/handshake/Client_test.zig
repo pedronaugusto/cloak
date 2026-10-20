@@ -27,7 +27,8 @@ test "C2 client asks for exactly the entropy its first flight needs" {
         .{ .hello = .{ .groups = &.{.x25519} }, .compat = true, .expected = 32 + 32 + 32 },
         .{ .hello = .{ .groups = &.{.p256} }, .compat = true, .expected = 32 + 32 + 32 },
         .{ .hello = .{ .groups = &.{.p384} }, .compat = false, .expected = 32 + 48 },
-        .{ .hello = .{ .groups = &.{ .p256, .x25519_mlkem768 } }, .compat = false, .expected = 32 + 96 },
+        // The first classical and the first hybrid group: P-256's scalar and the hybrid's.
+        .{ .hello = .{ .groups = &.{ .p256, .x25519_mlkem768 } }, .compat = false, .expected = 32 + 32 + 96 },
     };
     for (cases) |case| {
         var o = options(case.hello);

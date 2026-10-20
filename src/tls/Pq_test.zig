@@ -224,3 +224,38 @@ test "F131 catalogue_key_shares_in_group_order (the hello's key shares follow su
         try std.testing.expectEqual(@as(usize, 2), count);
     }
 }
+
+test "C10 initial key shares by the caller's order: the first post-quantum or hybrid group and the first classical one" {
+    // RFC 8446 section 4.2.8 lets a client send shares for any subset of its groups. cloak sends
+    // one for the first post-quantum or hybrid group the caller lists and one for the first
+    // classical group, at most two, in supported_groups' order; a server choosing another listed
+    // group asks for it with a retry request.
+    const ClientHello = @import("handshake/ClientHello.zig");
+    const Case = struct { groups: []const Group, shares: []const Group, require_hybrid: bool = false };
+    const cases = [_]Case{
+        .{ .groups = Group.default, .shares = &.{ .x25519_mlkem768, .x25519 } },
+        .{ .groups = &.{ .mlkem1024, .x25519 }, .shares = &.{ .mlkem1024, .x25519 } },
+        .{ .groups = &.{ .p384, .mlkem768, .x25519, .x25519_mlkem768 }, .shares = &.{ .p384, .mlkem768 } },
+        .{ .groups = &.{ .secp256r1_mlkem768, .x25519_mlkem768, .p256 }, .shares = &.{ .secp256r1_mlkem768, .p256 } },
+        .{ .groups = &.{.x25519}, .shares = &.{.x25519} },
+        .{ .groups = &.{.mlkem1024}, .shares = &.{.mlkem1024} },
+        .{ .groups = &.{ .p256, .p384 }, .shares = &.{.p256} },
+        // Under require_hybrid a classical or ML-KEM-only share could never be taken: the first
+        // hybrid alone.
+        .{ .groups = &.{ .x25519, .mlkem768, .x25519_mlkem768 }, .shares = &.{.x25519_mlkem768}, .require_hybrid = true },
+    };
+    for (cases) |case| {
+        const duo = try Duo.init(gpa, .{ .client_groups = case.groups, .client_require_hybrid = case.require_hybrid });
+        defer duo.deinit();
+        try duo.serveClient();
+        const hello = try ClientHello.parse(duo.client.output()[5..], .stream);
+        var shares = hello.shares;
+        var count: usize = 0;
+        while (shares.len != 0) : (count += 1) {
+            try std.testing.expect(count < case.shares.len);
+            try std.testing.expectEqual(@backingInt(case.shares[count]), std.mem.readInt(u16, shares[0..2], .big));
+            shares = shares[4 + std.mem.readInt(u16, shares[2..4], .big) ..];
+        }
+        try std.testing.expectEqual(case.shares.len, count);
+    }
+}

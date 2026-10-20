@@ -498,18 +498,20 @@ fn initialGroups(self: *const Client) struct { groups: [2]?Group, count: usize }
         out[0] = classical;
         return .{ .groups = out, .count = 1 };
     }
-    // X25519MLKEM768 and X25519 when listed, in the order listed: shares follow supported_groups
-    // (RFC 8446 section 4.2.8).
+    // The caller's order decides: a share for the first post-quantum or hybrid group listed and
+    // one for the first classical group, at most two, in supported_groups' order (RFC 8446
+    // section 4.2.8 lets a client send any subset; the shares follow the list). Under
+    // require_hybrid only the first hybrid: a server could take no other share.
+    var quantum = false;
+    var classical = false;
     for (self.options.hello.groups) |group| {
-        if (group == .x25519_mlkem768 or group == .x25519) {
-            out[count] = group;
-            count += 1;
-            if (count == out.len) break;
-        }
-    }
-    if (count == 0) {
-        out[0] = self.options.hello.groups[0];
-        count = 1;
+        if (self.options.hello.require_hybrid and !group.hybrid()) continue;
+        const kind = if (group.classical()) &classical else &quantum;
+        if (kind.*) continue;
+        kind.* = true;
+        out[count] = group;
+        count += 1;
+        if (count == out.len) break;
     }
     return .{ .groups = out, .count = count };
 }
