@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.8] - 2026-10-20
+
 ### Fixed
 
 - An exporter takes an empty label, in TLS 1.3 and TLS 1.2: RFC 8446 section 7.5 takes its labels' format from RFC 5705 section 4, which sets no minimum, and BoringSSL, OpenSSL and Go export under one. It was refused as `InvalidLabel`. F124.
