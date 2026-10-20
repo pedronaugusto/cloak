@@ -195,7 +195,9 @@ pub fn newSessionTicket(message: []const u8) ParseError!Ticket {
     const ticket = (try r.vector(u16)).bytes;
     var ext: Extensions = .{ .reader = try r.vector(u16) };
     try r.finish();
-    if (ticket.len == 0 or lifetime > max_ticket_lifetime) return error.IllegalParameter;
+    // ticket<1..2^16-1> (RFC 8446 section 4.6.1): an empty one is out of range.
+    if (ticket.len == 0) return error.InvalidLength;
+    if (lifetime > max_ticket_lifetime) return error.IllegalParameter;
     while (try ext.next()) |item| if (item.id == 42 and item.bytes.len != 4) return error.InvalidMessage;
     return .{ .lifetime = lifetime, .age_add = age_add, .nonce = nonce, .ticket = ticket };
 }

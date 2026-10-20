@@ -1295,7 +1295,8 @@ fn sendEncrypted(self: *Server) Client.Error!void {
     for (self.options.ech_keys) |key| retry_len += key.config.len;
     const dst = try self.reserve(1024 + self.options.parameters.len + retry_len);
     const message = try Hello.buildEncrypted(dst, .{
-        .server_name = scratch.server_name_len != 0,
+        // RFC 6066 section 3: a resumed session's name is the session's, never acknowledged.
+        .server_name = scratch.server_name_len != 0 and !self.resumed,
         .alpn = self.alpn,
         .parameters = if (self.options.transport == .quic) self.options.parameters else null,
         // A client whose ECH did not decrypt (or was GREASE) learns the current configs.

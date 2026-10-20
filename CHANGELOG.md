@@ -4,6 +4,17 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- A client in middlebox compatibility mode sends its change_cipher_spec as soon as it has the ServerHello, before any record under its handshake keys (RFC 8446 appendix D.4): an alert refusing the server's flight went out encrypted with no change_cipher_spec before it, which a middlebox, and BoringSSL's runner, reads as a protocol error. F116.
+- A server resuming a session no longer acknowledges server_name, in TLS 1.3's EncryptedExtensions or TLS 1.2's ServerHello (RFC 6066 section 3). F117.
+- A hello that offers TLS 1.2 alone lists only the classical groups in supported_groups: hybrid and ML-KEM groups are TLS 1.3's. F118.
+- A server that declines early data skips a record of it whatever its length; one shorter than a tag was refused with bad_record_mac (RFC 8446 section 4.2.10 has every record that fails deprotection discarded). F119.
+- A client answers an extension it never sent with unsupported_extension (RFC 8446 section 4.2, RFC 5246 section 7.4.1.4): an unknown type or QUIC transport parameters in EncryptedExtensions, a server_name acknowledgement without a name sent, or ALPN without any offered were illegal_parameter. An extension it knows in the wrong message stays illegal_parameter. F120.
+- Fields out of their range end with decode_error (RFC 8446 section 6.2): a ServerHello's session id echo past 32 bytes, an empty NewSessionTicket ticket and a server_name acknowledgement with data were illegal_parameter. F121.
+- A second HelloRetryRequest is unexpected_message whatever it asks (RFC 8446 section 4.1.4); one asking again for the group already shared was illegal_parameter. F122.
+- A protected record before the receiver has any read key is unexpected_message whatever its length; a short one was bad_record_mac. F123.
+
 ## [0.17.6] - 2026-10-18
 
 ### Fixed

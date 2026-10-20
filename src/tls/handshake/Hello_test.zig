@@ -136,3 +136,67 @@ test "F68 a ServerHello selects only the one identity the client offered" {
     try std.testing.expectError(error.InvalidHello, H.server(&message, "", &shares, .{}, .{ .psk = true }));
     try std.testing.expect(!(try H.server(fixture, "", &shares, .{}, .{ .psk = true })).tls13.psk);
 }
+
+test "F118 catalogue_tls12_only_hello_offers_classical_groups (a hello offering TLS 1.2 alone lists no post-quantum group)" {
+    // Hybrid and ML-KEM groups are TLS 1.3's (designs/cloak.md section 5.8; RFC 8422 has no such
+    // group): a hello that cannot negotiate TLS 1.3 names only groups TLS 1.2 can use.
+    var out: [4096]u8 = undefined;
+    for ([_]bool{ false, true }) |only12| {
+        const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", "", if (only12) &.{} else &shares, "", .{ .sni = "example.com", .max_version = if (only12) .tls12 else .tls13 }, .{});
+        var r: Reader = .{ .bytes = ch[4..] };
+        _ = try r.take(34);
+        _ = try r.vector(u8);
+        _ = try r.vector(u16);
+        _ = try r.vector(u8);
+        var ext: Extensions = .{ .reader = try r.vector(u16) };
+        var pq: usize = 0;
+        var classical: usize = 0;
+        while (try ext.next()) |item| if (item.id == 10) {
+            var list: Reader = .{ .bytes = item.bytes };
+            var groups = try list.vector(u16);
+            while (groups.bytes.len != groups.pos) {
+                const group: @import("../crypto/Group.zig").Group = @fromBackingInt(@intCast(try groups.int(u16)));
+                if (group.classical()) classical += 1 else pq += 1;
+            }
+        };
+        try std.testing.expect(classical != 0);
+        try std.testing.expectEqual(only12, pq == 0);
+    }
+}
+
+test "F120 catalogue_unsolicited_extension_unsupported (an extension the client never sent is unsupported_extension)" {
+    // RFC 8446 section 4.2: a response to an extension the client did not send ends the handshake
+    // with unsupported_extension (Client maps UnsolicitedExtension to it); one the client
+    // recognizes in a message it is not specified for is illegal_parameter (InvalidHello).
+    const ee = struct {
+        fn of(comptime id: u16, comptime body: []const u8) []const u8 {
+            const ext = [_]u8{ id >> 8, id & 0xff, 0, body.len } ++ body;
+            return [_]u8{ 8, 0, 0, 2 + ext.len, 0, ext.len } ++ ext;
+        }
+    };
+    // An extension type cloak does not know, so never sent.
+    try std.testing.expectError(error.UnsolicitedExtension, H.encrypted(ee.of(0x7a7a, ""), .{}, false));
+    // server_name acknowledged without a name sent; ALPN answered without any offered.
+    try std.testing.expectError(error.UnsolicitedExtension, H.encrypted(ee.of(0, ""), .{}, false));
+    try std.testing.expectError(error.UnsolicitedExtension, H.encrypted(ee.of(16, "\x00\x03\x02h2"), .{}, false));
+    // QUIC transport parameters on a stream.
+    try std.testing.expectError(error.UnsolicitedExtension, H.encrypted(ee.of(57, ""), .{}, false));
+    // key_share is the client's own, out of place in EncryptedExtensions.
+    try std.testing.expectError(error.InvalidHello, H.encrypted(ee.of(51, ""), .{}, false));
+    // A server_name acknowledgement is empty: one with data is out of its range.
+    try std.testing.expectError(error.DecodeError, H.encrypted(ee.of(0, "\x00"), .{ .sni = "example.com" }, false));
+}
+
+test "F121 catalogue_field_out_of_range_decode_error (a session id echo past 32 bytes is decode_error)" {
+    // RFC 8446 section 4.1.3 and RFC 5246 section 7.4.1.3: legacy_session_id_echo<0..32>; a field
+    // out of its range is decode_error (RFC 8446 section 6.2).
+    var message: [4 + 2 + 32 + 1 + 33 + 2 + 1 + 2]u8 = @splat(0);
+    message[0] = 2;
+    std.mem.writeInt(u24, message[1..4], message.len - 4, .big);
+    message[4] = 3;
+    message[5] = 3;
+    message[4 + 34] = 33;
+    message[4 + 34 + 1 + 33] = 0x13;
+    message[4 + 34 + 1 + 33 + 1] = 0x01;
+    try std.testing.expectError(error.DecodeError, H.server(&message, "", &shares, .{}, .{}));
+}

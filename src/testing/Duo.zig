@@ -115,6 +115,8 @@ pub const Options = struct {
     /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
     client_record_size_limit: ?u16 = null,
     server_record_size_limit: ?u16 = null,
+    /// The server's key log (NSS key log lines), to read its records in a test.
+    server_key_log: ?Connection.KeyLog = null,
     /// The entropy request (counted from 0 at that end) the harness answers with a failure.
     entropy_fails: ?struct { end: enum { client, server }, at: usize } = null,
 };
@@ -249,6 +251,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .record_size_limit = options.server_record_size_limit,
         .accept_delegated = options.server_accept_delegated,
         .post_handshake_auth = options.server_post_auth,
+        .key_log = options.server_key_log,
     });
     return self;
 }

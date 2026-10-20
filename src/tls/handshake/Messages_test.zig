@@ -75,7 +75,8 @@ test "C2 messages ticket lifetime nonce and early data bounds" {
     var too_long = body;
     std.mem.writeInt(u32, too_long[0..4], M.max_ticket_lifetime + 1, .big);
     try std.testing.expectError(error.IllegalParameter, M.newSessionTicket(message(4, &too_long, &buf)));
-    try std.testing.expectError(error.IllegalParameter, M.newSessionTicket(message(4, &.{ 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, &buf)));
+    // An empty ticket is out of ticket<1..2^16-1>'s range: decode_error (F121).
+    try std.testing.expectError(error.InvalidLength, M.newSessionTicket(message(4, &.{ 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, &buf)));
     const early_bad = [_]u8{ 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 'k', 0, 6, 0, 42, 0, 2, 0, 1 };
     try std.testing.expectError(error.InvalidMessage, M.newSessionTicket(message(4, &early_bad, &buf)));
     for (0..body.len + 4) |len| {
@@ -153,4 +154,10 @@ fn parseAll(input: []const u8) !void {
         try std.testing.expect(ticket.ticket.len != 0 and ticket.lifetime <= M.max_ticket_lifetime);
     } else |_| {}
     if (M.keyUpdate(input)) |request| try std.testing.expect(request or !request) else |_| {}
+}
+
+test "F121 catalogue_field_out_of_range_decode_error (an empty ticket is decode_error)" {
+    // RFC 8446 section 4.6.1: ticket<1..2^16-1> (InvalidLength is decode_error).
+    const empty = [_]u8{ 4, 0, 0, 14, 0, 0, 0, 60, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 };
+    try std.testing.expectError(error.InvalidLength, M.newSessionTicket(&empty));
 }

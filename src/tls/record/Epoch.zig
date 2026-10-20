@@ -192,7 +192,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         fn openChecked(self: *Self, wire: []const u8, out: []u8, trial: bool) TrialError!Plaintext {
             @setRuntimeSafety(true);
             if (self.closed or self.owner != .software) return error.Closed;
-            if (wire.len < 5 + 17) return self.bad();
+            // Too short for a tag and a content type: it fails deprotection, which a trial reports
+            // as for a tag that fails (declined early data of any length is skipped).
+            if (wire.len < 5 + 17) return if (trial) error.Undecryptable else self.bad();
             if (!std.mem.eql(u8, wire[0..3], &.{ 23, 3, 3 }) or std.mem.readInt(u16, wire[3..5], .big) != wire.len - 5) return self.bad();
             const len = wire.len - 5 - A.tag_length;
             // A ciphertext past 2^14 + 256 bytes, or one whose inner plaintext (content, type and

@@ -1212,6 +1212,8 @@ fn offeredShares(self: *const Client, out: *[2]Hello.Share) []const Hello.Share 
 
 fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
+    // A second retry request is unexpected_message whatever it asks (RFC 8446 section 4.1.4).
+    if (self.retry_suite != null and msg.len >= 4 + 2 + 32 and std.mem.eql(u8, msg[6..38], &Hello.retry_random)) return error.UnexpectedMessage;
     var offered: [2]Hello.Share = undefined;
     const ech_sent = self.options.ech == .config_list or self.scratch.?.ech.ext.len != 0;
     const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, .{ .psk = self.pskOffer() != null, .ticket12 = self.sendsTickets12() and self.retry_suite == null, .session12 = self.offered12 != null and self.retry_suite == null, .ech = ech_sent });
@@ -1281,6 +1283,9 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
         },
     }
     self.eraseShares();
+    // RFC 8446 appendix D.4: the dummy change_cipher_spec goes before the first record under
+    // the handshake keys, whether that is the second flight or an alert refusing the server's.
+    try self.sendCompatCcs();
     try self.emitHandshakeSecrets();
 }
 
@@ -1641,7 +1646,6 @@ fn endRejected(self: *Client) Error {
 /// The client's second flight: the response to a CertificateRequest, then Finished.
 fn continueFlight(self: *Client) Error!void {
     @setRuntimeSafety(true);
-    try self.sendCompatCcs();
     if (!self.requested_certificate) return self.finishFlight();
     const auth = self.options.auth orelse return self.sendEmptyCertificate();
     // The type the server selected (RFC 7250) must be the one this credential is.

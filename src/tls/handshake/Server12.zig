@@ -287,14 +287,14 @@ fn sendPskFlight(self: anytype, random: *const [32]u8) Error!void {
     try self.queueMessage(.initial, done);
 }
 
-/// The abbreviated handshake's flight: the ServerHello echoing the client's session id, a new
-/// ticket if promised, then this server's ChangeCipherSpec and Finished from the session's master
+/// The abbreviated handshake's flight: the ServerHello echoing the client's session id (and no
+/// server_name, RFC 6066 section 3), a new ticket if promised, then this server's ChangeCipherSpec and Finished from the session's master
 /// secret and the new randoms.
 fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = false, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     if (self.state.ticket12) try sendTicket(self);

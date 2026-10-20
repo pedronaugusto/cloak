@@ -87,6 +87,8 @@ pub const Tamper = enum {
     wrong_session_id,
     unoffered_group,
     second_retry,
+    /// A second retry request asking again for the group the first asked for.
+    second_retry_same,
     plaintext_encrypted_extensions,
     encrypted_extensions_in_hello_record,
     finished_not_at_record_end,
@@ -497,6 +499,7 @@ pub fn Peer(comptime suite: Suite13) type {
                 return self.sendRetry(self.config.group);
             }
             if (self.config.tamper == .second_retry and seen.hellos == 2) return self.sendRetry(.p384);
+            if (self.config.tamper == .second_retry_same and seen.hellos == 2) return self.sendRetry(self.config.group);
             const want = @backingInt(self.config.group);
             for (shares[0..seen.share_count]) |share| if (share.group == want) return self.sendFlight(share.bytes);
             return error.PeerNoMatchingShare;

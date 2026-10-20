@@ -722,3 +722,122 @@ test "F69 TLS 1.2 tickets bind the same authority as TLS 1.3's" {
         break :blk same;
     }));
 }
+
+/// The server's handshake traffic secret, taken from its key log.
+const HandshakeLog = struct {
+    secret: [48]u8 = undefined,
+    len: usize = 0,
+
+    fn write(context: ?*anyopaque, line: []const u8) void {
+        const self: *HandshakeLog = @ptrCast(@alignCast(context.?));
+        if (!std.mem.startsWith(u8, line, "SERVER_HANDSHAKE_TRAFFIC_SECRET ")) return;
+        const hex = std.mem.trimEnd(u8, line[std.mem.findScalarLast(u8, line, ' ').? + 1 ..], "\n");
+        self.len = (std.fmt.hexToBytes(&self.secret, hex) catch return).len;
+    }
+};
+
+/// Whether an extension block (its two-byte length first) carries `id`.
+fn carries(block: []const u8, id: u16) bool {
+    var at: usize = 2;
+    while (at + 4 <= block.len) {
+        if (std.mem.readInt(u16, block[at..][0..2], .big) == id) return true;
+        at += 4 + std.mem.readInt(u16, block[at + 2 ..][0..2], .big);
+    }
+    return false;
+}
+
+/// Whether the server's first flight, waiting in its output, acknowledges server_name: in the
+/// TLS 1.2 ServerHello, or in the TLS 1.3 EncryptedExtensions opened under the logged secret.
+fn acknowledgesName(duo: *Duo, log: *const HandshakeLog) !bool {
+    const Protection = @import("record/Protection.zig");
+    const wire = duo.server.output();
+    var at: usize = 0;
+    while (at + 5 <= wire.len) {
+        const len = std.mem.readInt(u16, wire[at + 3 ..][0..2], .big);
+        const record = wire[at..][0 .. 5 + len];
+        at += 5 + len;
+        switch (record[0]) {
+            22 => if (log.len == 0) {
+                // ServerHello: version, random, session id, suite, method, then extensions.
+                const body = record[5 + 4 ..];
+                const sid = body[2 + 32];
+                return carries(body[2 + 32 + 1 + sid + 2 + 1 ..], 0);
+            },
+            23 => {
+                var protection = try Protection.init(.aes_128_gcm_sha256, log.secret[0..log.len], .{});
+                defer protection.deinit();
+                var out: [16 * 1024 + 256]u8 = undefined;
+                const plain = try protection.open(record, &out);
+                // EncryptedExtensions comes first.
+                try std.testing.expectEqual(@as(u8, 8), plain.bytes[0]);
+                return carries(plain.bytes[4..], 0);
+            },
+            else => {},
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "F117 catalogue_no_server_name_ack_on_resumption (RFC 6066 section 3: a resuming server sends no server_name)" {
+    // TLS 1.3: the full handshake acknowledges the name in EncryptedExtensions, the resumed one
+    // does not.
+    {
+        var fixture: Fixture = undefined;
+        try fixture.init();
+        defer fixture.deinit();
+        for ([_]bool{ false, true }) |resuming| {
+            var log: HandshakeLog = .{};
+            var options = fixture.options(if (resuming) 2 else 1);
+            options.client_suites = &.{.aes_128_gcm_sha256};
+            options.server_key_log = .{ .context = &log, .write = HandshakeLog.write };
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try duo.handshakeUntilServerFlight();
+            try std.testing.expect(log.len == 32);
+            try std.testing.expectEqual(!resuming, try acknowledgesName(duo, &log));
+            try duo.handshake();
+            try std.testing.expectEqual(resuming, duo.server.info().?.resumed);
+        }
+    }
+    // TLS 1.2 tickets: the same in the ServerHello.
+    {
+        var fixture: Fixture = undefined;
+        try fixture.init();
+        defer fixture.deinit();
+        for ([_]bool{ false, true }) |resuming| {
+            const duo = try Duo.init(gpa, options12(&fixture, if (resuming) 2 else 1));
+            defer duo.deinit();
+            try duo.handshakeUntilServerFlight();
+            try std.testing.expectEqual(!resuming, try acknowledgesName(duo, &.{}));
+            try duo.handshake();
+            try std.testing.expectEqual(resuming, duo.server.info().?.resumed);
+        }
+    }
+}
+
+test "F119 catalogue_declined_early_record_shorter_than_tag (a declined early record too short to carry a tag is skipped)" {
+    // RFC 8446 section 4.2.10: the server skips declined early data, discarding the records that
+    // fail deprotection; a record shorter than a tag fails it like any other (BoGo's fake early
+    // data is four bytes).
+    const Pair = ServerPair(.aes_128_gcm_sha256);
+    for ([_]usize{ 0, 1, 4, 16 }) |size| {
+        const pair = try Pair.init(gpa, .{ .early_data = true, .early_records = 2, .early_record_size = size }, .{});
+        defer pair.deinit();
+        try pair.run();
+        try pair.client.send("after");
+        var out: [16]u8 = undefined;
+        const n = try pair.read(&out);
+        try std.testing.expectEqualSlices(u8, "after", out[0..n]);
+    }
+}
+
+test "F123 catalogue_protected_record_before_read_keys_unexpected (a protected record before any read key is unexpected_message, whatever its length)" {
+    // RFC 8446 section 5: before the server has a read key, a protected record is a record type
+    // it cannot take; its length does not make it a tag failure.
+    const Pair = ServerPair(.aes_128_gcm_sha256);
+    for ([_]usize{ 4, 600 }) |size| {
+        const pair = try Pair.init(gpa, .{ .early_records = 1, .early_record_size = size, .shares = &.{.p256} }, .{ .groups = &.{.x25519} });
+        defer pair.deinit();
+        try std.testing.expectError(error.UnexpectedRecord, pair.run());
+    }
+}

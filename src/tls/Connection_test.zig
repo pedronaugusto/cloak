@@ -83,7 +83,10 @@ fn fails(comptime suite: Suite13, config: peer_module.Config, options: Options, 
     try std.testing.expectEqual(@as(usize, 0), pair.conn.readable().len);
     try std.testing.expectEqual(alert, pair.conn.diagnostics().alert_sent);
     if (alert != null) {
-        const sent = pair.conn.output();
+        var sent = pair.conn.output();
+        // A compatibility-mode client's change_cipher_spec comes before its first protected
+        // record once it has the server's hello (F116).
+        if (sent.len > 6 and sent[0] == 20) sent = sent[6..];
         try std.testing.expect(sent.len >= 7 and (sent[0] == 21 or sent[0] == 23));
     }
     // A failed connection is terminal: no further progress, no new service work.
@@ -162,6 +165,12 @@ test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     try fails(.aes_128_gcm_sha256, .{ .retry = .p384, .group = .p384 }, .{ .groups = &.{ .x25519, .p256 } }, error.UnofferedSelection, .illegal_parameter);
 }
 
+test "F122 catalogue_second_retry_unexpected_first (a second retry request is unexpected_message before what it asks is judged)" {
+    // RFC 8446 section 4.1.4: whatever the second retry asks, here the group the second hello
+    // already shared, it is unexpected_message.
+    try fails(.aes_128_gcm_sha256, .{ .retry = .p256, .group = .p256, .tamper = .second_retry_same }, .{}, error.UnexpectedMessage, .unexpected_message);
+}
+
 test "C2 hello retry request carries a cookie and the second hello repeats the first" {
     const P = Pair(.aes_128_gcm_sha256);
     // A cookie with a group change: fresh share for the requested group only.
@@ -214,6 +223,25 @@ test "C2 client hello without compatibility mode sends no session id and no chan
     try pair.handshake();
     try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.session_id_len);
     try std.testing.expectEqual(@as(usize, 0), pair.peer.seen.ccs);
+}
+
+test "F116 catalogue_compat_ccs_before_first_protected_record (a compatibility-mode client's alert under its handshake keys follows its change_cipher_spec)" {
+    // RFC 8446 appendix D.4: the dummy change_cipher_spec precedes the client's protected
+    // records, so a middlebox sees it before any; an alert refusing the server's flight is the
+    // first of them when it comes before the second flight.
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tamper = .bad_signature }, .{});
+    defer pair.deinit();
+    try std.testing.expectError(error.BadSignature, pair.handshake());
+    try std.testing.expectEqual(Alert.decrypt_error, pair.conn.diagnostics().alert_sent.?);
+    const sent = pair.conn.output();
+    try std.testing.expect(sent.len > 6 + 5);
+    try std.testing.expectEqualSlices(u8, &.{ 20, 3, 3, 0, 1, 1 }, sent[0..6]);
+    try std.testing.expectEqual(@as(u8, 23), sent[6]);
+    // Without compatibility mode there is no change_cipher_spec at all.
+    const plain = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tamper = .bad_signature }, .{ .compat = false });
+    defer plain.deinit();
+    try std.testing.expectError(error.BadSignature, plain.handshake());
+    try std.testing.expectEqual(@as(u8, 23), plain.conn.output()[0]);
 }
 
 test "F105 catalogue_ccs_without_compatibility_mode (a client without a session id drops the server's one change_cipher_spec)" {

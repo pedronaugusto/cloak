@@ -358,12 +358,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try leadingOffers(&w, options, tls13);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
-    var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
-    var g: Writer = .{ .bytes = &group_bytes };
-    // safe: at most every group once, each two bytes.
-    try g.int(u16, @intCast(options.groups.len * 2));
-    for (options.groups) |group| try g.int(u16, @backingInt(group));
-    if (!compress) try extension(&w, 10, group_bytes[0..g.pos]);
+    if (!compress) try supportedGroups(&w, options, tls13);
     // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
     if (tls12) try extension(&w, 11, &.{ 1, 0 });
     const offered: []const SignatureScheme = if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12;
@@ -605,7 +600,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     const legacy_version = try r.int(u16);
     const random = (try r.take(32))[0..32];
     const retry = std.mem.eql(u8, random, &retry_random);
-    const echoed = (try r.vector(u8)).bytes;
+    const echoed = try sessionEcho(&r);
     const suite_id = try r.int(u16);
     if (try r.int(u8) != 0) return error.InvalidHello;
     // An older server may send no extension block at all.
@@ -761,8 +756,11 @@ fn recordSizeAnswer(value: *Reader, options: Options) ParseError!u16 {
 }
 
 /// The one protocol an ALPN answer selects, which must be one this client offered.
+/// The protocol a server selected: one the client offered, and no answer when it offered none
+/// (unsupported_extension, RFC 8446 section 4.2 and RFC 5246 section 7.4.1.4).
 fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     @setRuntimeSafety(true);
+    if (options.alpn.len == 0) return error.UnsolicitedExtension;
     var protocols = try value.vector(u16);
     const alpn = (try protocols.vector(u8)).bytes;
     try protocols.finish();
@@ -805,7 +803,6 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     // No TLS 1.3 field in a TLS 1.2 answer, and no resumption this client did not ask for: an echo
     // of its session id resumes, which it may only with a ticket it sent (RFC 5077 section 3.4).
     if (seen.group or std.mem.eql(u8, random, &retry_random)) return error.InvalidHello;
-    if (echoed.len > 32) return error.InvalidHello;
     const resumed = session.len != 0 and std.mem.eql(u8, echoed, session);
     if (resumed and !seen.session12) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite12, suite_id) orelse return error.UnofferedSelection;
@@ -839,6 +836,33 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
     // safe: at most 258 bytes.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
+}
+
+/// supported_groups: a hello without TLS 1.3 names only the groups TLS 1.2 has, the classical
+/// ones (F118).
+fn supportedGroups(w: *Writer, options: Options, tls13: bool) Writer.WriteError!void {
+    @setRuntimeSafety(true);
+    var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
+    var g: Writer = .{ .bytes = &group_bytes };
+    var listed: usize = 0;
+    for (options.groups) |group| listed += @intFromBool(tls13 or group.classical());
+    // safe: at most every group once, each two bytes.
+    try g.int(u16, @intCast(listed * 2));
+    for (options.groups) |group| if (tls13 or group.classical()) try g.int(u16, @backingInt(group));
+    try extension(w, 10, group_bytes[0..g.pos]);
+}
+
+/// legacy_session_id_echo<0..32>: a longer echo is out of the field's range (decode_error).
+fn sessionEcho(r: *Reader) ParseError![]const u8 {
+    const echoed = (try r.vector(u8)).bytes;
+    if (echoed.len > 32) return error.DecodeError;
+    return echoed;
+}
+
+/// The extensions cloak implements, in either role: any other is one its hellos never carry.
+fn recognized(id: u16) bool {
+    const known = [_]u16{ 0, 10, 11, 13, 14, 16, 18, 19, 20, 23, 27, 28, 34, 35, 41, 42, 43, 44, 45, 49, 51, 54, 57, 0xfd00, Ech.extension_id, 0xff01 };
+    return std.mem.containsAtLeast(u16, &known, 1, &.{id});
 }
 
 /// `ech`: an ECHConfigList the server offered for a retry (RFC 9849 section 7.1).
@@ -875,8 +899,11 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
             Ech.checkList(item.bytes) catch return error.DecodeError;
             ech = item.bytes;
         },
+        // RFC 8446 section 4.2: an answer to an extension the client never sent is
+        // unsupported_extension; the empty acknowledgement with data in it is out of range.
         0 => {
-            if (options.sni.len == 0 or item.bytes.len != 0) return error.InvalidHello;
+            if (options.sni.len == 0) return error.UnsolicitedExtension;
+            if (item.bytes.len != 0) return error.DecodeError;
         },
         10 => {
             var groups: Reader = .{ .bytes = item.bytes };
@@ -886,22 +913,17 @@ pub fn encrypted(message: []const u8, options: Options, ech_sent: bool) ParseErr
         },
         16 => {
             var value: Reader = .{ .bytes = item.bytes };
-            var protocols = try value.vector(u16);
-            alpn = (try protocols.vector(u8)).bytes;
-            try protocols.finish();
+            alpn = try selectedAlpn(&value, options);
             try value.finish();
-            var matched = false;
-            for (options.alpn) |offered| if (std.mem.eql(u8, offered, alpn)) {
-                matched = true;
-            };
-            if (!matched or alpn.len == 0) return error.UnofferedSelection;
         },
         57 => {
-            if (options.transport != .quic) return error.InvalidHello;
+            if (options.transport != .quic) return error.UnsolicitedExtension;
             parameters = item.bytes;
             has_parameters = true;
         },
-        else => return error.InvalidHello,
+        // One cloak knows is out of place here (illegal_parameter); one it does not know it
+        // never sent.
+        else => return if (recognized(item.id)) error.InvalidHello else error.UnsolicitedExtension,
     };
     if ((options.require_alpn or options.transport == .quic) and alpn.len == 0) return error.NoApplicationProtocol;
     if (options.transport == .quic and !has_parameters) return error.MissingExtension;

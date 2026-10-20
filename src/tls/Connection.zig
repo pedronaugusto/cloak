@@ -1345,7 +1345,11 @@ fn checkHeader(self: *Connection) ReceiveError!void {
         23 => {
             if (length > max_content + 256) return error.RecordOverflow;
             // A TLS 1.3 record holds at least its content type and tag; a TLS 1.2 one its tag.
-            if (length < @as(u16, if (sealed12) 16 else 17)) return error.BadRecord;
+            // Declined early data is the exception: any record of it fails deprotection and is
+            // skipped within the bound (RFC 8446 section 4.2.10).
+            const early = !self.early_done and self.hs.earlySkip() != .none;
+            // Before any read key it is a record this end cannot take at all, whatever its length.
+            if (length < @as(u16, if (sealed12) 16 else 17) and !early) return if (self.rx == null) error.UnexpectedRecord else error.BadRecord;
         },
         else => return error.UnexpectedRecord,
     }
