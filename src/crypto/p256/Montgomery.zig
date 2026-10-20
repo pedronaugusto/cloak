@@ -90,7 +90,8 @@ pub fn Field(comptime modulus: u256) type {
         pub const one: Self = .{ .limbs = split(@intCast((@as(u257, 1) << 256) % modulus)) };
 
         comptime {
-            std.debug.assert(modulus & 1 == 1 and modulus >> 255 == 1);
+            std.debug.assert(modulus & 1 == 1);
+            std.debug.assert(modulus >> 255 == 1);
             std.debug.assert(m[0] *% inverse == std.math.maxInt(u64));
             if (special) std.debug.assert(inverse == 1);
         }
