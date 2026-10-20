@@ -4,6 +4,8 @@ pub const Alert = enum(u8) {
     unexpected_message = 10,
     bad_record_mac = 20,
     record_overflow = 22,
+    /// TLS 1.2 (RFC 5246 section 7.2.2); cloak compresses no records, so it only receives it.
+    decompression_failure = 30,
     handshake_failure = 40,
     bad_certificate = 42,
     unsupported_certificate = 43,

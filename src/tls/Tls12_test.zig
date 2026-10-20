@@ -376,7 +376,8 @@ test "C4 TLS 1.2 warnings pass, a few times; TLS 1.3 takes every alert as fatal"
         try std.testing.expectEqual(.tls12, duo.client.info().?.version);
         var buffer: [64]u8 = undefined;
         for (0..3) |_| _ = try duo.client.receive(try duo.server.tx.?.seal(.alert, "\x01\x70", 0, &buffer));
-        try std.testing.expectError(error.PeerAlert, duo.client.receive(try duo.server.tx.?.seal(.alert, "\x01\x70", 0, &buffer)));
+        // The fifth is a flood, refused as this end's (F133).
+        try std.testing.expectError(error.ControlFlood, duo.client.receive(try duo.server.tx.?.seal(.alert, "\x01\x70", 0, &buffer)));
     }
     const duo = try connect(.{});
     defer duo.deinit();

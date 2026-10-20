@@ -841,3 +841,19 @@ test "F123 catalogue_protected_record_before_read_keys_unexpected (a protected r
         try std.testing.expectError(error.UnexpectedRecord, pair.run());
     }
 }
+
+test "F132 catalogue_early_data_between_hello_fragments_unexpected (declined early data is skipped only between messages)" {
+    // RFC 8446 section 5.1: no record of another type comes between a handshake message's
+    // fragments. Declined early data after a retry request is skipped (section 4.2.10), but a
+    // record of it inside the second hello is unexpected_message.
+    const Pair = ServerPair(.aes_128_gcm_sha256);
+    {
+        const pair = try Pair.init(gpa, .{ .early_data = true, .early_records = 1, .shares = &.{.p256}, .tamper = .early_inside_second_hello }, .{ .groups = &.{.x25519} });
+        defer pair.deinit();
+        try std.testing.expectError(error.UnexpectedRecord, pair.run());
+    }
+    // Between the messages it is still skipped.
+    const pair = try Pair.init(gpa, .{ .early_data = true, .early_records = 1, .shares = &.{.p256} }, .{ .groups = &.{.x25519} });
+    defer pair.deinit();
+    try pair.run();
+}

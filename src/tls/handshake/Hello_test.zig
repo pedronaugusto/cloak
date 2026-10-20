@@ -231,3 +231,42 @@ test "F125 catalogue_tls12_server_groups_ignored (supported_groups in a TLS 1.2 
     const plain13 = hello.of(0x1301, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x33\x00\x24\x00\x1d\x00\x20" ++ @as([32]u8, @splat(1)));
     _ = try H.server(&plain13, "", &shares, .{}, .{});
 }
+
+const server13 = struct {
+    fn of(comptime random: [32]u8, comptime exts: []const u8) [4 + 2 + 32 + 1 + 2 + 1 + 2 + exts.len]u8 {
+        const tail: [exts.len]u8 = exts[0..exts.len].*;
+        const body = [_]u8{ 3, 3 } ++ random ++ [_]u8{ 0, 0x13, 0x01, 0, 0, exts.len } ++ tail;
+        return [_]u8{ 2, 0, 0, body.len } ++ body;
+    }
+};
+
+test "F134 catalogue_empty_alpn_selection_decode_error (a selected protocol name of no bytes is decode_error)" {
+    // RFC 7301 section 3.1: ProtocolName<1..2^8-1>; a name out of its range is decode_error
+    // (RFC 8446 section 6.2), not a name the client did not offer.
+    const ee = "\x08\x00\x00\x09\x00\x07\x00\x10\x00\x03\x00\x01\x00";
+    try std.testing.expectError(error.DecodeError, H.encrypted(ee, .{ .alpn = &.{"h2"} }, false));
+    // The same in a TLS 1.2 ServerHello.
+    const tls12_body = [_]u8{ 3, 3 } ++ @as([32]u8, @splat(0x11)) ++ [_]u8{ 0, 0xc0, 0x2b, 0, 0, 16 } ++ "\x00\x17\x00\x00".* ++ "\xff\x01\x00\x01\x00".* ++ "\x00\x10\x00\x03\x00\x01\x00".*;
+    const tls12 = [_]u8{ 2, 0, 0, tls12_body.len } ++ tls12_body;
+    try std.testing.expectError(error.DecodeError, H.server(&tls12, "", &.{}, .{ .max_version = .tls12, .alpn = &.{"h2"} }, .{}));
+}
+
+test "F135 catalogue_empty_retry_cookie_decode_error (a retry request's empty cookie is decode_error)" {
+    // RFC 8446 section 4.2.2: Cookie's cookie<1..2^16-1>; empty is out of its range, decode_error
+    // (section 6.2).
+    const empty = server13.of(H.retry_random, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x2c\x00\x02\x00\x00");
+    try std.testing.expectError(error.DecodeError, H.server(&empty, "", &shares, .{}, .{}));
+    const one = server13.of(H.retry_random, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x2c\x00\x03\x00\x01\x07");
+    try std.testing.expect((try H.server(&one, "", &shares, .{}, .{})).tls13.retry);
+}
+
+test "F136 catalogue_server_hello_without_key_share_missing_extension (a TLS 1.3 ServerHello without the share its mode needs is missing_extension)" {
+    // cloak's client offers only psk_dhe_ke (RFC 8446 section 4.2.9), so every TLS 1.3
+    // ServerHello it takes carries key_share: one without it lacks an extension mandatory for the
+    // negotiated parameters, missing_extension (section 6.2).
+    const bare = server13.of(@splat(0x11), "\x00\x2b\x00\x02\x03\x04");
+    try std.testing.expectError(error.MissingExtension, H.server(&bare, "", &shares, .{}, .{}));
+    // A retry request that changes nothing stays illegal_parameter (RFC 8446 section 4.1.4).
+    const retry = server13.of(H.retry_random, "\x00\x2b\x00\x02\x03\x04");
+    try std.testing.expectError(error.InvalidHello, H.server(&retry, "", &shares, .{}, .{}));
+}

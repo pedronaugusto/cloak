@@ -632,6 +632,36 @@ test "F129 catalogue_alert_any_level_error_alert (an alert whose level is not wa
     try std.testing.expectEqual(@as(?Alert, null), pair.conn.diagnostics().alert_sent);
 }
 
+test "F133 catalogue_warning_flood_refused_here (past the warnings passed over, the next is a flood this end refuses, not the peer's alert)" {
+    // A warning ends nothing (RFC 5246 section 7.2): the bound on how many are passed over is
+    // this end's, so the one past it is answered unexpected_message as ControlFlood, the
+    // peer's alert kept in the diagnostics.
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tickets = 0 }, .{});
+    defer pair.deinit();
+    try pair.handshake();
+    for (0..4) |_| try pair.peer.sealOne(.alert, "\x01\x5a");
+    try pair.peer.sealOne(.application, "ok");
+    var buf: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), try pair.read(&buf));
+    try pair.peer.sealOne(.alert, "\x01\x5a");
+    try std.testing.expectError(error.ControlFlood, pair.read(&buf));
+    try std.testing.expectEqual(@as(?Alert, .user_canceled), pair.conn.diagnostics().alert_received);
+    try std.testing.expectEqual(@as(?Alert, .unexpected_message), pair.conn.diagnostics().alert_sent);
+}
+
+test "F137 catalogue_empty_plaintext_record_unexpected (a plaintext change_cipher_spec, alert or handshake record of no bytes is unexpected_message)" {
+    // RFC 8446 section 5: a change_cipher_spec other than the single byte 0x01 is
+    // unexpected_message; section 5.1 and RFC 5246 section 6.2.1: handshake and alert fragments
+    // are never empty, as F97 has them under protection. Not record_overflow: nothing overflows.
+    for ([_][]const u8{ "\x14\x03\x03\x00\x00", "\x15\x03\x03\x00\x00", "\x16\x03\x03\x00\x00" }) |record| {
+        const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+        defer pair.deinit();
+        _ = try pair.service();
+        try std.testing.expectError(error.UnexpectedRecord, pair.conn.receive(record));
+        try std.testing.expectEqual(@as(?Alert, .unexpected_message), pair.conn.diagnostics().alert_sent);
+    }
+}
+
 test "F45 catalogue_finished_entropy_failure_is_never_success" {
     const P = Pair(.aes_128_gcm_sha256);
     // Entropy failing at the first request ends the connection before a hello is sent.

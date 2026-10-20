@@ -650,11 +650,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 ech = item.bytes[0..8];
                 value.pos = 8;
             },
-            44 => {
-                if (!retry) return error.InvalidHello;
-                cookie = (try value.vector(u16)).bytes;
-                if (cookie.len == 0 or cookie.len > 4096) return error.InvalidHello;
-            },
+            44 => cookie = try retryCookie(&value, retry),
             // The rest belong to a TLS 1.2 ServerHello (`answers12`).
             client_certificate_type, server_certificate_type => try types.read(item.id, &value, options),
             0 => if (options.sni.len == 0) return error.UnsolicitedExtension,
@@ -714,11 +710,24 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = answered.connection_id } };
 }
 
+/// A retry request's cookie, which only a retry request carries: cookie<1..2^16-1> (RFC 8446
+/// section 4.2.2), so an empty one is out of its range; past 4096 bytes is this end's bound.
+fn retryCookie(value: *Reader, retry: bool) ParseError![]const u8 {
+    if (!retry) return error.InvalidHello;
+    const cookie = (try value.vector(u16)).bytes;
+    if (cookie.len == 0) return error.DecodeError;
+    if (cookie.len > 4096) return error.InvalidHello;
+    return cookie;
+}
+
 /// The group a TLS 1.3 ServerHello or retry request selects, checked against the client's
 /// groups and shares: a ServerHello answers a share sent, a retry asks for one not sent.
 fn selectedGroup(group: ?Group, share: []const u8, shares: []const Share, retry: bool, options: Options) ParseError!Group {
     @setRuntimeSafety(true);
-    const selected = group orelse return error.InvalidHello;
+    // This client offers psk_dhe_ke alone, so a ServerHello lacks a mandatory key_share
+    // (missing_extension, RFC 8446 section 6.2); a retry request asking for nothing changes
+    // nothing (illegal_parameter, section 4.1.4).
+    const selected = group orelse return if (retry) error.InvalidHello else error.MissingExtension;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
     if (options.require_hybrid and !selected.hybrid()) return error.HybridRequired;
     var shared = false;
@@ -783,7 +792,9 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     var protocols = try value.vector(u16);
     const alpn = (try protocols.vector(u8)).bytes;
     try protocols.finish();
-    for (options.alpn) |offered| if (std.mem.eql(u8, offered, alpn) and alpn.len != 0) return alpn;
+    // ProtocolName<1..2^8-1> (RFC 7301 section 3.1): an empty name is out of its range.
+    if (alpn.len == 0) return error.DecodeError;
+    for (options.alpn) |offered| if (std.mem.eql(u8, offered, alpn)) return alpn;
     return error.UnofferedSelection;
 }
 

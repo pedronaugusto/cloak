@@ -4,6 +4,19 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- `Alert.decompression_failure` (30), TLS 1.2's (RFC 5246 section 7.2.2), so a peer's alert of it is named in `Diagnostics`; cloak compresses no records and never sends it.
+
+### Fixed
+
+- Declined early data is skipped only between handshake messages: a record of it between the fragments of the hello that answers a retry request is unexpected_message (RFC 8446 section 5.1). It was skipped. F132.
+- A warning past the four passed over is `ControlFlood`, answered with unexpected_message, the peer's warning kept in `Diagnostics`: it was reported as the peer's `PeerAlert` and the connection closed with no alert, though the warning ended nothing (RFC 5246 section 7.2). F133.
+- An empty protocol name selected by a server's ALPN is decode_error (ProtocolName<1..2^8-1>, RFC 7301 section 3.1); it was illegal_parameter, as a name not offered. F134.
+- An empty cookie in a HelloRetryRequest is decode_error (cookie<1..2^16-1>, RFC 8446 section 4.2.2); it was illegal_parameter. F135.
+- A TLS 1.3 ServerHello without key_share is missing_extension (RFC 8446 section 6.2): cloak's client offers psk_dhe_ke alone, so every ServerHello it takes needs one. It was illegal_parameter. A retry request asking for nothing stays illegal_parameter (section 4.1.4). F136.
+- An empty plaintext change_cipher_spec, alert or handshake record is unexpected_message (RFC 8446 sections 5 and 5.1, RFC 5246 section 6.2.1); it was record_overflow, though nothing overflows. F137.
+
 ## [0.17.8] - 2026-10-20
 
 ### Fixed

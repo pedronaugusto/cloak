@@ -1342,11 +1342,13 @@ fn checkHeader(self: *Connection) ReceiveError!void {
     const version_ok = std.mem.eql(u8, self.head[1..3], &.{ 3, 3 }) or (plaintext and self.head[1] == 3);
     if (!version_ok) return error.UnexpectedRecord;
     switch (kind) {
-        20 => if (length == 0 or length > max_content) return error.RecordOverflow,
+        // An empty change_cipher_spec, alert or handshake fragment is a record this end cannot
+        // take (RFC 8446 sections 5 and 5.1, RFC 5246 section 6.2.1), not one that overflows.
+        20 => if (length == 0) return error.UnexpectedRecord else if (length > max_content) return error.RecordOverflow,
         21, 22 => if (sealed12) {
             if (length > max_content + 256) return error.RecordOverflow;
             if (length < 16) return error.BadRecord;
-        } else if (length == 0 or length > max_content) return error.RecordOverflow,
+        } else if (length == 0) return error.UnexpectedRecord else if (length > max_content) return error.RecordOverflow,
         23 => {
             if (length > max_content + 256) return error.RecordOverflow;
             // A TLS 1.3 record holds at least its content type and tag; a TLS 1.2 one its tag.
@@ -1449,8 +1451,10 @@ fn openRecord(self: *Connection) Error!void {
     }
 }
 
-/// Passes over one record of declined early data, within the bound.
+/// Passes over one record of declined early data, within the bound, and only between messages:
+/// nothing comes between a handshake message's fragments (RFC 8446 section 5.1).
 fn skipEarly(self: *Connection, len: usize) Error!void {
+    if (self.message_total != 0 or self.header_have != 0) return error.UnexpectedRecord;
     self.early_skipped += len;
     if (self.early_skipped > max_early_skip) return error.EarlyDataLimit;
     self.record_have = 0;
@@ -1492,9 +1496,11 @@ fn onAlert(self: *Connection) ReceiveError!void {
         self.settlePhase();
         return;
     }
-    // A warning is passed over a few times, then the run of them is a flood.
+    // A warning is passed over a few times, then the run of them is a flood: this end's bound,
+    // refused as such (the peer's warning ended nothing).
     const ignorable = alert == .user_canceled or (alert != .close_notify and self.hs.warningsAllowed());
-    if (ignorable and warning and self.alerts_ignored < 4) {
+    if (ignorable and warning) {
+        if (self.alerts_ignored == 4) return error.ControlFlood;
         self.alerts_ignored += 1;
         return;
     }

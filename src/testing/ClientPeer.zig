@@ -68,6 +68,9 @@ pub const Tamper = enum {
     /// A plaintext fatal alert (unknown_ca) in place of the second flight: a client refusing the
     /// server's flight before it writes under its keys.
     plaintext_alert,
+    /// The hello that answers a retry request split in two records with a record of early data
+    /// (undecryptable) between them.
+    early_inside_second_hello,
 };
 
 pub const Config = struct {
@@ -405,7 +408,13 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             try self.transcript.commit(message);
             self.hellos_sent += 1;
             const version = if (second) 0x0303 else self.config.first_record_version;
-            if (self.config.tamper == .fragmented_hello and self.config.fragment != 0) {
+            if (second and self.config.tamper == .early_inside_second_hello) {
+                try self.plainRecord(22, version, message[0..16]);
+                var body: [64]u8 = undefined;
+                self.rng.random().bytes(&body);
+                try self.plainRecord(23, 0x0303, &body);
+                try self.plainRecord(22, version, message[16..]);
+            } else if (self.config.tamper == .fragmented_hello and self.config.fragment != 0) {
                 var at: usize = 0;
                 while (at < message.len) : (at += self.config.fragment) {
                     try self.plainRecord(22, version, message[at..@min(message.len, at + self.config.fragment)]);
