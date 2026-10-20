@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.7] - 2026-10-20
+
 ### Fixed
 
 - A client in middlebox compatibility mode sends its change_cipher_spec as soon as it has the ServerHello, before any record under its handshake keys (RFC 8446 appendix D.4): an alert refusing the server's flight went out encrypted with no change_cipher_spec before it, which a middlebox, and BoringSSL's runner, reads as a protocol error. F116.
