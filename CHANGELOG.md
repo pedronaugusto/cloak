@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.17.9] - 2026-10-20
+
 ### Added
 
 - `Alert.decompression_failure` (30), TLS 1.2's (RFC 5246 section 7.2.2), so a peer's alert of it is named in `Diagnostics`; cloak compresses no records and never sends it.
