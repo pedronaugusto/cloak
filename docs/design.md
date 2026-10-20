@@ -382,7 +382,10 @@ exportable after a failure.
 
 Key updates. The write side sends KeyUpdate under the old key and then switches,
 before the record or byte budget can run out; the read side asks the peer to update
-when its own budget runs low. Budgets default to 2^24 records and 2^38 bytes per
+when its own budget runs low. A peer's request is answered with one KeyUpdate before the
+next application data, so requests that arrive while this end is silent get one answer
+(RFC 8446 section 4.6.3); under a kernel holding the write keys, which sends that data
+unseen, the answer goes at once. Budgets default to 2^24 records and 2^38 bytes per
 epoch and direction; tests lower them.
 
 Memory. A running handshake holds one scratch block (offered key shares, the
@@ -1533,3 +1536,11 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F121 | `catalogue_field_out_of_range_decode_error` | `tls/handshake/Hello_test.zig`, `tls/handshake/Messages_test.zig` | the session id echo, empty ticket and server_name data answered illegal_parameter, as before (found by BoGo) |
 | F122 | `catalogue_second_retry_unexpected_first` | `tls/Connection_test.zig` | the retry's contents judged before its being a second one, as before (found by BoGo's SecondHelloRetryRequest-TLS13) |
 | F123 | `catalogue_protected_record_before_read_keys_unexpected` | `tls/Resumption_test.zig` | the short-record check answering bad_record_mac before any read key, as before (found by BoGo's SkipEarlyData-OmitEarlyDataExtension-HelloRetryRequest-TLS13) |
+| F124 | `catalogue_empty_exporter_label` | `tls/crypto/Labels_test.zig`, `tls/crypto/Prf_test.zig` | the empty label refused in HKDF-Expand-Label and the TLS 1.2 exporter, as before (found re-auditing BoGo's disablings: RFC 8446 7.5 takes the label format from RFC 5705 4, which sets no minimum) |
+| F125 | `catalogue_tls12_server_groups_ignored` | `tls/handshake/Hello_test.zig` | supported_groups in any ServerHello illegal_parameter, as before (found re-auditing BoGo's SupportedCurves-ServerHello-TLS12: no TLS 1.2 text forbids it) |
+| F126 | `catalogue_update_requests_one_answer` | `tls/Connection_test.zig` | the answer owed at once, as before (found re-auditing BoGo's KeyUpdate-Requested: RFC 8446 4.6.3, requests while silent get a single update) |
+| F127 | `catalogue_quic_parameters_off_quic_unsupported` | `tls/handshake/ClientHello_test.zig`, `tls/handshake/Hello_test.zig` | the parameters taken by a stream server and answered illegal_parameter by a stream client, as before (RFC 9001 8.2) |
+| F128 | `catalogue_tls12_hello_no_session_id_unresumed` | `tls/Tls12_test.zig` | the compatibility session id in every stream hello, as before (found by BoGo's TLS12NoSessionID-TLS13; RFC 5246 7.4.1.2) |
+| F129 | `catalogue_alert_any_level_error_alert` | `tls/Connection_test.zig` | a level outside warning and fatal answered unexpected_message, as before (found by BoGo's SendBogusAlertType; RFC 8446 6.2) |
+| F130 | `catalogue_client_hello_ends_its_record` | `tls/Tls12_test.zig` | the received ClientHello's edges without the record boundary, as before (found by BoGo's Partial*WithClientHello rows; RFC 8446 5.1) |
+| F131 | `catalogue_key_shares_in_group_order` | `tls/Pq_test.zig` | the two initial shares in a fixed order, as before (found by BoGo's MLKEMKeyShareIncluded*-X25519MLKEM768; RFC 8446 4.2.8) |

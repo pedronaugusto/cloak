@@ -473,10 +473,12 @@ test "C3 server key updates, tickets and application data under fresh keys" {
     try pair.client.keyUpdate(true);
     try pair.client.send("after client update");
     try std.testing.expectEqualSlices(u8, "after client update", buf[0..try pair.read(&buf)]);
+    // The answer waits for the server's next application data (RFC 8446 section 4.6.3).
     try pair.flush();
-    try std.testing.expectEqual(@as(usize, 1), pair.client.key_updates_seen);
+    try std.testing.expectEqual(@as(usize, 0), pair.client.key_updates_seen);
     _ = try pair.conn.send("server data");
     try pair.flush();
+    try std.testing.expectEqual(@as(usize, 1), pair.client.key_updates_seen);
     try std.testing.expectEqualSlices(u8, "server data", pair.client.received.items);
     // A server-initiated update asking for a reply.
     try pair.conn.keyUpdate(true);

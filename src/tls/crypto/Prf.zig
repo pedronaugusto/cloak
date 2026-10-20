@@ -76,10 +76,11 @@ pub fn checkFinished(comptime Hash: type, master: *const [master_length]u8, clie
 pub const ExportError = error{ InvalidLabel, ReservedLabel };
 
 /// RFC 5705 exporter over the extended master secret: PRF(master, label, client_random ||
-/// server_random [|| uint16 length || context]). Labels the TLS PRF itself uses are refused.
+/// server_random [|| uint16 length || context]). Labels the TLS PRF itself uses are refused; an
+/// empty one is taken (RFC 5705 section 4 sets no minimum).
 pub fn exporter(comptime Hash: type, out: []u8, master: *const [master_length]u8, label: []const u8, client_random: *const [32]u8, server_random: *const [32]u8, context: ?[]const u8) ExportError!void {
     @setRuntimeSafety(true);
-    if (label.len == 0 or label.len > 255) return error.InvalidLabel;
+    if (label.len > 255) return error.InvalidLabel;
     for ([_][]const u8{ "client finished", "server finished", "master secret", "extended master secret", "key expansion" }) |reserved| {
         if (std.mem.eql(u8, label, reserved)) return error.ReservedLabel;
     }

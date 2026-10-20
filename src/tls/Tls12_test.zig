@@ -434,3 +434,46 @@ test "C4 an output popped from the queue leaves no key bytes behind" {
     }
     try std.testing.expect(!flight.pop(&out));
 }
+
+test "F128 catalogue_tls12_hello_no_session_id_unresumed (a TLS 1.2-only hello resuming nothing has an empty session id)" {
+    // RFC 5246 section 7.4.1.2: the session id is empty when no session is available; the random
+    // one of middlebox compatibility is TLS 1.3's (RFC 8446 appendix D.4).
+    for ([_]Duo.Options{ one12, .{} }) |options| {
+        const duo = try Duo.init(std.testing.allocator, options);
+        defer duo.deinit();
+        try duo.serveClient();
+        const hello = duo.client.output();
+        // The record header, the message header, legacy_version and the random.
+        const at = 5 + 4 + 2 + 32;
+        try std.testing.expect(hello.len > at);
+        try std.testing.expectEqual(@as(u8, if (options.client_max == .tls12) 0 else 32), hello[at]);
+    }
+}
+
+test "F130 catalogue_client_hello_ends_its_record (a ClientHello sharing its record with the start of another message is unexpected_message)" {
+    // RFC 8446 section 5.1: a ClientHello can precede a key change, so it must end its record;
+    // bytes of the client's next message beside it were sent before the server's answer.
+    var buffer: [2048]u8 = undefined;
+    // A TLS 1.2 hello and the first byte of a ClientKeyExchange.
+    {
+        const duo = try Duo.init(std.testing.allocator, .{});
+        defer duo.deinit();
+        const hello = helloRecord(&buffer, 0x0303, &.{0}, plain12);
+        buffer[hello.len] = 16;
+        std.mem.writeInt(u16, buffer[3..5], @intCast(hello.len - 5 + 1), .big);
+        try std.testing.expectError(error.RecordAlignment, duo.server.receive(buffer[0 .. hello.len + 1]));
+        try std.testing.expectEqual(@as(?@import("wire/Alert.zig").Alert, .unexpected_message), duo.server.diagnostics().alert_sent);
+    }
+    // A TLS 1.3 hello and the first byte of a Finished.
+    {
+        const duo = try Duo.init(std.testing.allocator, .{});
+        defer duo.deinit();
+        try duo.serveClient();
+        const hello = duo.client.output();
+        @memcpy(buffer[0..hello.len], hello);
+        buffer[hello.len] = 20;
+        std.mem.writeInt(u16, buffer[3..5], @intCast(hello.len - 5 + 1), .big);
+        try std.testing.expectError(error.RecordAlignment, duo.server.receive(buffer[0 .. hello.len + 1]));
+        try std.testing.expectEqual(@as(?@import("wire/Alert.zig").Alert, .unexpected_message), duo.server.diagnostics().alert_sent);
+    }
+}

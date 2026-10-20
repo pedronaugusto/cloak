@@ -439,6 +439,25 @@ test "C2 a bad client signature from the signer never reaches the wire" {
     try std.testing.expect(!pair.peer.client_finished_ok);
 }
 
+test "F126 catalogue_update_requests_one_answer (requests received while silent get one KeyUpdate, before the next application data: RFC 8446 4.6.3)" {
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tickets = 0 }, .{});
+    defer pair.deinit();
+    try pair.handshake();
+    for (0..5) |_| try pair.peer.keyUpdate(true);
+    try pair.peer.send("after five");
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "after five", buf[0..try pair.read(&buf)]);
+    // While the client is silent nothing is owed: no answer goes out yet.
+    try std.testing.expect(!pair.conn.owes());
+    try pair.flush();
+    try std.testing.expectEqual(@as(usize, 0), pair.peer.key_updates_seen);
+    // Its next application data goes after one KeyUpdate, under the next keys.
+    _ = try pair.conn.send("reply");
+    try pair.flush();
+    try std.testing.expectEqual(@as(usize, 1), pair.peer.key_updates_seen);
+    try std.testing.expectEqualSlices(u8, "reply", pair.peer.received.items);
+}
+
 test "C2 key updates in both directions keep data flowing under fresh keys" {
     const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tickets = 0 }, .{});
     defer pair.deinit();
@@ -448,11 +467,13 @@ test "C2 key updates in both directions keep data flowing under fresh keys" {
     try pair.peer.keyUpdate(true);
     try pair.peer.send("after peer update");
     try std.testing.expectEqualSlices(u8, "after peer update", buf[0..try pair.read(&buf)]);
+    // The answer waits for the client's next application data (RFC 8446 section 4.6.3).
     try pair.flush();
-    try std.testing.expectEqual(@as(usize, 1), pair.peer.key_updates_seen);
+    try std.testing.expectEqual(@as(usize, 0), pair.peer.key_updates_seen);
     // The client's reply moved its write keys; data under them still opens at the peer.
     _ = try pair.conn.send("client data");
     try pair.flush();
+    try std.testing.expectEqual(@as(usize, 1), pair.peer.key_updates_seen);
     try std.testing.expectEqualSlices(u8, "client data", pair.peer.received.items);
     // A client-initiated update asking for a reply.
     try pair.conn.keyUpdate(true);
@@ -588,6 +609,27 @@ test "F39 catalogue_clienthello_close_notify_no_spin" {
     try std.testing.expectError(error.PeerAlert, fatal.conn.receive("\x15\x03\x03\x00\x02\x02\x28"));
     try std.testing.expectEqual(@as(?Alert, .handshake_failure), fatal.conn.diagnostics().alert_received);
     try std.testing.expectEqual(@as(?Alert, null), fatal.conn.diagnostics().alert_sent);
+}
+
+test "F129 catalogue_alert_any_level_error_alert (an alert whose level is not warning is the peer's error alert: the connection closes unanswered)" {
+    // RFC 8446 section 6.2: alerts are error alerts when received regardless of their level, and
+    // upon receipt of one the connection closes at once; a level TLS 1.2 does not define (RFC
+    // 5246 section 7.2) warns of nothing either.
+    const clear = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{});
+    defer clear.deinit();
+    _ = try clear.service();
+    try std.testing.expectError(error.PeerAlert, clear.conn.receive("\x15\x03\x03\x00\x02\x42\x0a"));
+    try std.testing.expectEqual(@as(?Alert, .unexpected_message), clear.conn.diagnostics().alert_received);
+    try std.testing.expectEqual(@as(?Alert, null), clear.conn.diagnostics().alert_sent);
+    // Protected, after the handshake.
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{ .tickets = 0 }, .{});
+    defer pair.deinit();
+    try pair.handshake();
+    try pair.peer.sealOne(.alert, "\x42\x0a");
+    var buf: [8]u8 = undefined;
+    try std.testing.expectError(error.PeerAlert, pair.read(&buf));
+    try std.testing.expectEqual(@as(?Alert, .unexpected_message), pair.conn.diagnostics().alert_received);
+    try std.testing.expectEqual(@as(?Alert, null), pair.conn.diagnostics().alert_sent);
 }
 
 test "F45 catalogue_finished_entropy_failure_is_never_success" {

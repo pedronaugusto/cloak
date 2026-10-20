@@ -198,3 +198,29 @@ fn defaultGroups(comptime T: type) []const Group {
     }
     unreachable;
 }
+
+test "F131 catalogue_key_shares_in_group_order (the hello's key shares follow supported_groups' order)" {
+    // RFC 8446 section 4.2.8: each KeyShareEntry MUST appear in the same order as its group in
+    // supported_groups. cloak's two initial shares go in the order the groups are listed.
+    const ClientHello = @import("handshake/ClientHello.zig");
+    for ([_][]const Group{ &.{ .x25519, .x25519_mlkem768 }, &.{ .x25519_mlkem768, .x25519 }, &.{ .p256, .x25519, .x25519_mlkem768 } }) |groups| {
+        const duo = try Duo.init(gpa, .{ .client_groups = groups });
+        defer duo.deinit();
+        try duo.serveClient();
+        const hello = try ClientHello.parse(duo.client.output()[5..], .stream);
+        var shares = hello.shares;
+        var last: usize = 0;
+        var count: usize = 0;
+        while (shares.len != 0) : (count += 1) {
+            const id = std.mem.readInt(u16, shares[0..2], .big);
+            const len = std.mem.readInt(u16, shares[2..4], .big);
+            shares = shares[4 + len ..];
+            var at: usize = 0;
+            while (at < hello.groups.len and std.mem.readInt(u16, hello.groups[at..][0..2], .big) != id) at += 2;
+            try std.testing.expect(at < hello.groups.len);
+            if (count != 0) try std.testing.expect(at > last);
+            last = at;
+        }
+        try std.testing.expectEqual(@as(usize, 2), count);
+    }
+}

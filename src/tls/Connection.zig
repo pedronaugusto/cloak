@@ -612,11 +612,16 @@ fn sealRecord(self: *Connection, content: Protection.Content, body: []const u8, 
 
 // ---------------------------------------------------------------- outbound
 
-/// Whether the read half owes the write half something to send: a KeyUpdate, a warning, the
-/// fatal alert of a failure. `output` writes it. A read-modify-write, so that a task that
-/// releases the write half and then asks cannot miss what the other task owed meanwhile.
+/// Whether the read half owes the write half something to send now: a KeyUpdate asking for the
+/// peer's, a warning, the fatal alert of a failure, a post-handshake answer. `output` writes it.
+/// The KeyUpdate answering the peer's request waits for the next application data, which `send`
+/// writes it before: requests received while this end is silent get one answer (RFC 8446 section
+/// 4.6.3). A kernel holding the write keys sends that data unseen, so there the answer is owed at
+/// once. A read-modify-write, so that a task that releases the write half and then asks cannot
+/// miss what the other task owed meanwhile.
 pub fn owes(self: *Connection) bool {
-    return self.owed.fetchOr(0, .seq_cst) != 0;
+    const bits = self.owed.fetchOr(0, .seq_cst);
+    return bits & ~owe_key_update != 0 or (bits != 0 and self.tx_kernel);
 }
 
 /// Ciphertext to write to the transport, after what the read half owes is written.
@@ -1475,7 +1480,11 @@ fn onAlert(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
     const body = self.record[self.plain_pos..self.plain_end];
     self.clearRecord();
-    if (body.len != 2 or (body[0] != 1 and body[0] != 2)) return error.UnexpectedRecord;
+    if (body.len != 2) return error.UnexpectedRecord;
+    // Only a warning can be passed over: any other level makes an error alert, as RFC 8446
+    // section 6.2 has every alert whatever its level, and a level TLS 1.2 does not define (RFC
+    // 5246 section 7.2) warns of nothing.
+    const warning = body[0] == 1;
     const alert: Alert = @fromBackingInt(@intCast(body[1]));
     self.alert_received.store(@backingInt(alert), .release);
     if (alert == .close_notify and self.phase() == .connected) {
@@ -1485,7 +1494,7 @@ fn onAlert(self: *Connection) ReceiveError!void {
     }
     // A warning is passed over a few times, then the run of them is a flood.
     const ignorable = alert == .user_canceled or (alert != .close_notify and self.hs.warningsAllowed());
-    if (ignorable and body[0] == 1 and self.alerts_ignored < 4) {
+    if (ignorable and warning and self.alerts_ignored < 4) {
         self.alerts_ignored += 1;
         return;
     }

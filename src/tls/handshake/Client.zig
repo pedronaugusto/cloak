@@ -498,10 +498,13 @@ fn initialGroups(self: *const Client) struct { groups: [2]?Group, count: usize }
         out[0] = classical;
         return .{ .groups = out, .count = 1 };
     }
-    for ([_]Group{ .x25519_mlkem768, .x25519 }) |group| {
-        if (std.mem.containsAtLeast(Group, self.options.hello.groups, 1, &.{group})) {
+    // X25519MLKEM768 and X25519 when listed, in the order listed: shares follow supported_groups
+    // (RFC 8446 section 4.2.8).
+    for (self.options.hello.groups) |group| {
+        if (group == .x25519_mlkem768 or group == .x25519) {
             out[count] = group;
             count += 1;
+            if (count == out.len) break;
         }
     }
     if (count == 0) {
@@ -511,9 +514,11 @@ fn initialGroups(self: *const Client) struct { groups: [2]?Group, count: usize }
     return .{ .groups = out, .count = count };
 }
 
-/// A legacy session id: for middleboxes, or to see a TLS 1.2 ticket accepted (RFC 5077 section 3.4).
+/// A legacy session id: for middleboxes in a hello offering TLS 1.3 (RFC 8446 appendix D.4), or to
+/// see a TLS 1.2 ticket accepted (RFC 5077 section 3.4). Otherwise it is empty: a TLS 1.2 hello
+/// resuming nothing has no session to name (RFC 5246 section 7.4.1.2).
 fn sendsSessionId(self: *const Client) bool {
-    return self.options.compat or self.offered12 != null;
+    return (self.options.compat and self.options.hello.allows13()) or self.offered12 != null;
 }
 
 fn initialEntropy(self: *const Client) usize {

@@ -55,7 +55,7 @@ test "C2 schedule invalid phases never expose prior output" {
         try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
         try schedule.application(&@as([H.digest_length]u8, @splat(3)), &traffic);
         try schedule.complete(&@as([H.digest_length]u8, @splat(4)));
-        try std.testing.expectError(error.InvalidLabel, schedule.exportBytes(&out, "", "context"));
+        try std.testing.expectError(error.InvalidLabel, schedule.exportBytes(&out, &@as([250]u8, @splat('a')), "context"));
         try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
     }
 }

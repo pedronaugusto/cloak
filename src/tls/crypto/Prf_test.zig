@@ -40,3 +40,12 @@ test "C4 TLS 1.2 Finished checks its length and value and the exporter refuses P
     // An empty context is not the same as no context (RFC 5705 section 4).
     try std.testing.expect(!std.mem.eql(u8, &out, &with_context));
 }
+
+test "F124 catalogue_empty_exporter_label (TLS 1.2's exporter takes an empty label: RFC 5705 4 sets no minimum)" {
+    // OpenSSL 4.0.3: `openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt hexsecret:07..07
+    // -kdfopt hexseed:<32 x 01><32 x 02> TLS1-PRF`, the PRF over the empty label and both randoms.
+    const master: [48]u8 = @splat(7);
+    var out: [32]u8 = undefined;
+    try Prf.exporter(std.crypto.hash.sha2.Sha256, &out, &master, "", &@as([32]u8, @splat(1)), &@as([32]u8, @splat(2)), null);
+    try std.testing.expectEqualSlices(u8, &unhex("df55ffe2499145734b5297121de748ca27ae28ba0cb929e1f52a732fff1e58bc"), &out);
+}

@@ -18,10 +18,13 @@ pub const Prefix = enum {
 pub fn expand(comptime Hash: type, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) ExpandError!void {
     return expandWith(Hash, .tls13, out, secret, label, context);
 }
+/// A label may be empty: an exporter's label is the caller's, and RFC 8446 7.5 takes its format
+/// from RFC 5705 section 4, which sets no minimum (7.1's label<7..255> floor fits the schedule's
+/// own labels, none of them empty). The ceiling is the wire's: six prefix bytes and 249 more.
 pub fn expandWith(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) ExpandError!void {
     @setRuntimeSafety(true);
     const Hmac = std.crypto.auth.hmac.Hmac(Hash);
-    if (label.len == 0 or label.len > 249 or context.len > 255 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
+    if (label.len > 249 or context.len > 255 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
     var info: [514]u8 = undefined;
     // safe: HKDF output is bounded by 255 * Hash.digest_length, below u16 max.
     std.mem.writeInt(u16, info[0..2], @intCast(out.len), .big);

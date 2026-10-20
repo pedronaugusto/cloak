@@ -200,3 +200,34 @@ test "F121 catalogue_field_out_of_range_decode_error (a session id echo past 32 
     message[4 + 34 + 1 + 33 + 1] = 0x01;
     try std.testing.expectError(error.DecodeError, H.server(&message, "", &shares, .{}, .{}));
 }
+
+test "F125 catalogue_tls12_server_groups_ignored (supported_groups in a TLS 1.2 ServerHello is taken and ignored; in TLS 1.3 it stays illegal_parameter)" {
+    // No TLS 1.2 text forbids a server's supported_groups (RFC 8422 section 5.2 defines
+    // ec_point_formats alone for the ServerHello and refuses nothing else; RFC 5246 section
+    // 7.4.1.4 refuses only extensions the client did not send). RFC 8446 section 4.2's table
+    // lists it for ClientHello and EncryptedExtensions, so a TLS 1.3 ServerHello carrying it is
+    // illegal_parameter (InvalidHello).
+    const hello = struct {
+        fn of(comptime suite: u16, comptime exts: []const u8) [4 + 2 + 32 + 1 + 2 + 1 + 2 + exts.len]u8 {
+            const tail: [exts.len]u8 = exts[0..exts.len].*;
+            const body = [_]u8{ 3, 3 } ++ @as([32]u8, @splat(0x11)) ++ [_]u8{ 0, suite >> 8, suite & 0xff, 0, 0, exts.len } ++ tail;
+            return [_]u8{ 2, 0, 0, body.len } ++ body;
+        }
+    };
+    const groups = "\x00\x0a\x00\x04\x00\x02\x00\x1d";
+    const tls12 = hello.of(0xc02b, "\x00\x17\x00\x00" ++ "\xff\x01\x00\x01\x00" ++ groups);
+    switch (try H.server(&tls12, "", &.{}, .{ .max_version = .tls12 }, .{})) {
+        .tls12 => |parsed| try std.testing.expectEqual(@as(u16, 0xc02b), @backingInt(parsed.suite)),
+        .tls13 => return error.TestUnexpectedResult,
+    }
+    const tls13 = hello.of(0x1301, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x33\x00\x24\x00\x1d\x00\x20" ++ @as([32]u8, @splat(1)) ++ groups);
+    try std.testing.expectError(error.InvalidHello, H.server(&tls13, "", &shares, .{}, .{}));
+    // F127: quic_transport_parameters in a ServerHello: a stream client never sent it
+    // (unsupported_extension, RFC 9001 section 8.2); a QUIC one has it in EncryptedExtensions.
+    const quic13 = hello.of(0x1301, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x33\x00\x24\x00\x1d\x00\x20" ++ @as([32]u8, @splat(1)) ++ "\x00\x39\x00\x00");
+    try std.testing.expectError(error.UnsolicitedExtension, H.server(&quic13, "", &shares, .{}, .{}));
+    try std.testing.expectError(error.InvalidHello, H.server(&quic13, "", &shares, .{ .transport = .quic, .alpn = &.{"h3"}, .parameters = "x" }, .{}));
+    // Without it the same TLS 1.3 ServerHello is taken.
+    const plain13 = hello.of(0x1301, "\x00\x2b\x00\x02\x03\x04" ++ "\x00\x33\x00\x24\x00\x1d\x00\x20" ++ @as([32]u8, @splat(1)));
+    _ = try H.server(&plain13, "", &shares, .{}, .{});
+}

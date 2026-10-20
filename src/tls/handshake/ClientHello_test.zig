@@ -13,7 +13,7 @@ fn encode(out: []u8, options: Hello.Options, session: []const u8, cookie: []cons
 test "C3 client hello parser reads what the client encoder writes" {
     var out: [4096]u8 = undefined;
     const wire = try encode(&out, .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .transport = .quic, .parameters = "tp" }, "", "");
-    const hello = try ClientHello.parse(wire, .stream);
+    const hello = try ClientHello.parse(wire, .quic);
     try std.testing.expectEqualSlices(u8, "example.com", hello.server_name);
     try std.testing.expect(hello.offers13() and !hello.offers12());
     try std.testing.expect(hello.offersSuite(0x1301) and hello.offersSuite(0x1303) and hello.offersSuite(0x1302));
@@ -323,4 +323,13 @@ test "F112 catalogue_server_name_ranges_decode_error (an empty server_name list 
     try std.testing.expectError(error.IllegalParameter, ClientHello.parse(helloWith(&out, "\x00\x00\x00\x0c\x00\x0a\x00\x00\x07a b c.d"), .stream));
     const hello = try ClientHello.parse(helloWith(&out, "\x00\x00\x00\x0c\x00\x0a\x00\x00\x07a-b.c.d"), .stream);
     try std.testing.expectEqualSlices(u8, "a-b.c.d", hello.server_name);
+}
+
+test "F127 catalogue_quic_parameters_off_quic_unsupported (quic_transport_parameters on another carrier is unsupported_extension)" {
+    // RFC 9001 section 8.2: a fatal unsupported_extension alert MUST be sent when the extension
+    // is received and the transport is not QUIC.
+    var out: [256]u8 = undefined;
+    try std.testing.expectError(error.UnsolicitedExtension, ClientHello.parse(helloWith(&out, "\x00\x39\x00\x00"), .stream));
+    const hello = try ClientHello.parse(helloWith(&out, "\x00\x39\x00\x00"), .quic);
+    try std.testing.expectEqual(@as(usize, 0), hello.parameters.?.len);
 }

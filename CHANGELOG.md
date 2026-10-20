@@ -4,6 +4,17 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- An exporter takes an empty label, in TLS 1.3 and TLS 1.2: RFC 8446 section 7.5 takes its labels' format from RFC 5705 section 4, which sets no minimum, and BoringSSL, OpenSSL and Go export under one. It was refused as `InvalidLabel`. F124.
+- A TLS 1.2 ServerHello carrying supported_groups is taken, the extension ignored: no TLS 1.2 text forbids it and some servers send it. It was refused with illegal_parameter. In a TLS 1.3 ServerHello it stays illegal_parameter (RFC 8446 section 4.2). F125.
+- KeyUpdate requests received while this end is silent get one KeyUpdate, sent before its next application data (RFC 8446 section 4.6.3); each request was answered at once with a KeyUpdate of its own. Under a kernel holding the write keys the answer still goes at once, since the kernel sends that data unseen. F126.
+- quic_transport_parameters off QUIC is unsupported_extension (RFC 9001 section 8.2): a server on a stream or datagram ignored it in a ClientHello, and a stream client answered it in a ServerHello with illegal_parameter. F127.
+- A hello offering TLS 1.2 alone and resuming nothing has an empty session id (RFC 5246 section 7.4.1.2); it carried the random one of middlebox compatibility, which is TLS 1.3's (RFC 8446 appendix D.4). F128.
+- An alert whose level is not warning is an error alert: the connection closes and nothing answers it (RFC 8446 section 6.2, every alert whatever its level). A level outside warning and fatal was answered with unexpected_message. F129.
+- A received ClientHello must end its record (RFC 8446 section 5.1): the bytes of a next message beside it, which the client sent before the server answered, are unexpected_message. A partial Finished or ClientKeyExchange after a ClientHello in one record was taken. F130.
+- A client's initial key shares follow the order of its supported_groups (RFC 8446 section 4.2.8): with X25519 listed before X25519MLKEM768, the hybrid share still went first. F131.
+
 ## [0.17.7] - 2026-10-20
 
 ### Fixed

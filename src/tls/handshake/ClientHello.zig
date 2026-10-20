@@ -8,6 +8,7 @@ const Transport = @import("../crypto/Suite.zig").Transport;
 
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     InvalidHello,
+    UnsolicitedExtension,
     IllegalParameter,
     MissingExtension,
     NoSecureRenegotiation,
@@ -235,7 +236,11 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
             }) |entry| if (entry.bytes.len == 0) return error.DecodeError;
             self.has_shares = true;
         },
-        57 => self.parameters = bytes,
+        57 => {
+            // Off QUIC it is unsupported_extension (RFC 9001 section 8.2).
+            if (self.transport != .quic) return error.UnsolicitedExtension;
+            self.parameters = bytes;
+        },
         35 => self.session_ticket = bytes,
         0xfe0d => self.ech = bytes,
         27 => {

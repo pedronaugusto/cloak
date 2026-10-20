@@ -110,7 +110,7 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
         pub fn exportBytes(self: *const Self, out: []u8, label: []const u8, context: []const u8) ExportError!void {
             @setRuntimeSafety(true);
             if (self.phase != .complete) return error.WrongPhase;
-            if (label.len == 0 or label.len > 249 or context.len > 65535 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
+            if (label.len > 249 or context.len > 65535 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
             var derived = Secret.init(undefined);
             defer derived.deinit();
             expand(self.prefix, derived.exposeMut(), self.exporter.expose(), label, &emptyHash());
@@ -138,7 +138,7 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             return hash;
         }
         fn expand(prefix: Labels.Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) void {
-            // unreachable: internal labels are nonempty, <=249 bytes, contexts and outputs are hash-sized.
+            // unreachable: internal labels are <=249 bytes, contexts and outputs are hash-sized.
             Labels.expandWith(Hash, prefix, out, secret, label, context) catch unreachable;
         }
     };

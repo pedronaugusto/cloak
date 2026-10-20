@@ -44,7 +44,7 @@ test "F45 catalogue_finished_entropy_failure_is_never_success" {
         }
         try std.testing.expectError(error.BadFinished, L.checkFinished(Hash, .tls13, &traffic, &transcript, valid[1..]));
         var out: [256]u8 = @splat(0xa5);
-        try std.testing.expectError(error.InvalidLabel, L.expand(Hash, &out, &traffic, "", ""));
+        try std.testing.expectError(error.InvalidLabel, L.expand(Hash, &out, &traffic, &@as([250]u8, @splat('a')), ""));
         try std.testing.expect(std.mem.allEqual(u8, &out, 0xa5));
         try L.expand(Hash, &out, &traffic, "exporter", &transcript);
         var info: [9 + 8 + 1 + Hash.digest_length]u8 = undefined;
@@ -57,4 +57,14 @@ test "F45 catalogue_finished_entropy_failure_is_never_success" {
         std.crypto.kdf.hkdf.Hkdf(std.crypto.auth.hmac.Hmac(Hash)).expand(&oracle, &info, traffic);
         try std.testing.expectEqualSlices(u8, &oracle, &out);
     }
+}
+
+test "F124 catalogue_empty_exporter_label (an exporter's empty label expands: RFC 8446 7.5 takes its labels' format from RFC 5705 4, which sets no minimum)" {
+    // OpenSSL 4.0.3: `openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt mode:EXPAND_ONLY
+    // -kdfopt hexkey:0b..0b -kdfopt hexinfo:0020 06 "tls13 " 20 SHA-256("") HKDF`.
+    const secret: [32]u8 = @splat(0x0b);
+    const empty = hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    var out: [32]u8 = undefined;
+    try L.expand(H, &out, &secret, "", &empty);
+    try std.testing.expectEqualSlices(u8, &hex("09a5e1579ecc1b1972236d60fd24f6dd0d2b1803d08ba43bcf8b461a65c6c04a"), &out);
 }

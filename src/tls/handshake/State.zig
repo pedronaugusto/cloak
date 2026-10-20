@@ -279,9 +279,11 @@ pub const client_lines = [_]Line(ClientState){
 };
 
 pub const server_lines = [_]Line(ServerState){
-    .{ .from = .start, .on = .client_hello, .to = .hello, .rule = init_rule },
+    // A received ClientHello ends its record: it can precede a key change (RFC 8446 section 5.1),
+    // and bytes beside it were sent before this server answered.
+    .{ .from = .start, .on = .client_hello, .to = .hello, .rule = init_end },
     .{ .from = .hello, .on = .hello_retry, .to = .retry, .rule = init_end },
-    .{ .from = .retry, .on = .client_hello, .to = .hello, .rule = init_rule },
+    .{ .from = .retry, .on = .client_hello, .to = .hello, .rule = init_end },
     .{ .from = .hello, .on = .server_hello, .to = .extensions, .rule = init_end },
     .{ .from = .extensions, .on = .encrypted_extensions, .to = .certificate_request },
     .{ .from = .hello, .on = .resumed, .to = .hello_psk, .rule = decision },

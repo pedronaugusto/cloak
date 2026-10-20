@@ -621,6 +621,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var types: CertificateTypes = .{};
     var scts: ?[]const u8 = null;
     var record_size_limit: ?u16 = null;
+    var groups_answered = false;
     while (try ext.next()) |item| {
         var value: Reader = .{ .bytes = item.bytes };
         only12 = only12 or answers12(item.id);
@@ -681,9 +682,19 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 if ((try value.vector(u8)).bytes.len != 0) return error.NoSecureRenegotiation;
                 renegotiation = true;
             },
-            // One this client sends that has no place in a ServerHello is illegal_parameter; one
-            // it never sends is unsupported_extension (RFC 5246 section 7.4.1.4, RFC 8446 section 4.2).
-            10, 13, 45, 57 => return error.InvalidHello,
+            // supported_groups: RFC 8446 section 4.2 has no place for it in a TLS 1.3 ServerHello
+            // (checked below); no TLS 1.2 text forbids it, so a TLS 1.2 one is ignored.
+            10 => {
+                groups_answered = true;
+                value.pos = item.bytes.len;
+            },
+            // One this client sends that a server must not send is illegal_parameter
+            // (signature_algorithms RFC 5246 section 7.4.1.4.1, psk_key_exchange_modes RFC 8446
+            // section 4.2.9; QUIC's parameters belong in EncryptedExtensions, RFC 9001 section
+            // 8.2); one it never sends is unsupported_extension (RFC 5246 section 7.4.1.4, RFC
+            // 8446 section 4.2), QUIC's parameters off QUIC among them (RFC 9001 section 8.2).
+            13, 45 => return error.InvalidHello,
+            57 => return if (options.transport == .quic) error.InvalidHello else error.UnsolicitedExtension,
             else => return error.UnsolicitedExtension,
         }
         try value.finish();
@@ -692,13 +703,21 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     if (!version13 and psk) return error.InvalidHello;
     if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = scts, .record_size_limit = record_size_limit }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
-    if (only12 or answered.srtp != null) return error.InvalidHello;
+    if (only12 or groups_answered or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
     const echo = if (options.transport == .datagram) "" else session;
     if (legacy_version != options.transport.legacy() or !std.mem.eql(u8, echoed, echo)) return error.InvalidHello;
     const suite = std.enums.fromInt(Suite13, suite_id) orelse return error.UnofferedSelection;
     if (!options.offers13(suite)) return error.UnofferedSelection;
     if (retry and group == null and cookie.len != 0) return .{ .tls13 = .{ .suite = suite, .group = null, .share = "", .retry = true, .cookie = cookie, .ech = ech } };
+    const selected = try selectedGroup(group, share, shares, retry, options);
+    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = answered.connection_id } };
+}
+
+/// The group a TLS 1.3 ServerHello or retry request selects, checked against the client's
+/// groups and shares: a ServerHello answers a share sent, a retry asks for one not sent.
+fn selectedGroup(group: ?Group, share: []const u8, shares: []const Share, retry: bool, options: Options) ParseError!Group {
+    @setRuntimeSafety(true);
     const selected = group orelse return error.InvalidHello;
     if (!std.mem.containsAtLeast(Group, options.groups, 1, &.{selected})) return error.UnofferedSelection;
     if (options.require_hybrid and !selected.hybrid()) return error.HybridRequired;
@@ -711,7 +730,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     } else {
         if (!shared or share.len != selected.serverShareLength()) return error.InvalidHello;
     }
-    return .{ .tls13 = .{ .suite = suite, .group = selected, .share = share, .retry = retry, .cookie = cookie, .psk = psk, .ech = ech, .connection_id = answered.connection_id } };
+    return selected;
 }
 
 /// A ServerHello's answers to a datagram hello's connection_id and use_srtp.
