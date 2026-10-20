@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-21
+
 ### Added
 
 - certificate_authorities (RFC 8446 section 4.2.4; the TLS 1.2 CertificateRequest's field, RFC 5246 section 7.4.4), both roles, every carrier. A received list is a preference in credential choice, never a refusal: of the credentials the peer can take, the first whose chain has a certificate issued by a named authority (its issuer Name equal to a named one, as Go decides) answers, else the first. A server reads the ClientHello's names in its credential walk; a client reads a CertificateRequest's (the handshake's, a post-handshake one, TLS 1.2's). Names are sent only when the caller lists them: `certificate_authorities` at a client (in a hello offering TLS 1.3; an ECH hello's inner one alone) and at a server (in every CertificateRequest), DER Names, at most `tls.max_authorities_bytes` (8 KiB) on the wire. F139, F140.
