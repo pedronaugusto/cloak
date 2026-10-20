@@ -73,7 +73,7 @@ test "F138 catalogue_certificate_authorities_decoded (a CertificateRequest's cer
         const request = M.certificateRequest(message(13, body[0 .. head.len + case.body.len], &out));
         if (case.ok) {
             try std.testing.expectEqualSlices(u8, "\x00\x03\x30\x01\x00", (try request).authorities.?);
-        } else try std.testing.expectError(error.InvalidMessage, request);
+        } else try std.testing.expectError(error.DecodeError, request);
     }
 }
 

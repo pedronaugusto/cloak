@@ -33,6 +33,8 @@ pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     MissingExtension,
     IllegalParameter,
     UnexpectedMessage,
+    /// An extension's body that does not decode as its type defines it.
+    DecodeError,
 };
 
 /// Splits a message into type and body after checking the enclosing length exactly.
@@ -152,7 +154,7 @@ pub fn certificateRequest(message: []const u8) ParseError!CertificateRequest {
     var authorities: ?[]const u8 = null;
     while (try ext.next()) |item| {
         if (item.id == Authorities.extension) {
-            authorities = Authorities.parse(item.bytes) catch return error.InvalidMessage;
+            authorities = try Authorities.parse(item.bytes);
             continue;
         }
         if (item.id != 13 and item.id != delegated_credential) continue;
