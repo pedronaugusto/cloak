@@ -8,6 +8,7 @@ const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Messages = @import("Messages.zig");
+const Authorities = @import("Authorities.zig");
 
 pub const ParseError = Messages.ParseError;
 pub const BuildError = Messages.BuildError;
@@ -134,11 +135,13 @@ pub fn signedParams(out: *[max_signed]u8, client_random: *const [32]u8, server_r
     return out[0 .. 64 + params.len];
 }
 
-/// A TLS 1.2 CertificateRequest: certificate types, signature schemes and CA names. Names are
-/// a hint cloak does not use for selection.
+/// A TLS 1.2 CertificateRequest: certificate types, signature schemes and CA names.
 pub const CertificateRequest = struct {
     types: []const u8,
     schemes: []const u8,
+    /// certificate_authorities (RFC 5246 section 7.4.4): the names the server trusts, each with
+    /// its two-byte length; null for an empty list. A preference in the client's credential choice.
+    authorities: ?[]const u8 = null,
 
     pub fn accepts(self: CertificateRequest, scheme: u16) bool {
         @setRuntimeSafety(true);
@@ -157,17 +160,16 @@ pub fn certificateRequest(message: []const u8) ParseError!CertificateRequest {
     var r: Reader = .{ .bytes = parsed.bytes };
     const types = (try r.vector(u8)).bytes;
     const schemes = (try r.vector(u16)).bytes;
-    var names = try r.vector(u16);
+    const names = (try r.vector(u16)).bytes;
     try r.finish();
     if (types.len == 0 or schemes.len < 2 or schemes.len % 2 != 0) return error.InvalidMessage;
-    while (names.pos != names.bytes.len) {
-        if ((try names.vector(u16)).bytes.len == 0) return error.InvalidMessage;
-    }
-    return .{ .types = types, .schemes = schemes };
+    Authorities.check(names) catch return error.InvalidMessage;
+    return .{ .types = types, .schemes = schemes, .authorities = if (names.len == 0) null else names };
 }
 
-/// Asks for an ECDSA or RSA client certificate signed with one of `schemes`; no CA names.
-pub fn buildCertificateRequest(out: []u8, schemes: []const u16) BuildError![]u8 {
+/// Asks for an ECDSA or RSA client certificate signed with one of `schemes`, naming `authorities`
+/// (DER Names, checked by `Authorities.validate`).
+pub fn buildCertificateRequest(out: []u8, schemes: []const u16, authorities: []const []const u8) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try Messages.header(&w, .certificate_request);
@@ -176,7 +178,9 @@ pub fn buildCertificateRequest(out: []u8, schemes: []const u16) BuildError![]u8 
     // safe: the scheme table holds a dozen entries.
     try w.int(u16, @intCast(schemes.len * 2));
     for (schemes) |scheme| try w.int(u16, scheme);
-    try w.int(u16, 0);
+    // safe: `Authorities.validate` bounds the names to `max_bytes`.
+    try w.int(u16, @intCast(Authorities.wireLength(authorities)));
+    try Authorities.write(&w, authorities);
     return Messages.seal(&w);
 }
 

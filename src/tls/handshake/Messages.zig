@@ -3,6 +3,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
+const Authorities = @import("Authorities.zig");
 const Extensions = @import("../wire/Extensions.zig");
 
 pub const Type = enum(u8) {
@@ -123,6 +124,9 @@ pub const CertificateRequest = struct {
     schemes: []const u8,
     /// delegated_credential's SignatureSchemeList body (RFC 9345 section 4.1.2), when sent.
     delegated: ?[]const u8 = null,
+    /// certificate_authorities (RFC 8446 section 4.2.4): the names the server trusts, each with
+    /// its two-byte length, when sent.
+    authorities: ?[]const u8 = null,
 
     /// Whether the server accepts a given scheme for the client's CertificateVerify.
     pub fn accepts(self: CertificateRequest, scheme: u16) bool {
@@ -145,7 +149,12 @@ pub fn certificateRequest(message: []const u8) ParseError!CertificateRequest {
     try r.finish();
     var schemes: ?[]const u8 = null;
     var delegated: ?[]const u8 = null;
+    var authorities: ?[]const u8 = null;
     while (try ext.next()) |item| {
+        if (item.id == Authorities.extension) {
+            authorities = Authorities.parse(item.bytes) catch return error.InvalidMessage;
+            continue;
+        }
         if (item.id != 13 and item.id != delegated_credential) continue;
         var value: Reader = .{ .bytes = item.bytes };
         const list = (try value.vector(u16)).bytes;
@@ -153,7 +162,7 @@ pub fn certificateRequest(message: []const u8) ParseError!CertificateRequest {
         if (list.len < 2 or list.len % 2 != 0) return error.InvalidMessage;
         if (item.id == 13) schemes = list else delegated = list;
     }
-    return .{ .context = context, .schemes = schemes orelse return error.MissingExtension, .delegated = delegated };
+    return .{ .context = context, .schemes = schemes orelse return error.MissingExtension, .delegated = delegated, .authorities = authorities };
 }
 
 pub const CertificateVerify = struct { scheme: u16, signature: []const u8 };
@@ -293,20 +302,29 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
     return seal(&w);
 }
 
-/// A CertificateRequest with an empty context asking for these signature schemes, and with
-/// delegated_credential listing `delegated` when it is not empty (RFC 9345 section 4.1.2).
 /// A CertificateRequest: empty `context` in the handshake, the request's own after it (RFC 8446
-/// section 4.3.2).
-pub fn buildCertificateRequest(out: []u8, context: []const u8, schemes: []const u16, delegated: []const u16) BuildError![]u8 {
+/// section 4.3.2), asking for these signature schemes, with delegated_credential listing
+/// `delegated` when it is not empty (RFC 9345 section 4.1.2) and certificate_authorities naming
+/// `authorities` when it is not empty (RFC 8446 section 4.2.4; checked by `Authorities.validate`).
+pub fn buildCertificateRequest(out: []u8, context: []const u8, schemes: []const u16, delegated: []const u16, authorities: []const []const u8) BuildError![]u8 {
     @setRuntimeSafety(true);
     var w: Writer = .{ .bytes = out };
     try header(&w, .certificate_request);
     try w.vector(u8, context);
     const delegated_len: usize = if (delegated.len != 0) 6 + delegated.len * 2 else 0;
-    // safe: each extension is six bytes of header and its list, bounded by the scheme table.
-    try w.int(u16, @intCast(6 + schemes.len * 2 + delegated_len));
+    const names_len = Authorities.wireLength(authorities);
+    const authorities_len: usize = if (authorities.len != 0) 6 + names_len else 0;
+    // safe: each extension is six bytes of header and its list, bounded by the scheme table and
+    // `Authorities.max_bytes`.
+    try w.int(u16, @intCast(6 + schemes.len * 2 + delegated_len + authorities_len));
     try schemeList(&w, 13, schemes);
     if (delegated.len != 0) try schemeList(&w, delegated_credential, delegated);
+    if (authorities.len != 0) {
+        try w.int(u16, Authorities.extension);
+        try w.int(u16, @intCast(2 + names_len));
+        try w.int(u16, @intCast(names_len));
+        try Authorities.write(&w, authorities);
+    }
     return seal(&w);
 }
 

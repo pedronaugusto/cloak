@@ -90,6 +90,8 @@ options: Options,
 now: std.Io.Timestamp = .fromNanoseconds(1_000_000_000),
 trust: certificates.Trust,
 snapshot: certificates.Trust.Snapshot,
+/// The client's one credential as its table.
+client_credentials: [1]@import("../tls/handshake/Client.zig").Credential = undefined,
 identity: certificates.Identity,
 credential: [1]Datagram.Credential = undefined,
 client_auth: ?certificates.ClientAuth = null,
@@ -137,7 +139,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .min_version = options.client_min,
         .max_version = options.client_max,
         .groups = options.groups,
-        .auth = self.client_auth,
+        .credentials = self.credentialsOf(self.client_auth),
         .resumption = if (options.cache) |cache| .{ .cache = cache } else null,
         .mtu = options.mtu,
         .generation = .fromRaw(21),
@@ -174,6 +176,12 @@ fn startServer(self: *Pair, admission: ?Cookies.Admission) !void {
     self.credential = .{.{ .identity = self.identity }};
     self.server.dtls = try Datagram.server(self.gpa, self.serverOptions(), admission);
     self.server_ready = true;
+}
+
+/// `auth` as a one-credential table, or none.
+fn credentialsOf(self: *Pair, auth: ?certificates.ClientAuth) []const @import("../tls/handshake/Client.zig").Credential {
+    self.client_credentials[0] = .{ .auth = auth orelse return &.{} };
+    return &self.client_credentials;
 }
 
 pub fn deinit(self: *Pair) void {

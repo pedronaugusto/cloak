@@ -346,7 +346,7 @@ test "C10 session answers a post-handshake CertificateRequest from the reading t
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
     var settings = options(snapshot);
-    settings.auth = auth;
+    settings.credentials = &.{.{ .auth = auth }};
     settings.post_handshake_auth = true;
     try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
     defer session.deinit();

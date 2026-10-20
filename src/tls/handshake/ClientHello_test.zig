@@ -333,3 +333,20 @@ test "F127 catalogue_quic_parameters_off_quic_unsupported (quic_transport_parame
     const hello = try ClientHello.parse(helloWith(&out, "\x00\x39\x00\x00"), .quic);
     try std.testing.expectEqual(@as(usize, 0), hello.parameters.?.len);
 }
+
+test "F138 catalogue_certificate_authorities_decoded (a ClientHello's certificate_authorities is an authorities<3..2^16-1> of names<1..2^16-1> filling its extension, else decode_error)" {
+    // RFC 8446 section 4.2.4: `DistinguishedName authorities<3..2^16-1>`, each
+    // `opaque DistinguishedName<1..2^16-1>`. Unread before (BoGo's RejectEmptyCertificateAuthorities
+    // and ExtensionTrailingData-CertificateAuthorities rows, server side).
+    var out: [256]u8 = undefined;
+    // An empty list.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x02\x00\x00"), .stream));
+    // An empty name.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x04\x00\x02\x00\x00"), .stream));
+    // A name running past its list.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x05\x00\x03\x00\x05\x30"), .stream));
+    // A byte after the list.
+    try std.testing.expectError(error.DecodeError, ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x08\x00\x05\x00\x03\x30\x01\x00\xff"), .stream));
+    const hello = try ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x07\x00\x05\x00\x03\x30\x01\x00"), .stream);
+    try std.testing.expectEqualSlices(u8, "\x00\x03\x30\x01\x00", hello.authorities.?);
+}

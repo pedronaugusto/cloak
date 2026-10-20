@@ -33,6 +33,7 @@ const Ticket = @import("../resumption/Ticket.zig");
 const Ech = @import("Ech.zig");
 const Compression = @import("Compression.zig");
 const Psk = @import("Psk.zig");
+const Authorities = @import("Authorities.zig");
 const Hpke = @import("../crypto/Hpke.zig");
 
 pub const Epoch = Flight.Epoch;
@@ -95,6 +96,11 @@ pub const Options = struct {
     client_auth: Auth = .none,
     /// How a presented client chain is checked; `none` accepts any chain unauthenticated.
     client_verify: Verify = .none,
+    /// certificate_authorities (RFC 8446 section 4.2.4; TLS 1.2's field, RFC 5246 section 7.4.4):
+    /// the DER Names of the anchors `client_verify` trusts that every CertificateRequest names, a
+    /// client's preference among its credentials; borrowed. None by default; at most
+    /// `Authorities.max_bytes` on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// The CertificateRequest takes a client's delegated credential (RFC 9345 section 4.1.2):
     /// TLS 1.3, with full verification of the client's chain.
     accept_delegated: bool = false,
@@ -335,6 +341,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
     if (options.ech_keys.len != 0 and (options.max_version != .tls13 or options.transport == .datagram)) return error.InvalidOptions;
     if (options.post_handshake_auth and (options.max_version != .tls13 or options.transport != .stream)) return error.InvalidOptions;
+    // Names go in a CertificateRequest: a server that never sends one has nowhere to put them.
+    Authorities.validate(options.certificate_authorities) catch return error.InvalidOptions;
+    if (options.certificate_authorities.len != 0 and options.client_auth == .none and !options.post_handshake_auth) return error.InvalidOptions;
     const self = try gpa.create(Server);
     errdefer gpa.destroy(self);
     // The credential table is copied; the names it points at and the identities (retained below)
@@ -549,8 +558,10 @@ pub fn rejectVerification(self: *Server) void {
 pub fn signRequest(self: *const Server) SignRequest {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    if (self.version == .tls12) return .{ .scheme = self.scheme, .content = scratch.params12[0..scratch.params12_len] };
-    return .{ .scheme = self.scheme, .content = scratch.sign_content[0..scratch.sign_content_len] };
+    // safe: at most 32 credentials.
+    const credential: u8 = @intCast(self.credential);
+    if (self.version == .tls12) return .{ .scheme = self.scheme, .content = scratch.params12[0..scratch.params12_len], .credential = credential };
+    return .{ .scheme = self.scheme, .content = scratch.sign_content[0..scratch.sign_content_len], .credential = credential };
 }
 
 /// Checks the signature against the credential's public key before it is used.
@@ -716,11 +727,12 @@ fn takesForm(hello: *const ClientHello, identity: certificates.Identity) bool {
 
 /// The credential a client is answered with (RFC 8446 section 4.4.2.2, RFC 5246 section 7.4.2),
 /// in `self.credential` and `self.scheme`: among the credentials answering its name (each, when
-/// none does and `unknown_name` is `.first`), the first in the server's order of a form the
-/// client takes that the version's `fit` (`fits13`, `Server12.fits12`) takes. A credential of
-/// another name is never taken: the client would refuse it. Without one, the refusal is the
-/// furthest a candidate got: unsupported_certificate only when none is of a form the client
-/// takes, `fit`'s refusal otherwise.
+/// none does and `unknown_name` is `.first`), those of a form the client takes that the version's
+/// `fit` (`fits13`, `Server12.fits12`) takes; of them the first in the server's order that chains
+/// to an authority the client names (RFC 8446 section 4.2.4, a preference), else the first. A
+/// credential of another name is never taken: the client would refuse it. Without one, the
+/// refusal is the furthest a candidate got: unsupported_certificate only when none is of a form
+/// the client takes, `fit`'s refusal otherwise.
 pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: anytype) Client.Error!Possession.Fit {
     @setRuntimeSafety(true);
     const named = for (self.options.credentials) |credential| {
@@ -728,6 +740,7 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
     } else false;
     if (!named and self.options.unknown_name == .reject) return error.UnrecognizedName;
     var refusal: Client.Error = error.UnsupportedCertificate;
+    var pick: Authorities.Pick(Possession.Fit) = .{};
     for (self.options.credentials, 0..) |credential, i| {
         if (named and !answers(credential, hello.server_name)) continue;
         if (!takesForm(hello, credential.identity)) continue;
@@ -735,11 +748,12 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
             if (refusal == error.UnsupportedCertificate) refusal = err;
             continue;
         };
-        self.credential = i;
-        self.scheme = found.scheme;
-        return found;
+        if (pick.offer(i, found, Authorities.prefers(credential.identity, hello.authorities))) break;
     }
-    return refusal;
+    const chosen = pick.chosen() orelse return refusal;
+    self.credential = chosen.index;
+    self.scheme = chosen.value.scheme;
+    return chosen.value;
 }
 
 /// RFC 8449 for the hello this server answers: the client's record_size_limit bounds the records
@@ -1319,8 +1333,8 @@ fn sendRequest(self: *Server) Client.Error!void {
     const credential_list = if (self.options.accept_delegated) Delegation.offered(self.options.require_pq_auth) else &.{};
     var delegated: [Delegation.schemes.len]u16 = undefined;
     for (credential_list, delegated[0..credential_list.len]) |scheme, *slot| slot.* = @backingInt(scheme);
-    const dst = try self.reserve(128);
-    const message = try Messages.buildCertificateRequest(dst, "", schemes[0..allowed.len], delegated[0..credential_list.len]);
+    const dst = try self.reserve(128 + Authorities.wireLength(self.options.certificate_authorities));
+    const message = try Messages.buildCertificateRequest(dst, "", schemes[0..allowed.len], delegated[0..credential_list.len], self.options.certificate_authorities);
     try self.state.advance(.certificate_request, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message);
 }
@@ -1574,7 +1588,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             try k.schedule.complete(scratch.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
             // Every later exchange starts from the transcript through this Finished.
-            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth);
+            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.certificate_authorities);
         },
     }
     try self.push(.{ .secret = .{ .direction = .read, .epoch = .application, .traffic = self.app_read.? } });

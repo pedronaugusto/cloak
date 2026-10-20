@@ -250,7 +250,7 @@ test "F61 catalogue_kci_static_dh_and_role_reflection" {
     try std.testing.expectEqual(error.NoSharedSuite, serverRefuses(clientHello12(&hello, &.{ 0xc004, 0xc00e, 0x0030 }, &.{0}, modern)));
     // A certificate request asking for fixed-ECDH client certificates gets no certificate.
     var cr: [128]u8 = undefined;
-    const request = try Messages12.buildCertificateRequest(&cr, &.{0x0403});
+    const request = try Messages12.buildCertificateRequest(&cr, &.{0x0403}, &.{});
     cr[4..7].* = .{ 2, 65, 66 };
     _ = try Messages12.certificateRequest(request);
 }

@@ -23,6 +23,7 @@ const Hello = @import("Hello.zig");
 const Flight = @import("Flight.zig");
 const Messages = @import("Messages.zig");
 const Messages12 = @import("Messages12.zig");
+const Authorities = @import("Authorities.zig");
 const Possession = @import("Possession.zig");
 const Transcripts = @import("Transcripts.zig");
 const Ticket = @import("../resumption/Ticket.zig");
@@ -389,7 +390,8 @@ fn sendKeyExchange(self: anytype, signature: []const u8) Error!void {
     if (self.options.client_auth != .none) {
         var schemes: [Hello.schemes12_verify.len]u16 = undefined;
         for (Hello.schemes12_verify, &schemes) |scheme, *slot| slot.* = @backingInt(scheme);
-        const request = try Messages12.buildCertificateRequest(try self.reserve(64), &schemes);
+        const authorities = self.options.certificate_authorities;
+        const request = try Messages12.buildCertificateRequest(try self.reserve(64 + Authorities.wireLength(authorities)), &schemes, authorities);
         try self.state.advance(.certificate_request, .initial, .parsed, true);
         try self.queueMessage(.initial, request);
     }

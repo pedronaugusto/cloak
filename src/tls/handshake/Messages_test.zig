@@ -44,13 +44,37 @@ test "C2 messages certificate request needs signature_algorithms and an even sch
     try std.testing.expect(!parsed.accepts(0x0807));
     try std.testing.expectEqual(@as(usize, 0), parsed.context.len);
     var other: [64]u8 = undefined;
-    try std.testing.expectError(error.MissingExtension, M.certificateRequest(message(13, &.{ 0, 0, 4, 0, 47, 0, 0 }, &other)));
+    try std.testing.expectError(error.MissingExtension, M.certificateRequest(message(13, &.{ 0, 0, 4, 0, 0xff, 0, 0 }, &other)));
     try std.testing.expectError(error.InvalidMessage, M.certificateRequest(message(13, &.{ 0, 0, 7, 0, 13, 0, 3, 0, 1, 4 }, &other)));
     try std.testing.expectError(error.InvalidMessage, M.certificateRequest(message(13, &.{ 0, 0, 6, 0, 13, 0, 2, 0, 0 }, &other)));
     try std.testing.expectError(error.DuplicateExtension, M.certificateRequest(message(13, &.{ 0, 0, 16, 0, 13, 0, 4, 0, 2, 4, 3, 0, 13, 0, 4, 0, 2, 8, 7 }, &other)));
     // A nonempty context parses (post-handshake requests use it); the handshake rejects it.
     const with_context = try M.certificateRequest(message(13, &.{ 2, 'h', 'i', 0, 8, 0, 13, 0, 4, 0, 2, 4, 3 }, &other));
     try std.testing.expectEqualSlices(u8, "hi", with_context.context);
+}
+
+test "F138 catalogue_certificate_authorities_decoded (a CertificateRequest's certificate_authorities is an authorities<3..2^16-1> of names<1..2^16-1> filling its extension, else decode_error)" {
+    // RFC 8446 section 4.2.4; unread before (BoGo's RejectEmptyCertificateAuthorities and
+    // ExtensionTrailingData-CertificateAuthorities rows, client side).
+    var out: [64]u8 = undefined;
+    // signature_algorithms, then certificate_authorities with the body given.
+    const cases = [_]struct { body: []const u8, ok: bool }{
+        .{ .body = "\x00\x00", .ok = false },
+        .{ .body = "\x00\x02\x00\x00", .ok = false },
+        .{ .body = "\x00\x03\x00\x05\x30", .ok = false },
+        .{ .body = "\x00\x05\x00\x03\x30\x01\x00\xff", .ok = false },
+        .{ .body = "\x00\x05\x00\x03\x30\x01\x00", .ok = true },
+    };
+    for (cases) |case| {
+        var body: [48]u8 = undefined;
+        const head = [_]u8{ 0, 0, @intCast(12 + case.body.len), 0, 13, 0, 4, 0, 2, 4, 3, 0, 47, 0, @intCast(case.body.len) };
+        @memcpy(body[0..head.len], &head);
+        @memcpy(body[head.len..][0..case.body.len], case.body);
+        const request = M.certificateRequest(message(13, body[0 .. head.len + case.body.len], &out));
+        if (case.ok) {
+            try std.testing.expectEqualSlices(u8, "\x00\x03\x30\x01\x00", (try request).authorities.?);
+        } else try std.testing.expectError(error.InvalidMessage, request);
+    }
 }
 
 test "C2 messages certificate verify and finished are exact" {

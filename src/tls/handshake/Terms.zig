@@ -5,6 +5,7 @@ const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
+const Delegation = @import("Delegation.zig");
 
 pub const Limits = struct {
     /// One handshake message, header included.
@@ -57,4 +58,22 @@ pub const Need = union(enum) {
 
 /// What a key held elsewhere must sign. `prehashed` content is already the digest of the
 /// scheme's hash (a TLS 1.2 CertificateVerify signs the transcript hash); sign it as is.
-pub const SignRequest = struct { scheme: Hello.SignatureScheme, content: []const u8, prehashed: bool = false };
+pub const SignRequest = struct {
+    scheme: Hello.SignatureScheme,
+    content: []const u8,
+    prehashed: bool = false,
+    /// The credential that signs: its index in the server's or the client's credentials.
+    credential: u8 = 0,
+};
+
+/// A certificate chain or raw public key a client can present, with its delegated credential.
+pub const ClientCredential = struct {
+    auth: certificates.ClientAuth,
+    /// A delegated credential of `auth`'s certificate (RFC 9345, role `client`), presented with
+    /// it when the server's CertificateRequest takes one; its key signs then. Needs full
+    /// verification of the server, whose clock decides whether it is still valid.
+    delegated: ?Delegation.Credential = null,
+
+    /// The most a client holds, as a server.
+    pub const max = 32;
+};

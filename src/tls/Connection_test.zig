@@ -410,7 +410,8 @@ test "C2 the client draws signature noise up front for a key it holds, and asks 
     defer elsewhere.deinit();
     var lengths: [3]usize = undefined;
     for ([_]?certificates.ClientAuth{ null, held, elsewhere }, &lengths) |auth, *length| {
-        var conn = try Connection.client(gpa, .{ .identity = .{ .dns = "example.com" }, .verify = .none, .auth = auth });
+        const table: []const Connection.ClientCredential = if (auth) |a| &.{.{ .auth = a }} else &.{};
+        var conn = try Connection.client(gpa, .{ .identity = .{ .dns = "example.com" }, .verify = .none, .credentials = table });
         defer conn.deinit();
         length.* = conn.request().?.service.entropy;
     }

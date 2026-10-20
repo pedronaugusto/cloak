@@ -856,8 +856,8 @@ retained and shared like an identity. `Credential.init` checks it against the id
 when it is made (the certificate may delegate, the key matches, the scheme suits it, the delegation
 verifies, it ends before the certificate), so a credential no peer could take is refused once, not at
 every handshake; `issue` makes one with the certificate's key, which cloak must hold. A server's goes
-in its `Credential` beside the identity it belongs to, a client's beside its certificate
-(`auth_delegated`). It is sent only while a peer would take it: the peer listed its scheme for
+in its `Credential` beside the identity it belongs to, a client's in its `ClientCredential`
+beside its certificate. It is sent only while a peer would take it: the peer listed its scheme for
 credentials and its algorithm in signature_algorithms, it has not expired and has no more than seven
 days to run. A server whose credential has one asks for the clock before it answers a hello that
 offers the extension, as it does for tickets; a client knows the clock from verifying the server. When
@@ -961,9 +961,10 @@ plaintext that comes first in the reader's buffer as far as it holds. The handsh
 `Info.peer_authenticated` stays the handshake's, and tickets carry the handshake's
 authentication, never a later one.
 
-At the client the read half takes a request and answers with the handshake's `auth` when the
-request takes it (a scheme it lists for the credential's key, and the certificate type the
-handshake agreed); otherwise with an empty Certificate. Delegated credentials answer only the
+At the client the read half takes a request and answers with one of the client's `credentials`
+the request takes (a scheme it lists for the credential's key, and the certificate type the
+handshake agreed), the first that chains to an authority the request names, else the first;
+otherwise with an empty Certificate. Delegated credentials answer only the
 handshake's request: here the certificate's key signs. The signature takes fresh noise through an
 `entropy` request, or a `sign` request for a key held elsewhere, checked against the identity's key
 before it is used, as in the handshake. The Certificate and CertificateVerify then go to the write
@@ -1395,6 +1396,33 @@ provisioned PSK, being symmetric, does. The policy is TLS 1.3's, binds the sessi
 and fails with `PqAuthenticationRequired` (insufficient_security). A client's handshake memory
 with an ML-DSA-87 chain (13 KiB of certificates) peaks at 81 KiB (82,752 bytes).
 
+## Certificate authorities (RFC 8446 4.2.4)
+
+A peer may name the anchors it trusts: certificate_authorities, a list of Distinguished Names, in a
+ClientHello and a TLS 1.3 CertificateRequest (the handshake's and a post-handshake one), and as a
+field of the TLS 1.2 CertificateRequest (RFC 5246 section 7.4.4). Received, the list is decoded
+whole (`authorities<3..2^16-1>` of `DistinguishedName<1..2^16-1>`, TLS 1.2's list may be empty,
+nothing trailing; decode_error otherwise) and the names are compared as bytes, never parsed.
+
+It is a preference in credential choice, never a refusal (the RFC's SHOULD): a credential chains to
+a named authority when a certificate of its chain, the leaf included, has an issuer Name equal to a
+named one, as Go's `SupportsCertificate` decides; a raw public key never does. Of the credentials
+the peer can take, the first that chains to a name answers, else the first. The server's walk is
+the one it always made (the name, the form the client takes, the version's fit: TLS 1.3 schemes or
+a usable delegated credential, TLS 1.2 a shared suite, curve and scheme). A client holds its
+credentials in a list (`credentials`, at most 32, all of one form, each with its delegated
+credential), walked the same way: the type the server selected, then a scheme the request lists or
+a usable delegated credential (TLS 1.2: a certificate type it names and a scheme). The request's
+names are reduced to a bit per credential when it arrives, so nothing of the list outlives it.
+BoringSSL's per-credential `must_match_issuer`, which refuses, is not built. An external signer is
+told which credential signs (`SignRequest.credential`).
+
+Sending is the caller's: `certificate_authorities` lists DER Names (borrowed, each checked to be a
+Name), at most `max_authorities_bytes` (8 KiB on the wire, about a hundred names; a system store's
+~150 anchors are past what a hello should carry). A server names them in every CertificateRequest,
+so it needs client authentication or post-handshake authentication on; a client in a hello offering
+TLS 1.3, an ECH hello's inner one alone (the names say what the client trusts). None by default.
+
 ## Failure catalogue: the test map
 
 The design book's failure catalogue lists each known TLS and X.509 failure class with its
@@ -1554,3 +1582,6 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F135 | `catalogue_empty_retry_cookie_decode_error` | `tls/handshake/Hello_test.zig` | an empty cookie answered illegal_parameter, as before (found by BoGo's HelloRetryRequest-EmptyCookie-TLS13; RFC 8446 4.2.2) |
 | F136 | `catalogue_server_hello_without_key_share_missing_extension` | `tls/handshake/Hello_test.zig` | a ServerHello without key_share answered illegal_parameter, as before (found by BoGo's MissingKeyShare-Client-TLS13 and NegotiatePSKResumption-TLS13; RFC 8446 6.2) |
 | F137 | `catalogue_empty_plaintext_record_unexpected` | `tls/Connection_test.zig` | an empty plaintext record answered record_overflow, as before (found by BoGo's V2ClientHello-EmptyRecordPrefix under strict errors; RFC 8446 5, 5.1) |
+| F138 | `catalogue_certificate_authorities_decoded` | `tls/handshake/ClientHello_test.zig`, `tls/handshake/Messages_test.zig` | the empty-list check removed from `Authorities.parse`; before, the extension went unread in both messages (found by BoGo's RejectEmptyCertificateAuthorities and ExtensionTrailingData-CertificateAuthorities rows; RFC 8446 4.2.4) |
+| F139 | `catalogue_server_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in `Server.chooseCredential`, and the issuer comparison in `Authorities.chains`; before, the client's names were not read (RFC 8446 4.2.4, main's call 2026-10-20) |
+| F140 | `catalogue_client_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in each client walk (TLS 1.3, TLS 1.2, post-handshake); before, a client held one credential and read no names (RFC 8446 4.2.4, RFC 5246 7.4.4) |

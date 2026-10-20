@@ -27,9 +27,13 @@ test "C4 TLS 1.2 messages round-trip and refuse lengths past their parent" {
     try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x09\x03\x02\x02\x01\x00\x04\x03\x00\x01"));
     try std.testing.expectError(error.IllegalParameter, Messages12.serverKeyExchange("\x0c\x00\x00\x09\x03\x00\x1d\x01\xaa\x04\x03\x00\x01"));
     // CertificateRequest and ServerHelloDone.
-    const request = try Messages12.buildCertificateRequest(&buffer, &.{ 0x0403, 0x0804 });
+    const request = try Messages12.buildCertificateRequest(&buffer, &.{ 0x0403, 0x0804 }, &.{});
     const cr = try Messages12.certificateRequest(request);
     try std.testing.expect(cr.accepts(0x0804) and !cr.accepts(0x0807));
+    try std.testing.expectEqual(@as(?[]const u8, null), cr.authorities);
+    // Names, each with its length, as the client reads them.
+    const named = try Messages12.certificateRequest(try Messages12.buildCertificateRequest(&buffer, &.{0x0403}, &.{ "\x30\x00", "\x30\x02\x31\x00" }));
+    try std.testing.expectEqualSlices(u8, "\x00\x02\x30\x00\x00\x04\x30\x02\x31\x00", named.authorities.?);
     try std.testing.expectError(error.InvalidMessage, Messages12.serverHelloDone("\x0e\x00\x00\x01\x00"));
     try Messages12.serverHelloDone(try Messages12.buildServerHelloDone(&buffer));
     // ClientKeyExchange: exactly the group's length.

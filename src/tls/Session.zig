@@ -119,17 +119,22 @@ pub const Options = struct {
     /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
-    auth: ?certificates.ClientAuth = null,
-    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
-    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
-    auth_delegated: ?@import("handshake/Delegation.zig").Credential = null,
+    /// What a CertificateRequest is answered with, in this client's order, each with its
+    /// delegated credential (RFC 9345): the first the request takes that chains to an authority
+    /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, of one form.
+    credentials: []const @import("handshake/Client.zig").Credential = &.{},
+    /// certificate_authorities (RFC 8446 section 4.2.4): the DER Names of the anchors this client
+    /// trusts, named in a hello offering TLS 1.3, a server's preference among its credentials;
+    /// borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a server's delegated credential (RFC 9345): its key proves possession for the
     /// verified certificate that signed it. TLS 1.3, with full verification.
     accept_delegated: bool = false,
-    /// Required when `auth` is an identity cloak holds no signing key for.
+    /// Required when a credential is an identity cloak holds no signing key for; a request names
+    /// the credential that signs (`SignRequest.credential`).
     signer: ?Signer = null,
     /// Answer CertificateRequests after the handshake (RFC 8446 section 4.6.2), TLS 1.3: with
-    /// `auth` when the request takes it, an empty Certificate otherwise. The reading task signs
+    /// a credential when the request takes one, an empty Certificate otherwise. The reading task signs
     /// (through `signer` for a key held elsewhere) and the answer goes out under the write lock.
     post_handshake_auth: bool = false,
     /// TLS 1.3 resumption from a ticket cache. Under the system's verifier (macOS, Windows) a
@@ -209,7 +214,7 @@ pub fn open(
     options: Options,
 ) OpenError!void {
     @setRuntimeSafety(true);
-    if (options.auth) |auth| if (auth.identity.noiseLength() == null and options.signer == null) return error.SignerRequired;
+    for (options.credentials) |credential| if (credential.auth.identity.noiseLength() == null and options.signer == null) return error.SignerRequired;
     const policy: Connection.Verify = switch (options.trust) {
         .none => .none,
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
@@ -229,8 +234,8 @@ pub fn open(
         .require_hybrid = options.require_hybrid,
         .require_pq_auth = options.require_pq_auth,
         .accept_delegated = options.accept_delegated,
-        .auth = options.auth,
-        .auth_delegated = options.auth_delegated,
+        .certificate_authorities = options.certificate_authorities,
+        .credentials = options.credentials,
         .post_handshake_auth = options.post_handshake_auth,
         .resumption = resumptionFor(options),
         .ech = options.ech,
@@ -303,6 +308,10 @@ pub const ServerOptions = struct {
     /// How a presented client chain is checked.
     client_trust: Trust = .none,
     client_policy: certificates.types.Policy = .{},
+    /// certificate_authorities (RFC 8446 section 4.2.4; RFC 5246 section 7.4.4 in TLS 1.2): the
+    /// DER Names of the client anchors every CertificateRequest names, a client's preference
+    /// among its credentials; borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
     /// and fully verified.
     accept_delegated: bool = false,
@@ -370,6 +379,7 @@ pub fn accept(
         .client_auth = options.client_auth,
         .client_verify = policy,
         .accept_delegated = options.accept_delegated,
+        .certificate_authorities = options.certificate_authorities,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
         .post_handshake_auth = options.post_handshake_auth,

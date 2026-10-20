@@ -592,8 +592,8 @@ test "C3 server memory: a connection holds no handshake scratch until a peer sen
     // The server state and the credential table only: the scratch is the large allocation.
     // 1176 measured since delegated credentials (a reference per credential, two flags, an option);
     // 1208 since Certificate Transparency (a credential's SCTs, the policy's reference, evidence);
-    // 1224 since record_size_limit (an option).
-    try std.testing.expect(created <= 1232);
+    // 1224 since record_size_limit (an option); 1240 since certificate_authorities (an option).
+    try std.testing.expect(created <= 1248);
     // A connection the peer never speaks on is released without ever having built it.
     try std.testing.expect(!pair.conn.hs.state.server.pending());
     try pair.client.start();

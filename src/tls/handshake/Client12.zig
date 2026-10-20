@@ -20,6 +20,7 @@ const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
 const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
+const Authorities = @import("Authorities.zig");
 const Transcripts = @import("Transcripts.zig");
 
 const Error = @import("Errors.zig").Error;
@@ -195,6 +196,7 @@ fn onCertificateRequest(self: anytype, msg: []const u8, epoch: Epoch, boundary: 
         else => {},
     };
     scratch.cr_types = types;
+    scratch.cr_named = self.namedCredentials(parsed.authorities);
     const keep = @min(parsed.schemes.len, scratch.cr_schemes.len) & ~@as(usize, 1);
     @memcpy(scratch.cr_schemes[0..keep], parsed.schemes[0..keep]);
     // safe: at most 1024 bytes are kept.
@@ -221,15 +223,30 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     try sendFlight(self);
 }
 
-/// The scheme the client certificate signs with, or null to answer with an empty certificate.
+/// The scheme the client certificate signs with, its credential in `self.credential`, or null to
+/// answer with an empty certificate: of the credentials whose type the request names and whose key
+/// signs under a scheme it lists, the first that chains to an authority it names (RFC 5246
+/// section 7.4.4), else the first.
 fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const auth = self.options.auth orelse return null;
+    var pick: Authorities.Pick(Hello.SignatureScheme) = .{};
+    for (self.kept.credentials, 0..) |credential, i| {
+        const scheme = fits12(scratch, credential.auth.identity) orelse continue;
+        if (pick.offer(i, scheme, Authorities.marked(scratch.cr_named, i))) break;
+    }
+    const chosen = pick.chosen() orelse return null;
+    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
+    return chosen.value;
+}
+
+/// The scheme `identity` signs this request with, if the request takes it.
+fn fits12(scratch: anytype, identity: certificates.Identity) ?Hello.SignatureScheme {
+    @setRuntimeSafety(true);
     // A raw public key (RFC 7250) goes only where the server selected that type, and a chain
     // only where it did not.
-    if ((auth.identity.form() == .raw_public_key) != scratch.client_raw) return null;
-    const public_key = auth.identity.publicKey();
+    if ((identity.form() == .raw_public_key) != scratch.client_raw) return null;
+    const public_key = identity.publicKey();
     const wanted: u8 = switch (public_key) {
         .rsa => rsa_sign,
         // ecdsa_sign stands for EdDSA keys too (RFC 8422 section 5.5); an Ed25519 signature
@@ -252,10 +269,10 @@ fn sendFlight(self: anytype) Error!void {
         scheme = chooseCredential(self);
         const message = if (scratch.client_raw) raw: {
             // The raw-key form; empty when this client has no key to present.
-            const spki: []const u8 = if (scheme != null) self.options.auth.?.identity.rawKey().? else "";
+            const spki: []const u8 = if (scheme != null) self.kept.credentials[self.credential].auth.identity.rawKey().? else "";
             break :raw try Messages12.buildRawKey(try self.reserve(8 + spki.len), spki);
         } else chain: {
-            const chain: []const []const u8 = if (scheme != null) self.options.auth.?.chain() else &.{};
+            const chain: []const []const u8 = if (scheme != null) self.kept.credentials[self.credential].auth.chain() else &.{};
             var total: usize = 16;
             for (chain) |der| total += der.len + 3;
             break :chain try Messages12.buildCertificate(try self.reserve(total), chain);
@@ -276,7 +293,7 @@ fn sendFlight(self: anytype) Error!void {
         self.sign_scheme = chosen;
         if (chosen == .ed25519) {
             // Ed25519 signs the handshake messages so far, kept whole (RFC 8422 section 5.10).
-            const identity = self.options.auth.?.identity;
+            const identity = self.kept.credentials[self.credential].auth.identity;
             const messages = scratch.transcripts.keptBytes();
             if (identity.noiseLength()) |noise_length| {
                 var out: [certificates.PrivateKey.max_signature]u8 = undefined;
@@ -291,7 +308,7 @@ fn sendFlight(self: anytype) Error!void {
         @memcpy(scratch.sign_content[0..digest.len], digest);
         // safe: a transcript digest is at most 48 bytes.
         scratch.sign_content_len = @intCast(digest.len);
-        const identity = self.options.auth.?.identity;
+        const identity = self.kept.credentials[self.credential].auth.identity;
         // Cloak signs for a key it holds; a key held elsewhere signs the digest for the caller.
         if (identity.noiseLength()) |noise_length| {
             var out: [certificates.PrivateKey.max_signature]u8 = undefined;
@@ -337,7 +354,7 @@ fn sendPskFlight(self: anytype) Error!void {
 pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const own = self.options.auth.?.identity.publicKey();
+    const own = self.kept.credentials[self.credential].auth.identity.publicKey();
     if (self.sign_scheme == .ed25519) {
         Possession.verifyMessage12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, own, scratch.transcripts.keptBytes(), signature) catch return error.BadSignature;
     } else {

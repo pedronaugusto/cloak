@@ -15,6 +15,7 @@ const Ech = @import("../tls/handshake/Ech.zig");
 const Compression = @import("../tls/handshake/Compression.zig");
 const Psk = @import("../tls/handshake/Psk.zig");
 const Delegation = @import("../tls/handshake/Delegation.zig");
+const Client = @import("../tls/handshake/Client.zig");
 pub const pki = @import("Peer.zig").pki;
 
 pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
@@ -117,6 +118,12 @@ pub const Options = struct {
     server_record_size_limit: ?u16 = null,
     /// The server's key log (NSS key log lines), to read its records in a test.
     server_key_log: ?Connection.KeyLog = null,
+    /// A second client credential after the first: `dc_client` under the delegation root, with
+    /// the client's key (a chain of another issuer).
+    client_second: bool = false,
+    /// certificate_authorities (RFC 8446 section 4.2.4): the names each end sends.
+    client_authorities: []const []const u8 = &.{},
+    server_authorities: []const []const u8 = &.{},
     /// The entropy request (counted from 0 at that end) the harness answers with a failure.
     entropy_fails: ?struct { end: enum { client, server }, at: usize } = null,
 };
@@ -143,6 +150,10 @@ also: [2]certificates.Identity = undefined,
 also_count: usize = 0,
 credential_list: [3]Server.Credential = undefined,
 auth: ?certificates.ClientAuth = null,
+second: ?certificates.ClientAuth = null,
+client_credentials: [2]Client.Credential = undefined,
+/// The SHA-256 of the leaf each end was asked to verify, client first; zero before.
+peer_leaf: [2][32]u8 = @splat(@splat(0)),
 server_dc: ?Delegation.Credential = null,
 client_dc: ?Delegation.Credential = null,
 rng: std.Random.DefaultPrng,
@@ -203,6 +214,14 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
             try certificates.ClientAuth.init(gpa, chain, client_key, .{});
     }
     errdefer if (self.auth) |auth| auth.deinit();
+    self.second = null;
+    if (options.client_second) {
+        const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
+        defer client_key.deinit();
+        self.second = try certificates.ClientAuth.init(gpa, &.{ pki.dc_client, pki.dc_ca }, client_key, .{});
+    }
+    errdefer if (self.second) |second| second.deinit();
+    self.peer_leaf = @splat(@splat(0));
     self.server_dc = if (options.server_delegated) try self.delegate(self.identity, .server) else null;
     errdefer if (self.server_dc) |dc| dc.deinit();
     self.client_dc = if (options.client_delegated) try self.delegate(self.auth.?.identity, .client) else null;
@@ -222,8 +241,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .require_hybrid = options.client_require_hybrid,
         .require_pq_auth = options.client_require_pq_auth,
         .alpn = options.client_alpn,
-        .auth = self.auth,
-        .auth_delegated = self.client_dc,
+        .credentials = self.clientCredentials(),
+        .certificate_authorities = options.client_authorities,
         .accept_delegated = options.client_accept_delegated,
         .post_handshake_auth = options.client_post_auth,
     });
@@ -242,6 +261,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .require_pq_auth = options.server_require_pq_auth,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
+        .certificate_authorities = options.server_authorities,
         .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_auth != .none or options.server_post_auth) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
         .tls12_tickets = options.server_tls12_tickets,
@@ -261,6 +281,7 @@ pub fn deinit(self: *Duo) void {
     self.client.deinit();
     self.server.deinit();
     if (self.auth) |auth| auth.deinit();
+    if (self.second) |second| second.deinit();
     if (self.server_dc) |dc| dc.deinit();
     if (self.client_dc) |dc| dc.deinit();
     if (self.raw_identity) |raw| raw.deinit();
@@ -269,6 +290,20 @@ pub fn deinit(self: *Duo) void {
     self.snapshot.deinit();
     self.trust.deinit();
     gpa.destroy(self);
+}
+
+/// The client's credentials: its certificate (with its delegation), then the second.
+fn clientCredentials(self: *Duo) []const Client.Credential {
+    var n: usize = 0;
+    if (self.auth) |auth| {
+        self.client_credentials[n] = .{ .auth = auth, .delegated = self.client_dc };
+        n += 1;
+    }
+    if (self.second) |second| {
+        self.client_credentials[n] = .{ .auth = second };
+        n += 1;
+    }
+    return self.client_credentials[0..n];
 }
 
 /// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
@@ -356,6 +391,7 @@ fn serve(self: *Duo, conn: *Connection) !void {
         },
         .time => try conn.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, self.options.time) * std.time.ns_per_s) }),
         .verify => |verify_request| {
+            std.crypto.hash.sha2.Sha256.hash(verify_request.chain[0], &self.peer_leaf[@intFromBool(conn == &self.server)], .{});
             if (certificates.verify.indexed(self.gpa, verify_request, self.snapshot.issuers())) |receipt| {
                 var owned = receipt;
                 defer owned.deinit();

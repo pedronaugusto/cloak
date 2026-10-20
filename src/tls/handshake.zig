@@ -56,6 +56,9 @@ test {
 test {
     _ = @import("handshake/Datagram_test.zig");
 }
+test {
+    _ = @import("handshake/Authorities.zig");
+}
 pub const Ech = @import("handshake/Ech.zig");
 test {
     _ = Ech;

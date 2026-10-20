@@ -54,6 +54,8 @@ pub fn Pair(comptime suite: Suite13) type {
         peer: PeerType,
         trust: certificates.Trust,
         snapshot: certificates.Trust.Snapshot,
+        /// The client's one credential as its table.
+        client_credentials: [1]@import("../tls/handshake/Client.zig").Credential = undefined,
         rng: std.Random.DefaultPrng,
         options: Options,
         verified: usize = 0,
@@ -95,7 +97,7 @@ pub fn Pair(comptime suite: Suite13) type {
                 .alpn = options.alpn,
                 .require_alpn = options.require_alpn,
                 .require_hybrid = options.require_hybrid,
-                .auth = options.client_auth,
+                .credentials = self.credentialsOf(options.client_auth),
                 .limits = options.limits,
                 .compat = options.compat,
                 .key_log = options.key_log,
@@ -103,6 +105,12 @@ pub fn Pair(comptime suite: Suite13) type {
                 .post_handshake_auth = options.post_auth,
             });
             return self;
+        }
+
+        /// `auth` as a one-credential table, or none.
+        fn credentialsOf(self: *Self, auth: ?certificates.ClientAuth) []const @import("../tls/handshake/Client.zig").Credential {
+            self.client_credentials[0] = .{ .auth = auth orelse return &.{} };
+            return &self.client_credentials;
         }
 
         pub fn deinit(self: *Self) void {

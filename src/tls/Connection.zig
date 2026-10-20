@@ -68,6 +68,8 @@ pub const ServerName = union(enum) {
     none,
 };
 
+pub const ClientCredential = Client.Credential;
+
 pub const ClientOptions = struct {
     /// What the server certificate must identify. Required for full verification.
     identity: types.Identity,
@@ -87,17 +89,21 @@ pub const ClientOptions = struct {
     /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
-    auth: ?certificates.ClientAuth = null,
-    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
-    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
-    auth_delegated: ?@import("handshake/Delegation.zig").Credential = null,
+    /// What a CertificateRequest is answered with, in this client's order, each with its
+    /// delegated credential (RFC 9345): the first the request takes that chains to an authority
+    /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, of one form.
+    credentials: []const @import("handshake/Client.zig").Credential = &.{},
+    /// certificate_authorities (RFC 8446 section 4.2.4): the DER Names of the anchors this client
+    /// trusts, named in a hello offering TLS 1.3, a server's preference among its credentials;
+    /// borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a server's delegated credential (RFC 9345): its key proves possession for the
     /// verified certificate that signed it. TLS 1.3, with full verification.
     accept_delegated: bool = false,
     /// TLS 1.3 session resumption from a ticket cache.
     resumption: ?Resumption = null,
     /// Answer CertificateRequests after the handshake (RFC 8446 section 4.6.2), TLS 1.3: with
-    /// `auth` when the request takes it, an empty Certificate otherwise.
+    /// a credential when the request takes one, an empty Certificate otherwise.
     post_handshake_auth: bool = false,
     /// Encrypted Client Hello (RFC 9849). With a config list it is required: the connection is
     /// TLS 1.3 only, and fails with `EchRejected` when the server does not accept it.
@@ -257,6 +263,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
             .require_hybrid = options.require_hybrid,
             .require_pq_auth = options.require_pq_auth,
             .accept_delegated = options.accept_delegated,
+            .certificate_authorities = options.certificate_authorities,
             .certificate_compression = options.certificate_compression,
             .post_handshake_auth = options.post_handshake_auth,
             .record_size_limit = options.record_size_limit,
@@ -266,8 +273,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .external_psk = options.external_psk,
         .identity = identity,
         .verify = options.verify,
-        .auth = options.auth,
-        .auth_delegated = options.auth_delegated,
+        .credentials = options.credentials,
         .limits = options.limits.handshake,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -297,6 +303,10 @@ pub const ServerOptions = struct {
     client_auth: Server.Auth = .none,
     /// How a presented client chain is checked; required for authenticated client identities.
     client_verify: Verify = .none,
+    /// certificate_authorities (RFC 8446 section 4.2.4; RFC 5246 section 7.4.4 in TLS 1.2): the
+    /// DER Names of the client anchors every CertificateRequest names, a client's preference
+    /// among its credentials; borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
     /// and fully verified.
     accept_delegated: bool = false,
@@ -343,6 +353,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .certificate_authorities = options.certificate_authorities,
         .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
@@ -833,7 +844,7 @@ pub fn requestCertificate(self: *Connection) RequestError!u64 {
     if (self.write_done.load(.acquire)) return error.WriteClosed;
     if (self.hs.role() != .server) return error.PostAuthUnavailable;
     const post = self.hs.postAuth() orelse return error.PostAuthUnavailable;
-    var buf: [256]u8 = undefined;
+    var buf: [256 + @import("handshake/Authorities.zig").max_bytes]u8 = undefined;
     const made = post.request(&buf) catch |err| switch (err) {
         error.RequestOutstanding => return error.RequestOutstanding,
         else => |e| return self.writeFailed(e),

@@ -5,6 +5,7 @@ const Reader = @import("../../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Transport = @import("../crypto/Suite.zig").Transport;
+const Authorities = @import("Authorities.zig");
 
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{
     InvalidHello,
@@ -91,6 +92,9 @@ client_certificate_types: ?[]const u8,
 /// record_size_limit (RFC 8449): the most a protected record sent to the client may carry, when
 /// sent; at least 64.
 record_size_limit: ?u16,
+/// certificate_authorities (RFC 8446 section 4.2.4): the names the client trusts, each with its
+/// two-byte length, when sent; a preference in the server's credential choice.
+authorities: ?[]const u8,
 
 pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     @setRuntimeSafety(true);
@@ -148,6 +152,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.server_certificate_types = null;
     self.client_certificate_types = null;
     self.record_size_limit = null;
+    self.authorities = null;
     var modes = false;
     var ext: Extensions = .{ .reader = block };
     var last: u16 = 0;
@@ -252,6 +257,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         49 => self.post_handshake_auth = try empty(bytes),
         54 => self.connection_id = try whole8(&value),
         28 => self.record_size_limit = try recordSizeLimit(&value),
+        Authorities.extension => self.authorities = try Authorities.parse(bytes),
         14 => {
             const profiles = (try value.vector(u16)).bytes;
             _ = try value.vector(u8);

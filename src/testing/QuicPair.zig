@@ -37,6 +37,8 @@ pub fn QuicPair(comptime suite: Suite13) type {
         peer: PeerType,
         trust: certificates.Trust,
         snapshot: certificates.Trust.Snapshot,
+        /// The client's one credential as its table.
+        client_credentials: [1]@import("../tls/handshake/Client.zig").Credential = undefined,
         rng: std.Random.DefaultPrng,
         options: Options,
         sent: [3]std.ArrayList(u8) = .{ .empty, .empty, .empty },
@@ -67,10 +69,16 @@ pub fn QuicPair(comptime suite: Suite13) type {
                 .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.groups,
                 .require_hybrid = options.require_hybrid,
-                .auth = options.client_auth,
+                .credentials = self.credentialsOf(options.client_auth),
                 .generation = .fromRaw(9),
             });
             return self;
+        }
+
+        /// `auth` as a one-credential table, or none.
+        fn credentialsOf(self: *Self, auth: ?certificates.ClientAuth) []const @import("../tls/handshake/Client.zig").Credential {
+            self.client_credentials[0] = .{ .auth = auth orelse return &.{} };
+            return &self.client_credentials;
         }
 
         pub fn deinit(self: *Self) void {

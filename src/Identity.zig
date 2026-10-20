@@ -21,7 +21,7 @@ pub const Options = struct {
 };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
 pub const InitPemError = InitError || Pem.Error || error{NotCertificate};
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds, raw: ?[]const u8 = null, public_key: certificate.PublicKey };
+const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds, raw: ?[]const u8 = null, public_key: certificate.PublicKey, issuers: []const []const u8 = &.{} };
 /// What an identity presents: certificates (X.509), or a raw public key (RFC 7250), which a
 /// peer trusts by its pin and never as a certificate.
 pub const Form = enum { x509, raw_public_key };
@@ -109,13 +109,17 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     @setRuntimeSafety(true);
     if (certificates.len == 0) return error.EmptyChain;
     if (certificates.len > options.certificates) return error.IdentityLimit;
+    // Each certificate's issuer Name, in the caller's bytes until the chain is copied.
+    const names = try gpa.alloc([]const u8, certificates.len);
+    errdefer gpa.free(names);
     var bytes: usize = 0;
     var expiry: i64 = std.math.maxInt(i64);
-    for (certificates) |der| {
+    for (certificates, names) |der, *issuer| {
         bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.IdentityLimit).raw();
         if (der.len > 0xffffff or bytes > options.chain_bytes) return error.IdentityLimit;
         const cert = try certificate.parse(der, .{});
         expiry = @min(expiry, cert.not_after);
+        issuer.* = cert.issuer;
     }
     if (key) |owned| if (!owned.matches(certificates[0])) return error.KeyMismatch;
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
@@ -131,16 +135,18 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     errdefer gpa.free(flight);
     var at: usize = 0;
     var wire: usize = 0;
-    for (certificates, owned) |der, *entry| {
+    for (certificates, owned, names) |der, *entry, *issuer| {
         @memcpy(storage[at..][0..der.len], der);
         entry.* = storage[at..][0..der.len];
+        // The issuer moves with its certificate into the owned copy.
+        issuer.* = entry.*[@intFromPtr(issuer.ptr) - @intFromPtr(der.ptr) ..][0..issuer.len]; // safe: the issuer lies within its certificate's bytes
         at += der.len;
         std.mem.writeInt(u24, flight[wire..][0..3], @intCast(der.len), .big); // safe: certificate length was checked against u24 above
         wire += 3;
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = undefined };
+    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = undefined, .issuers = names };
     // The leaf's key borrows the owned copy, not the caller's bytes.
     state.public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // unreachable: the same bytes parsed above
     return .{ .state = state };
@@ -161,6 +167,7 @@ pub fn deinit(identity: Identity) void {
     const gpa = state.gpa;
     if (state.key) |key| key.deinit();
     gpa.free(state.chain);
+    gpa.free(state.issuers);
     gpa.free(state.storage);
     gpa.free(state.flight);
     gpa.destroy(state);
@@ -169,6 +176,12 @@ pub fn deinit(identity: Identity) void {
 pub fn chain(identity: Identity) []const []const u8 {
     @setRuntimeSafety(true);
     return identity.state.chain;
+}
+/// Each certificate's issuer Name (DER), in chain order; empty for a raw public key. What a
+/// peer's certificate_authorities is matched against (RFC 8446 section 4.2.4).
+pub fn issuers(identity: Identity) []const []const u8 {
+    @setRuntimeSafety(true);
+    return identity.state.issuers;
 }
 pub fn form(identity: Identity) Form {
     return if (identity.state.raw != null) .raw_public_key else .x509;

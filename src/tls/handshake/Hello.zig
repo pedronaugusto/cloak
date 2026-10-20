@@ -8,6 +8,7 @@ const Compression = @import("Compression.zig");
 const Messages = @import("Messages.zig");
 const suites = @import("../crypto/Suite.zig");
 const RecordLimits = @import("RecordLimits.zig");
+const Authorities = @import("Authorities.zig");
 const Suite = suites.Suite;
 const Suite13 = suites.Suite13;
 const Suite12 = suites.Suite12;
@@ -107,6 +108,11 @@ pub const Options = struct {
     /// names the version's maximum. Offered by a client and answered by a server on streams and
     /// datagrams; QUIC has no records.
     record_size_limit: ?u16 = null,
+    /// certificate_authorities (RFC 8446 section 4.2.4): the DER Names of the anchors this
+    /// client's verifier trusts, named in a hello offering TLS 1.3 (an ECH hello's inner one
+    /// alone), a server's preference among its credentials; borrowed. None by default; at most
+    /// `Authorities.max_bytes` on the wire.
+    certificate_authorities: []const []const u8 = &.{},
 
     /// The record_size_limit this end names: its own, or the most the versions it allows take.
     pub fn recordSizeLimit(options: Options) u16 {
@@ -255,6 +261,8 @@ pub fn validate(options: Options) ValidateError!void {
     };
     if (options.post_handshake_auth and (options.transport != .stream or !options.allows13())) return error.InvalidOptions;
     if (options.record_size_limit) |limit| if (options.transport == .quic or limit < RecordLimits.min or limit > (if (options.allows13()) RecordLimits.max13 else RecordLimits.max12)) return error.InvalidOptions;
+    Authorities.validate(options.certificate_authorities) catch return error.InvalidOptions;
+    if (options.certificate_authorities.len != 0 and !options.allows13()) return error.InvalidOptions;
     if (options.sni.len > 253) return error.InvalidOptions;
     if (options.sni.len != 0) {
         var label: usize = 0;
@@ -394,6 +402,8 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     }
     if (datagram) try datagramOffer(&w, options);
     try certificateTypes(&w, options);
+    // The names say what the client trusts: an ECH outer hello carries none.
+    if (tls13 and form != .outer and options.certificate_authorities.len != 0) try authoritiesExtension(&w, options.certificate_authorities);
     if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;
@@ -463,6 +473,17 @@ fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
     if (options.raw_client_key) try extension(w, client_certificate_type, raw);
     if (options.raw_server_key) try extension(w, server_certificate_type, raw);
     if (options.post_handshake_auth and options.allows13()) try extension(w, post_handshake_auth, "");
+}
+
+/// certificate_authorities (RFC 8446 section 4.2.4) naming `names`, checked by `Authorities.validate`.
+fn authoritiesExtension(w: *Writer, names: []const []const u8) EncodeError!void {
+    @setRuntimeSafety(true);
+    const length = Authorities.wireLength(names);
+    try w.int(u16, Authorities.extension);
+    // safe: `Authorities.validate` bounds the names to `max_bytes`.
+    try w.int(u16, @intCast(2 + length));
+    try w.int(u16, @intCast(length));
+    try Authorities.write(w, names);
 }
 
 /// connection_id and use_srtp as a datagram hello offers them.

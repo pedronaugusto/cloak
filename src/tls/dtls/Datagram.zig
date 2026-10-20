@@ -80,10 +80,14 @@ pub const Options = struct {
     /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
-    auth: ?certificates.ClientAuth = null,
-    /// A delegated credential of `auth`'s certificate (RFC 9345), presented when the server's
-    /// CertificateRequest takes one; TLS 1.3, with full verification of the server.
-    auth_delegated: ?@import("../handshake/Delegation.zig").Credential = null,
+    /// What a CertificateRequest is answered with, in this client's order, each with its
+    /// delegated credential (RFC 9345): the first the request takes that chains to an authority
+    /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, of one form.
+    credentials: []const @import("../handshake/Client.zig").Credential = &.{},
+    /// certificate_authorities (RFC 8446 section 4.2.4): the DER Names of the anchors this client
+    /// trusts, named in a hello offering TLS 1.3, a server's preference among its credentials;
+    /// borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a server's delegated credential (RFC 9345): its key proves possession for the
     /// verified certificate that signed it. TLS 1.3, with full verification.
     accept_delegated: bool = false,
@@ -127,6 +131,10 @@ pub const ServerOptions = struct {
     require_pq_auth: bool = false,
     client_auth: Server.Auth = .none,
     client_verify: Verify = .none,
+    /// certificate_authorities (RFC 8446 section 4.2.4; RFC 5246 section 7.4.4 in TLS 1.2): the
+    /// DER Names of the client anchors every CertificateRequest names, a client's preference
+    /// among its credentials; borrowed. None by default; at most 8 KiB on the wire.
+    certificate_authorities: []const []const u8 = &.{},
     /// Take a client's delegated credential (RFC 9345): TLS 1.3, a client certificate asked for
     /// and fully verified.
     accept_delegated: bool = false,
@@ -379,6 +387,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .require_hybrid = options.require_hybrid,
             .require_pq_auth = options.require_pq_auth,
             .accept_delegated = options.accept_delegated,
+            .certificate_authorities = options.certificate_authorities,
             .connection_id = options.connection_id,
             .srtp = options.srtp,
             .record_size_limit = options.record_size_limit,
@@ -387,8 +396,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
         .external_psk = options.external_psk,
         .identity = options.identity,
         .verify = options.verify,
-        .auth = options.auth,
-        .auth_delegated = options.auth_delegated,
+        .credentials = options.credentials,
         .limits = options.limits.handshake,
         .compat = false,
         .key_log = options.key_log,
@@ -429,6 +437,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .unknown_name = options.unknown_name,
         .client_auth = options.client_auth,
         .client_verify = options.client_verify,
+        .certificate_authorities = options.certificate_authorities,
         .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,

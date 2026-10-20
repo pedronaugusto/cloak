@@ -4,6 +4,20 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- certificate_authorities (RFC 8446 section 4.2.4; the TLS 1.2 CertificateRequest's field, RFC 5246 section 7.4.4), both roles, every carrier. A received list is a preference in credential choice, never a refusal: of the credentials the peer can take, the first whose chain has a certificate issued by a named authority (its issuer Name equal to a named one, as Go decides) answers, else the first. A server reads the ClientHello's names in its credential walk; a client reads a CertificateRequest's (the handshake's, a post-handshake one, TLS 1.2's). Names are sent only when the caller lists them: `certificate_authorities` at a client (in a hello offering TLS 1.3; an ECH hello's inner one alone) and at a server (in every CertificateRequest), DER Names, at most `tls.max_authorities_bytes` (8 KiB) on the wire. F139, F140.
+- `SignRequest.credential`: the index of the credential that signs, for a signer holding the keys of several.
+- `Identity.issuers`: each certificate's issuer Name.
+
+### Changed
+
+- A client holds a list of credentials: `credentials: []const ClientCredential` (each a `ClientAuth` with its delegated credential, at most 32, all certificates or all raw keys) replaces `auth` and `auth_delegated` in every client's options (`Session`, `Connection`, `dtls.Datagram`, `quic.Handshake`). Breaking.
+
+### Fixed
+
+- certificate_authorities in a ClientHello or a TLS 1.3 CertificateRequest is decoded: an empty list, an empty name or bytes after the list are decode_error. It was ignored unread. F138.
+
 ## [0.17.9] - 2026-10-20
 
 ### Added

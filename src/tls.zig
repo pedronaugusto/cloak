@@ -12,6 +12,12 @@ pub const SignatureScheme = @import("tls/handshake/Hello.zig").SignatureScheme;
 pub const Alert = @import("tls/wire/Alert.zig").Alert;
 /// A certificate chain a server can present, with the names it answers for.
 pub const Credential = @import("tls/handshake/Server.zig").Credential;
+/// A certificate chain or raw public key a client can present, with its delegated credential;
+/// a client holds a list of them (`credentials`), answering a CertificateRequest with the first
+/// it takes that chains to an authority the request names, else the first it takes.
+pub const ClientCredential = @import("tls/handshake/Client.zig").Credential;
+/// certificate_authorities (RFC 8446 section 4.2.4): the most bytes a list of names takes.
+pub const max_authorities_bytes = @import("tls/handshake/Authorities.zig").max_bytes;
 /// Whether a server asks for a client certificate.
 pub const ClientCertificate = @import("tls/handshake/Server.zig").Auth;
 /// A sans-I/O connection, client or server.
@@ -60,7 +66,7 @@ pub const certificate_compression = struct {
 };
 /// Delegated credentials (RFC 9345): a short-lived key an end-entity certificate signs for, so a
 /// TLS 1.3 endpoint proves possession with it while the certificate's key stays elsewhere. A
-/// server's goes in its `Credential`, a client's beside its certificate (`auth_delegated`); either
+/// server's goes in its `Credential`, a client's in its `ClientCredential`; either
 /// end takes the peer's with `accept_delegated`. `issue` makes one with a certificate's key.
 pub const delegated_credentials = struct {
     const Delegation = @import("tls/handshake/Delegation.zig");
@@ -113,6 +119,7 @@ test {
     _ = @import("tls/Psk_test.zig");
     _ = @import("tls/Psk12_test.zig");
     _ = @import("tls/RecordSizeLimit_test.zig");
+    _ = @import("tls/CertificateAuthorities_test.zig");
     _ = @import("tls/RawKey_test.zig");
     _ = @import("tls/Delegated_test.zig");
     _ = @import("tls/Transparency_test.zig");

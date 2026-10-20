@@ -74,6 +74,8 @@ pub fn QuicLoop(comptime suite: Suite13) type {
         server: Side,
         trust: certificates.Trust,
         snapshot: certificates.Trust.Snapshot,
+        /// The client's one credential as its table.
+        client_credentials: [1]@import("../tls/handshake/Client.zig").Credential = undefined,
         server_identity: certificates.Identity,
         client_auth: ?certificates.ClientAuth = null,
         rng: std.Random.DefaultPrng,
@@ -115,7 +117,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .alpn = options.client_alpn,
                 .suites = &.{comptime SuiteAll.from13(suite)},
                 .groups = options.client_groups,
-                .auth = self.client_auth,
+                .credentials = self.credentialsOf(self.client_auth),
                 .resumption = if (options.cache) |cache| .{ .cache = cache } else null,
                 .generation = .fromRaw(9),
             }) };
@@ -132,6 +134,12 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .generation = .fromRaw(11),
             }) };
             return self;
+        }
+
+        /// `auth` as a one-credential table, or none.
+        fn credentialsOf(self: *Self, auth: ?certificates.ClientAuth) []const @import("../tls/handshake/Client.zig").Credential {
+            self.client_credentials[0] = .{ .auth = auth orelse return &.{} };
+            return &self.client_credentials;
         }
 
         pub fn deinit(self: *Self) void {

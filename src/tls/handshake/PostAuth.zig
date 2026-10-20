@@ -27,6 +27,7 @@ const Suite13 = suites.Suite13;
 const Messages = @import("Messages.zig");
 const Hello = @import("Hello.zig");
 const Possession = @import("Possession.zig");
+const Authorities = @import("Authorities.zig");
 const Transcripts = @import("Transcripts.zig");
 const Terms = @import("Terms.zig");
 
@@ -93,6 +94,8 @@ need: Need = .none,
 raw_client: bool,
 /// The server asks for ML-DSA alone (`require_pq_auth`).
 pq_only: bool,
+/// Server: the names its requests carry (`Server.Options.certificate_authorities`), borrowed.
+authorities: []const []const u8,
 /// The server's requests so far; each context is its number.
 requests: u64 = 0,
 /// `Outcome` packed: generation shifted left by one, authenticated in the low bit.
@@ -105,8 +108,9 @@ const Exchange = struct {
     /// Client: the Certificate and CertificateVerify, built here, sent by the write half.
     flight: []u8 = &.{},
     flight_len: usize = 0,
-    /// Client: what the CertificateVerify signs, and its scheme.
+    /// Client: what the CertificateVerify signs, its scheme and the credential that signs.
     sign_scheme: Hello.SignatureScheme = .ed25519,
+    credential: u8 = 0,
     sign_content: [Messages.max_signed]u8 = undefined,
     sign_content_len: u8 = 0,
     /// The transcript through the CertificateVerify (or the empty Certificate), and at a server
@@ -125,7 +129,7 @@ const Exchange = struct {
 };
 
 /// Keeps what later exchanges need: `transcript`, the handshake's through the client's Finished.
-pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *const Transcripts, raw_client: bool, pq_only: bool) std.mem.Allocator.Error!*PostAuth {
+pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *const Transcripts, raw_client: bool, pq_only: bool, authorities: []const []const u8) std.mem.Allocator.Error!*PostAuth {
     const self = try gpa.create(PostAuth);
     self.* = .{
         .gpa = gpa,
@@ -138,6 +142,7 @@ pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *con
         },
         .raw_client = raw_client,
         .pq_only = pq_only,
+        .authorities = authorities,
     };
     return self;
 }
@@ -190,7 +195,7 @@ fn digestLength(self: *const PostAuth) usize {
 /// A CertificateRequest after the handshake, in the read half. A request while the last answer
 /// still waits for the write half is a second one outstanding, and refused. The answer is ready
 /// (`answered`) at once or after the services it asks for.
-pub fn onRequest(self: *PostAuth, msg: []const u8, auth: ?certificates.ClientAuth) Error!void {
+pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.ClientCredential) Error!void {
     @setRuntimeSafety(true);
     if (self.holder.load(.acquire) != .read) return error.UnexpectedMessage;
     _ = self.machine.client.step(.request) catch return error.UnexpectedMessage;
@@ -199,11 +204,20 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, auth: ?certificates.ClientAut
     @memcpy(ex.context[0..parsed.context.len], parsed.context);
     ex.context_len = @intCast(parsed.context.len); // safe: a vector<0..255>
     try ex.transcript.commit(msg);
-    // A credential of the type the handshake agreed (RFC 7250), with a scheme the server takes.
+    // A credential of the type the handshake agreed (RFC 7250), with a scheme the server takes,
+    // the first that chains to an authority it names, else the first (RFC 8446 section 4.2.4).
     // Delegated credentials answer only the handshake's request: here the certificate's key signs.
-    const usable = if (auth) |a| (a.identity.form() == .raw_public_key) == self.raw_client else false;
-    const scheme = if (usable) Possession.choose(auth.?.identity.publicKey(), parsed) else null;
-    const entries: []const []const u8 = if (scheme != null) auth.?.entries() else &.{};
+    var pick: Authorities.Pick(Hello.SignatureScheme) = .{};
+    for (credentials, 0..) |credential, i| {
+        const identity = credential.auth.identity;
+        if ((identity.form() == .raw_public_key) != self.raw_client) continue;
+        const fit = Possession.choose(identity.publicKey(), parsed) orelse continue;
+        if (pick.offer(i, fit, Authorities.prefers(identity, parsed.authorities))) break;
+    }
+    const choice = pick.chosen();
+    const scheme = if (choice) |c| c.value else null;
+    if (choice) |c| ex.credential = @intCast(c.index); // safe: at most 32 credentials
+    const entries: []const []const u8 = if (choice) |c| credentials[c.index].auth.entries() else &.{};
     var total: usize = 64 + 8 + certificates.PrivateKey.max_signature;
     for (entries) |der| total += der.len + 5;
     ex.flight = try self.gpa.alloc(u8, total);
@@ -215,7 +229,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, auth: ?certificates.ClientAut
     const content = Messages.signedContent(&ex.sign_content, false, ex.transcript.digest(&digest_buf));
     ex.sign_content_len = @intCast(content.len); // safe: signed content is at most 146 bytes
     ex.sign_scheme = chosen;
-    const identity = auth.?.identity;
+    const identity = credentials[ex.credential].auth.identity;
     // Cloak signs for a key it holds, with fresh noise; a key held elsewhere is the caller's.
     if (identity.noiseLength()) |noise| {
         if (noise == 0) return self.signWith(identity, "");
@@ -226,7 +240,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, auth: ?certificates.ClientAut
 }
 
 /// The noise for the hedged signature of the pending answer.
-pub fn provideEntropy(self: *PostAuth, entropy: []const u8, auth: certificates.ClientAuth) Error!void {
+pub fn provideEntropy(self: *PostAuth, entropy: []const u8, credentials: []const Terms.ClientCredential) Error!void {
     @setRuntimeSafety(true);
     const expected = switch (self.need) {
         .entropy => |e| e.len,
@@ -234,7 +248,7 @@ pub fn provideEntropy(self: *PostAuth, entropy: []const u8, auth: certificates.C
     };
     if (entropy.len != expected) return error.InvalidEntropy;
     self.need = .none;
-    return self.signWith(auth.identity, entropy);
+    return self.signWith(credentials[self.exchange.?.credential].auth.identity, entropy);
 }
 
 fn signWith(self: *PostAuth, identity: certificates.Identity, noise: []const u8) Error!void {
@@ -249,15 +263,15 @@ fn signWith(self: *PostAuth, identity: certificates.Identity, noise: []const u8)
 /// What a key held elsewhere must sign; valid while `need` is `.sign`.
 pub fn signRequest(self: *const PostAuth) SignRequest {
     const ex = self.exchange.?;
-    return .{ .scheme = ex.sign_scheme, .content = ex.sign_content[0..ex.sign_content_len] };
+    return .{ .scheme = ex.sign_scheme, .content = ex.sign_content[0..ex.sign_content_len], .credential = ex.credential };
 }
 
 /// A signature from a key held elsewhere, checked against the identity's key before it is sent.
-pub fn provideSignature(self: *PostAuth, signature: []const u8, auth: certificates.ClientAuth) Error!void {
+pub fn provideSignature(self: *PostAuth, signature: []const u8, credentials: []const Terms.ClientCredential) Error!void {
     @setRuntimeSafety(true);
     if (self.need != .sign) return error.UnexpectedService;
     const ex = self.exchange.?;
-    Possession.verifyKey(@backingInt(ex.sign_scheme), &.{ex.sign_scheme}, auth.identity.publicKey(), ex.sign_content[0..ex.sign_content_len], signature) catch return error.BadSignature;
+    Possession.verifyKey(@backingInt(ex.sign_scheme), &.{ex.sign_scheme}, credentials[ex.credential].auth.identity.publicKey(), ex.sign_content[0..ex.sign_content_len], signature) catch return error.BadSignature;
     self.need = .none;
     return self.addCertificateVerify(signature);
 }
@@ -337,7 +351,7 @@ pub fn request(self: *PostAuth, out: []u8) (Error || error{RequestOutstanding})!
     const allowed = Hello.verifySchemes(.{ .require_pq_auth = self.pq_only });
     var schemes: [Hello.schemes.len]u16 = undefined;
     for (allowed, schemes[0..allowed.len]) |scheme, *slot| slot.* = @backingInt(scheme);
-    const message = try Messages.buildCertificateRequest(out, &context, schemes[0..allowed.len], &.{});
+    const message = try Messages.buildCertificateRequest(out, &context, schemes[0..allowed.len], &.{}, self.authorities);
     const ex = try self.startExchange();
     errdefer self.endExchange();
     @memcpy(ex.context[0..8], &context);
