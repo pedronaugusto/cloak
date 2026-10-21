@@ -708,8 +708,10 @@ of its random confirm the inner transcript; the inner transcript then becomes th
 A retry request that accepted binds the ServerHello to accept too (illegal_parameter otherwise).
 Rejected, the handshake goes on with the outer hello only to authenticate the public name: the
 verification request names it, without the origin's pins; a PSK selection is refused (the outer
-offer was GREASE); after the server's Finished the client sends ech_required instead of its
-own flight and fails with `EchRejected`. The server's retry configurations are released
+offer was GREASE); after the server's Finished the client completes the handshake (RFC 9849
+section 6.1.6), a CertificateRequest answered with an empty Certificate, never its own (6.1.7),
+then its Finished, and only then sends ech_required, under its application keys, and fails with
+`EchRejected` (F154). The server's retry configurations are released
 (`echRetryConfigs`, Session's `ech_retry`) only when the public name was authenticated: empty
 when it sent none, ECH then securely disabled; null for any other outcome. Nothing else of a
 rejected handshake reaches the caller: no info, plaintext, exporter or ticket. The engine does
@@ -1751,4 +1753,5 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F151 | `catalogue_dtls13_ack_skips_dropped_fragments` | `tls/dtls/Datagram_test.zig` | ACKing a record with a fragment dropped, and clearing the list after each ACK; before, a record was ACKed when any of its fragments was new, against RFC 9147 section 7's MUST (BoGo's DTLS-Retransmit-Server-DoNotACKDiscardedFragments) |
 | F152 | `catalogue_verified_leaf_must_allow_signing` | `tls/catalogue_test.zig`, `tls/PostAuth_test.zig` | the engine's Key Usage check removed at the client, the server and post-handshake authentication, each alone; before, a caller's verifier that did not look at key usage let a leaf whose key may not sign prove possession (BoGo's ECDSAKeyUsage-Server, RSAKeyUsage-Server-WantSignature-GotEncipherment; RFC 8446 4.4.2.2) |
 | F153 | `catalogue_revocation_verdict_surfaces` | `verify/Verifier_test.zig`, `tls/Session_test.zig` | the verifier's record of a revocation refusal removed, and the Revoked and status mappings, each alone; before, a path refused by its revocation evidence reported NoTrustedPath, so a revoked certificate went out as unknown_ca (found by the OCSP stapling interop rows) |
+| F154 | `catalogue_ech_rejection_answers_a_certificate_request` | `tls/Ech_test.zig` | the rejected client's flight (empty Certificate, Finished) before its ech_required; before, the client ended at the server's Finished with no flight, so a server asking for a certificate never got the empty Certificate RFC 9849 6.1.7 requires (BoGo's ECH-Client-Reject-NoClientCertificate) |
 | F160 | `catalogue_dtls_authenticated_fragment_refused` | `tls/dtls/Datagram_test.zig` | the refusal of each unfit fragment under keys alone (cut short, past its record, past its message, past the limit), DTLS 1.3 and 1.2; before, each was dropped as a forged plaintext one is, and the handshake waited out its timer (BoGo's LargeMessage-Reject-DTLS) |

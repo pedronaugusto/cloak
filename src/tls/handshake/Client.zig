@@ -1882,7 +1882,6 @@ fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             const received = try Messages.finished(msg, Hash.digest_length);
             const before = self.scratch.?.transcripts.digest(&before_buf);
             try Labels.checkFinished(Hash, k.schedule.prefix, k.handshake.server.expose(), before[0..Hash.digest_length], received);
-            if (self.echRejected()) return self.endRejected();
             try self.state.advance(.finished, epoch, .finished, boundary);
             try self.scratch.?.transcripts.commit(msg);
             var after_buf: [Transcripts.max_digest]u8 = undefined;
@@ -1900,11 +1899,11 @@ fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Erro
     try self.continueFlight();
 }
 
-/// The server rejected ECH and the handshake with the outer hello is complete, the public name
-/// authenticated or not. The connection never reaches the application: it ends with
-/// ech_required, before the client's Finished, and the retry configurations are released only
-/// when the public name was authenticated (RFC 9849 sections 6.1.6 and 6.1.7).
-fn endRejected(self: *Client) Error {
+/// The server rejected ECH and the handshake with the outer hello is complete, the client's
+/// flight queued, the public name authenticated or not. The connection never reaches the
+/// application: it ends with ech_required (`Emit.rejected`), and the retry configurations are
+/// released only when the public name was authenticated (RFC 9849 sections 6.1.6 and 6.1.7).
+fn endRejected(self: *Client) Error!void {
     @setRuntimeSafety(true);
     const e = &self.scratch.?.ech;
     if (self.authenticated and self.options.verify == .full) {
@@ -1912,13 +1911,16 @@ fn endRejected(self: *Client) Error {
         e.retry_list = &.{};
     }
     self.authenticated = false;
-    return error.EchRejected;
+    try self.push(.rejected);
 }
 
-/// The client's second flight: the response to a CertificateRequest, then Finished.
+/// The client's second flight: the response to a CertificateRequest, then Finished. After an
+/// ECH rejection a CertificateRequest is answered with an empty Certificate: no certificate goes
+/// to a name the client did not ask for (RFC 9849 section 6.1.7).
 fn continueFlight(self: *Client) Error!void {
     @setRuntimeSafety(true);
     if (!self.requested_certificate) return self.finishFlight();
+    if (self.echRejected()) return self.sendEmptyCertificate();
     const chosen = self.chooseCredential() orelse return self.sendEmptyCertificate();
     self.credential = @intCast(chosen.index); // safe: at most 32 credentials
     const auth = self.kept.credentials[chosen.index].auth;
@@ -2005,6 +2007,7 @@ fn finishFlight(self: *Client) Error!void {
             if (self.options.hello.post_handshake_auth) self.post_auth = try PostAuth.init(self.gpa, .client, tag, &self.scratch.?.transcripts, self.scratch.?.client_raw, false, &.{}, &.{});
         },
     }
+    if (self.echRejected()) return self.endRejected();
     self.established = true;
     // A provisioned key authenticates whatever the certificate policy; otherwise only a full
     // verification does.

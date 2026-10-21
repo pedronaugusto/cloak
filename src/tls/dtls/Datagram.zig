@@ -793,6 +793,8 @@ fn drainEngine(self: *Datagram) Error!void {
                 self.negotiated = self.hs.info();
                 self.phase_now = .connected;
             },
+            // ECH over datagrams is not built: a datagram client offers none to reject.
+            .rejected => return error.EchRejected,
         }
     }
     self.hs.recycle();

@@ -455,6 +455,11 @@ fn advance(self: *Handshake) void {
             self.current = .authenticated;
             return;
         },
+        // The client's flight to a server that rejected ECH is queued above: ech_required now.
+        .rejected => {
+            self.fail(.ech_required);
+            return;
+        },
         .ticket => {},
         .compat_ccs, .key_update, .keys12, .change_cipher_spec, .refuse_renegotiation, .auth_response, .auth_finished, .record_limits => {
             // None exists in QUIC: the state table rejects them before they can be queued, and

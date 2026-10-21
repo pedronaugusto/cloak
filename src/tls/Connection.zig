@@ -778,6 +778,7 @@ fn drain(self: *Connection) Error!void {
                 self.phase_now.store(.connected, .release);
                 self.split = true;
             },
+            .rejected => return error.EchRejected,
         }
     }
     self.hs.recycle();

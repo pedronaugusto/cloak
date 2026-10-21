@@ -168,8 +168,8 @@ test "F75 catalogue_ech_rejection_no_target_authority" {
         var out: [8]u8 = undefined;
         try std.testing.expectError(error.WrongPhase, duo.client.exportKeyingMaterial(&out, "label", ""));
         try std.testing.expectEqual(0, cache.count());
-        // The server never saw the client's Finished, nor a certificate: the outer handshake
-        // asked for one and the client sent nothing at all.
+        // The server never saw a certificate: the outer handshake asked for one and the client
+        // answered with an empty Certificate (F154), which this server requires.
         try std.testing.expect(duo.server.phase() != .connected);
     }
     // Rejected over a retry request: the same, the outer hello answering both.
@@ -406,6 +406,28 @@ test "C6 ECH server: a tampered outer hello is not decrypted, a tampered second 
 const Session = @import("Session.zig");
 const peer_module = @import("../testing/Peer.zig");
 const Loopback = @import("../testing/Loopback.zig").Loopback;
+
+test "F154 catalogue_ech_rejection_answers_a_certificate_request" {
+    // RFC 9849 sections 6.1.6 and 6.1.7: rejected, the client completes the handshake with the
+    // outer hello, answers a CertificateRequest with an empty Certificate (never its own
+    // certificate, for a name it did not ask for) and its Finished, and only then ends with
+    // ech_required. It ended before its flight, so the server never saw the empty Certificate
+    // the RFC requires.
+    var stale: Keys = undefined;
+    try stale.init(5, 1, public_name);
+    defer stale.deinit();
+    var current: Keys = undefined;
+    try current.init(6, 2, public_name);
+    defer current.deinit();
+    const duo = try rejected(&stale, &current, .{ .client_auth = .required, .client_cert = true });
+    defer duo.deinit();
+    // The server fails on the empty Certificate it requires: the pump's error is that failure.
+    try std.testing.expectError(error.CertificateRequired, duo.pump());
+    // The server took the client's empty Certificate, and a server requiring one refuses it.
+    try std.testing.expectEqual(@as(?Alert, .certificate_required), duo.server.diagnostics().alert_sent);
+    try std.testing.expectEqualSlices(u8, current.list, duo.client.echRetryConfigs().?);
+    try std.testing.expectEqual(Alert.ech_required, duo.client.diagnostics().alert_sent.?);
+}
 
 test "C6 ECH session: a rejection fails open and hands the caller the retry configs" {
     var keys: Keys = undefined;

@@ -173,6 +173,10 @@ pub const Emit = union(enum) {
     record_limits: RecordLimits,
     /// Everything this side owes has been queued and the peer is authenticated.
     complete,
+    /// A client's handshake with its outer hello is complete and the server rejected ECH: the
+    /// connection ends now with ech_required (`EchRejected`), its flight already queued (RFC 9849
+    /// section 6.1.6).
+    rejected,
     /// A client's answer to a post-handshake CertificateRequest is ready for the write half,
     /// which ends it with a Finished under its current keys (stream TLS 1.3 only).
     auth_response,

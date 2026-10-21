@@ -23,6 +23,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Fixed
 
+- A client whose ECH the server rejected completes the handshake with the outer hello before it sends ech_required (RFC 9849 section 6.1.6), answering a CertificateRequest with an empty Certificate (6.1.7) and sending its Finished; it ended at the server's Finished with no flight, so a server asking for a certificate never got the empty Certificate the RFC requires. F154.
 - DTLS: a handshake fragment under keys that is cut short, lies past its record or its message, or belongs to a message past `limits.handshake.message` ends the association (decode_error; `DecodeError`, `HandshakeLimit`); it was dropped as a forged plaintext fragment is, so a peer's oversized Certificate left the handshake waiting out its timer. Plaintext fragments are still dropped. F160.
 
 ## [0.20.0] - 2026-10-21
