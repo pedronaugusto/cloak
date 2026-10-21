@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-21
+
 ### Added
 
 - `Info.credential`: the credential this end presented in the handshake, by its index in the options' `credentials` (the server's answer, or the client's to a CertificateRequest); null on a resumption, with a provisioned key, or for a client not asked or answering with an empty Certificate.
