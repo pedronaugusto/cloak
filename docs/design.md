@@ -500,7 +500,14 @@ credential's own when it names its schemes (`Credential.schemes`, a client's
 signing preferences): a key held where only some schemes may be used, or an order other than
 cloak's. The list restricts and reorders cloak's and never adds to it, a scheme the key or the
 version cannot make passed over, so one list serves both versions; a credential with none the
-peer takes is not chosen. `Info.peer_scheme` names the scheme the peer proved possession under
+peer takes is not chosen. The schemes an end takes from its peer are cloak's unless the caller names
+its own (`peer_schemes`, either role and every carrier, at most 16: BoringSSL's verify
+preferences, the lists a FIPS or CNSA policy allows): they then restrict and reorder cloak's
+for the version and never add to them, in the hello's signature_algorithms, every
+CertificateRequest, and every check of the peer's CertificateVerify or ServerKeyExchange; a list
+that leaves a hello, or a CertificateRequest of a version the server speaks, nothing to name is
+refused at init (a server's needs one version it speaks to name some; a handshake of a version
+its list leaves nothing ends with handshake_failure). `Info.peer_scheme` names the scheme the peer proved possession under
 in the handshake (null when it signed nothing, a resumption among them). `Info.credential` names the
 credential each end presented by its index (the server's answer, a client's to a
 CertificateRequest), null on a resumption, a provisioned key or an empty client Certificate;

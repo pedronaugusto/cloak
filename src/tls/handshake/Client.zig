@@ -1863,7 +1863,10 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
         // section 4.1.3): any other is unoffered.
         try Possession.verifyKey(parsed.scheme, &.{checked.scheme}, checked.key, content, parsed.signature);
         self.delegated_used = true;
-    } else try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
+    } else {
+        var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+        try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.options.hello.peer_schemes, Hello.verifySchemes(self.options.hello), &taken), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
+    }
     self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
@@ -1999,7 +2002,7 @@ fn finishFlight(self: *Client) Error!void {
             try k.schedule.complete(self.scratch.?.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
             // Every later exchange starts from the transcript through this Finished.
-            if (self.options.hello.post_handshake_auth) self.post_auth = try PostAuth.init(self.gpa, .client, tag, &self.scratch.?.transcripts, self.scratch.?.client_raw, false, &.{});
+            if (self.options.hello.post_handshake_auth) self.post_auth = try PostAuth.init(self.gpa, .client, tag, &self.scratch.?.transcripts, self.scratch.?.client_raw, false, &.{}, &.{});
         },
     }
     self.established = true;

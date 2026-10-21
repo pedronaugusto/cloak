@@ -14,7 +14,7 @@ fn base() Transcripts {
 test "C10 post-handshake requests carry their own context, one outstanding at a time" {
     const gpa = std.testing.allocator;
     const transcripts = base();
-    const post = try PostAuth.init(gpa, .server, .aes_128_gcm_sha256, &transcripts, false, false, &.{});
+    const post = try PostAuth.init(gpa, .server, .aes_128_gcm_sha256, &transcripts, false, false, &.{}, &.{});
     defer post.deinit();
     var buf: [256]u8 = undefined;
     const first = try post.request(&buf);

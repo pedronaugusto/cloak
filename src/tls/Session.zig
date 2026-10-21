@@ -124,6 +124,9 @@ pub const Options = struct {
     /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
+    /// The signature schemes taken from the peer, in this end's order, restricting cloak's and
+    /// never adding to them (FIPS, CNSA or the caller's own policy); borrowed, at most 16.
+    peer_schemes: []const @import("handshake/Hello.zig").SignatureScheme = &.{},
     /// What a CertificateRequest is answered with, in this client's order, each with its
     /// delegated credential (RFC 9345): the first the request takes that chains to an authority
     /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, certificates or
@@ -248,6 +251,7 @@ pub fn open(
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
         .require_pq_auth = options.require_pq_auth,
+        .peer_schemes = options.peer_schemes,
         .accept_delegated = options.accept_delegated,
         .certificate_authorities = options.certificate_authorities,
         .credentials = options.credentials,
@@ -320,6 +324,9 @@ pub const ServerOptions = struct {
     /// The peer authenticates with ML-DSA, its whole path to the anchor (TLS 1.3); a server
     /// requiring it of clients needs a required, verified client certificate.
     require_pq_auth: bool = false,
+    /// The signature schemes taken from the peer, in this end's order, restricting cloak's and
+    /// never adding to them (FIPS, CNSA or the caller's own policy); borrowed, at most 16.
+    peer_schemes: []const @import("handshake/Hello.zig").SignatureScheme = &.{},
     client_auth: Server.Auth = .none,
     /// How a presented client chain is checked.
     client_trust: Trust = .none,
@@ -394,6 +401,7 @@ pub fn accept(
         .require_alpn = options.require_alpn,
         .require_hybrid = options.require_hybrid,
         .require_pq_auth = options.require_pq_auth,
+        .peer_schemes = options.peer_schemes,
         .client_auth = options.client_auth,
         .client_verify = policy,
         .accept_delegated = options.accept_delegated,

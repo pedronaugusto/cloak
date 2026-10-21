@@ -129,6 +129,9 @@ pub const Options = struct {
     /// The signature schemes the server's first credential and the client's first sign under.
     server_schemes: []const Hello.SignatureScheme = &.{},
     client_schemes: []const Hello.SignatureScheme = &.{},
+    /// The signature schemes each end takes from its peer.
+    client_peer_schemes: []const Hello.SignatureScheme = &.{},
+    server_peer_schemes: []const Hello.SignatureScheme = &.{},
     /// Post-handshake authentication: the client offers it, the server asks with it, checking
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
@@ -270,6 +273,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .groups = options.client_groups,
         .require_hybrid = options.client_require_hybrid,
         .require_pq_auth = options.client_require_pq_auth,
+        .peer_schemes = options.client_peer_schemes,
         .alpn = options.client_alpn,
         .credentials = self.clientCredentials(),
         .certificate_authorities = options.client_authorities,
@@ -290,6 +294,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .groups = options.server_groups,
         .require_hybrid = options.server_require_hybrid,
         .require_pq_auth = options.server_require_pq_auth,
+        .peer_schemes = options.server_peer_schemes,
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
         .certificate_authorities = options.server_authorities,

@@ -404,10 +404,13 @@ fn sendKeyExchange(self: anytype, signature: []const u8) Error!void {
     try self.state.advance(.server_key_exchange, .initial, .possession, true);
     try self.queueMessage(.initial, message);
     if (self.options.client_auth != .none) {
-        var schemes: [Hello.schemes12_verify.len]u16 = undefined;
-        for (Hello.schemes12_verify, &schemes) |scheme, *slot| slot.* = @backingInt(scheme);
+        var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+        const allowed = Hello.peerSchemes(self.options.peer_schemes, &Hello.schemes12_verify, &taken);
+        if (allowed.len == 0) return error.NoSignatureScheme;
+        var schemes: [Hello.max_peer_schemes]u16 = undefined;
+        for (allowed, schemes[0..allowed.len]) |scheme, *slot| slot.* = @backingInt(scheme);
         const authorities = self.options.certificate_authorities;
-        const request = try Messages12.buildCertificateRequest(try self.reserve(64 + Authorities.wireLength(authorities)), &schemes, authorities);
+        const request = try Messages12.buildCertificateRequest(try self.reserve(64 + Authorities.wireLength(authorities)), schemes[0..allowed.len], authorities);
         try self.state.advance(.certificate_request, .initial, .parsed, true);
         try self.queueMessage(.initial, request);
     }
@@ -561,15 +564,16 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     const scheme: Hello.SignatureScheme = @fromBackingInt(parsed.scheme);
     if (!scheme.supported()) return error.UnofferedScheme;
     const key = try Possession.peerKey(scratch.chain[0], scratch.peer_raw);
+    var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
     if (scheme == .ed25519) {
         // Ed25519 signs the handshake messages, which the transcript kept whole.
         if (scratch.transcripts.keeper == null) return error.UnofferedScheme;
-        try Possession.verifyMessage12(parsed.scheme, &Hello.schemes12_verify, key, scratch.transcripts.keptBytes(), parsed.signature);
+        try Possession.verifyMessage12(parsed.scheme, Hello.peerSchemes(self.options.peer_schemes, &Hello.schemes12_verify, &taken), key, scratch.transcripts.keptBytes(), parsed.signature);
     } else {
         const length = Possession.transcriptHash12(scheme) orelse return error.UnofferedScheme;
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         const digest = scratch.transcripts.digestOf(&digest_buf, length);
-        try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, key, digest, parsed.signature);
+        try Possession.verifyDigest12(parsed.scheme, Hello.peerSchemes(self.options.peer_schemes, &Hello.schemes12_verify, &taken), key, digest, parsed.signature);
     }
     self.peer_scheme = scheme;
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);

@@ -107,6 +107,9 @@ pub const Options = struct {
     /// The client authenticates with ML-DSA (`Hello.Options.require_pq_auth`): it needs a
     /// required, verified client certificate, and TLS 1.3.
     require_pq_auth: bool = false,
+    /// The signature schemes this server takes from a client's CertificateVerify, in its order
+    /// (`Hello.peerSchemes`), borrowed; empty for cloak's. At most `Hello.max_peer_schemes`.
+    peer_schemes: []const Hello.SignatureScheme = &.{},
     /// Set by the carrier: `Connection` is a stream, `quic.Handshake` QUIC, `dtls.Datagram` a datagram.
     transport: suites.Transport = .stream,
     /// The server's QUIC transport parameters.
@@ -356,6 +359,15 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     // Provisioned keys may be a server's only authentication; otherwise it needs a credential.
     if (options.credentials.len > 32 or (options.credentials.len == 0 and options.external_psk == null)) return error.InvalidOptions;
     if (options.require_pq_auth and (options.client_auth != .required or options.client_verify == .none)) return error.InvalidOptions;
+    // The schemes taken from a client leave a CertificateRequest of some version it speaks
+    // something to list; a handshake of a version left none ends there (`NoSignatureScheme`).
+    if (options.peer_schemes.len > Hello.max_peer_schemes) return error.InvalidOptions;
+    if (options.peer_schemes.len != 0 and options.client_auth != .none) {
+        var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+        const takes13 = @backingInt(options.max_version) >= @backingInt(Version.tls13) and Hello.peerSchemes(options.peer_schemes, Hello.verifySchemes(.{ .require_pq_auth = options.require_pq_auth }), &taken).len != 0;
+        const takes12 = @backingInt(options.min_version) <= @backingInt(Version.tls12) and Hello.peerSchemes(options.peer_schemes, &Hello.schemes12_verify, &taken).len != 0;
+        if (!takes13 and !takes12) return error.InvalidOptions;
+    }
     switch (options.client_verify) {
         .raw_key, .leaf_key => |pinned| if (pinned.pins.len == 0 or pinned.pins.len > Verify.Pins.max_pins or options.client_auth == .none) return error.InvalidOptions,
         else => {},
@@ -1410,7 +1422,9 @@ fn sendEncrypted(self: *Server) Client.Error!void {
 
 fn sendRequest(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
-    const allowed = Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth });
+    var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+    const allowed = Hello.peerSchemes(self.options.peer_schemes, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), &taken);
+    if (allowed.len == 0) return error.NoSignatureScheme;
     var schemes: [Hello.schemes.len]u16 = undefined;
     for (allowed, schemes[0..allowed.len]) |scheme, *slot| slot.* = @backingInt(scheme);
     const credential_list = if (self.options.accept_delegated) Delegation.offered(self.options.require_pq_auth) else &.{};
@@ -1657,7 +1671,10 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
         // section 4.1.3): any other is unoffered.
         try Possession.verifyKey(parsed.scheme, &.{checked.scheme}, checked.key, content, parsed.signature);
         self.delegated_used = true;
-    } else try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), try Possession.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
+    } else {
+        var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+        try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.options.peer_schemes, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), &taken), try Possession.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
+    }
     self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
@@ -1681,7 +1698,7 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             try k.schedule.complete(scratch.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
             // Every later exchange starts from the transcript through this Finished.
-            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.certificate_authorities);
+            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.peer_schemes, self.options.certificate_authorities);
         },
     }
     const emit = try self.claim();

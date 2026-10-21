@@ -130,6 +130,9 @@ pub const Options = struct {
     /// every certificate signature on its verified path up to the trust anchor. A hybrid key
     /// exchange does not meet it; a provisioned PSK, a symmetric key, does. TLS 1.3 only.
     require_pq_auth: bool = false,
+    /// The signature schemes this client takes from the server, in its order (`peerSchemes`),
+    /// borrowed; empty for cloak's. At most `max_peer_schemes`.
+    peer_schemes: []const SignatureScheme = &.{},
     /// The server presents a raw public key (RFC 7250), which this client trusts by its pin:
     /// server_certificate_type offers that type alone. Either version.
     raw_server_key: bool = false,
@@ -273,6 +276,27 @@ fn rsae(scheme: SignatureScheme) bool {
     return scheme == .rsa_pss_rsae_sha256 or scheme == .rsa_pss_rsae_sha384 or scheme == .rsa_pss_rsae_sha512;
 }
 
+/// The most schemes a caller names as those it takes from its peer (`peer_schemes`).
+pub const max_peer_schemes = 16;
+
+/// The schemes an end takes from its peer where cloak's own are `base` (`verifySchemes`,
+/// `schemes12`, `schemes12_verify`, or a hello's): the caller's `peer` in its order, those `base`
+/// holds, as its signature_algorithms or CertificateRequest lists them and as the peer's
+/// signature is checked; `base` itself when the caller names none. The caller's list restricts
+/// and reorders cloak's and never adds to it (BoringSSL's verify preferences; a policy such as
+/// FIPS or CNSA).
+pub fn peerSchemes(peer: []const SignatureScheme, base: []const SignatureScheme, out: *[max_peer_schemes]SignatureScheme) []const SignatureScheme {
+    if (peer.len == 0) return base;
+    var n: usize = 0;
+    for (peer) |scheme| {
+        if (std.mem.findScalar(SignatureScheme, base, scheme) == null) continue;
+        if (std.mem.findScalar(SignatureScheme, out[0..n], scheme) != null) continue;
+        out[n] = scheme;
+        n += 1;
+    }
+    return out[0..n];
+}
+
 /// The schemes a CertificateVerify (TLS 1.3) may use under `options`: ML-DSA's alone when the
 /// policy requires post-quantum authentication.
 pub fn verifySchemes(options: Options) []const SignatureScheme {
@@ -286,6 +310,12 @@ pub const ValidateError = error{InvalidOptions};
 pub fn validate(options: Options) ValidateError!void {
     @setRuntimeSafety(true);
     Compression.validate(options.certificate_compression, .decompress) catch return error.InvalidOptions;
+    // The schemes taken from the peer leave the hello some to list.
+    if (options.peer_schemes.len > max_peer_schemes) return error.InvalidOptions;
+    if (options.peer_schemes.len != 0) {
+        var taken: [max_peer_schemes]SignatureScheme = undefined;
+        if (peerSchemes(options.peer_schemes, if (!options.allows12()) verifySchemes(options) else if (options.allows13()) &schemes_both else &schemes12, &taken).len == 0) return error.InvalidOptions;
+    }
     if (options.suites.len == 0 or options.suites.len > std.enums.values(Suite).len or options.groups.len == 0 or options.groups.len > std.enums.values(Group).len or options.alpn.len > 32 or options.parameters.len > 65535) return error.InvalidOptions;
     // The suites, groups and profiles listed are ones cloak speaks: the types are open, so a
     // caller can name any number, and every later step relies on this check.
@@ -439,7 +469,8 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (!compress) try supportedGroups(&w, options, tls13);
     // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
     if (tls12) try extension(&w, 11, &.{ 1, 0 });
-    const offered: []const SignatureScheme = if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12;
+    var taken: [max_peer_schemes]SignatureScheme = undefined;
+    const offered = peerSchemes(options.peer_schemes, if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12, &taken);
     var signature_bytes: [4 + schemes_both.len * 2]u8 = undefined;
     var s: Writer = .{ .bytes = &signature_bytes };
     // safe: at most fifteen two-byte schemes, and GREASE one more.

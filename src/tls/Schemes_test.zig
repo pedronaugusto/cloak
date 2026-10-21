@@ -71,3 +71,51 @@ test "C2 a credential names at most max_schemes schemes" {
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_schemes = &many }));
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_cert = true, .client_schemes = &many }));
 }
+
+test "C2 the schemes a client takes from the server restrict what it offers and what it accepts" {
+    for ([_]bool{ false, true }) |tls12| {
+        // The client takes SHA-384 PSS alone: the server, whose own first choice is SHA-256, signs
+        // under it.
+        const duo = try Duo.init(gpa, versions(tls12, .{ .cert = .rsa, .client_peer_schemes = &.{ .ecdsa_p256_sha256, .rsa_pss_rsae_sha384 } }));
+        defer duo.deinit();
+        try duo.handshake();
+        try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha384, duo.client.info().?.peer_scheme.?);
+    }
+    // A server whose credential signs only outside the client's list has no scheme to sign with.
+    const refused = try Duo.init(gpa, .{ .cert = .rsa, .server_schemes = &.{.rsa_pss_rsae_sha256}, .client_peer_schemes = &.{.rsa_pss_rsae_sha384} });
+    defer refused.deinit();
+    try std.testing.expectError(error.NoSignatureScheme, refused.handshake());
+}
+
+test "C2 the schemes a server takes from the client restrict its CertificateRequest" {
+    {
+        // TLS 1.2 names a hash, not a curve: the P-256 client signs under SHA-384, the one listed.
+        const duo = try Duo.init(gpa, versions(true, .{ .client_cert = true, .client_auth = .required, .server_peer_schemes = &.{.ecdsa_p384_sha384} }));
+        defer duo.deinit();
+        try duo.handshake();
+        try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p384_sha384, duo.server.info().?.peer_scheme.?);
+    }
+    {
+        // TLS 1.3 binds the curve: the P-256 client has no listed scheme and answers with no
+        // certificate, which an optional request takes.
+        const duo = try Duo.init(gpa, .{ .client_cert = true, .client_auth = .optional, .server_peer_schemes = &.{.ecdsa_p384_sha384} });
+        defer duo.deinit();
+        try duo.handshake();
+        try std.testing.expect(!duo.server.info().?.peer_authenticated);
+    }
+}
+
+test "C2 the schemes taken from the peer must leave some to list" {
+    // PKCS#1 v1.5 alone leaves a TLS 1.3 hello nothing; past `max_peer_schemes`, too many.
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_min = .tls13, .client_peer_schemes = &.{.rsa_pkcs1_sha256} }));
+    const many: [Hello.max_peer_schemes + 1]Hello.SignatureScheme = @splat(.ecdsa_p256_sha256);
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_peer_schemes = &many }));
+    // A server asking for certificates needs a listed scheme in some version it speaks; a
+    // handshake of a version its list leaves nothing ends with handshake_failure.
+    const sha1: Hello.SignatureScheme = @fromBackingInt(0x0201);
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_auth = .optional, .server_peer_schemes = &.{sha1} }));
+    // The server speaks both versions, and SHA-512 PSS leaves its TLS 1.2 request nothing.
+    const tls12 = try Duo.init(gpa, .{ .client_max = .tls12, .client_auth = .optional, .server_peer_schemes = &.{.rsa_pss_rsae_sha512} });
+    defer tls12.deinit();
+    try std.testing.expectError(error.NoSignatureScheme, tls12.handshake());
+}

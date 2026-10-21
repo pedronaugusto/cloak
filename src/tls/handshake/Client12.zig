@@ -220,7 +220,8 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     try suiteKey(self.suite12.?, key);
     var content_buf: [Messages12.max_signed]u8 = undefined;
     const content = Messages12.signedParams(&content_buf, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), ske.params);
-    try Possession.verifyMessage12(ske.scheme, &Hello.schemes12, key, content, ske.signature);
+    var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+    try Possession.verifyMessage12(ske.scheme, Hello.peerSchemes(self.options.hello.peer_schemes, &Hello.schemes12, &taken), key, content, ske.signature);
     self.peer_scheme = @fromBackingInt(ske.scheme);
     try self.state.advance(.server_key_exchange, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);

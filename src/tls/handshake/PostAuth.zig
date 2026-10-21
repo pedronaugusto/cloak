@@ -94,6 +94,8 @@ need: Need = .none,
 raw_client: bool,
 /// The server asks for ML-DSA alone (`require_pq_auth`).
 pq_only: bool,
+/// The schemes a server takes from the client's CertificateVerify (`Hello.peerSchemes`), borrowed.
+peer: []const Hello.SignatureScheme,
 /// Server: the names its requests carry (`Server.Options.certificate_authorities`), borrowed.
 authorities: []const []const u8,
 /// The server's requests so far; each context is its number.
@@ -129,7 +131,7 @@ const Exchange = struct {
 };
 
 /// Keeps what later exchanges need: `transcript`, the handshake's through the client's Finished.
-pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *const Transcripts, raw_client: bool, pq_only: bool, authorities: []const []const u8) std.mem.Allocator.Error!*PostAuth {
+pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *const Transcripts, raw_client: bool, pq_only: bool, peer: []const Hello.SignatureScheme, authorities: []const []const u8) std.mem.Allocator.Error!*PostAuth {
     const self = try gpa.create(PostAuth);
     self.* = .{
         .gpa = gpa,
@@ -142,6 +144,7 @@ pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *con
         },
         .raw_client = raw_client,
         .pq_only = pq_only,
+        .peer = peer,
         .authorities = authorities,
     };
     return self;
@@ -348,7 +351,8 @@ pub fn request(self: *PostAuth, out: []u8) (Error || error{RequestOutstanding})!
     const number = self.requests + 1;
     var context: [8]u8 = undefined;
     std.mem.writeInt(u64, &context, number, .big);
-    const allowed = Hello.verifySchemes(.{ .require_pq_auth = self.pq_only });
+    var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+    const allowed = Hello.peerSchemes(self.peer, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), &taken);
     var schemes: [Hello.schemes.len]u16 = undefined;
     for (allowed, schemes[0..allowed.len]) |scheme, *slot| slot.* = @backingInt(scheme);
     const message = try Messages.buildCertificateRequest(out, &context, schemes[0..allowed.len], &.{}, self.authorities);
@@ -479,7 +483,8 @@ pub fn onCertificateVerify(self: *PostAuth, msg: []const u8) Error!void {
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
     const content = Messages.signedContent(&content_buf, false, ex.transcript.digest(&digest_buf));
-    try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), try Possession.peerKey(ex.chain[0], self.raw_client), content, parsed.signature);
+    var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
+    try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.peer, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), &taken), try Possession.peerKey(ex.chain[0], self.raw_client), content, parsed.signature);
     _ = self.machine.server.step(.certificate_verify) catch unreachable; // unreachable: possession
     try ex.transcript.commit(msg);
 }
