@@ -1,5 +1,6 @@
 //! Failure-catalogue tests that cross the TLS layers: each names its F-id and catalogue test.
 const std = @import("std");
+const Alert = @import("wire/Alert.zig").Alert;
 const Der = @import("../wire/Der.zig");
 const ClientHello = @import("handshake/ClientHello.zig");
 const Messages = @import("handshake/Messages.zig");
@@ -118,6 +119,38 @@ test "F01 catalogue_entropy_clone_and_unready_source (entropy failing at any req
     var differ: usize = 0;
     for (flights[0], flights[2]) |a, b| differ += @intFromBool(a != b);
     try std.testing.expect(differ > 32 + 32 + 1000);
+}
+
+test "F152 catalogue_verified_leaf_must_allow_signing (a verified leaf whose Key Usage leaves out digitalSignature never proves possession, whichever verifier took it)" {
+    // BoGo's ECDSAKeyUsage-Server and RSAKeyUsage-Server-WantSignature-GotEncipherment: RFC 8446
+    // section 4.4.2.2, the certificate MUST allow its key to sign. A caller's verifier that checks
+    // nothing (`accept_any`) takes the chain; the engine refuses it with bad_certificate, as the
+    // portable verifier's purpose check does.
+    const gpa = std.testing.allocator;
+    for ([_]bool{ false, true }) |tls12| {
+        const base: Duo.Options = if (tls12) .{ .client_max = .tls12, .server_max = .tls12, .accept_any = true } else .{ .accept_any = true };
+        // The server's certificate.
+        {
+            var options = base;
+            options.cert = .dc_no_signature;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try std.testing.expectError(error.KeyUsage, duo.handshake());
+            try std.testing.expectEqual(@as(?Alert, .bad_certificate), duo.client.diagnostics().alert_sent);
+        }
+        // The client's.
+        {
+            var options = base;
+            options.client_auth = .required;
+            options.client_cert = true;
+            options.client_no_signature = true;
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try std.testing.expectError(error.KeyUsage, duo.handshake());
+            try std.testing.expectEqual(@as(?Alert, .bad_certificate), duo.server.diagnostics().alert_sent);
+            try std.testing.expect(duo.server.info() == null);
+        }
+    }
 }
 
 test "F42 catalogue_mtls_builder_order_and_optional_usage (optional and required client authentication: a wrong-usage certificate never authenticates, absence never reports an identity)" {

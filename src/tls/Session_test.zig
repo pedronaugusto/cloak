@@ -297,6 +297,47 @@ test "C2 session reports a rejected server chain as the alert it sent" {
     try std.testing.expectEqual(@as(?Session.VerifyError, error.NoTrustedPath), report.verification);
 }
 
+/// A caller's verifier with a policy of its own: it takes every chain, or none.
+const Custom = struct {
+    accept: bool,
+    calls: usize = 0,
+
+    fn verify(context: ?*anyopaque, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
+        const self: *Custom = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        if (!self.accept) return error.Failed;
+        return certificates.types.Verification.init(gpa, request, request.chain, true, .{ .nanoseconds = request.time.nanoseconds + std.time.ns_per_s });
+    }
+};
+
+test "C2 session takes a custom verifier's verdict, and reports its refusal as certificate_unknown" {
+    // RFC 8446 section 6.2: a verifier's own refusal names no defect of the certificate.
+    const gpa = std.testing.allocator;
+    for ([_]bool{ true, false }) |accept| {
+        var verifier: Custom = .{ .accept = accept };
+        var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+        defer peer.deinit();
+        var transport: Loopback(@TypeOf(peer)) = undefined;
+        var transport_read: [4096]u8 = undefined;
+        transport.init(&peer, &transport_read, &.{});
+        var session: Session = undefined;
+        var read_buffer: [256]u8 = undefined;
+        var write_buffer: [256]u8 = undefined;
+        var report: Session.Diagnostics = .{};
+        const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = .{ .context = &verifier, .generation = .fromRaw(1), .verify = Custom.verify } }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
+        if (accept) {
+            try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+            defer session.deinit();
+            try std.testing.expect(session.info().?.peer_authenticated);
+        } else {
+            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
+            try std.testing.expectEqual(@as(?Alert, .certificate_unknown), report.alert_sent);
+            try std.testing.expectEqual(@as(?Session.VerifyError, error.Failed), report.verification);
+        }
+        try std.testing.expectEqual(@as(usize, 1), verifier.calls);
+    }
+}
+
 test "C10 session keeps the verifier's reason for a refused chain: Certificate Transparency" {
     const gpa = std.testing.allocator;
     var trust = certificates.Trust.init(gpa);

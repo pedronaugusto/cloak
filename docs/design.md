@@ -420,7 +420,14 @@ is not measured here.
 `Session` drives a `Connection` over `std.Io` readers and writers. It answers
 requests with the system's secure randomness and calendar clock (or a fixed time),
 the portable verifier over a trust snapshot (or a caller's verifier), and, for
-a key cloak does not hold, a caller's signer. After the handshake one task may read
+a key cloak does not hold, a caller's signer. A refused chain goes out as the verifier's reason
+(RFC 8446 section 6.2): no path to an anchor unknown_ca, a validity outside the time
+certificate_expired, a corrupt certificate or a signature that does not verify bad_certificate,
+a caller's verifier saying no for reasons of its own certificate_unknown. Whichever verifier
+took a chain, the engine checks that the leaf's Key Usage, when present, allows signing before
+it trusts the CertificateVerify the leaf's key made (RFC 8446 section 4.4.2.2; bad_certificate,
+F152); with verification off (`Trust.none`, pinned leaf keys) nothing of the certificate is
+checked. After the handshake one task may read
 while another writes, as Go's `tls.Conn` and a split rustls stream allow (HTTP/2 and
 WebSocket need it). The connection is then two halves with record states of their own:
 the read half (input reassembly, the read keys, post-handshake messages) and the write half
@@ -1670,3 +1677,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F149 | `catalogue_dtls13_handshake_alert_epoch` | `tls/dtls/Datagram_test.zig` | the handshake epoch for a fatal alert before this end's Finished went out, and the mark that it went; before, a client failing on the server's flight sent its alert under application keys the server could not read (BoGo's DTLS13-SendExtraFinished-Packed) |
 | F150 | `catalogue_dtls13_message_after_key_update` | `tls/dtls/Datagram_test.zig` | the epoch floor a peer's KeyUpdate sets removed; before, a handshake message after a KeyUpdate under the retired epoch was taken (BoGo's KeyUpdate-ExtraMessage-DTLS and -Buffered; RFC 8446 section 5.1) |
 | F151 | `catalogue_dtls13_ack_skips_dropped_fragments` | `tls/dtls/Datagram_test.zig` | ACKing a record with a fragment dropped, and clearing the list after each ACK; before, a record was ACKed when any of its fragments was new, against RFC 9147 section 7's MUST (BoGo's DTLS-Retransmit-Server-DoNotACKDiscardedFragments) |
+| F152 | `catalogue_verified_leaf_must_allow_signing` | `tls/catalogue_test.zig`, `tls/PostAuth_test.zig` | the engine's Key Usage check removed at the client, the server and post-handshake authentication, each alone; before, a caller's verifier that did not look at key usage let a leaf whose key may not sign prove possession (BoGo's ECDSAKeyUsage-Server, RSAKeyUsage-Server-WantSignature-GotEncipherment; RFC 8446 4.4.2.2) |

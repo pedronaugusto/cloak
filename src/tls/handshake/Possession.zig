@@ -93,6 +93,17 @@ fn pss(key: Algorithm.PublicKey, restricted: bool, hash: Algorithm.Hash, salt: u
     return .{ .pss = .{ .hash = hash, .mgf_hash = hash, .salt_length = salt } };
 }
 
+/// Whether a verified leaf's key may sign the handshake: RFC 8446 section 4.4.2.2 (and TLS 1.2's
+/// signing suites) ask digitalSignature when Key Usage is present. Checked on every verified chain,
+/// since a caller's verifier may not (F152); a leaf that does not parse is that error.
+pub fn signs(leaf_der: []const u8) certificates.certificate.ParseError!bool {
+    @setRuntimeSafety(true);
+    const cert = try certificates.certificate.parse(leaf_der, .{});
+    const usage = cert.x509(0x0f) orelse return true;
+    const mask = try certificates.certificate.Extensions.keyUsage(usage.value);
+    return mask & 1 != 0;
+}
+
 /// Whether a verified path (leaf first, the trust anchor last) is signed with ML-DSA at every
 /// link: each certificate but the anchor carries an ML-DSA signature. The anchor's own signature
 /// authenticates nothing; the leaf's key is checked by its CertificateVerify scheme.

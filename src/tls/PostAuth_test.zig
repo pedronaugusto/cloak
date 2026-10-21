@@ -56,6 +56,16 @@ test "C10 post-handshake auth: a key held elsewhere signs the answer through a r
     try std.testing.expectEqual(Connection.PostAuthOutcome{ .generation = 1, .authenticated = true }, duo.server.postAuthentication().?);
 }
 
+test "F152 post-handshake auth: a verified client leaf whose key may not sign proves nothing" {
+    // RFC 8446 section 4.4.2.2, as for the handshake's certificates: the verifier takes the chain
+    // (`accept_any`), the engine refuses it.
+    const duo = try Duo.init(gpa, .{ .client_cert = true, .client_no_signature = true, .client_post_auth = true, .server_post_auth = true, .accept_any = true });
+    defer duo.deinit();
+    try duo.handshake();
+    try std.testing.expectError(error.KeyUsage, authenticate(duo));
+    try std.testing.expectEqual(Connection.Phase.failed, duo.server.phase());
+}
+
 test "C10 post-handshake auth: none is asked of a client that did not offer it, nor by a server that does not ask" {
     {
         const duo = try Duo.init(gpa, .{ .client_cert = true, .server_post_auth = true });

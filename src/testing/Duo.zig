@@ -46,6 +46,12 @@ pub const Options = struct {
     client_mldsa: bool = false,
     /// That certificate is the server's P-256 one: a server-only extended key usage.
     client_server_eku: bool = false,
+    /// That certificate is `dc_no_signature` (keyAgreement alone) on the P-256 key: its key may not
+    /// sign the handshake.
+    client_no_signature: bool = false,
+    /// Both ends' verifier takes every chain, checking nothing: a caller's verifier that does not
+    /// look at key usage.
+    accept_any: bool = false,
     /// Post-quantum authentication required of the server (client) and of the client (server).
     client_require_pq_auth: bool = false,
     server_require_pq_auth: bool = false,
@@ -210,9 +216,9 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.raw_identity) |raw| raw.deinit();
     self.auth = null;
     if (options.client_cert) {
-        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_server_eku) pki.p256_pem else if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
+        const client_key = try certificates.PrivateKey.parse(gpa, if (options.client_server_eku or options.client_no_signature) pki.p256_pem else if (options.client_mldsa) pki.client_mldsa65_pem else if (options.client_ed25519) pki.client_ed25519_pem else pki.client_pem, .{});
         defer client_key.deinit();
-        const chain: []const []const u8 = if (options.client_server_eku) &.{ pki.p256, pki.ca } else if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else if (options.client_delegated) &.{ pki.dc_client, pki.dc_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
+        const chain: []const []const u8 = if (options.client_server_eku) &.{ pki.p256, pki.ca } else if (options.client_no_signature) &.{ pki.dc_no_signature, pki.dc_ca } else if (options.client_mldsa) &.{ pki.client_mldsa65, pki.mldsa_ca } else if (options.client_delegated) &.{ pki.dc_client, pki.dc_ca } else &.{ if (options.client_ed25519) pki.client_ed25519 else pki.client, pki.ca };
         self.auth = if (options.client_raw)
             try certificates.ClientAuth.initRawKey(gpa, (try certificates.certificate.parse(chain[0], .{})).spki, client_key, .{})
         else if (options.client_external)
@@ -403,6 +409,12 @@ fn serve(self: *Duo, conn: *Connection) !void {
         .time => try conn.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, self.options.time) * std.time.ns_per_s) }),
         .verify => |verify_request| {
             std.crypto.hash.sha2.Sha256.hash(verify_request.chain[0], &self.peer_leaf[@intFromBool(conn == &self.server)], .{});
+            if (self.options.accept_any) {
+                var owned = try certificates.types.Verification.init(self.gpa, verify_request, verify_request.chain, true, .{ .nanoseconds = verify_request.time.nanoseconds + std.time.ns_per_day });
+                defer owned.deinit();
+                try conn.provide(request.token, .{ .verified = &owned });
+                continue;
+            }
             if (certificates.verify.indexed(self.gpa, verify_request, self.snapshot.issuers())) |receipt| {
                 var owned = receipt;
                 defer owned.deinit();

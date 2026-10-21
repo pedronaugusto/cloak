@@ -159,7 +159,7 @@ pub fn alertFor(err: anyerror) Alert {
         // A peer's message or handshake past the receiver's bounds: a length out of the range it
         // takes (RFC 8446 section 6.2), not an internal failure.
         error.HandshakeLimit => .decode_error,
-        error.VerificationRejected, error.UnsupportedKey, error.InvalidCertificate, error.InvalidDer => .bad_certificate,
+        error.VerificationRejected, error.UnsupportedKey, error.InvalidCertificate, error.InvalidDer, error.KeyUsage => .bad_certificate,
         else => .internal_error,
     };
 }
@@ -884,6 +884,7 @@ pub fn provideVerification(self: *Client, token: types.Token, receipt: *const ty
     @setRuntimeSafety(true);
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
+    if (!try Possession.signs(receipt.path[0])) return error.KeyUsage;
     if (self.options.hello.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
     // A delegated credential is checked against the certificate just verified (RFC 9345 section
     // 4.1.3); its key then proves possession.

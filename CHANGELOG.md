@@ -4,6 +4,14 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking: `Connection.VerifyFailure` (and the datagram's and QUIC's) gains `unknown`, answered with certificate_unknown; a `Trust.custom` verifier's `error.Failed` now goes out as certificate_unknown, not bad_certificate (RFC 8446 section 6.2: bad_certificate is for a corrupt certificate or a signature that does not verify; a verifier refusing by its own policy names neither).
+
+### Fixed
+
+- A verified leaf whose Key Usage leaves out digitalSignature no longer proves possession (RFC 8446 section 4.4.2.2): the engine checks it whichever verifier took the chain, at the client, the server and post-handshake authentication, and ends the handshake with bad_certificate (`KeyUsage`). The portable verifier refused such a leaf already; a caller's verifier that did not look at key usage let it through. F152.
+
 ## [0.19.2] - 2026-10-21
 
 ### Changed

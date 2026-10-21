@@ -459,6 +459,7 @@ pub fn provideVerification(self: *PostAuth, token: types.Token, receipt: *const 
     @setRuntimeSafety(true);
     if (self.need != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token, policy)) catch return error.VerificationRejected;
+    if (!try Possession.signs(receipt.path[0])) return error.KeyUsage;
     if (policy.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
     self.need = .none;
     return self.chainVerified(true);

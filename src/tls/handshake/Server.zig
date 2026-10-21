@@ -537,6 +537,7 @@ pub fn provideVerification(self: *Server, token: types.Token, receipt: *const ty
     if (self.established) return self.post_auth.?.provideVerification(token, receipt, self.postPolicy());
     if (self.need_now != .verify) return error.UnexpectedService;
     receipt.check(self.verification(token)) catch return error.VerificationRejected;
+    if (!try Possession.signs(receipt.path[0])) return error.KeyUsage;
     if (self.options.require_pq_auth and !Possession.postQuantumPath(receipt.path)) return error.PqAuthenticationRequired;
     const scratch = self.scratch.?;
     if (scratch.delegated) |bytes| {
