@@ -59,6 +59,11 @@ pub const Credential = struct {
     /// TLS 1.3 client that takes it while it is valid; its key then signs CertificateVerify and
     /// the certificate's key is not used. Retained with the identity.
     delegated: ?Delegation.Credential = null,
+    /// The credential signs only through `delegated`, never with the certificate's key: RFC
+    /// 9345's server that does not hold that key (its owner issues the short-lived credential).
+    /// It is offered only to a TLS 1.3 client that takes its delegated credential while it is
+    /// valid, and passed over otherwise; it needs no signer. Requires `delegated`.
+    delegated_only: bool = false,
     /// The certificate's SignedCertificateTimestampList (RFC 6962 section 3.3), borrowed: SCTs
     /// logs issued for it as it is, sent to a client that asks (TLS 1.3 in the leaf's entry, TLS
     /// 1.2 in the ServerHello). SCTs embedded in the certificate need nothing here. At most
@@ -376,6 +381,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
         for (credential.names) |name| if (name.len == 0 or name.len > 253) return error.InvalidOptions;
         if (credential.schemes.len > Credential.max_schemes) return error.InvalidOptions;
         if (credential.delegated) |delegated| if (delegated.side() != .server or !delegated.belongsTo(credential.identity)) return error.InvalidOptions;
+        if (credential.delegated_only and credential.delegated == null) return error.InvalidOptions;
         if (credential.scts.len != 0) {
             if (credential.scts.len > Credential.max_scts or credential.identity.form() != .x509) return error.InvalidOptions;
             _ = transparency.List.init(credential.scts) catch return error.InvalidOptions;
@@ -840,6 +846,8 @@ fn fits13(self: *const Server, credential: Credential, hello: *const ClientHello
     if (credential.delegated) |delegated| if (hello.delegated) |list| {
         if (delegated.usable(types.seconds(self.now.?), list, hello)) return .{ .scheme = delegated.keyScheme(), .delegating = true };
     };
+    // A credential that signs only through its delegated credential has nothing else to sign with.
+    if (credential.delegated_only) return error.NoSignatureScheme;
     return .{ .scheme = Possession.choose(credential.identity.publicKey(), credential.schemes, hello) orelse return error.NoSignatureScheme };
 }
 

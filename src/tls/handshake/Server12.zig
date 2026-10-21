@@ -136,6 +136,9 @@ fn authenticationOf(key: certificates.certificate.Algorithm.PublicKey, hello: *c
 /// client lists.
 fn fits12(self: anytype, credential: anytype, hello: *const ClientHello) Error!Possession.Fit {
     @setRuntimeSafety(true);
+    // TLS 1.2 has no delegated credentials (RFC 9345 section 4): one that signs only through its
+    // own has nothing to sign with here.
+    if (credential.delegated_only) return error.NoSignatureScheme;
     const key = credential.identity.publicKey();
     const kind = try authenticationOf(key, hello);
     for (self.options.suites) |suite| {

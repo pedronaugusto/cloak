@@ -961,6 +961,14 @@ the caller when that key is held elsewhere), so a stale credential costs a fallb
 handshake. The credential's key is always held by cloak and signs inside the engine with hedged noise
 drawn with the handshake's entropy.
 
+A server that never holds the certificate's key (its owner issues the credentials and keeps the
+key) marks its `Credential` `delegated_only`: the identity may be the chain alone, no signer is
+needed, and the credential is offered only to a TLS 1.3 client that takes its delegated credential
+while it is valid; for any other client it is passed over for the next credential, as one of a form
+or scheme the client cannot take is (BoringSSL's delegated credential, a credential of its own).
+Alone, it answers such a client with no credential: the handshake fails rather than sign with a
+key it does not have.
+
 Peers: NSS 3.128's tstclnt (`-B`) verifies a cloak server's credential (trials `--dc`); no available
 server sends one (OpenSSL and Go speak no RFC 9345, BoringSSL's bssl tool has no option for one, NSS's
 selfserv cannot load one), so cloak's client is tested against cloak's server, and the offer against

@@ -113,6 +113,8 @@ pub const Options = struct {
     /// with a P-384 key expiring `delegated_lifetime` seconds after `delegated_issued`; and
     /// whether each end takes the peer's.
     server_delegated: bool = false,
+    /// With `server_delegated`: the credential signs only through its delegated credential.
+    server_delegated_only: bool = false,
     client_delegated: bool = false,
     client_accept_delegated: bool = false,
     server_accept_delegated: bool = false,
@@ -349,7 +351,7 @@ fn clientCredentials(self: *Duo) []const Client.Credential {
 
 /// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
 fn credentials(self: *Duo) []const Server.Credential {
-    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp, .schemes = self.options.server_schemes };
+    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .delegated_only = self.options.server_delegated_only, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp, .schemes = self.options.server_schemes };
     for (self.also[0..self.also_count], 1..) |identity, i| self.credential_list[i] = .{ .identity = identity };
     return self.credential_list[0 .. 1 + self.also_count];
 }

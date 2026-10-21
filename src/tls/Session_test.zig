@@ -211,6 +211,50 @@ test "C3 session accept needs a signer for an identity without a key, and uses i
     try std.testing.expect(peer.certificate_verify_ok and peer.server_finished_ok);
 }
 
+test "C10 session accept needs no signer for a credential that signs only through its delegated credential" {
+    // RFC 9345's server that does not hold the certificate's key: its identity is the chain alone.
+    const gpa = std.testing.allocator;
+    const Delegation = @import("handshake/Delegation.zig");
+    const key = try certificates.PrivateKey.parse(gpa, pki.p256_pem, .{});
+    defer key.deinit();
+    const owner = try certificates.Identity.init(gpa, &.{ pki.dc_p256, pki.dc_ca }, key, .{});
+    defer owner.deinit();
+    const dc_key = try certificates.PrivateKey.parse(gpa, pki.p384_pem, .{});
+    defer dc_key.deinit();
+    var noise: [certificates.PrivateKey.max_noise]u8 = @splat(7);
+    const bytes = try Delegation.issue(gpa, owner, .{
+        .role = .server,
+        .spki = (try certificates.certificate.parse(pki.p384, .{})).spki,
+        .scheme = .ecdsa_p384_sha384,
+        .algorithm = .ecdsa_p256_sha256,
+        .expires = certificates.types.instant(pki.time + 24 * 60 * 60),
+    }, noise[0..owner.noiseLength().?]);
+    defer gpa.free(bytes);
+    const identity = try certificates.Identity.initExternal(gpa, &.{ pki.dc_p256, pki.dc_ca }, .{});
+    defer identity.deinit();
+    const delegated = try Delegation.Credential.init(gpa, identity, bytes, dc_key, .server);
+    defer delegated.deinit();
+    var peer = client_module.ClientPeer(.aes_128_gcm_sha256).init(gpa, .{}, 5);
+    defer peer.deinit();
+    try peer.start();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [64]u8 = undefined;
+    // A key held elsewhere without one needs a signer; this one signs only through its credential,
+    // so the session starts, and a client that does not take delegated credentials finds no
+    // credential to answer it.
+    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+        .credentials = &.{.{ .identity = identity, .delegated = delegated }},
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    }));
+    try std.testing.expectError(error.NoSignatureScheme, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+        .credentials = &.{.{ .identity = identity, .delegated = delegated, .delegated_only = true }},
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    }));
+}
+
 test "C3 session accept reports a signer that fails as a failed handshake" {
     const gpa = std.testing.allocator;
     const identity = try certificates.Identity.initExternal(gpa, &.{ pki.p256, pki.ca }, .{});

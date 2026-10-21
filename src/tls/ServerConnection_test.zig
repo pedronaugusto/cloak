@@ -595,8 +595,9 @@ test "C3 server memory: a connection holds no handshake scratch until a peer sen
     // 1224 since record_size_limit (an option); 1240 since certificate_authorities (an option);
     // 1256 since OCSP stapling (a credential's staple); 1272 since a credential's own signature
     // schemes; 1288 since the provisioned key's identity (`Info.external_psk`); 1304 since the
-    // schemes taken from the client (`peer_schemes`).
-    try std.testing.expect(created <= 1304);
+    // schemes taken from the client (`peer_schemes`); 1312 since a credential that signs only
+    // through its delegated credential (`delegated_only`).
+    try std.testing.expect(created <= 1312);
     // A connection the peer never speaks on is released without ever having built it.
     try std.testing.expect(!pair.conn.hs.state.server.pending());
     try pair.client.start();

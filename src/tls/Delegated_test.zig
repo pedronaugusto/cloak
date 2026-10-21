@@ -116,3 +116,29 @@ test "F89 catalogue_delegated_parent_expiry_and_raw_key_namespace (delegation: r
         }
     }
 }
+
+test "C10 delegated credentials: a credential that signs only through its delegated credential is offered only to a client that takes it" {
+    // RFC 9345's server that never holds the certificate's key: without a delegated credential
+    // the client can take, the credential is passed over for the next.
+    {
+        const duo = try connect(.{ .server_delegated = true, .server_delegated_only = true, .client_accept_delegated = true, .server_also = &.{.p256} });
+        defer duo.deinit();
+        try std.testing.expect(duo.client.info().?.delegated_credential);
+        try std.testing.expectEqual(@as(?u8, 0), duo.server.info().?.credential);
+    }
+    for ([_]Duo.Options{
+        .{ .server_delegated = true, .server_delegated_only = true, .server_also = &.{.p256} },
+        .{ .server_delegated = true, .server_delegated_only = true, .client_accept_delegated = true, .server_max = .tls12, .server_also = &.{.p256} },
+    }) |options| {
+        const duo = try connect(options);
+        defer duo.deinit();
+        try std.testing.expect(!duo.client.info().?.delegated_credential);
+        try std.testing.expectEqual(@as(?u8, 1), duo.server.info().?.credential);
+    }
+    // Alone, it answers no such client: the handshake fails rather than sign with the certificate's key.
+    const alone = try Duo.init(gpa, .{ .server_delegated = true, .server_delegated_only = true });
+    defer alone.deinit();
+    try std.testing.expectError(error.NoSignatureScheme, alone.handshake());
+    // A credential with no delegated credential to sign with is refused.
+    try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_delegated_only = true }));
+}

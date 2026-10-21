@@ -391,7 +391,7 @@ pub fn accept(
 ) OpenError!void {
     @setRuntimeSafety(true);
     if (options.signer == null) for (options.credentials) |credential| {
-        if (credential.identity.noiseLength() == null) return error.SignerRequired;
+        if (credential.identity.noiseLength() == null and !credential.delegated_only) return error.SignerRequired;
     };
     const policy: Connection.Verify = switch (options.client_trust) {
         .none => .none,
