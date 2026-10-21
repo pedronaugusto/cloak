@@ -299,6 +299,22 @@ test "F111 catalogue_hello_version_tolerance (a stream hello naming any version 
     try std.testing.expect(!old.offers12());
 }
 
+test "F145 catalogue_dtls_hello_version_tolerance (a datagram hello naming any version above DTLS 1.2 without supported_versions offers DTLS 1.2, 0xfdff too)" {
+    // BoGo's MajorVersionTolerance-DTLS. DTLS numbers versions downward, so every number below
+    // 0xfefd is above DTLS 1.2, a major version past 254 included (RFC 5246 appendix E.1, by
+    // RFC 6347 section 4.1's numbering).
+    const tail = "\x00\x00\x00\x02\xc0\x2b\x01\x00\x00\x00";
+    inline for (.{ "\xfe\xfd", "\xfe\xfc", "\xfe\x00", "\xfd\xff", "\x03\x03" }) |version| {
+        const wire = "\x01\x00\x00\x2c" ++ version ++ @as([32]u8, @splat(0)) ++ tail;
+        const hello = try ClientHello.parse(wire, .datagram);
+        try std.testing.expect(hello.offers12());
+        try std.testing.expect(!hello.offers13());
+    }
+    // DTLS 1.0 (0xfeff) is below DTLS 1.2.
+    const old = try ClientHello.parse("\x01\x00\x00\x2c\xfe\xff" ++ @as([32]u8, @splat(0)) ++ tail, .datagram);
+    try std.testing.expect(!old.offers12());
+}
+
 /// A TLS 1.3 hello (one suite, null compression) carrying `extensions`, in `out`.
 fn helloWith(out: []u8, extensions: []const u8) []const u8 {
     const prefix = "\x03\x03rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\x00\x00\x02\x13\x01\x01\x00";

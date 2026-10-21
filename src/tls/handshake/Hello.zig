@@ -904,9 +904,9 @@ pub fn helloVerify(message: []const u8) ParseError![]const u8 {
     var r: Reader = .{ .bytes = message[4..] };
     const version = try r.int(u16);
     if (version != 0xfeff and version != 0xfefd) return error.InvalidHello;
+    // opaque cookie<0..2^8-1>: an empty one too, which the second hello then carries.
     const cookie = (try r.vector(u8)).bytes;
     try r.finish();
-    if (cookie.len == 0) return error.InvalidHello;
     return cookie;
 }
 

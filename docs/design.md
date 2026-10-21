@@ -1234,9 +1234,20 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   ChaCha20-Poly1305, 2^23.5 for CCM), past which the association ends (`ForgeryLimit`). A
   record is marked in the replay window only after it authenticates. A datagram's records
   reach the engine one by one, so the keys a ServerHello or ChangeCipherSpec brings open the
-  records after it in the same datagram. Once the peer's keys are in (or the handshake is
-  over) a new plaintext handshake message can only be forged: it is dropped, where the engine
-  would refuse it and end the association. A plaintext alert counts only before any key.
+  records after it in the same datagram. Plaintext proves nothing of its sender, so no
+  plaintext record ends the association: an unknown content type, an alert that is not one
+  two-byte alert, application data before the handshake, a ChangeCipherSpec other than the one
+  byte 1, a handshake record cut inside a fragment are all dropped. Once the peer's keys are in
+  (or the handshake is over) a new plaintext handshake message can only be forged: it is
+  dropped (F82), and so is one held from before the keys whose turn comes after them, or before
+  the peer's ChangeCipherSpec, its place left for the genuine message (F148). A plaintext alert
+  counts only before any key. What the peer holding the keys sends against the protocol ends
+  the association: application data under DTLS 1.3's handshake keys (RFC 9147 section 6.1,
+  F144), an inner plaintext naming no content type (RFC 8446 section 5.4, F146), a handshake
+  message after the peer's KeyUpdate under the epoch it retired (RFC 8446 section 5.1, F150).
+  A record over the size limit is dropped unopened, as RFC 8449 section 4 allows a DTLS end.
+  A fatal alert of a DTLS 1.3 handshake goes under the handshake keys until this end's
+  Finished went out, since the peer reads no newer epoch before (F149).
 - Flights. The handshake's flight is one state machine; after the handshake each NewSessionTicket,
   KeyUpdate, NewConnectionId and RequestConnectionId is a flight of its own with its own timer
   (RFC 9147 section 5.8.4), so a message of one kind never stops another's retransmission: at
@@ -1256,30 +1267,34 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   section 5.5 lets a record carry several): a flight costs one header and tag per epoch and
   datagram, which counts at a 256-byte MTU. Plaintext and DTLS 1.2 records carry one message
   each, as tinydtls reads no more from a record. A datagram is left only when not one byte more
-  of the next message fits. An ACK waits a quarter of the retransmission wait after the first
-  record it names, so what arrives meanwhile shares it, and goes before post-handshake flights;
-  the client's final flight is ACKed at once, and a flight of this end's answering the records
-  stops the wait. A repeated peer flight is answered once, at its last message. The timer (1 s, doubling to
-  60 s, at most 7 retransmissions, then `HandshakeTimeout`) runs until the peer's whole answer
-  has made the engine speak again or the handshake ends (RFC 9147 section 5.8.1): a partial
-  answer does not stop it, and at its expiry DTLS 1.3 ACKs what it has (the peer resends the
-  rest) where DTLS 1.2 resends its flight. A repeated peer message our flight answers sends
-  our flight again (at most once per half period); one that answered our flight sends our ACK
-  again. DTLS 1.3 ACKs what no flight of its own answers: the client's final flight at a
-  server, NewSessionTicket and KeyUpdate, with records named by an ACK freed from
-  retransmission and an ACK of every record ending the flight; the peer's application data
-  does not end a client's wait for the ACK of its final flight, since a server may send it before
-  that flight arrives (RFC 9147 section 5.8.1); only the ACK does, and the server's own last
-  handshake flight is answered by the client's, never ACKed. After the handshake each record of
-  a peer's message is ACKed, a repeat too, and an ACK lists the newest records that fit the
-  datagram, in increasing order. A client that receives records under keys it does not hold yet
-  (the datagram with the ServerHello lost) sends an ACK of what it has, or of nothing, in the
-  clear before it has keys (RFC 9147 section 7.1); an ACK in the clear proves nothing, so what it
-  names counts for nothing, but like an authenticated partial ACK it may make the handshake
-  flight go again before its timer, once a timer period, so no ACK makes a flight go more than
-  twice a period. After the handshake a flight whose ACK never comes, or whose keys a later
-  update retired, is given up on without ending the association. DTLS 1.2's last flight has no
-  timer: it goes again when the peer repeats its own.
+  of the next message fits. A retransmission leaves out the bytes an ACK covered (RFC 9147
+  section 7.2), and a partial ACK makes the rest go at once, at most once a timer period (its
+  SHOULD; BoringSSL waits for its timer). A repeated peer flight is answered once, at its last
+  message (RFC 9147 section 5.8.1). The timer (1 s, doubling to 60 s, at most 7
+  retransmissions, then `HandshakeTimeout`) runs until the peer's answer stops it: in DTLS 1.3,
+  once the version is settled (the client has the ServerHello or a retry request, the server
+  answered or asked to retry), any message of the peer's next flight acknowledges ours whole
+  and it goes no more (RFC 9147 section 7.1); in DTLS 1.2, and before the version is settled,
+  only the whole answer stops it and a partial one leaves our flight to go again. DTLS 1.3 ACKs
+  every handshake record whose fragments were all processed or held, a repeat's too, and never
+  one with a fragment dropped (RFC 9147 section 7: an ACK of it could deadlock, F151), plaintext
+  records of the handshake included (the ServerHello, by the ACK the handshake keys carry; in
+  the clear before any keys once the version is settled). The list holds the newest 64 records
+  and outlives each ACK, so an ACK names as many as fit and a lost one costs nothing; this end's
+  next handshake flight clears it. An ACK waits a quarter of the retransmission wait after the
+  first record it names, so what arrives meanwhile shares it, and goes before post-handshake
+  flights; the client's final flight is ACKed at once. DTLS 1.3 ACKs what no flight of its own
+  answers: the client's final flight at a server, NewSessionTicket and KeyUpdate; the peer's
+  application data does not end a client's wait for the ACK of its final flight, since a server
+  may send it before that flight arrives (RFC 9147 section 5.8.1). A client that receives
+  records under keys it does not hold yet (the datagram with the ServerHello lost) sends an ACK
+  of what it has, or of nothing, in the clear before it has keys (RFC 9147 section 7.1). An ACK
+  in the clear counts once DTLS 1.3 is settled, and for plaintext records only (an ACK's epoch
+  is at least its records'): a forged one holds back at most one retransmission of a plaintext
+  flight, which the peer's own timer recovers; an empty one makes the handshake flight go again
+  before its timer, once a timer period. After the handshake a flight whose ACK never comes, or
+  whose keys a later update retired, is given up on without ending the association (BoringSSL
+  ends it). DTLS 1.2's last flight has no timer: it goes again when the peer repeats its own.
 - Return routability. A server first checks a ClientHello with `dtls.Cookies`, statelessly:
   a hello without a valid cookie gets a HelloVerifyRequest (DTLS 1.2) or a HelloRetryRequest
   with a cookie (DTLS 1.3) written into the caller's buffer, at most three times the
@@ -1310,13 +1325,15 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   peer's, in a value the caller erases; the SRTP itself is the application's.
 - Key updates (DTLS 1.3): one at a time (`UpdatePending` until its ACK); the KeyUpdate goes
   under the old keys and the sender switches when it is acknowledged; a peer's update adds
-  the next read epoch beside the current, which a record under the new one retires; a write
-  epoch updates by itself with an eighth of its records left; epochs stop at 2^48. DTLS 1.2
-  has none, and its association ends at the record limit.
+  the next read epoch beside the current, and the first record under the new one sets the old
+  to go four minutes later (two maximum segment lifetimes, as BoringSSL keeps it): records of an
+  older epoch SHOULD still be read (RFC 9147 section 8), and the keys are erased at the next
+  receive or send after that time; a write epoch updates by itself with an eighth of its records
+  left; epochs stop at 2^48. DTLS 1.2 has none, and its association ends at the record limit.
 - Resumption: TLS 1.3 tickets as on a stream; a ticket's format byte names its carrier, so a
   DTLS ticket (its keys from "dtls13" labels) never resumes over TLS or the reverse.
 
-Defaults are design §5.7's: MTU 1,200, replay window 128 records per retained epoch,
+Defaults are design §5.7's: MTU 1,200, replay window 256 records per retained epoch,
 reassembly 16 messages / 256 KiB, flight cache 256 KiB, pre-validation output 3x.
 
 ### AES-CCM
@@ -1645,3 +1662,11 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F141 | `catalogue_pin_without_authorities` | `tls/LeafKey_test.zig` | the pin check made to pass in each role's leaf-key branch (TLS 1.3 and 1.2 client and server), the cache key's mode label, and the empty-pins refusal; before, a pin was checked only beside full verification, so a caller verifying no chain could not hold a pinned key (main's call 2026-10-21, designs/cloak.md §5.2) |
 | F142 | `catalogue_tls12_ecdsa_scheme_names_hash_not_curve` | `tls/handshake/Possession_test.zig`, `credentials/Key_test.zig` | the signer bound back to each curve's own hash, and the client's TLS 1.2 chooser to its curve's scheme; before, a TLS 1.2 server took a P-384 key for a client listing only ecdsa_secp256r1_sha256 and failed to sign (internal_error), and the client never offered the pairing (BoGo's CertificateSelection-*-SignatureAlgorithmECDSACurve-TLS-TLS12) |
 | F143 | `catalogue_resumed_server_certificate_type` | `tls/RawKey_test.zig`, `tls/resumption/Ticket_test.zig` | each resumption's answer (TLS 1.3 EncryptedExtensions, TLS 1.2 ServerHello) and each server's type check on a ticket removed; before, a resumed handshake answered server_certificate_type with nothing, which a client offering raw keys alone reads as X.509 and refuses (BoGo's ServerCertificateType-Server-*) |
+| F144 | `catalogue_dtls13_application_data_under_handshake_keys` | `tls/dtls/Datagram_test.zig` | the epoch check on application records removed; before, application data under the DTLS 1.3 handshake keys reached the application once the handshake completed (BoGo's AppDataBeforeTLS13KeyChange-DTLS; RFC 9147 section 6.1) |
+| F145 | `catalogue_dtls_hello_version_tolerance` | `tls/handshake/ClientHello_test.zig` | the 0xfe00 floor on a datagram's legacy_version, as before (BoGo's MajorVersionTolerance-DTLS; 0xfdff is above DTLS 1.2) |
+| F146 | `catalogue_dtls_record_without_content_type` | `tls/dtls/Datagram_test.zig` | an authenticated record naming no content type dropped, as before, where RFC 8446 section 5.4 asks unexpected_message (BoGo's TLS13-OnlyPadding-DTLS) |
+| F147 | `catalogue_empty_hello_verify_cookie` | `tls/handshake/Datagram_test.zig` | the refusal of an empty HelloVerifyRequest cookie, as before (BoGo's DTLS-HelloVerifyRequest-0; RFC 6347 section 4.2.1's opaque cookie<0..2^8-1>) |
+| F148 | `catalogue_dtls_plaintext_held_past_the_keys` | `tls/dtls/Datagram_test.zig` | the drop of a plaintext message held until after the keys or due after the peer's ChangeCipherSpec, each half alone; before, one forged datagram buffered ahead of its turn ended the handshake at delivery (found by BoGo's KeyChangeWithBufferedMessages-DTLS) |
+| F149 | `catalogue_dtls13_handshake_alert_epoch` | `tls/dtls/Datagram_test.zig` | the handshake epoch for a fatal alert before this end's Finished went out, and the mark that it went; before, a client failing on the server's flight sent its alert under application keys the server could not read (BoGo's DTLS13-SendExtraFinished-Packed) |
+| F150 | `catalogue_dtls13_message_after_key_update` | `tls/dtls/Datagram_test.zig` | the epoch floor a peer's KeyUpdate sets removed; before, a handshake message after a KeyUpdate under the retired epoch was taken (BoGo's KeyUpdate-ExtraMessage-DTLS and -Buffered; RFC 8446 section 5.1) |
+| F151 | `catalogue_dtls13_ack_skips_dropped_fragments` | `tls/dtls/Datagram_test.zig` | ACKing a record with a fragment dropped, and clearing the list after each ACK; before, a record was ACKed when any of its fragments was new, against RFC 9147 section 7's MUST (BoGo's DTLS-Retransmit-Server-DoNotACKDiscardedFragments) |

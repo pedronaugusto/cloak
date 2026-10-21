@@ -428,12 +428,13 @@ pub fn offers13(self: *const ClientHello) bool {
 /// absent, a legacy version of at least TLS 1.2 (RFC 8446 section 4.2.1: a server that speaks
 /// TLS 1.2 negotiates it even for a legacy_version of 0x0304 or later; RFC 5246 appendix E.1:
 /// any version above the highest answers with that one, 0xfefe included, a stream knowing no
-/// DTLS numbering). DTLS numbers its versions downward: DTLS 1.2 is 0xfefd and a newer one smaller.
+/// DTLS numbering). DTLS numbers its versions downward: DTLS 1.2 is 0xfefd and any smaller
+/// number newer, a major version past 254 (0xfdff) too.
 pub fn offers12(self: *const ClientHello) bool {
     if (self.versions.len != 0) return containsU16(self.versions, self.transport.wire(.tls12));
     return switch (self.transport) {
         .stream, .quic => self.legacy_version >= 0x0303,
-        .datagram => self.legacy_version <= 0xfefd and self.legacy_version >= 0xfe00,
+        .datagram => self.legacy_version <= 0xfefd,
     };
 }
 

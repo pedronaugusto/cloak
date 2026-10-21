@@ -474,6 +474,114 @@ test "C8 a server's application data does not stand for the ACK of the client's 
     try carriesData(pair);
 }
 
+test "F144 catalogue_dtls13_application_data_under_handshake_keys (application data under the DTLS 1.3 handshake keys ends the association)" {
+    // BoGo's AppDataBeforeTLS13KeyChange-DTLS: RFC 9147 section 6.1, epoch 2 carries handshake
+    // messages; the runner's server sends application data under it after its Finished.
+    // The client's final flight is lost, so the server still holds its handshake keys.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .drop_client = &.{3} });
+    defer pair.deinit();
+    try pair.flush();
+    try std.testing.expectEqual(Datagram.Phase.connected, pair.client.dtls.phase());
+    var out: [256]u8 = undefined;
+    const wrong = try writeEpoch(&pair.server.dtls, 2).seal13(.application, "early", "", &out);
+    try std.testing.expectError(error.UnexpectedRecord, pair.client.dtls.receive(wrong, pair.now));
+    try std.testing.expectEqual(Datagram.Phase.failed, pair.client.dtls.phase());
+    try std.testing.expectEqual(null, pair.client.dtls.read());
+}
+
+test "F146 catalogue_dtls_record_without_content_type (an authenticated record whose inner plaintext names no content type ends the association)" {
+    // BoGo's TLS13-OnlyPadding-DTLS: RFC 8446 section 5.4, unexpected_message. A record failing
+    // its tag is still dropped (RFC 9147 section 4.5.2).
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+    defer pair.deinit();
+    try pair.run();
+    var out: [256]u8 = undefined;
+    const forged = try writeEpoch(&pair.server.dtls, 3).seal13(.application, "forged", "", &out);
+    forged[forged.len - 1] ^= 1;
+    try pair.client.dtls.receive(forged, pair.now);
+    try std.testing.expectEqual(Datagram.Phase.connected, pair.client.dtls.phase());
+    const padding = try writeEpoch(&pair.server.dtls, 3).seal13(@fromBackingInt(@intCast(0)), &@as([10]u8, @splat(0)), "", &out);
+    try std.testing.expectError(error.UnexpectedRecord, pair.client.dtls.receive(padding, pair.now));
+    try std.testing.expectEqual(Datagram.Phase.failed, pair.client.dtls.phase());
+}
+
+test "F148 catalogue_dtls_plaintext_held_past_the_keys (a forged plaintext message buffered ahead of its turn is dropped once keys are due, and the handshake completes)" {
+    // BoGo's KeyChangeWithBufferedMessages-DTLS showed a plaintext Finished, held until its turn,
+    // reaching the engine after the keys and ending the association. Forged, each comes before the
+    // server's flight: a DTLS 1.2 Finished (message 4, after ServerHello, Certificate,
+    // ServerKeyExchange and ServerHelloDone), due after the server's ChangeCipherSpec; a DTLS 1.3
+    // EncryptedExtensions (message 1), due under the handshake keys.
+    for ([_]struct { list: []const suites.Suite, kind: u8, sequence: u16 }{
+        .{ .list = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .kind = 20, .sequence = 4 },
+        .{ .list = suites.Suite.tls13_only, .kind = 8, .sequence = 1 },
+    }) |case| {
+        const pair = try Pair.init(gpa, .{ .client_suites = case.list, .server_suites = case.list, .admission = .validated });
+        defer pair.deinit();
+        var message: [12 + 12]u8 = @splat(0);
+        message[0] = case.kind;
+        std.mem.writeInt(u24, message[1..4], 12, .big);
+        std.mem.writeInt(u16, message[4..6], case.sequence, .big);
+        std.mem.writeInt(u24, message[9..12], 12, .big);
+        var out: [64]u8 = undefined;
+        const forged = try Record.plaintext(.handshake, 7, &message, &out);
+        try pair.client.inbox.append(gpa, .{ .bytes = try gpa.dupe(u8, forged) });
+        try pair.run();
+        try carriesData(pair);
+    }
+}
+
+test "F149 catalogue_dtls13_handshake_alert_epoch (a DTLS 1.3 handshake that fails before it completes sends its alert under the handshake keys)" {
+    // BoGo's DTLS13-SendExtraFinished-Packed: the server's flight ends with a second Finished in
+    // the same datagram. The client has made its application keys but sent nothing under them, so
+    // the server reads none: the alert goes under the handshake epoch, which it reads.
+    var sent: std.ArrayList([]u8) = .empty;
+    defer {
+        for (sent.items) |datagram| gpa.free(datagram);
+        sent.deinit(gpa);
+    }
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = .validated, .drop_server = &.{ 1, 2, 3, 4, 5, 6 }, .server_sent = &sent });
+    defer pair.deinit();
+    try pair.flush();
+    const burst = for (sent.items, 0..) |datagram, i| {
+        if (datagram.len == 0) break i;
+    } else return error.NoFlight;
+    try std.testing.expect(burst >= 1 and burst <= 6);
+    // ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished: the extra
+    // Finished is message 5.
+    var extra: [12 + 32]u8 = @splat(0);
+    extra[0] = 20;
+    std.mem.writeInt(u24, extra[1..4], 32, .big);
+    std.mem.writeInt(u16, extra[4..6], 5, .big);
+    std.mem.writeInt(u24, extra[9..12], 32, .big);
+    var buffer: [4096]u8 = undefined;
+    for (sent.items[0 .. burst - 1]) |datagram| {
+        @memcpy(buffer[0..datagram.len], datagram);
+        try pair.client.dtls.receive(buffer[0..datagram.len], pair.now);
+    }
+    const last = sent.items[burst - 1];
+    @memcpy(buffer[0..last.len], last);
+    const record = try writeEpoch(&pair.server.dtls, 2).seal13(.handshake, &extra, "", buffer[last.len..]);
+    try pair.client.dtls.receive(buffer[0 .. last.len + record.len], pair.now);
+    // The Finished messages wait for the chain's verification.
+    try std.testing.expectError(error.UnexpectedMessage, pair.serveClient());
+    var out: [1500]u8 = undefined;
+    const alert = (try pair.client.dtls.send(&out, pair.now)).?;
+    try std.testing.expectEqual(@as(u8, 2), alert[0] & 3);
+    try std.testing.expectError(error.PeerAlert, pair.server.dtls.receive(alert, pair.now));
+    try std.testing.expectEqual(Datagram.Phase.failed, pair.server.dtls.phase());
+    try std.testing.expectEqual(@as(?@TypeOf(pair.server.dtls.alerts().received.?), .unexpected_message), pair.server.dtls.alerts().received);
+
+    // Once the Finished went out, the alert goes under the application keys.
+    const done = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+    defer done.deinit();
+    try done.run();
+    const padding = try writeEpoch(&done.server.dtls, 3).seal13(@fromBackingInt(@intCast(0)), &@as([10]u8, @splat(0)), "", &buffer);
+    try std.testing.expectError(error.UnexpectedRecord, done.client.dtls.receive(padding, done.now));
+    const late = (try done.client.dtls.send(&out, done.now)).?;
+    try std.testing.expectEqual(@as(u8, 3), late[0] & 3);
+    try std.testing.expectError(error.PeerAlert, done.server.dtls.receive(late, done.now));
+}
+
 test "C8 records under keys not held yet are answered by an ACK of nothing, and the flight goes again at once" {
     // A small MTU spreads the server's flight over datagrams; the first, with the ServerHello, is
     // lost, so what follows is under keys the client does not have.
@@ -502,6 +610,185 @@ test "C8 an ACK in the clear makes a flight go again at most once a timer period
     }
     try std.testing.expect(datagrams[0] != 0);
     for (datagrams[1..]) |count| try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "C8 an ACK in the clear names plaintext records only" {
+    // A retry request forces a plaintext flight of one record: the client's ACK of it in the
+    // clear stops its retransmission (BoGo's DTLS-Retransmit-Server-ACK* scripts ACK a retry
+    // request so).
+    const retry = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{ .x25519, .p384 }, .server_groups = &.{.p384}, .admission = .validated, .drop_server = &.{1} });
+    defer retry.deinit();
+    try retry.flush();
+    try std.testing.expect(retry.server.dtls.timeout() != null);
+    var out: [2048]u8 = undefined;
+    var plain = [_]u8{ 26, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 10, 0, 18, 0, 16 } ++ @as([16]u8, @splat(0));
+    try retry.server.dtls.receive(&plain, retry.now);
+    try std.testing.expectEqual(null, try retry.server.dtls.send(&out, retry.now));
+    try std.testing.expectEqual(null, retry.server.dtls.timeout());
+
+    // Before the version is settled an ACK in the clear counts for nothing: the client's hello
+    // goes again on its timer.
+    const early = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = .validated, .drop_client = &.{1} });
+    defer early.deinit();
+    try early.flush();
+    var hello_ack = [_]u8{ 26, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 0, 16 } ++ @as([16]u8, @splat(0));
+    try early.client.dtls.receive(&hello_ack, early.now);
+    const hello = (try early.client.dtls.send(&out, early.client.dtls.timeout().?)).?;
+    try std.testing.expectEqual(@as(u8, 1), hello[13]);
+
+    // The server's main flight is lost: an ACK in the clear naming every record of it, those
+    // under the handshake keys too, covers the ServerHello alone, and the rest goes again.
+    const full = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = .validated, .drop_server = &.{ 1, 2, 3, 4, 5, 6 } });
+    defer full.deinit();
+    try full.flush();
+    var ack: [13 + 2 + 16 * 17]u8 = undefined;
+    @memcpy(ack[0..11], &[_]u8{ 26, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 11 });
+    std.mem.writeInt(u16, ack[11..13], 2 + 16 * 17, .big);
+    std.mem.writeInt(u16, ack[13..15], 16 * 17, .big);
+    for (0..17) |i| {
+        const epoch: u64 = if (i == 0) 0 else 2;
+        const sequence: u64 = if (i == 0) 0 else i - 1;
+        std.mem.writeInt(u64, ack[15 + 16 * i ..][0..8], epoch, .big);
+        std.mem.writeInt(u64, ack[15 + 16 * i + 8 ..][0..8], sequence, .big);
+    }
+    try full.server.dtls.receive(&ack, full.now);
+    const again = (try full.server.dtls.send(&out, full.now)).?;
+    // The resent records are protected ones: the ServerHello is not among them.
+    try std.testing.expect(again[0] & 0xe0 == 0x20);
+    try std.testing.expect(full.server.dtls.timeout() != null);
+}
+
+test "C8 a retransmission leaves out the fragments an ACK covered" {
+    // RFC 9147 section 7.2. The server's flight spreads over small datagrams and its third is
+    // lost; the client ACKs the rest, and what goes again is about the lost datagram's bytes, not
+    // the messages it cut whole.
+    var sent: std.ArrayList([]u8) = .empty;
+    defer {
+        for (sent.items) |datagram| gpa.free(datagram);
+        sent.deinit(gpa);
+    }
+    // X25519 alone keeps the ServerHello in the first datagram.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{.x25519}, .admission = .validated, .mtu = 256, .drop_server = &.{3}, .server_sent = &sent });
+    defer pair.deinit();
+    try pair.run();
+    const first = for (sent.items, 0..) |datagram, i| {
+        if (datagram.len == 0) break i;
+    } else return error.NoFlight;
+    try std.testing.expect(first > 4);
+    const lost = sent.items[2].len;
+    var again: usize = 0;
+    for (sent.items[first + 1 ..]) |datagram| {
+        if (datagram.len == 0) break;
+        again += datagram.len;
+    }
+    try std.testing.expect(again != 0);
+    try std.testing.expect(again <= lost + 64);
+    try carriesData(pair);
+}
+
+test "C8 part of the peer's next flight acknowledges ours in DTLS 1.3, and not in DTLS 1.2" {
+    // RFC 9147 section 7.1. After a retry request DTLS 1.3 is settled: X25519MLKEM768's share
+    // spreads the ServerHello over small datagrams and all but its first are lost. The client's
+    // hello goes no more; at a quarter of the wait an ACK in the clear names what came.
+    const settled = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{.x25519_mlkem768}, .admission = .validated, .mtu = 256, .drop_server = &.{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } });
+    defer settled.deinit();
+    try settled.flush();
+    var out: [2048]u8 = undefined;
+    const ack = (try settled.client.dtls.send(&out, settled.client.dtls.timeout().?)).?;
+    try std.testing.expectEqual(@as(u8, 26), ack[0]);
+    try std.testing.expectEqual(@as(usize, 13 + 2 + 16), ack.len);
+    try std.testing.expectEqual(null, settled.client.dtls.timeout());
+
+    // DTLS 1.2: the ServerHello and part of the certificate came; the hello goes again on its
+    // timer until the answer is whole (RFC 6347 section 4.2.4).
+    const open = try Pair.init(gpa, .{ .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .admission = .validated, .mtu = 256, .drop_server = &.{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 } });
+    defer open.deinit();
+    try open.flush();
+    try std.testing.expect(open.client.dtls.answered);
+    const again = (try open.client.dtls.send(&out, open.client.dtls.timeout().?)).?;
+    // A plaintext ClientHello fragment.
+    try std.testing.expectEqual(@as(u8, 22), again[0]);
+    try std.testing.expectEqual(@as(u8, 1), again[13]);
+}
+
+test "F150 catalogue_dtls13_message_after_key_update (a handshake message after the peer's KeyUpdate under the epoch it retired ends the association)" {
+    // BoGo's KeyUpdate-ExtraMessage-DTLS and -Buffered: RFC 8446 section 5.1, handshake messages
+    // do not span key changes. Each order: the extra message after the KeyUpdate, and before it.
+    for ([_]bool{ false, true }) |extra_first| {
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+        defer pair.deinit();
+        try pair.run();
+        const next = pair.server.dtls.send_sequence;
+        var update: [13]u8 = .{ 24, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1 };
+        std.mem.writeInt(u16, update[4..6], next, .big);
+        var extra = update;
+        std.mem.writeInt(u16, extra[4..6], next + 1, .big);
+        var buffer: [256]u8 = undefined;
+        const keys = writeEpoch(&pair.server.dtls, 3);
+        const first = try keys.seal13(.handshake, if (extra_first) &extra else &update, "", &buffer);
+        const second = try keys.seal13(.handshake, if (extra_first) &update else &extra, "", buffer[first.len..]);
+        try std.testing.expectError(error.RecordAlignment, pair.client.dtls.receive(buffer[0 .. first.len + second.len], pair.now));
+        try std.testing.expectEqual(Datagram.Phase.failed, pair.client.dtls.phase());
+    }
+}
+
+test "C8 after the peer's key update its old epoch is still read for four minutes" {
+    // RFC 9147 section 8: records of an older epoch SHOULD still be processed; a reordering path
+    // brings them after the first under the new keys.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+    defer pair.deinit();
+    try pair.run();
+    var late: [256]u8 = undefined;
+    const old = try writeEpoch(&pair.server.dtls, 3).seal13(.application, "late", "", &late);
+    try pair.server.dtls.keyUpdate(false);
+    pair.settle = true;
+    try pair.run();
+    try carriesData(pair);
+    var copy: [256]u8 = undefined;
+    @memcpy(copy[0..old.len], old);
+    try pair.client.dtls.receive(copy[0..old.len], pair.now);
+    try std.testing.expectEqualSlices(u8, "late", pair.client.dtls.read().?);
+    // Four minutes on, the old keys are gone.
+    var later: [256]u8 = undefined;
+    const gone = try writeEpoch(&pair.server.dtls, 3).seal13(.application, "gone", "", &later);
+    try pair.client.dtls.receive(gone, .{ .nanoseconds = pair.now.nanoseconds + 4 * 60 * std.time.ns_per_s });
+    try std.testing.expectEqual(null, pair.client.dtls.read());
+}
+
+test "F151 catalogue_dtls13_ack_skips_dropped_fragments (a record with a fragment dropped is not ACKed; the ACK list outlives an ACK)" {
+    // BoGo's DTLS-Retransmit-Server-DoNotACKDiscardedFragments: RFC 9147 section 7, records
+    // holding fragments neither processed nor buffered MUST NOT be acknowledged (a deadlock
+    // otherwise). One record carries a fragment of the next message and one too far ahead to
+    // hold; another carries the first alone.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+    defer pair.deinit();
+    try pair.run();
+    const next = pair.server.dtls.send_sequence;
+    var near: [12]u8 = .{ 24, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+    std.mem.writeInt(u16, near[4..6], next, .big);
+    var far = near;
+    std.mem.writeInt(u16, far[4..6], next +% 1000, .big);
+    const keys = writeEpoch(&pair.server.dtls, 3);
+    var buffer: [256]u8 = undefined;
+    const mixed_number = keys.sequence;
+    const mixed = try keys.seal13(.handshake, &(near ++ far), "", &buffer);
+    try pair.client.dtls.receive(mixed, pair.now);
+    const alone_number = keys.sequence;
+    const alone = try keys.seal13(.handshake, &near, "", &buffer);
+    try pair.client.dtls.receive(alone, pair.now);
+    const listed = struct {
+        fn has(dtls: *const Datagram, number: u64) bool {
+            for (dtls.acks.items) |held| if (held[0] == 3 and held[1] == number) return true;
+            return false;
+        }
+    }.has;
+    try std.testing.expect(!listed(&pair.client.dtls, mixed_number));
+    try std.testing.expect(listed(&pair.client.dtls, alone_number));
+    // The ACK goes on its timer, and the record stays listed for the next.
+    var out: [2048]u8 = undefined;
+    const ack = (try pair.client.dtls.send(&out, pair.client.dtls.timeout().?)).?;
+    try std.testing.expect(ack[0] & 0xe0 == 0x20);
+    try std.testing.expect(listed(&pair.client.dtls, alone_number));
 }
 
 test "C8 DTLS 1.3 connection IDs on request, spare and immediate" {

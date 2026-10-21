@@ -9,6 +9,22 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - DTLS 1.3 puts a flight's messages of one epoch in one protected record per datagram, as many as fit, and DTLS fills each datagram it leaves down to a byte of the next message; it sent a record per message, and left a datagram once less than 64 bytes of the next message fit. Plaintext and DTLS 1.2 records keep one message each (tinydtls reads no more from a record). Fewer records and datagrams for every flight; BoGo checks for this packing.
 - DTLS 1.3 ACKs post-handshake messages a quarter of the first retransmission wait after the first that waits (250 ms by default), one ACK for what arrives meanwhile, as BoringSSL does; it ACKed each at once. The ACK of a client's final flight still goes at once, and now before the server's tickets; post-handshake flights go out in the order they were made.
 - DTLS answers a peer's repeated flight once, at its last message, as BoringSSL does with a repeated Finished; it answered each repeated message of a flight that had no timer of its own (a DTLS 1.2 final flight).
+- DTLS 1.3 ACKs name every handshake record whose fragments were all processed or held, repeats and the plaintext ServerHello included, and the list (the newest 64) outlives each ACK, so every ACK names as many records as fit (RFC 9147 section 7.1); after the handshake it was cleared with each ACK, and a repeat of a flight was ACKed at once rather than on the ACK's timer.
+- DTLS 1.3: once the version is settled, any message of the peer's next flight acknowledges this end's flight, which goes no more (RFC 9147 section 7.1); at its timer the flight went again or this end ACKed. Before any keys the ACK goes in the clear. An ACK in the clear counts once DTLS 1.3 is settled, for the plaintext records it names; it counted for nothing and made the flight go again.
+- A DTLS retransmission leaves out the bytes an ACK covered (RFC 9147 section 7.2); a message partly ACKed went again whole.
+- After the peer's key update its old read epoch is kept four minutes after the first record under the new one, for records a reordering path brings late (RFC 9147 section 8 asks they be processed); it was erased at that first record.
+- The DTLS replay window is 256 records (was 128), as BoringSSL's.
+- A DTLS server meets a hello naming any version above DTLS 1.2 without supported_versions with DTLS 1.2, 0xfdff included (RFC 5246 appendix E.1 by DTLS's numbering); it refused versions below 0xfe00. F145.
+- A DTLS client takes a HelloVerifyRequest with an empty cookie, as RFC 6347's opaque cookie<0..2^8-1> allows. F147.
+
+### Fixed
+
+- DTLS 1.3 refuses application data under the handshake keys (RFC 9147 section 6.1) with unexpected_message; it handed it to the application once the handshake completed. F144.
+- An authenticated DTLS record whose inner plaintext names no content type ends the association with unexpected_message (RFC 8446 section 5.4); it was dropped. F146.
+- A forged plaintext handshake message buffered ahead of its turn no longer ends a DTLS handshake: one whose turn comes once the peer's keys are in, or before the peer's ChangeCipherSpec, is dropped and its place left for the genuine message. One forged datagram from an address-spoofing attacker could end a handshake. F148.
+- A DTLS 1.3 handshake that fails before this end's Finished went out sends its alert under the handshake keys, which the peer reads; it went under application keys the peer did not have yet. F149.
+- A DTLS 1.3 handshake message after the peer's KeyUpdate under the epoch it retired ends the association with unexpected_message (RFC 8446 section 5.1); it was taken. F150.
+- A DTLS 1.3 record with a fragment that was dropped (too far ahead to hold) is not ACKed, as RFC 9147 section 7 requires; a record was ACKed when any of its fragments was new, which could leave the peer believing a dropped fragment arrived. F151.
 
 ## [0.19.1] - 2026-10-21
 

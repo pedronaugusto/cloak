@@ -36,8 +36,10 @@ pub fn overhead12(cipher: Cipher, cid: usize) usize {
 }
 
 pub const SealError = error{ BufferTooSmall, InvalidLength, RecordLimit };
-/// The record is dropped; the association goes on.
-pub const OpenError = error{Drop};
+/// `Drop`: the record is dropped and the association goes on. `NoContentType`: an authenticated
+/// inner plaintext names no content type, which the peer holding the keys sent (RFC 8446 section
+/// 5.4: unexpected_message).
+pub const OpenError = error{ Drop, NoContentType };
 
 pub const Version = enum { dtls12, dtls13 };
 
@@ -263,7 +265,7 @@ pub const Epoch = struct {
         self.window.mark(sequence);
         var end = sealed_len;
         while (end > 0 and ciphertext[end - 1] == 0) end -= 1;
-        if (end == 0) return error.Drop;
+        if (end == 0) return error.NoContentType;
         return .{ .content = @fromBackingInt(@intCast(ciphertext[end - 1])), .bytes = ciphertext[0 .. end - 1], .sequence = sequence };
     }
 
@@ -329,7 +331,7 @@ pub const Epoch = struct {
         // DTLSInnerPlaintext: the content, its real type, then zeros.
         var end = sealed.len;
         while (end > 0 and sealed[end - 1] == 0) end -= 1;
-        if (end == 0) return error.Drop;
+        if (end == 0) return error.NoContentType;
         return .{ .content = @fromBackingInt(@intCast(sealed[end - 1])), .bytes = sealed[0 .. end - 1], .sequence = header.sequence };
     }
 };

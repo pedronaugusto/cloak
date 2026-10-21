@@ -78,6 +78,8 @@ test "C8 a client offering both DTLS versions settles on DTLS 1.2 with a DTLS 1.
 }
 
 fn helloVerify(cookie: []const u8) ![]u8 {
+    // cloak's servers never send an empty cookie; another server may (RFC 6347 section 4.2.1).
+    if (cookie.len == 0) return gpa.dupe(u8, &.{ 3, 0, 0, 3, 0xfe, 0xff, 0 });
     var buffer: [300]u8 = undefined;
     return gpa.dupe(u8, try Hello.buildHelloVerify(&buffer, cookie));
 }
@@ -95,21 +97,24 @@ fn verifiedHello(pair: *Pair, cookie: []const u8) ![]const u8 {
 }
 
 test "C8 a HelloVerifyRequest is answered by the same hello with its cookie, and the handshake goes on" {
-    const pair = try Pair.init(gpa, .{ .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256} });
-    defer pair.deinit();
-    const second = try verifiedHello(pair, "cookie-0123456789");
-    const first = try ClientHello.parse(pair.client.sent.items[0], .datagram);
-    const again = try ClientHello.parse(second, .datagram);
-    try std.testing.expectEqualSlices(u8, "", first.legacy_cookie);
-    try std.testing.expectEqualSlices(u8, "cookie-0123456789", again.legacy_cookie);
-    try std.testing.expectEqualSlices(u8, first.random, again.random);
-    try std.testing.expectEqualSlices(u8, first.extensions, again.extensions);
-    // The server meets the hello the cookie came back in: message_seq 1.
-    pair.server.machine.firstSequence(1);
-    try pair.forwardLast();
-    pair.hold_client = false;
-    try pair.run();
-    try exportersAgree(pair);
+    // An empty cookie too (F147).
+    for ([_][]const u8{ "cookie-0123456789", "" }) |cookie| {
+        const pair = try Pair.init(gpa, .{ .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256} });
+        defer pair.deinit();
+        const second = try verifiedHello(pair, cookie);
+        const first = try ClientHello.parse(pair.client.sent.items[0], .datagram);
+        const again = try ClientHello.parse(second, .datagram);
+        try std.testing.expectEqualSlices(u8, "", first.legacy_cookie);
+        try std.testing.expectEqualSlices(u8, cookie, again.legacy_cookie);
+        try std.testing.expectEqualSlices(u8, first.random, again.random);
+        try std.testing.expectEqualSlices(u8, first.extensions, again.extensions);
+        // The server meets the hello the cookie came back in: message_seq 1.
+        pair.server.machine.firstSequence(1);
+        try pair.forwardLast();
+        pair.hold_client = false;
+        try pair.run();
+        try exportersAgree(pair);
+    }
 }
 
 test "C8 a DTLS 1.3 answer after a HelloVerifyRequest is refused" {
@@ -159,13 +164,14 @@ test "C8 HelloVerifyRequest edges: datagram only, never after a retry request, a
     try std.testing.expectError(error.UnexpectedMessage, verified.advance(.hello_retry, .initial, .parsed, true));
 }
 
-test "C8 the HelloVerifyRequest parser takes a cookie of DTLS 1.0 or 1.2 and nothing else" {
+test "F147 catalogue_empty_hello_verify_cookie (the HelloVerifyRequest parser takes a cookie of DTLS 1.0 or 1.2, an empty one too, and nothing else)" {
+    // BoGo's DTLS-HelloVerifyRequest-0: RFC 6347 section 4.2.1, opaque cookie<0..2^8-1>.
     const good = try helloVerify("abc");
     defer gpa.free(good);
     try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0, 6, 0xfe, 0xff, 3, 'a', 'b', 'c' }, good);
     try std.testing.expectEqualSlices(u8, "abc", try Hello.helloVerify(good));
     try std.testing.expectError(error.InvalidHello, Hello.helloVerify(&.{ 3, 0, 0, 3, 0x03, 0x03, 0 }));
-    try std.testing.expectError(error.InvalidHello, Hello.helloVerify(&.{ 3, 0, 0, 3, 0xfe, 0xfd, 0 }));
+    try std.testing.expectEqualSlices(u8, "", try Hello.helloVerify(&.{ 3, 0, 0, 3, 0xfe, 0xfd, 0 }));
     try std.testing.expectError(error.InvalidLength, Hello.helloVerify(&.{ 3, 0, 0, 7, 0xfe, 0xfd, 3, 'a', 'b', 'c' }));
     try std.testing.expectError(error.InvalidLength, Hello.helloVerify(&.{ 3, 0, 0, 5, 0xfe, 0xfd, 1, 'a', 'b' }));
 }

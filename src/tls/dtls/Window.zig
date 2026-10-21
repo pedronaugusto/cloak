@@ -1,17 +1,19 @@
 //! The replay window of one receiving epoch (RFC 9147 section 4.5.1, RFC 4303 section 3.4.3): the
-//! highest authenticated record sequence and which of the 127 before it arrived. A record is
+//! highest authenticated record sequence and which of the 255 before it arrived. A record is
 //! checked before it is opened and marked only after it authenticates, so a forgery moves nothing.
 const std = @import("std");
 const aegis = @import("aegis");
 
 const Window = @This();
 
-pub const size = 128;
+/// RFC 6347 section 4.1.2.6 asks 32 at least and prefers 64; 256, as BoringSSL keeps, takes
+/// the reordering of paths that spread a burst over a wide span.
+pub const size = 256;
 
 /// The highest sequence marked; null before the first.
 highest: ?u64 = null,
 /// Bit i: sequence `highest - i` was marked.
-seen: u128 = 0,
+seen: u256 = 0,
 
 /// Whether `sequence` may still be accepted: right of the window, or inside it and unseen.
 pub fn fresh(self: *const Window, sequence: u64) bool {
@@ -19,7 +21,7 @@ pub fn fresh(self: *const Window, sequence: u64) bool {
     if (sequence > top) return true;
     const behind = top - sequence;
     if (behind >= size) return false;
-    return self.seen & (@as(u128, 1) << @intCast(behind)) == 0;
+    return self.seen & (@as(u256, 1) << @intCast(behind)) == 0;
 }
 
 /// Records an authenticated `sequence`, which `fresh` admitted.
@@ -37,7 +39,7 @@ pub fn mark(self: *Window, sequence: u64) void {
     }
     const behind = top - sequence;
     aegis.assert.invariant(behind < size, "a record behind the top is within the window");
-    self.seen |= @as(u128, 1) << @intCast(behind);
+    self.seen |= @as(u256, 1) << @intCast(behind);
 }
 
 /// The full sequence a received low part most likely names: the one with these low `bits` bits
@@ -64,17 +66,17 @@ test "C8 the replay window admits new records once and nothing it has slid past"
     try std.testing.expect(!window.fresh(5));
     try std.testing.expect(window.fresh(4));
     try std.testing.expect(window.fresh(6));
-    window.mark(200);
+    window.mark(400);
     try std.testing.expect(!window.fresh(5));
-    try std.testing.expect(!window.fresh(72));
-    try std.testing.expect(window.fresh(73));
-    window.mark(73);
-    try std.testing.expect(!window.fresh(73));
-    try std.testing.expect(!window.fresh(200));
-    try std.testing.expect(window.fresh(199));
+    try std.testing.expect(!window.fresh(144));
+    try std.testing.expect(window.fresh(145));
+    window.mark(145);
+    try std.testing.expect(!window.fresh(145));
+    try std.testing.expect(!window.fresh(400));
+    try std.testing.expect(window.fresh(399));
     window.mark(std.math.maxInt(u64));
     try std.testing.expect(!window.fresh(std.math.maxInt(u64)));
-    try std.testing.expect(!window.fresh(199));
+    try std.testing.expect(!window.fresh(399));
 }
 
 test "C8 a truncated record number is read as the nearest one past the highest" {

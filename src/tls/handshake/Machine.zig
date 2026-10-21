@@ -226,6 +226,15 @@ pub fn negotiated(self: Machine) bool {
     };
 }
 
+/// TLS 1.3 is chosen: the client has the server's hello or retry request, the server has answered
+/// the client's hello or asked it to retry.
+pub fn settled13(self: Machine) bool {
+    return switch (self.state) {
+        .client => |m| m.version == .tls13 and (m.group != null or m.retry_suite != null),
+        .server => |m| m.version == .tls13 and (m.answered or m.retried),
+    };
+}
+
 /// How a server skips the early data its client offered and it never accepts (RFC 8446 section
 /// 4.2.10): after a retry request, every protected record before the second hello (`keyless`);
 /// otherwise each record that fails to open under the handshake keys, until one opens (`trial`).
