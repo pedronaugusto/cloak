@@ -116,6 +116,9 @@ pub const Options = struct {
     /// association is DTLS 1.3 only, and fails with `EchRejected` when the server does not
     /// accept it (`echRetryConfigs`).
     ech: Ech.Mode = .off,
+    /// The hello's extensions in a random order per connection (`Hello.Permutation`), so a server
+    /// that depends on one order is found now rather than when a new extension moves it.
+    permute_extensions: bool = false,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -443,6 +446,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
         .external_psks = options.external_psks,
         .grease = options.grease,
         .ech = options.ech,
+        .permute_extensions = options.permute_extensions,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,

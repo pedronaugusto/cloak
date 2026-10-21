@@ -73,6 +73,8 @@ pub const Options = struct {
     /// Encrypted Client Hello: the client's mode and the server's keys.
     client_ech: @import("../tls/handshake/Ech.zig").Mode = .off,
     server_ech: []const @import("../tls/handshake/Ech.zig").Key = &.{},
+    /// The client's hello extensions in a random order (`Hello.Permutation`).
+    client_permute: bool = false,
 };
 
 const Packet = struct { bytes: []u8 };
@@ -163,6 +165,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .srtp = options.client_srtp,
         .key_log = options.client_key_log,
         .ech = options.client_ech,
+        .permute_extensions = options.client_permute,
     }) };
     errdefer self.client.dtls.deinit();
     self.server = .{ .dtls = undefined };

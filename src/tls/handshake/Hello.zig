@@ -115,6 +115,25 @@ pub const Grease = struct {
     }
 };
 
+/// A random order of a client's hello extensions (BoringSSL's permute_extensions), so that no
+/// server comes to depend on one: each extension sorts by a keyed hash of its type, the key drawn
+/// per connection and kept across a retry (RFC 8446 section 4.1.2 lets the second hello change
+/// only what it lists). Pinned: a datagram retry's leading cookie, GREASE's first extension, and
+/// GREASE's last and pre_shared_key at the end. ECH's inner and encoded hellos move the shared
+/// run (`Ech.compressed`) as one unit, at its first member's place and in the order
+/// ech_outer_extensions lists, which is the outer hello's; the hello the server rebuilds is the
+/// inner one. Nothing in it is secret: the order is public on the wire.
+pub const Permutation = struct {
+    key: [16]u8,
+
+    /// The place of extension `id`; below the pinned ends' places.
+    pub fn rank(self: Permutation, id: u16) u64 {
+        var bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &bytes, id, .big);
+        return std.crypto.auth.siphash.SipHash64(2, 4).toInt(&bytes, &self.key) >> 1;
+    }
+};
+
 pub const Options = struct {
     /// Suites of both versions, in preference order.
     suites: []const Suite = Suite.default,
@@ -175,6 +194,9 @@ pub const Options = struct {
     certificate_authorities: []const []const u8 = &.{},
     /// GREASE values (RFC 8701) a client's hello carries; set by `Client` from its entropy.
     grease: ?Grease = null,
+    /// The order of a client's hello extensions; null for cloak's own. Set by `Client` from its
+    /// entropy.
+    permutation: ?Permutation = null,
 
     /// The record_size_limit this end names: its own, or the most the versions it allows take.
     pub fn recordSizeLimit(options: Options) u16 {
@@ -532,6 +554,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         // Random bytes in the shape of the inner offer: nothing a client-facing server can resume.
         if (form.outer.psk.len != 0) try greasePsk(&w, form.outer.psk);
     } else if (tls13 and resumption.offers.len != 0) try offeredPsk(&w, resumption);
+    if (options.permutation) |p| try permute(out[ext_at + 2 .. w.pos], p, options.grease, datagram and cookie.len != 0, form);
     if (w.pos - ext_at - 2 > 65535 or w.pos - 4 > 128 * 1024) return error.InvalidOptions;
     // safe: total extension and handshake lengths have just been bounded.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
@@ -662,13 +685,23 @@ fn serverName(w: *Writer, sni: []const u8) EncodeError!void {
 /// ech_outer_extensions naming `Ech.compressed`, those of them the hello carries.
 fn outerExtensions(w: *Writer, options: Options, cookie: []const u8) EncodeError!void {
     @setRuntimeSafety(true);
+    var ids: [Ech.compressed.len]u16 = undefined;
+    var count: usize = 0;
+    for (Ech.compressed) |id| {
+        if ((id == 44 and cookie.len == 0) or (id == 16 and options.alpn.len == 0)) continue;
+        ids[count] = id;
+        count += 1;
+    }
+    // Permuted, the list is in the order the outer hello carries the run.
+    if (options.permutation) |p| std.sort.insertion(u16, ids[0..count], p, struct {
+        fn less(perm: Permutation, a: u16, b: u16) bool {
+            return perm.rank(a) < perm.rank(b);
+        }
+    }.less);
     var list: [1 + 2 * Ech.compressed.len]u8 = undefined;
     var l: Writer = .{ .bytes = &list };
     try l.int(u8, 0);
-    for (Ech.compressed) |id| {
-        if ((id == 44 and cookie.len == 0) or (id == 16 and options.alpn.len == 0)) continue;
-        try l.int(u16, id);
-    }
+    for (ids[0..count]) |id| try l.int(u16, id);
     list[0] = @intCast(l.pos - 1); // safe: at most twelve bytes
     try extension(w, Ech.outer_extensions_id, list[0..l.pos]);
 }
@@ -726,6 +759,102 @@ fn greasePsk(w: *Writer, offers: []const GreasePsk) EncodeError!void {
 fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
     try w.int(u16, id);
     try w.vector(u16, bytes);
+}
+
+/// One extension of a written block, or the run of several that moves as one.
+const Unit = struct { start: usize, len: usize, key: u64 };
+/// The most extensions a hello of cloak's carries, with room to spare.
+const max_units = 48;
+
+/// Reorders a written extension block by `permutation` (`Permutation` says what stays put). In
+/// place: the bytes move by rotation, so no second buffer is needed.
+fn permute(block: []u8, permutation: Permutation, grease: ?Grease, cookie_leads: bool, form: Form) EncodeError!void {
+    @setRuntimeSafety(true);
+    var units: [max_units]Unit = undefined;
+    var ids: [max_units]u16 = undefined;
+    var count: usize = 0;
+    var r: Reader = .{ .bytes = block };
+    while (r.pos != block.len) {
+        if (count == max_units) return error.InvalidOptions;
+        const start = r.pos;
+        // unreachable: the block was written just now, whole extensions only.
+        ids[count] = r.int(u16) catch unreachable;
+        // unreachable: as above, each id is followed by its body.
+        _ = r.vector(u16) catch unreachable;
+        units[count] = .{ .start = start, .len = r.pos - start, .key = permutation.rank(ids[count]) };
+        count += 1;
+    }
+    var lead: usize = @intFromBool(cookie_leads);
+    if (grease) |g| if (lead < count and ids[lead] == g.first) {
+        lead += 1;
+    };
+    const end = std.math.maxInt(u64);
+    for (units[0..count], ids[0..count]) |*unit, id| {
+        if (id == 41) unit.key = end else if (grease != null and id == grease.?.last) unit.key = end - 1;
+    }
+    switch (form) {
+        // The shared run, its members in rank order, then one unit at its first member's rank.
+        .inner => {
+            var first: ?usize = null;
+            var last: usize = 0;
+            for (ids[lead..count], lead..) |id, i| if (std.mem.findScalar(u16, &Ech.compressed, id) != null) {
+                // The run is contiguous: an inner hello's own extensions lie outside it.
+                if (first == null) first = i else if (i != last + 1) return error.InvalidOptions;
+                last = i;
+            };
+            if (first) |f| {
+                const run = units[f .. last + 1];
+                const base = run[0].start;
+                const len = run[run.len - 1].start + run[run.len - 1].len - base;
+                var key: u64 = end;
+                for (run) |*unit| {
+                    unit.start -= base;
+                    key = @min(key, unit.key);
+                }
+                reorder(block[base..][0..len], run);
+                units[f] = .{ .start = base, .len = len, .key = key };
+                @memmove(units[f + 1 ..][0 .. count - last - 1], units[last + 1 .. count]);
+                count -= last - f;
+            }
+        },
+        // ech_outer_extensions stands for the run: its first listed member's rank.
+        .encoded => for (units[lead..count], ids[lead..count]) |*unit, id| if (id == Ech.outer_extensions_id) {
+            // unreachable: `outerExtensions` wrote it, a length then two bytes an entry.
+            const listed = block[unit.start + 5 .. unit.start + unit.len];
+            var key: u64 = end;
+            var at: usize = 0;
+            while (at < listed.len) : (at += 2) key = @min(key, permutation.rank(std.mem.readInt(u16, listed[at..][0..2], .big)));
+            unit.key = key;
+        },
+        else => {},
+    }
+    const movable = units[lead..count];
+    const base = if (movable.len != 0) movable[0].start else return;
+    for (movable) |*unit| unit.start -= base;
+    reorder(block[base..], movable);
+}
+
+/// Sorts `units`, consecutive spans of `bytes` from its start, by key, moving the bytes with
+/// them. Selection by rotation: a hello's few dozen extensions, no buffer.
+fn reorder(bytes: []u8, units: []Unit) void {
+    @setRuntimeSafety(true);
+    for (0..units.len) |t| {
+        var k = t;
+        for (units[t + 1 ..], t + 1..) |unit, i| if (unit.key < units[k].key) {
+            k = i;
+        };
+        if (k == t) continue;
+        const begin = units[t].start;
+        std.mem.rotate(u8, bytes[begin .. units[k].start + units[k].len], units[k].start - begin);
+        const moved = units[k];
+        @memmove(units[t + 1 .. k + 1], units[t..k]);
+        units[t] = .{ .start = begin, .len = moved.len, .key = moved.key };
+        var at = begin + moved.len;
+        for (units[t + 1 .. k + 1]) |*unit| {
+            unit.start = at;
+            at += unit.len;
+        }
+    }
 }
 pub const ServerHello = struct {
     suite: Suite13,

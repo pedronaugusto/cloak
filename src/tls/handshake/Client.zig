@@ -67,6 +67,9 @@ pub const Options = struct {
     /// GREASE (RFC 8701): reserved values in the hello, drawn per connection, so servers that
     /// would choke on what they do not know are found now rather than when it is real.
     grease: bool = false,
+    /// The hello's extensions in a random order per connection (`Hello.Permutation`), so servers
+    /// that depend on one order are found now rather than when a new extension moves it.
+    permute_extensions: bool = false,
     resumption: ?Resumption = null,
     /// Encrypted Client Hello (RFC 9849). A config list makes it required and the connection
     /// TLS 1.3 only.
@@ -669,6 +672,7 @@ fn initialEntropy(self: *const Client) usize {
     for (initial.groups[0..initial.count]) |group| len += Exchange.entropyLength(group.?);
     len += self.echEntropy();
     if (self.options.grease) len += 6;
+    if (self.options.permute_extensions) len += 16;
     // A client certificate whose key cloak holds is signed for here, with noise drawn up front.
     // A delegated credential signs instead when the server takes it: noise for either.
     var noise: usize = 0;
@@ -731,6 +735,10 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
         if (self.options.grease) {
             self.options.hello.grease = Hello.Grease.fromSeed(entropy[at..][0..6]);
             at += 6;
+        }
+        if (self.options.permute_extensions) {
+            self.options.hello.permutation = .{ .key = entropy[at..][0..16].* };
+            at += 16;
         }
         @memcpy(self.scratch.?.sign_noise[0 .. entropy.len - at], entropy[at..]);
         self.need_now = .none;

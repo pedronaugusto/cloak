@@ -60,6 +60,8 @@ pub const Options = struct {
     client_external: bool = false,
     /// The client puts GREASE values (RFC 8701) in its hello.
     client_grease: bool = false,
+    /// The client's hello extensions in a random order (`Hello.Permutation`).
+    client_permute: bool = false,
     /// Bytes moved per receive call, to cut records and messages at every boundary.
     chunk: usize = 1 << 20,
     /// Resumption: the client's ticket cache and the server's ticket keys.
@@ -273,6 +275,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .grease = options.client_grease,
+        .permute_extensions = options.client_permute,
         .external_psks = options.client_psks,
         .record_size_limit = options.client_record_size_limit,
         .max_fragment = options.client_max_fragment,

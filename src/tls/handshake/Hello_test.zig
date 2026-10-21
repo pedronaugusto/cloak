@@ -320,3 +320,105 @@ test "C2 GREASE (RFC 8701): a reserved value leads each list, two reserved exten
     const retry = try H.buildRetry(&server_hello, .stream, "", Suite13.aes_128_gcm_sha256, @fromBackingInt(grease.group), "", false);
     try std.testing.expect(if (H.server(retry, "", &shares, options, .{})) |_| false else |_| true);
 }
+
+/// The extensions of a written ClientHello, id and whole bytes each, in their order.
+fn helloExtensions(ch: []const u8, datagram: bool, out: *[48][]const u8) ![]const []const u8 {
+    var r: Reader = .{ .bytes = ch[4..] };
+    _ = try r.take(34);
+    _ = try r.vector(u8);
+    if (datagram) _ = try r.vector(u8);
+    _ = try r.vector(u16);
+    _ = try r.vector(u8);
+    const block = (try r.vector(u16)).bytes;
+    var b: Reader = .{ .bytes = block };
+    var count: usize = 0;
+    while (b.pos != block.len) {
+        const start = b.pos;
+        _ = try b.int(u16);
+        _ = try b.vector(u16);
+        out[count] = block[start..b.pos];
+        count += 1;
+    }
+    return out[0..count];
+}
+
+fn extensionId(ext: []const u8) u16 {
+    return std.mem.readInt(u16, ext[0..2], .big);
+}
+
+fn lessBytes(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+test "C2 permute_extensions: the same extensions in a random order per key, the same order for one key, the ends kept" {
+    const grease = H.Grease.fromSeed(&.{ 0x10, 0x21, 0x32, 0x43, 0x54, 0x65 });
+    const offer = [_]H.PskOffer{.{ .identity = "ticket", .age = 7, .binder_len = 32 }};
+    const base: H.Options = .{ .sni = "example.com", .alpn = &.{ "h2", "http/1.1" }, .grease = grease, .accept_delegated = true, .request_ocsp = true, .post_handshake_auth = true };
+    const resumption: H.Resume = .{ .modes = true, .offers = &offer };
+    var plain_buf: [4096]u8 = undefined;
+    const plain = try H.client(&plain_buf, &@as([32]u8, @splat(2)), "", "", &shares, "", base, resumption);
+    var plain_ext: [48][]const u8 = undefined;
+    const want = try helloExtensions(plain, false, &plain_ext);
+    var sorted_want: [48][]const u8 = undefined;
+    @memcpy(sorted_want[0..want.len], want);
+    std.sort.insertion([]const u8, sorted_want[0..want.len], {}, lessBytes);
+    var moved = false;
+    for (0..16) |seed| {
+        var options = base;
+        options.permutation = .{ .key = @splat(@intCast(seed)) };
+        var buf: [4096]u8 = undefined;
+        const ch = try H.client(&buf, &@as([32]u8, @splat(2)), "", "", &shares, "", options, resumption);
+        try std.testing.expectEqual(plain.len, ch.len);
+        var ext: [48][]const u8 = undefined;
+        const got = try helloExtensions(ch, false, &ext);
+        try std.testing.expectEqual(want.len, got.len);
+        // GREASE's first leads; GREASE's last, then pre_shared_key, end it.
+        try std.testing.expectEqual(grease.first, extensionId(got[0]));
+        try std.testing.expectEqual(grease.last, extensionId(got[got.len - 2]));
+        try std.testing.expectEqual(@as(u16, 41), extensionId(got[got.len - 1]));
+        for (got, want) |a, b| moved = moved or !std.mem.eql(u8, a, b);
+        var sorted: [48][]const u8 = undefined;
+        @memcpy(sorted[0..got.len], got);
+        std.sort.insertion([]const u8, sorted[0..got.len], {}, lessBytes);
+        for (sorted[0..got.len], sorted_want[0..want.len]) |a, b| try std.testing.expectEqualSlices(u8, b, a);
+        // One key, one order: a retry's hello keeps it.
+        var again: [4096]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, ch, try H.client(&again, &@as([32]u8, @splat(2)), "", "", &shares, "", options, resumption));
+        // A datagram hello answering a retry request still leads with its cookie.
+        var dtls = options;
+        dtls.transport = .datagram;
+        dtls.post_handshake_auth = false;
+        var dbuf: [4096]u8 = undefined;
+        const dch = try H.client(&dbuf, &@as([32]u8, @splat(2)), "", "", &shares, "cookie", dtls, .{ .modes = true });
+        var dext: [48][]const u8 = undefined;
+        const dgot = try helloExtensions(dch, true, &dext);
+        try std.testing.expectEqual(@as(u16, 44), extensionId(dgot[0]));
+        try std.testing.expectEqual(grease.first, extensionId(dgot[1]));
+    }
+    try std.testing.expect(moved);
+}
+
+test "C6 permute_extensions under ECH: the server rebuilds the permuted inner hello from the encoded one and the outer" {
+    const Ech = @import("Ech.zig");
+    const gpa = std.testing.allocator;
+    const grease = H.Grease.fromSeed(&.{ 0x10, 0x21, 0x32, 0x43, 0x54, 0x65 });
+    const names = [_][]const u8{"\x30\x0e\x31\x0c\x30\x0a\x06\x03\x55\x04\x03\x0c\x03ca1"};
+    const offer = [_]H.PskOffer{.{ .identity = "ticket", .age = 7, .binder_len = 32 }};
+    const random: [32]u8 = @splat(2);
+    const Transport = @import("../crypto/Suite.zig").Transport;
+    // Over datagrams the cookie leads every form and is never compressed; there is no session id.
+    for ([_]Transport{ .stream, .datagram }) |transport| for ([_][]const u8{ "", "cookie" }) |cookie| for (0..16) |seed| {
+        const options: H.Options = .{ .transport = transport, .min_version = .tls13, .sni = "example.com", .alpn = &.{"h2"}, .grease = grease, .certificate_authorities = &names, .permutation = .{ .key = @splat(@intCast(seed)) } };
+        const resumption: H.Resume = .{ .modes = true, .offers = &offer };
+        const session = if (transport == .datagram) "" else "session";
+        var inner_buf: [4096]u8 = undefined;
+        const inner = try H.clientForm(&inner_buf, &random, session, "", &shares, cookie, options, resumption, .inner);
+        var encoded_buf: [4096]u8 = undefined;
+        const encoded = try H.clientForm(&encoded_buf, &random, session, "", &shares, cookie, options, resumption, .encoded);
+        var outer_buf: [4096]u8 = undefined;
+        const outer = try H.clientForm(&outer_buf, &@as([32]u8, @splat(9)), session, "", &shares, cookie, options, .{ .modes = true }, .{ .outer = .{ .name = "public.example.org", .ext = "payload", .psk = &.{} } });
+        const rebuilt = try Ech.reconstruct(gpa, outer, encoded[4..], transport);
+        defer gpa.free(rebuilt);
+        try std.testing.expectEqualSlices(u8, inner, rebuilt);
+    };
+}

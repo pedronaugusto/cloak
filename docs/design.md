@@ -357,6 +357,21 @@ hello the client hashed. The lists a ServerHello, retry request or EncryptedExte
 checked against never hold a reserved value, so a server choosing one is refused (RFC 8701
 section 3.1). A server sends none (section 3.2 is a MAY).
 
+Extension permutation (BoringSSL's permute_extensions; owner 2026-10-22) is the caller's choice
+too, off by default: under `permute_extensions` a hello's extensions come in a random order, so
+that no server comes to depend on one order and break when a new extension moves it. Each extension
+sorts by SipHash-2-4 of its type under a 16-byte key drawn from the hello's entropy. The key stays
+across a retry, so the second hello keeps the first's order (RFC 8446 section 4.1.2). Pinned:
+- a datagram retry's leading cookie, which a stateless server reads in the first fragment;
+- GREASE's first extension;
+- GREASE's last, then pre_shared_key, which must end the hello.
+
+Under ECH the inner and encoded hellos move the shared run (`Ech.compressed`) as one unit, placed
+at its first member's rank. ech_outer_extensions lists the members in rank order, and that is the
+order they take among the outer hello's extensions, so the server's forward walk rebuilds the inner
+hello the client hashed. The pass runs over the written block by rotation, needing no second buffer.
+The order is public, so nothing in it is secret.
+
 Key shares are fresh per hello and per retry. The caller's group order decides which go in the
 first hello: a share for the first post-quantum or hybrid group listed and one for the first
 classical group, at most two, in supported_groups' order (RFC 8446 section 4.2.8 lets a client

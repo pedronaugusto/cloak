@@ -115,6 +115,9 @@ pub const ClientOptions = struct {
     /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
     /// connection; a server that refuses them is found now rather than when a real one comes.
     grease: bool = false,
+    /// The hello's extensions in a random order per connection (`Hello.Permutation`), so a server
+    /// that depends on one order is found now rather than when a new extension moves it.
+    permute_extensions: bool = false,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
     /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
@@ -288,6 +291,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .ech = options.ech,
         .external_psks = options.external_psks,
         .grease = options.grease,
+        .permute_extensions = options.permute_extensions,
         .identity = identity,
         .verify = options.verify,
         .credentials = options.credentials,

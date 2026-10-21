@@ -156,6 +156,9 @@ pub const Options = struct {
     /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
     /// connection; a server that refuses them is found now rather than when a real one comes.
     grease: bool = false,
+    /// The hello's extensions in a random order per connection (`Hello.Permutation`), so a server
+    /// that depends on one order is found now rather than when a new extension moves it.
+    permute_extensions: bool = false,
     /// After `open` fails with `EchRejected` and the server authenticated as the config's public
     /// name: the ECHConfigList it offered for a retry on a new connection, or empty when it
     /// offered none (ECH securely disabled). Allocated with the session's allocator; the caller
@@ -266,6 +269,7 @@ pub fn open(
         .certificate_compression = options.certificate_compression,
         .external_psks = options.external_psks,
         .grease = options.grease,
+        .permute_extensions = options.permute_extensions,
         .record_size_limit = options.record_size_limit,
         .max_fragment = options.max_fragment,
         .limits = options.limits,

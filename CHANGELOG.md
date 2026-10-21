@@ -32,6 +32,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `Identity.initExternalPem` and `ClientAuth.initExternalPem`: a chain whose key is held elsewhere, from PEM, read as `initPem` reads it.
 - `SignRequest.signWith`: signs a request with a `PrivateKey`, as cloak signs with a key it holds, for a driver that signs away from the handshake (a worker thread, a process holding the key); the connection still checks the signature against the credential before sending it.
 - GREASE (RFC 8701) in a client's hello: `grease` (Connection, Session, the datagram and QUIC clients; off by default) puts a reserved value first in the suites, groups (with a one-byte share), versions and signature schemes, and two reserved extensions around the rest, drawn per connection and kept across a retry; a server choosing any of them is refused.
+- `permute_extensions` (Connection, Session, the datagram and QUIC clients; off by default): the hello's extensions in a random order per connection (BoringSSL's permute_extensions), kept across a retry. GREASE's ends, a datagram's leading cookie and pre_shared_key stay put. Under ECH the compressed run moves as one unit, listed in the order the outer hello carries it.
 
 ### Changed
 
