@@ -23,6 +23,8 @@ pub const Options = struct {
     client_auth: ?certificates.ClientAuth = null,
     sign_with: enum { p256, ed25519 } = .p256,
     verify_none: bool = false,
+    /// Verify with revocation off: the client asks for no stapled status.
+    revocation_off: bool = false,
     pins: []const [32]u8 = &.{},
     /// Trust only a raw public key (RFC 7250) with one of these pins.
     raw_pins: ?[]const [32]u8 = null,
@@ -91,7 +93,7 @@ pub fn Pair(comptime suite: Suite13) type {
             self.conn = try Connection.client(options.client_gpa orelse gpa, .{
                 .identity = options.identity,
                 .server_name = options.server_name,
-                .verify = if (options.raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins } },
+                .verify = if (options.raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .pins = options.pins, .policy = .{ .revocation = .{ .mode = if (options.revocation_off) .off else .if_present } } } },
                 .suites = options.offer orelse &.{comptime SuiteAll.from13(suite)},
                 .groups = options.groups,
                 .alpn = options.alpn,

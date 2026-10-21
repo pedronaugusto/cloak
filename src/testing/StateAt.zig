@@ -21,9 +21,9 @@ pub fn at(role: S.Role, mode: S.Mode, phase: S.Phase, setup: Setup) S.State {
     }
     state.version = setup.version;
     state.auth = setup.auth;
-    state.requested_certificate = setup.requested_certificate;
-    state.ticket12 = setup.ticket12;
-    state.retried = setup.retried;
+    state.flags.requested_certificate = setup.requested_certificate;
+    state.flags.ticket12 = setup.ticket12;
+    state.flags.retried = setup.retried;
     return state;
 }
 
@@ -93,12 +93,12 @@ fn take(state: *S.State, line: Line) S.AdvanceError!void {
     const current = state.phase();
     // Policy flags that admit this edge.
     switch (action) {
-        .local_certificate, .local_empty_certificate => state.requested_certificate = true,
+        .local_certificate, .local_empty_certificate => state.flags.requested_certificate = true,
         .local_finished => if (current == .local_flight) {
-            state.requested_certificate = false;
+            state.flags.requested_certificate = false;
         },
         .local_key_exchange => if (current == .local_flight12) {
-            state.requested_certificate = false;
+            state.flags.requested_certificate = false;
         },
         .certificate_request => if (state.role == .server and state.auth == .none) {
             state.auth = .optional;
@@ -110,9 +110,9 @@ fn take(state: *S.State, line: Line) S.AdvanceError!void {
         .server_hello_done => if (state.role == .server and current == .s_request12) {
             state.auth = .none;
         },
-        .ticket, .local_ticket => state.ticket12 = true,
+        .ticket, .local_ticket => state.flags.ticket12 = true,
         .ccs, .local_ccs => if (current == .peer_ccs12 or current == .s_ccs12) {
-            state.ticket12 = false;
+            state.flags.ticket12 = false;
         },
         else => {},
     }

@@ -117,6 +117,9 @@ pub const Options = struct {
     /// The client asks for the server's SCTs (RFC 6962 section 3.3.1): set by `Client` when its
     /// verification requires Certificate Transparency.
     request_scts: bool = false,
+    /// The client asks for the server's stapled OCSP status (status_request, RFC 6066 section 8):
+    /// set by `Client` when its verification checks revocation.
+    request_ocsp: bool = false,
     /// DTLS: connection_id (RFC 9146). Null offers or accepts none; otherwise the connection ID
     /// this end receives records with, borrowed; empty: it sends with the peer's but takes none.
     connection_id: ?[]const u8 = null,
@@ -470,10 +473,13 @@ fn leadingOffers(w: *Writer, options: Options, tls13: bool) EncodeError!void {
 }
 
 /// What this client takes to authenticate the server beyond its certificate's key: a delegated
-/// credential (RFC 9345, TLS 1.3) and SCTs (RFC 6962), each asked for only when policy says so.
+/// credential (RFC 9345, TLS 1.3), SCTs (RFC 6962) and a stapled OCSP status (RFC 6066), each
+/// asked for only when policy says so.
 fn evidenceExtensions(w: *Writer, options: Options, tls13: bool) EncodeError!void {
     if (tls13 and options.accept_delegated) try delegatedExtension(w, options.require_pq_auth);
     if (options.request_scts) try extension(w, Messages.signed_certificate_timestamp, "");
+    // CertificateStatusRequest: ocsp, no responder IDs, no request extensions.
+    if (options.request_ocsp) try extension(w, Messages.status_request, &.{ 1, 0, 0, 0, 0 });
 }
 
 /// delegated_credential (RFC 9345 section 4.1.1): the schemes a credential's key may use.
@@ -631,6 +637,9 @@ pub const ServerHello12 = struct {
     raw_client_key: bool = false,
     /// The server's SignedCertificateTimestampList (RFC 6962 section 3.3.1), when the client asked.
     scts: ?[]const u8 = null,
+    /// The server answered status_request (RFC 6066 section 8): a CertificateStatus may follow
+    /// its Certificate.
+    ocsp: bool = false,
     /// The server's record_size_limit (RFC 8449), when it answered the client's.
     record_size_limit: ?u16 = null,
 };
@@ -666,7 +675,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var ech: ?*const [8]u8 = null;
     var answered: DatagramAnswer = .{};
     var types: CertificateTypes = .{};
-    var scts: ?[]const u8 = null;
+    var delivered: Delivered = .{};
     var record_size_limit: ?u16 = null;
     var groups_answered = false;
     while (try ext.next()) |item| {
@@ -708,10 +717,8 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
             16 => alpn = try selectedAlpn(&value, options),
             23 => ems = true,
             RecordLimits.extension => record_size_limit = try recordSizeAnswer(&value, options),
-            Messages.signed_certificate_timestamp => {
-                if (!options.request_scts) return error.UnsolicitedExtension;
-                if (item.bytes.len == 0) return error.DecodeError;
-                scts = item.bytes;
+            Messages.signed_certificate_timestamp, Messages.status_request => {
+                try delivered.read(item.id, item.bytes, options);
                 value.pos = item.bytes.len;
             },
             35 => {
@@ -744,7 +751,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
     if (!version13 and psk) return error.InvalidHello;
-    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = scts, .record_size_limit = record_size_limit }, options);
+    if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = delivered.scts, .ocsp = delivered.ocsp, .record_size_limit = record_size_limit }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
     if (only12 or groups_answered or answered.srtp != null) return error.InvalidHello;
     // A DTLS 1.3 server never echoes the session id (RFC 9147 section 5).
@@ -845,13 +852,36 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
     return error.UnofferedSelection;
 }
 
-const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes, scts: ?[]const u8, record_size_limit: ?u16 };
+/// What a TLS 1.2 ServerHello delivers beside the certificate, each only to a client that asked:
+/// its SCTs (RFC 6962 section 3.3.1, not empty) and, answering status_request empty, the promise
+/// that a CertificateStatus may follow (RFC 6066 section 8).
+const Delivered = struct {
+    scts: ?[]const u8 = null,
+    ocsp: bool = false,
+
+    fn read(self: *Delivered, id: u16, bytes: []const u8, options: Options) ParseError!void {
+        switch (id) {
+            Messages.signed_certificate_timestamp => {
+                if (!options.request_scts) return error.UnsolicitedExtension;
+                if (bytes.len == 0) return error.DecodeError;
+                self.scts = bytes;
+            },
+            else => {
+                if (!options.request_ocsp) return error.UnsolicitedExtension;
+                if (bytes.len != 0) return error.DecodeError;
+                self.ocsp = true;
+            },
+        }
+    }
+};
+
+const Seen12 = struct { group: bool, alpn: []const u8, ems: bool, renegotiation: bool, ticket: bool, session12: bool, connection_id: ?[]const u8, srtp: ?Srtp, types: CertificateTypes, scts: ?[]const u8, ocsp: bool, record_size_limit: ?u16 };
 
 /// The ServerHello extensions only a TLS 1.2 answer carries.
 fn answers12(id: u16) bool {
     return switch (id) {
         // record_size_limit: a TLS 1.3 server answers it in EncryptedExtensions (RFC 8449 section 4).
-        0, 11, 16, 18, 23, 35, 0xff01, client_certificate_type, server_certificate_type, RecordLimits.extension => true,
+        0, 5, 11, 16, 18, 23, 35, 0xff01, client_certificate_type, server_certificate_type, RecordLimits.extension => true,
         else => false,
     };
 }
@@ -894,7 +924,7 @@ fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, sess
     if (!seen.ems) return error.NoExtendedMasterSecret;
     if (!seen.renegotiation) return error.NoSecureRenegotiation;
     if (options.require_alpn and seen.alpn.len == 0) return error.NoApplicationProtocol;
-    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key, .scts = seen.scts, .record_size_limit = seen.record_size_limit } };
+    return .{ .tls12 = .{ .suite = suite, .random = random, .alpn = seen.alpn, .resumed = resumed, .ticket = seen.ticket, .connection_id = seen.connection_id, .srtp = seen.srtp, .raw_server_key = seen.types.raw_server_key, .raw_client_key = seen.types.raw_client_key, .scts = seen.scts, .ocsp = seen.ocsp, .record_size_limit = seen.record_size_limit } };
 }
 /// A DTLS 1.2 HelloVerifyRequest's cookie (RFC 6347 section 4.2.1). Its server_version only
 /// formats the record (DTLS 1.0's or 1.2's number) and negotiates nothing.
@@ -1057,8 +1087,9 @@ pub const max_scts = 2048;
 /// `client_certificate_type`, `server_certificate_type`: the types selected (RFC 7250), answered
 /// when the client sent the extension.
 /// `scts`: the certificate's SignedCertificateTimestampList, for a client that asked (RFC 6962
-/// section 3.3.1), at most `max_scts` bytes.
-pub const Echo12 = struct { server_name: bool, renegotiation_info: bool, point_formats: bool, record_size_limit: ?u16 = null, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null };
+/// section 3.3.1), at most `max_scts` bytes. `ocsp`: a CertificateStatus follows the
+/// Certificate, for a client that asked (RFC 6066 section 8).
+pub const Echo12 = struct { server_name: bool, renegotiation_info: bool, point_formats: bool, record_size_limit: ?u16 = null, ticket: bool = false, connection_id: ?[]const u8 = null, srtp: ?Srtp = null, client_certificate_type: ?CertificateType = null, server_certificate_type: ?CertificateType = null, scts: ?[]const u8 = null, ocsp: bool = false };
 
 /// A TLS 1.2 ServerHello: the session id (empty, or the client's when resuming its ticket), the
 /// suite, and the extended master secret, renegotiation_info, point formats, SessionTicket and
@@ -1085,6 +1116,7 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     if (echo.client_certificate_type) |kind| try extension(&w, client_certificate_type, &.{@backingInt(kind)});
     if (echo.server_certificate_type) |kind| try extension(&w, server_certificate_type, &.{@backingInt(kind)});
     if (echo.scts) |list| try extension(&w, Messages.signed_certificate_timestamp, list);
+    if (echo.ocsp) try extension(&w, Messages.status_request, "");
     if (alpn.len != 0) {
         try w.int(u16, 16);
         // safe: a protocol name is at most 255 bytes.

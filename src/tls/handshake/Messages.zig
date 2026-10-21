@@ -20,6 +20,8 @@ pub const Type = enum(u8) {
     certificate_verify = 15,
     client_key_exchange = 16,
     finished = 20,
+    /// TLS 1.2's stapled certificate status (RFC 6066 section 8).
+    certificate_status = 22,
     key_update = 24,
     compressed_certificate = 25,
     _,
@@ -63,6 +65,9 @@ pub const Leaf = struct {
     /// signed_certificate_timestamp's body (RFC 6962 section 3.3.1): a
     /// SignedCertificateTimestampList, which certificate verification reads.
     scts: ?[]const u8 = null,
+    /// status_request's OCSPResponse (RFC 8446 section 4.4.2.1, RFC 6066 section 8): the stapled
+    /// status, which certificate verification reads as evidence.
+    ocsp: ?[]const u8 = null,
 };
 
 /// The CertificateEntry extensions this end solicited.
@@ -71,12 +76,14 @@ pub const Accept = struct {
     delegated: bool = false,
     /// signed_certificate_timestamp (RFC 6962, RFC 8446 section 4.4.2), on the leaf only.
     scts: bool = false,
+    /// status_request (RFC 8446 section 4.4.2.1), on the leaf only.
+    ocsp: bool = false,
 };
 
 /// Parses a Certificate message into `out`. An entry extension is accepted only where `accept`
 /// solicited it, and on the leaf alone (on another entry it is illegal_parameter): a delegated
-/// credential (RFC 9345 section 4.1.1: unsolicited is unexpected_message) and SCTs (not empty).
-/// Every other extension is unsolicited: this end offers no status_request.
+/// credential (RFC 9345 section 4.1.1: unsolicited is unexpected_message), SCTs (not empty) and
+/// an OCSP status (`statusResponse`). Every other extension is unsolicited.
 pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out: *[max_certificates][]const u8, accept: Accept) ParseError!Certificates {
     @setRuntimeSafety(true);
     const parsed = try body(message);
@@ -93,16 +100,21 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
         if (der.len == 0) return error.InvalidMessage;
         var ext: Extensions = .{ .reader = try list.vector(u16) };
         // Where nothing was solicited any extension block is unsolicited, well formed or not.
-        while (ext.next() catch |err| return if (accept.delegated or accept.scts) err else error.UnsolicitedExtension) |item| {
+        while (ext.next() catch |err| return if (accept.delegated or accept.scts or accept.ocsp) err else error.UnsolicitedExtension) |item| {
             switch (item.id) {
                 delegated_credential => if (!accept.delegated) return error.UnexpectedMessage,
                 signed_certificate_timestamp => if (!accept.scts) return error.UnsolicitedExtension,
+                status_request => if (!accept.ocsp) return error.UnsolicitedExtension,
                 else => return error.UnsolicitedExtension,
             }
             if (count != 0) return error.IllegalParameter;
-            if (item.id == delegated_credential) leaf.delegated = item.bytes else {
-                if (item.bytes.len == 0) return error.InvalidMessage;
-                leaf.scts = item.bytes;
+            switch (item.id) {
+                delegated_credential => leaf.delegated = item.bytes,
+                status_request => leaf.ocsp = try statusResponse(item.bytes),
+                else => {
+                    if (item.bytes.len == 0) return error.InvalidMessage;
+                    leaf.scts = item.bytes;
+                },
             }
         }
         if (count == @min(max_count, max_certificates)) return error.CertificateLimit;
@@ -118,6 +130,48 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
 pub const delegated_credential = 34;
 /// The signed_certificate_timestamp extension's number (RFC 6962 section 3.3.1).
 pub const signed_certificate_timestamp = 18;
+/// The status_request extension's number (RFC 6066 section 8).
+pub const status_request = 5;
+/// CertificateStatusType ocsp (RFC 6066 section 8), the one a client asks for.
+const status_ocsp = 1;
+
+/// The OCSPResponse of a CertificateStatus body (RFC 6066 section 8): type ocsp, then
+/// opaque OCSPResponse<1..2^24-1>; the verifier reads the response itself.
+pub fn statusResponse(bytes: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    var r: Reader = .{ .bytes = bytes };
+    if (try r.int(u8) != status_ocsp) return error.IllegalParameter;
+    const response = (try r.vector(u24)).bytes;
+    try r.finish();
+    if (response.len == 0) return error.DecodeError;
+    return response;
+}
+
+/// A TLS 1.2 CertificateStatus message: its OCSPResponse.
+pub fn certificateStatus(message: []const u8) ParseError![]const u8 {
+    @setRuntimeSafety(true);
+    const parsed = try body(message);
+    if (parsed.kind != .certificate_status) return error.InvalidMessage;
+    return statusResponse(parsed.bytes);
+}
+
+/// The bytes of a CertificateStatus body for `response`, into a `writer`.
+fn putStatus(w: *Writer, response: []const u8) BuildError!void {
+    if (response.len == 0 or response.len > 0xffffff) return error.BufferTooSmall;
+    try w.int(u8, status_ocsp);
+    // safe: bounded by the u24 maximum just above.
+    try w.int(u24, @intCast(response.len));
+    try w.put(response);
+}
+
+/// A TLS 1.2 CertificateStatus carrying `response` (RFC 6066 section 8).
+pub fn buildCertificateStatus(out: []u8, response: []const u8) BuildError![]u8 {
+    @setRuntimeSafety(true);
+    var w: Writer = .{ .bytes = out };
+    try header(&w, .certificate_status);
+    try putStatus(&w, response);
+    return seal(&w);
+}
 
 /// Borrowed view of a CertificateRequest.
 pub const CertificateRequest = struct {
@@ -285,9 +339,10 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
         const extensions: Leaf = if (i == 0) leaf else .{};
         const delegated_len = if (extensions.delegated) |bytes| bytes.len + 4 else 0;
         const scts_len = if (extensions.scts) |bytes| bytes.len + 4 else 0;
-        if (delegated_len + scts_len > 0xffff) return error.BufferTooSmall;
+        const ocsp_len = if (extensions.ocsp) |bytes| bytes.len + 8 else 0;
+        if (delegated_len + scts_len + ocsp_len > 0xffff) return error.BufferTooSmall;
         // safe: the extensions were just bounded below the u16 maximum.
-        try w.int(u16, @intCast(delegated_len + scts_len));
+        try w.int(u16, @intCast(delegated_len + scts_len + ocsp_len));
         if (extensions.delegated) |credential| {
             try w.int(u16, delegated_credential);
             try w.vector(u16, credential);
@@ -295,6 +350,12 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
         if (extensions.scts) |list| {
             try w.int(u16, signed_certificate_timestamp);
             try w.vector(u16, list);
+        }
+        if (extensions.ocsp) |response| {
+            try w.int(u16, status_request);
+            // safe: the extension's length was bounded below the u16 maximum above.
+            try w.int(u16, @intCast(response.len + 4));
+            try putStatus(&w, response);
         }
     }
     const list_len = w.pos - list_at - 3;

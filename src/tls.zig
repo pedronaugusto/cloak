@@ -124,6 +124,7 @@ test {
     _ = @import("tls/LeafKey_test.zig");
     _ = @import("tls/Delegated_test.zig");
     _ = @import("tls/Transparency_test.zig");
+    _ = @import("tls/Stapling_test.zig");
     _ = @import("tls/PostAuth_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");

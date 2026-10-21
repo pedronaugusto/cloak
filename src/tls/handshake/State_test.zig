@@ -103,9 +103,9 @@ fn trace(state: *S.State, steps: []const Step) !void {
 // Alternatives come from the independent flight scenarios, not implementation edges.
 fn alternative(state: S.State, action: S.Action) bool {
     return switch (state.phase()) {
-        .hello => action == .server_hello or (action == .hello_retry and !state.retried),
+        .hello => action == .server_hello or (action == .hello_retry and !state.flags.retried),
         .certificate_request => if (state.role == .client) action == .certificate or action == .certificate_request else if (state.auth == .none) action == .certificate else action == .certificate_request,
-        .local_flight => state.role == .client and state.requested_certificate and (action == .local_certificate or action == .local_empty_certificate),
+        .local_flight => state.role == .client and state.flags.requested_certificate and (action == .local_certificate or action == .local_empty_certificate),
         .client_certificate => state.role == .server and state.auth == .optional and (action == .certificate or action == .empty_certificate),
         else => false,
     };

@@ -22,6 +22,8 @@ pub const Options = struct {
     groups: []const Group = &.{ .x25519_mlkem768, .x25519, .p256, .p384 },
     client_auth: Server.Auth = .none,
     seed: u64 = 7,
+    /// The OCSP response the server's credential staples for a client that asks.
+    server_ocsp: []const u8 = "",
 };
 
 /// A message or a ChangeCipherSpec, as a carrier would deliver it.
@@ -85,7 +87,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .transport = options.transport,
         .suites = options.server_suites,
         .groups = options.groups,
-        .credentials = &.{.{ .identity = self.identity }},
+        .credentials = &.{.{ .identity = self.identity, .ocsp = options.server_ocsp }},
         .client_auth = options.client_auth,
         .generation = .fromRaw(5),
     });

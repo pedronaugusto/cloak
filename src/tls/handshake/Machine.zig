@@ -286,7 +286,7 @@ pub fn resumeRetry(self: Machine, suite: @import("../crypto/Suite.zig").Suite13,
 /// carrier holds one that arrives early (it has no message sequence) until then.
 pub fn awaitingCcs(self: Machine) bool {
     return switch (self.state) {
-        .client => |m| m.version == .tls12 and ((m.state.phase() == .peer_ccs12 and !m.state.ticket12) or m.state.phase() == .ticket_seen12),
+        .client => |m| m.version == .tls12 and ((m.state.phase() == .peer_ccs12 and !m.state.flags.ticket12) or m.state.phase() == .ticket_seen12),
         .server => |m| m.version == .tls12 and m.state.phase() == .c_ccs12,
     };
 }

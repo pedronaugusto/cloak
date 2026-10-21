@@ -5,6 +5,7 @@
 //! lives in `Options`; the checked state table, transcript and key schedule are the same ones
 //! the client uses.
 const std = @import("std");
+const Der = @import("../../wire/Der.zig");
 const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
@@ -63,8 +64,23 @@ pub const Credential = struct {
     /// 1.2 in the ServerHello). SCTs embedded in the certificate need nothing here. At most
     /// `max_scts` bytes.
     scts: []const u8 = "",
+    /// The certificate's OCSPResponse, DER, borrowed: its stapled status (RFC 6066 section 8),
+    /// sent to a client that asks (TLS 1.3 in the leaf's entry, TLS 1.2 as a CertificateStatus).
+    /// The caller fetches and refreshes it; cloak checks only that it is an OCSPResponse. At most
+    /// `max_ocsp` bytes.
+    ocsp: []const u8 = "",
     pub const max_scts = Hello.max_scts;
+    pub const max_ocsp = 16 * 1024;
 };
+
+/// Whether `der` reads as an OCSPResponse: a SEQUENCE starting with its responseStatus
+/// (RFC 6960 section 4.2.1). The client's verifier judges the rest.
+fn ocspResponse(der: []const u8) bool {
+    const outer = Der.single(der, 0x30) catch return false;
+    var r = outer.reader();
+    _ = r.expect(0x0a) catch return false;
+    return true;
+}
 
 pub const Options = struct {
     /// Suites of both versions in the server's order of preference.
@@ -225,6 +241,9 @@ suite12: ?suites.Suite12 = null,
 tls12: ?*Flight.Secrets12 = null,
 
 const Scratch = struct {
+    /// The chosen credential's stapled OCSP status goes to a client that asked for it (RFC 6066
+    /// section 8): a choice of the handshake alone.
+    sends_ocsp: bool = false,
     flight: Flight = .{},
     transcripts: Transcripts = .{},
     client_random: [32]u8 = @splat(0),
@@ -335,6 +354,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
             if (credential.scts.len > Credential.max_scts or credential.identity.form() != .x509) return error.InvalidOptions;
             _ = transparency.List.init(credential.scts) catch return error.InvalidOptions;
         }
+        if (credential.ocsp.len != 0 and (credential.ocsp.len > Credential.max_ocsp or credential.identity.form() != .x509 or !ocspResponse(credential.ocsp))) return error.InvalidOptions;
     }
     if (options.accept_delegated and (options.client_auth == .none or options.client_verify != .full or options.max_version != .tls13)) return error.InvalidOptions;
     if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
@@ -950,6 +970,7 @@ fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!v
     self.delegating = (try self.chooseCredential(hello, fits13)).delegating;
     const credential = self.options.credentials[self.credential.?];
     self.sends_scts = hello.scts and credential.scts.len != 0;
+    self.scratch.?.sends_ocsp = hello.ocsp and credential.ocsp.len != 0;
     self.negotiateTypes(hello);
 }
 
@@ -1368,11 +1389,13 @@ fn sendCertificate(self: *Server) Client.Error!void {
     const leaf: Messages.Leaf = .{
         .delegated = if (self.delegating) credential.delegated.?.wire() else null,
         .scts = if (self.sends_scts) credential.scts else null,
+        .ocsp = if (self.scratch.?.sends_ocsp) credential.ocsp else null,
     };
     var total: usize = 64;
     for (identity.entries()) |der| total += der.len + 5;
     if (leaf.delegated) |bytes| total += bytes.len + 4;
     if (leaf.scts) |bytes| total += bytes.len + 4;
+    if (leaf.ocsp) |bytes| total += bytes.len + 8;
     const offered = scratch.compression[0..scratch.compression_len];
     const codec = if (offered.len != 0) Compression.choose(self.options.certificate_compression, offered) else null;
     try self.state.advance(.certificate, .handshake, .parsed, true);

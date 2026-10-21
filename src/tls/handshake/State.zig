@@ -91,6 +91,8 @@ pub const Action = enum {
     ccs,
     /// A TLS 1.2 server sends its NewSessionTicket.
     local_ticket,
+    /// TLS 1.2's CertificateStatus (RFC 6066 section 8), sent or received.
+    certificate_status,
 };
 pub const Proof = enum { parsed, chain, possession, finished };
 /// What moves a machine: the handshake actions, plus the events no message names. A TLS 1.2
@@ -130,6 +132,8 @@ pub const ClientState = enum {
     client_finished,
     server_certificate12,
     server_chain12,
+    /// The server's CertificateStatus came; its chain is verified next, with the staple.
+    server_status12,
     server_key_exchange12,
     server_request12,
     server_done12,
@@ -177,6 +181,8 @@ pub const ServerState = enum {
     client_finished,
     s_certificate12,
     s_key_exchange12,
+    /// This server's CertificateStatus went out; its ServerKeyExchange is next.
+    s_status_sent12,
     s_request12,
     s_done12,
     c_certificate12,
@@ -240,6 +246,9 @@ pub const client_lines = [_]Line(ClientState){
     .{ .from = .hello, .on = .server_hello12, .to = .server_certificate12, .rule = init_rule },
     .{ .from = .server_certificate12, .on = .certificate, .to = .server_chain12, .rule = init_rule },
     .{ .from = .server_chain12, .on = .verify_chain, .to = .server_key_exchange12, .rule = .{ .epoch = .initial, .proof = .chain } },
+    // A stapled status, when the ServerHello answered status_request, before the chain's check.
+    .{ .from = .server_chain12, .on = .certificate_status, .to = .server_status12, .rule = init_rule },
+    .{ .from = .server_status12, .on = .verify_chain, .to = .server_key_exchange12, .rule = .{ .epoch = .initial, .proof = .chain } },
     .{ .from = .server_key_exchange12, .on = .server_key_exchange, .to = .server_request12, .rule = .{ .epoch = .initial, .proof = .possession } },
     .{ .from = .server_request12, .on = .certificate_request, .to = .server_done12, .rule = init_rule },
     .{ .from = .server_request12, .on = .server_hello_done, .to = .local_flight12, .rule = init_end },
@@ -307,6 +316,8 @@ pub const server_lines = [_]Line(ServerState){
     .{ .from = .hello, .on = .server_hello12, .to = .s_certificate12, .rule = init_rule },
     .{ .from = .s_certificate12, .on = .certificate, .to = .s_key_exchange12, .rule = init_rule },
     .{ .from = .s_key_exchange12, .on = .server_key_exchange, .to = .s_request12, .rule = .{ .epoch = .initial, .proof = .possession } },
+    .{ .from = .s_key_exchange12, .on = .certificate_status, .to = .s_status_sent12, .rule = init_rule },
+    .{ .from = .s_status_sent12, .on = .server_key_exchange, .to = .s_request12, .rule = .{ .epoch = .initial, .proof = .possession } },
     .{ .from = .s_request12, .on = .certificate_request, .to = .s_done12, .rule = init_rule },
     .{ .from = .s_request12, .on = .server_hello_done, .to = .c_key_exchange12, .rule = init_rule },
     .{ .from = .s_done12, .on = .server_hello_done, .to = .c_certificate12, .rule = init_rule },
@@ -381,6 +392,8 @@ fn projected(comptime name: []const u8) Phase {
         .{ "finished_asking", .finished },
         .{ "local_key_exchange_proof12", .local_key_exchange12 },
         .{ "c_key_exchange_proof12", .c_key_exchange12 },
+        .{ "server_status12", .server_chain12 },
+        .{ "s_status_sent12", .s_key_exchange12 },
     };
     inline for (aliases) |alias| if (std.mem.eql(u8, alias[0], name)) return alias[1];
     // A resumed or provisioned-key TLS 1.2 state shows the phase of the full handshake it mirrors.
@@ -397,15 +410,24 @@ pub const State = struct {
     version: Version = .tls13,
     auth: Auth = .none,
     machine: union(Role) { client: Client.Machine.Runtime(void), server: Server.Machine.Runtime(void) },
-    /// Set by a refused step or `fail`; nothing moves the machine again.
-    failed: bool = false,
-    retried: bool = false,
-    requested_certificate: bool = false,
-    /// TLS 1.2: the ServerHello said a NewSessionTicket follows, which then must, before the
-    /// server's ChangeCipherSpec; without it none may come.
-    ticket12: bool = false,
-    /// DTLS: HelloVerifyRequests answered so far.
-    verified: u2 = 0,
+    flags: Flags = .{},
+
+    /// The history the policy reads, one byte.
+    pub const Flags = packed struct(u8) {
+        /// Set by a refused step or `fail`; nothing moves the machine again.
+        failed: bool = false,
+        retried: bool = false,
+        requested_certificate: bool = false,
+        /// TLS 1.2: the ServerHello said a NewSessionTicket follows, which then must, before the
+        /// server's ChangeCipherSpec; without it none may come.
+        ticket12: bool = false,
+        /// TLS 1.2: the ServerHello answered status_request, so a CertificateStatus may follow
+        /// the Certificate (RFC 6066 section 8); without it none may.
+        ocsp12: bool = false,
+        /// DTLS: HelloVerifyRequests answered so far.
+        verified: u2 = 0,
+        _: u1 = 0,
+    };
 
     pub fn init(role: Role, mode: Mode) State {
         return .{ .role = role, .mode = mode, .machine = switch (role) {
@@ -416,7 +438,7 @@ pub const State = struct {
 
     /// Where the handshake stands, as callers name it.
     pub fn phase(self: *const State) Phase {
-        if (self.failed) return .failed;
+        if (self.flags.failed) return .failed;
         return switch (self.machine) {
             .client => |*m| Client.phase(m.current()),
             .server => |*m| Server.phase(m.current()),
@@ -427,8 +449,8 @@ pub const State = struct {
     /// (server), before EncryptedExtensions; in TLS 1.2 before the ServerHello's edge is taken.
     /// Anywhere else the machine has no such edge, and the handshake fails.
     pub fn markResumed(self: *State) AdvanceError!void {
-        if (self.failed) return error.Closed;
-        errdefer self.failed = true;
+        if (self.flags.failed) return error.Closed;
+        errdefer self.flags.failed = true;
         const event: Event = if (self.version == .tls12) .resumed12 else .resumed;
         switch (self.machine) {
             inline else => |*m| _ = m.step(event) catch return error.UnexpectedMessage,
@@ -439,8 +461,8 @@ pub const State = struct {
     /// edge is taken: the client as it reads a ServerHello choosing a PSK suite, the server as
     /// it chooses one. Anywhere else the machine has no such edge, and the handshake fails.
     pub fn markPsk12(self: *State) AdvanceError!void {
-        if (self.failed) return error.Closed;
-        errdefer self.failed = true;
+        if (self.flags.failed) return error.Closed;
+        errdefer self.flags.failed = true;
         if (self.version != .tls12) return error.UnexpectedMessage;
         switch (self.machine) {
             inline else => |*m| _ = m.step(.psk12) catch return error.UnexpectedMessage,
@@ -449,8 +471,8 @@ pub const State = struct {
 
     pub fn advance(self: *State, action: Action, epoch: Epoch, proof: Proof, boundary: bool) AdvanceError!void {
         @setRuntimeSafety(true);
-        if (self.failed) return error.Closed;
-        errdefer self.failed = true;
+        if (self.flags.failed) return error.Closed;
+        errdefer self.flags.failed = true;
         const current = self.phase();
         if (current == .connected) {
             if (epoch != .application) return error.WrongEpoch;
@@ -481,38 +503,40 @@ pub const State = struct {
     /// The policy on an edge the machine declares: its rule, the client-auth policy, the
     /// promised ticket, one retry and DTLS's HelloVerifyRequests.
     fn admit(self: *State, current: Phase, action: Action, rule: Rule, epoch: Epoch, proof: Proof, boundary: bool) AdvanceError!void {
+        // TLS 1.2: a CertificateStatus only when the ServerHello answered status_request.
+        if (action == .certificate_status and (self.version != .tls12 or !self.flags.ocsp12)) return error.UnexpectedMessage;
         // TLS 1.2: a NewSessionTicket exactly when the ServerHello promised one.
-        if (self.version == .tls12 and (action == .ticket or action == .local_ticket) and !self.ticket12) return error.UnexpectedMessage;
-        if (self.version == .tls12 and self.ticket12 and ((self.role == .client and current == .peer_ccs12 and action == .ccs) or (self.role == .server and current == .s_ccs12 and action == .local_ccs))) return error.MissingProof;
+        if (self.version == .tls12 and (action == .ticket or action == .local_ticket) and !self.flags.ticket12) return error.UnexpectedMessage;
+        if (self.version == .tls12 and self.flags.ticket12 and ((self.role == .client and current == .peer_ccs12 and action == .ccs) or (self.role == .server and current == .s_ccs12 and action == .local_ccs))) return error.MissingProof;
         if (rule.epoch != epoch) return error.WrongEpoch;
         if (rule.proof != proof) return error.MissingProof;
         if (rule.boundary and !boundary) return error.RecordAlignment;
         if (self.role == .client and current == .local_flight) {
-            if (action == .local_finished and self.requested_certificate) return error.MissingProof;
-            if (action != .local_finished and !self.requested_certificate) return error.UnexpectedMessage;
+            if (action == .local_finished and self.flags.requested_certificate) return error.MissingProof;
+            if (action != .local_finished and !self.flags.requested_certificate) return error.UnexpectedMessage;
         }
         // A retry request is TLS 1.3's, once, and not after a HelloVerifyRequest.
-        if (action == .hello_retry and (self.version != .tls13 or self.retried or self.verified != 0)) return error.UnexpectedMessage;
+        if (action == .hello_retry and (self.version != .tls13 or self.flags.retried or self.flags.verified != 0)) return error.UnexpectedMessage;
         // A HelloVerifyRequest is DTLS's alone, never after a retry request, at most three.
         if (action == .hello_verify) {
-            if (self.mode != .datagram or self.retried or self.verified == 3) return error.UnexpectedMessage;
-            self.verified += 1;
+            if (self.mode != .datagram or self.flags.retried or self.flags.verified == 3) return error.UnexpectedMessage;
+            self.flags.verified += 1;
         }
         if (self.role == .server and action == .certificate_request and self.auth == .none) return error.UnexpectedMessage;
         if (self.role == .server and action == .certificate and current == .certificate_request and self.auth != .none) return error.MissingProof;
         if (action == .empty_certificate and self.auth == .required) return error.MissingProof;
         if (self.role == .client and current == .local_flight12) {
-            if (action == .local_key_exchange and self.requested_certificate) return error.MissingProof;
-            if (action != .local_key_exchange and !self.requested_certificate) return error.UnexpectedMessage;
+            if (action == .local_key_exchange and self.flags.requested_certificate) return error.MissingProof;
+            if (action != .local_key_exchange and !self.flags.requested_certificate) return error.UnexpectedMessage;
         }
         // A server asking for a certificate sends the request before ServerHelloDone.
         if (self.role == .server and current == .s_request12 and action == .server_hello_done and self.auth != .none) return error.MissingProof;
-        if (action == .hello_retry) self.retried = true;
-        if (action == .certificate_request) self.requested_certificate = true;
+        if (action == .hello_retry) self.flags.retried = true;
+        if (action == .certificate_request) self.flags.requested_certificate = true;
     }
 
     pub fn fail(self: *State) void {
-        self.failed = true;
+        self.flags.failed = true;
     }
 };
 comptime {

@@ -955,8 +955,27 @@ both versions; the server's list comes in the leaf's CertificateEntry (TLS 1.3; 
 illegal_parameter, unasked unsupported_extension, empty decode_error) or in the ServerHello
 (TLS 1.2), and joins the request after the caller's lists. A server's `Credential.scts` is a
 list for its certificate as it is, checked for framing when the server is made, sent only to a
-client that asks, never with a raw key. SCTs in a stapled OCSP response are not read: cloak asks
-for no stapled status.
+client that asks, never with a raw key. SCTs inside a stapled OCSP response are not read.
+
+## OCSP stapling
+
+status_request (RFC 6066 section 8; RFC 8446 section 4.4.2.1). A client that verifies with
+revocation on (the default `.if_present`, or `.required`) asks for the server's stapled status
+(type ocsp, no responder IDs or extensions), and the response joins the verification request's
+evidence after the caller's own: the verifier judges it as any supplied evidence (a stale or
+unverifiable staple fails, as RFC 6960's checks do for evidence the caller hands in), and a
+Must-Staple certificate (TLS feature status_request) now verifies with its staple, where before
+only a caller holding the response could verify one. TLS 1.3 carries the status in the leaf's
+CertificateEntry (on another entry illegal_parameter, unasked unsupported_extension). TLS 1.2:
+the ServerHello answers the extension empty and a CertificateStatus may follow the Certificate;
+a server that answered may still send none (RFC 6066 section 8), so the client verifies the
+chain at the CertificateStatus or, when a ServerKeyExchange comes in its place, holds that
+message, verifies, then takes it. A CertificateStatus the ServerHello did not announce is
+unexpected_message, a status type other than ocsp illegal_parameter. A server's
+`Credential.ocsp` is the DER OCSPResponse it staples (the caller fetches and refreshes it;
+checked when the server is made to read as an OCSPResponse, at most 16 KiB), sent only to a
+client that asks for an ocsp status, never with a raw key, never on a resumption (no
+Certificate).
 
 Peers: OpenSSL 4.0.3's `s_client -ct` (strict, with `-ctlogfile`) verifies a cloak server's
 embedded and delivered SCTs, and cloak's client verifies OpenSSL's server's (`-serverinfo`).

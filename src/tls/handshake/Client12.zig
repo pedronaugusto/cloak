@@ -62,8 +62,10 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
         self.scratch.?.client_raw = hello.raw_client_key;
         // RFC 6962 section 3.3.1: TLS 1.2 delivers the SCTs in the ServerHello.
         try self.keepScts(hello.scts);
+        // RFC 6066 section 8: a CertificateStatus may follow the Certificate.
+        self.state.flags.ocsp12 = hello.ocsp and !hello.raw_server_key;
     }
-    self.state.ticket12 = hello.ticket;
+    self.state.flags.ticket12 = hello.ticket;
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     const scratch = self.scratch.?;
     self.suite12 = hello.suite;
@@ -95,6 +97,7 @@ pub fn receive(self: anytype, kind: Messages.Type, msg: []const u8, epoch: Epoch
     @setRuntimeSafety(true);
     switch (kind) {
         .certificate => try onCertificate(self, msg, epoch, boundary),
+        .certificate_status => try onCertificateStatus(self, msg, epoch, boundary),
         .server_key_exchange => if (self.external_used) try onPskHint(self, msg, epoch, boundary) else try onServerKeyExchange(self, msg, epoch, boundary),
         .certificate_request => try onCertificateRequest(self, msg, epoch, boundary),
         .server_hello_done => try onServerHelloDone(self, msg, epoch, boundary),
@@ -135,6 +138,27 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     if (count == 0) return error.EmptyCertificate;
     scratch.chain_len = count;
     try scratch.transcripts.commit(msg);
+    // A CertificateStatus may come next (RFC 6066 section 8; a server that answered the
+    // extension may still send none): the chain is verified once it has, or has not.
+    if (self.state.flags.ocsp12) return;
+    return verifyChain(self);
+}
+
+/// The server's stapled status (RFC 6066 section 8), then the chain's verification with it.
+fn onCertificateStatus(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    try self.state.advance(.certificate_status, epoch, .parsed, boundary);
+    const staple = try Messages.certificateStatus(msg);
+    try self.scratch.?.transcripts.commit(msg);
+    try self.keepOcsp(staple);
+    return verifyChain(self);
+}
+
+/// The chain's check by the verification policy: at once for none or a pinned leaf, by the
+/// caller's verifier for full verification.
+fn verifyChain(self: anytype) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
@@ -161,8 +185,31 @@ fn suiteKey(suite: suites.Suite12, key: certificates.certificate.PublicKey) Erro
     if (!ok) return error.UnsupportedKey;
 }
 
+/// A ServerKeyExchange where a CertificateStatus might have come: no status, so the chain is
+/// verified now and the key exchange taken after it (`takeHeldKeyExchange`).
+fn holdKeyExchange(self: anytype, msg: []const u8, boundary: bool) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    scratch.held_ske = try self.gpa.dupe(u8, msg);
+    scratch.held_ske_boundary = boundary;
+    try verifyChain(self);
+    if (self.need() == .none) try takeHeldKeyExchange(self);
+}
+
+/// The held ServerKeyExchange, once the chain before it is verified.
+pub fn takeHeldKeyExchange(self: anytype) Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    if (scratch.held_ske.len == 0) return;
+    const msg = scratch.held_ske;
+    defer self.gpa.free(msg);
+    scratch.held_ske = &.{};
+    try onServerKeyExchange(self, msg, .initial, scratch.held_ske_boundary);
+}
+
 fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {
     @setRuntimeSafety(true);
+    if (self.state.phase() == .server_chain12 and self.state.flags.ocsp12 and self.scratch.?.held_ske.len == 0 and self.need() == .none) return holdKeyExchange(self, msg, boundary);
     if (self.state.phase() != .server_key_exchange12) return error.UnexpectedMessage;
     const scratch = self.scratch.?;
     const ske = try Messages12.serverKeyExchange(msg);

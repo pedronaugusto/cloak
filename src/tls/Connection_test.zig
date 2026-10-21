@@ -127,7 +127,10 @@ test "F30 catalogue_key_change_record_alignment" {
 test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist" {
     try fails(.aes_128_gcm_sha256, .{ .tamper = .duplicate_extension_in_encrypted }, .{}, error.DuplicateExtension, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .alpn = "h2", .tamper = .unoffered_alpn }, .{ .alpn = &.{ "h2", "http/1.1" } }, error.UnofferedSelection, .illegal_parameter);
-    try fails(.aes_128_gcm_sha256, .{ .tamper = .extension_in_certificate_entry }, .{}, error.UnsolicitedExtension, .unsupported_extension);
+    // An entry extension block where the client solicited none (revocation off: no status_request)
+    // is unsolicited, well formed or not; where it solicited one, a malformed block is malformed.
+    try fails(.aes_128_gcm_sha256, .{ .tamper = .extension_in_certificate_entry }, .{ .revocation_off = true }, error.UnsolicitedExtension, .unsupported_extension);
+    try fails(.aes_128_gcm_sha256, .{ .tamper = .extension_in_certificate_entry }, .{}, error.InvalidLength, .decode_error);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .unoffered_group }, .{}, error.InvalidHello, .illegal_parameter);
     try fails(.aes_128_gcm_sha256, .{ .tamper = .wrong_session_id }, .{}, error.InvalidHello, .illegal_parameter);
 }

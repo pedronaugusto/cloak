@@ -119,6 +119,10 @@ pub const Options = struct {
     /// sends to a client that asks.
     client_transparency: ?*const certificates.types.TransparencyPolicy = null,
     server_scts: []const u8 = "",
+    /// OCSP stapling: the staple the server's credential sends to a client that asks, and a
+    /// client that checks no revocation (so asks for none).
+    server_ocsp: []const u8 = "",
+    client_revocation_off: bool = false,
     /// Post-handshake authentication: the client offers it, the server asks with it, checking
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
@@ -167,6 +171,9 @@ second: ?certificates.ClientAuth = null,
 client_credentials: [2]Client.Credential = undefined,
 /// The SHA-256 of the leaf each end was asked to verify, client first; zero before.
 peer_leaf: [2][32]u8 = @splat(@splat(0)),
+/// The SHA-256 of the stapled OCSP response each end's verification request carried (the last of
+/// its responses), client first; null when it carried none.
+peer_ocsp: [2]?[32]u8 = .{ null, null },
 server_dc: ?Delegation.Credential = null,
 client_dc: ?Delegation.Credential = null,
 rng: std.Random.DefaultPrng,
@@ -244,7 +251,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.client_dc) |dc| dc.deinit();
     self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
-        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency }, .pins = options.pins } },
+        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency, .revocation = .{ .mode = if (options.client_revocation_off) .off else .if_present } }, .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .external_psk = options.client_psk,
@@ -325,7 +332,7 @@ fn clientCredentials(self: *Duo) []const Client.Credential {
 
 /// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
 fn credentials(self: *Duo) []const Server.Credential {
-    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts };
+    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp };
     for (self.also[0..self.also_count], 1..) |identity, i| self.credential_list[i] = .{ .identity = identity };
     return self.credential_list[0 .. 1 + self.also_count];
 }
@@ -409,6 +416,12 @@ fn serve(self: *Duo, conn: *Connection) !void {
         .time => try conn.provide(request.token, .{ .time = .fromNanoseconds(@as(i96, self.options.time) * std.time.ns_per_s) }),
         .verify => |verify_request| {
             std.crypto.hash.sha2.Sha256.hash(verify_request.chain[0], &self.peer_leaf[@intFromBool(conn == &self.server)], .{});
+            const responses = verify_request.evidence.ocsp;
+            self.peer_ocsp[@intFromBool(conn == &self.server)] = if (responses.len == 0) null else blk: {
+                var digest: [32]u8 = undefined;
+                std.crypto.hash.sha2.Sha256.hash(responses[responses.len - 1], &digest, .{});
+                break :blk digest;
+            };
             if (self.options.accept_any) {
                 var owned = try certificates.types.Verification.init(self.gpa, verify_request, verify_request.chain, true, .{ .nanoseconds = verify_request.time.nanoseconds + std.time.ns_per_day });
                 defer owned.deinit();

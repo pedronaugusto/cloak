@@ -114,6 +114,9 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
     _ = try self.chooseCredential(hello, fits12);
     // RFC 6962 section 3.3.1: the credential's SCTs, in the ServerHello, for a client that asks.
     self.sends_scts = hello.scts and self.options.credentials[self.credential.?].scts.len != 0;
+    // RFC 6066 section 8: the credential's staple, as a CertificateStatus, for a client that asks.
+    self.scratch.?.sends_ocsp = hello.ocsp and self.options.credentials[self.credential.?].ocsp.len != 0;
+    self.state.flags.ocsp12 = self.scratch.?.sends_ocsp;
     return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello) catch unreachable; // unreachable: fits12 took it
 }
 
@@ -174,7 +177,7 @@ pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!v
         self.external = true;
         issue = false;
     }
-    self.state.ticket12 = issue;
+    self.state.flags.ticket12 = issue;
     // The suite was chosen with a credential's key in view; a ticket or a provisioned key
     // authenticates this handshake instead, and no credential is presented.
     if (self.resumed or psk) self.credential = null;
@@ -228,7 +231,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     var random: [32]u8 = entropy[0..32].*;
     // A server that speaks TLS 1.3 marks a TLS 1.2 random (RFC 8446 section 4.1.3).
     if (self.allows13()) random[24..32].* = Hello.downgrade_tls12.*;
-    const salt_at = entropy.len - @as(usize, if (self.state.ticket12) Ticket.salt_length else 0);
+    const salt_at = entropy.len - @as(usize, if (self.state.flags.ticket12) Ticket.salt_length else 0);
     @memcpy(scratch.ticket_entropy[0 .. entropy.len - salt_at], entropy[salt_at..]);
     if (self.resumed) {
         self.need_now = .none;
@@ -252,7 +255,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [1024 + Hello.max_scts]u8 = undefined;
     const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential.?].scts else null;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.flags.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts, .ocsp = scratch.sends_ocsp });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     const identity = self.options.credentials[self.credential.?].identity;
@@ -265,6 +268,12 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     };
     try self.state.advance(.certificate, .initial, .parsed, true);
     try self.queueMessage(.initial, certificate);
+    if (scratch.sends_ocsp) {
+        const staple = self.options.credentials[self.credential.?].ocsp;
+        const status = try Messages.buildCertificateStatus(try self.reserve(8 + staple.len), staple);
+        try self.state.advance(.certificate_status, .initial, .parsed, true);
+        try self.queueMessage(.initial, status);
+    }
     const share = &scratch.share12.?;
     var params_buffer: [4 + 97]u8 = undefined;
     const params = try Messages12.buildParams(&params_buffer, group, share.wire());
@@ -301,10 +310,10 @@ fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = false, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = false, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.flags.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
-    if (self.state.ticket12) try sendTicket(self);
+    if (self.state.flags.ticket12) try sendTicket(self);
     try self.state.advance(.local_ccs, .initial, .parsed, true);
     try self.push(.change_cipher_spec);
     switch (self.suite12.?) {
@@ -589,7 +598,7 @@ fn onFinished(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Erro
             try scratch.transcripts.commit(msg);
             if (!self.resumed) {
                 // A promised ticket, then ChangeCipherSpec, the server write keys, and its Finished under them.
-                if (self.state.ticket12) try sendTicket(self);
+                if (self.state.flags.ticket12) try sendTicket(self);
                 try self.state.advance(.local_ccs, .initial, .parsed, true);
                 try self.push(.change_cipher_spec);
                 try self.tls12.?.release(self, .write);

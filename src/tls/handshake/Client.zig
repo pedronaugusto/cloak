@@ -274,6 +274,14 @@ const Scratch = struct {
     /// with it after the caller's.
     scts: []u8 = &.{},
     sct_lists: [types.TransparencyPolicy.max_lists][]const u8 = undefined,
+    /// RFC 6066: the server's stapled OCSPResponse, owned, and the request's responses with it
+    /// after the caller's.
+    ocsp: []u8 = &.{},
+    ocsp_lists: [max_evidence][]const u8 = undefined,
+    /// TLS 1.2: a ServerKeyExchange that came where a CertificateStatus might have, owned; it is
+    /// taken once the chain it follows is verified.
+    held_ske: []u8 = &.{},
+    held_ske_boundary: bool = false,
     /// RFC 9345: the server's delegated credential (in `held`) and, once checked, its key.
     delegated: ?[]const u8 = null,
     delegated_key: ?Delegation.Checked = null,
@@ -356,7 +364,15 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         if (full.policy.transparency) |policy| transparency.validate(policy.*) catch return error.InvalidOptions;
         hello.request_scts = full.policy.transparency != null;
         if (hello.request_scts and full.evidence.scts.len >= types.TransparencyPolicy.max_lists) return error.InvalidOptions;
-    } else hello.request_scts = false;
+        // RFC 6066 section 8: a client checking revocation asks for the server's stapled status,
+        // which joins the request's evidence after the caller's (a Must-Staple certificate needs
+        // it).
+        hello.request_ocsp = full.policy.revocation.mode != .off;
+        if (hello.request_ocsp and full.evidence.crls.len + full.evidence.ocsp.len >= max_evidence) return error.InvalidOptions;
+    } else {
+        hello.request_scts = false;
+        hello.request_ocsp = false;
+    }
     if (options.credentials.len > max_credentials) return error.InvalidOptions;
     hello.client_types = clientTypes(options.credentials);
     Hello.validate(hello) catch return error.InvalidOptions;
@@ -645,6 +661,8 @@ fn releaseScratch(self: *Client) void {
     scratch.flight.deinit(self.gpa);
     scratch.transcripts.release();
     if (scratch.scts.len != 0) self.gpa.free(scratch.scts);
+    if (scratch.ocsp.len != 0) self.gpa.free(scratch.ocsp);
+    if (scratch.held_ske.len != 0) self.gpa.free(scratch.held_ske);
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -857,16 +875,38 @@ pub fn verification(self: *const Client, token: types.Token) types.Request {
     };
 }
 
-/// The caller's evidence, and the SCTs the server sent after its lists.
+/// The caller's evidence, and the SCTs and stapled status the server sent after its own.
 fn evidence(self: *const Client, caller: types.Evidence) types.Evidence {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    if (scratch.scts.len == 0) return caller;
-    // `init` left room for one more list.
-    const n = caller.scts.len;
-    @memcpy(scratch.sct_lists[0..n], caller.scts);
-    scratch.sct_lists[n] = scratch.scts;
-    return .{ .crls = caller.crls, .ocsp = caller.ocsp, .scts = scratch.sct_lists[0 .. n + 1] };
+    var out = caller;
+    // `init` left room for one more list and one more response.
+    if (scratch.scts.len != 0) {
+        const n = caller.scts.len;
+        @memcpy(scratch.sct_lists[0..n], caller.scts);
+        scratch.sct_lists[n] = scratch.scts;
+        out.scts = scratch.sct_lists[0 .. n + 1];
+    }
+    if (scratch.ocsp.len != 0) {
+        const n = caller.ocsp.len;
+        @memcpy(scratch.ocsp_lists[0..n], caller.ocsp);
+        scratch.ocsp_lists[n] = scratch.ocsp;
+        out.ocsp = scratch.ocsp_lists[0 .. n + 1];
+    }
+    return out;
+}
+
+/// The most CRLs and OCSP responses one verification reads (`verify.revocation`).
+const max_evidence = 64;
+
+/// Keeps the server's stapled OCSPResponse for the verification request.
+pub fn keepOcsp(self: *Client, response: ?[]const u8) Error!void {
+    @setRuntimeSafety(true);
+    const bytes = response orelse return;
+    const scratch = self.scratch.?;
+    if (scratch.ocsp.len != 0) self.gpa.free(scratch.ocsp);
+    scratch.ocsp = &.{};
+    scratch.ocsp = try self.gpa.dupe(u8, bytes);
 }
 
 /// Keeps the server's SignedCertificateTimestampList for the verification request.
@@ -901,6 +941,8 @@ pub fn provideVerification(self: *Client, token: types.Token, receipt: *const ty
     if (receipt.revocation_expires) |until| self.auth_expires = @min(self.auth_expires, types.seconds(until));
     if (self.scratch.?.delegated_key) |checked| self.auth_expires = @min(self.auth_expires, checked.expires);
     self.need_now = .none;
+    // TLS 1.2: a ServerKeyExchange that came where a CertificateStatus might have waited for this.
+    if (self.version == .tls12) try Client12.takeHeldKeyExchange(self);
 }
 
 /// The epoch a chain verification completes in: TLS 1.2 verifies before any key exists.
@@ -1275,7 +1317,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, .{ .psk = self.pskOffer() != null, .ticket12 = self.sendsTickets12() and self.retry_suite == null, .session12 = self.offered12 != null and self.retry_suite == null, .ech = ech_sent });
     const parsed = switch (answer) {
         // A DTLS 1.3 server never asks for a HelloVerifyRequest's cookie (RFC 9147 section 5.2).
-        .tls13 => |hello| if (self.state.verified != 0) return error.IllegalParameter else hello,
+        .tls13 => |hello| if (self.state.flags.verified != 0) return error.IllegalParameter else hello,
         .tls12 => |hello| {
             // TLS 1.2 after a retry request is a version change mid-handshake.
             if (self.retry_suite != null) return error.IllegalParameter;
@@ -1627,12 +1669,13 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     @setRuntimeSafety(true);
     const msg = wire;
     const limits = self.options.limits;
-    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain, .{ .delegated = self.options.hello.accept_delegated, .scts = self.options.hello.request_scts });
+    const parsed = try Messages.certificate(self.held, limits.certificates, limits.chain_bytes, &self.scratch.?.chain, .{ .delegated = self.options.hello.accept_delegated, .scts = self.options.hello.request_scts, .ocsp = self.options.hello.request_ocsp });
     if (parsed.context.len != 0) return error.IllegalParameter;
     if (parsed.count == 0) return error.EmptyCertificate;
     self.scratch.?.chain_len = parsed.count;
     self.scratch.?.delegated = parsed.leaf.delegated;
     try self.keepScts(parsed.leaf.scts);
+    try self.keepOcsp(parsed.leaf.ocsp);
     if (self.scratch.?.peer_raw) {
         // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
         self.pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);

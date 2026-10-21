@@ -78,6 +78,8 @@ compress_certificate: ?[]const u8,
 delegated: ?[]const u8,
 /// signed_certificate_timestamp (RFC 6962 section 3.3.1) was sent, empty: the client takes SCTs.
 scts: bool,
+/// status_request (RFC 6066 section 8) asked for an OCSP status: the client takes a staple.
+ocsp: bool,
 /// DTLS connection_id (RFC 9146): the connection ID the client receives on, when sent.
 connection_id: ?[]const u8,
 /// DTLS use_srtp (RFC 5764): the two-byte profiles in the client's order, when sent.
@@ -146,6 +148,7 @@ pub fn parse(message: []const u8, transport: Transport) ParseError!ClientHello {
     self.compress_certificate = null;
     self.delegated = null;
     self.scts = false;
+    self.ocsp = false;
     self.post_handshake_auth = false;
     self.connection_id = null;
     self.srtp = null;
@@ -254,6 +257,7 @@ fn extension(self: *ClientHello, id: u16, bytes: []const u8, modes: *bool) Parse
         },
         34 => self.delegated = try schemeList(&value),
         18 => self.scts = try empty(bytes),
+        5 => self.ocsp = try statusRequest(&value),
         49 => self.post_handshake_auth = try empty(bytes),
         54 => self.connection_id = try whole8(&value),
         28 => self.record_size_limit = try recordSizeLimit(&value),
@@ -304,6 +308,20 @@ fn recordSizeLimit(value: *Reader) ParseError!u16 {
 }
 
 /// An extension whose presence says it all: its body must be empty.
+/// CertificateStatusRequest (RFC 6066 section 8): a status type, then for ocsp (1) the responder
+/// IDs and request extensions, which a server stapling one response for its certificate reads no
+/// further. Another type asks for nothing this server staples.
+fn statusRequest(value: *Reader) ParseError!bool {
+    if (try value.int(u8) != 1) {
+        value.pos = value.bytes.len;
+        return false;
+    }
+    _ = try value.vector(u16);
+    _ = try value.vector(u16);
+    try value.finish();
+    return true;
+}
+
 fn empty(bytes: []const u8) ParseError!bool {
     if (bytes.len != 0) return error.DecodeError;
     return true;
