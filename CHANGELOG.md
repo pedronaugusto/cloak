@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-10-21
+
 ### Changed
 
 - DTLS 1.3 puts a flight's messages of one epoch in one protected record per datagram, as many as fit, and DTLS fills each datagram it leaves down to a byte of the next message; it sent a record per message, and left a datagram once less than 64 bytes of the next message fit. Plaintext and DTLS 1.2 records keep one message each (tinydtls reads no more from a record). Fewer records and datagrams for every flight; BoGo checks for this packing.
