@@ -629,14 +629,20 @@ pub fn recycle(self: *Server) void {
     if (self.scratch) |scratch| scratch.flight.recycle();
 }
 
+/// Queues `emit`, which carries no secret.
 pub fn push(self: *Server, emit: Emit) Client.Error!void {
+    (try self.claim()).* = emit;
+}
+
+/// Claims the next output slot; see `Flight.claim`.
+pub fn claim(self: *Server) Client.Error!*Emit {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
         if (self.post != null) return error.QueueFull;
-        self.post = emit;
-        return;
+        self.post = @as(Emit, .complete);
+        return &self.post.?;
     };
-    try scratch.flight.push(emit);
+    return scratch.flight.claim();
 }
 
 pub fn reserve(self: *Server, want: usize) Client.Error![]u8 {
@@ -651,18 +657,15 @@ pub fn queueMessage(self: *Server, epoch: Epoch, wire: []const u8) Client.Error!
 
 fn install(self: *Server, direction: Flight.Direction, epoch: Epoch, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Client.Error!void {
     @setRuntimeSafety(true);
-    var made = self.makeTraffic(suite, len, secret, label);
-    errdefer made.secret.deinit();
-    try self.push(.{ .secret = .{ .direction = direction, .epoch = epoch, .traffic = made } });
+    const emit = try self.claim();
+    emit.* = .{ .secret = .{ .direction = direction, .epoch = epoch, .traffic = undefined } };
+    self.makeTraffic(&emit.secret.traffic, suite, secret[0..len], label);
 }
 
-fn makeTraffic(self: *const Server, suite: Suite13, len: usize, secret: []const u8, label: []const u8) Traffic {
+fn makeTraffic(self: *const Server, out: *Traffic, suite: Suite13, secret: []const u8, label: []const u8) void {
     @setRuntimeSafety(true);
-    var holder = aegis.Secret([Transcripts.max_digest]u8).init(@splat(0));
-    @memcpy(holder.exposeMut()[0..len], secret[0..len]);
-    self.keyLog(label, secret[0..len]);
-    // safe: the secret length is a digest length, at most 48.
-    return .{ .suite = suite, .secret = holder, .len = @intCast(len) };
+    out.init(suite, secret);
+    self.keyLog(label, secret);
 }
 
 pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
@@ -1279,12 +1282,12 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
         inline else => |tag| {
             const Hash = suites.Hash(tag);
             const K = Schedule.Schedule(tag);
-            var traffic: K.Traffic = .{};
-            errdefer traffic.deinit();
+
             const psk: ?*const [K.length]u8 = if (self.pskMode()) scratch.psk.expose()[0..K.length] else null;
-            var schedule = try K.init(self.options.transport.prefix(), psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &traffic);
-            errdefer schedule.deinit();
-            self.keys = @unionInit(Keys, @tagName(tag), .{ .schedule = schedule, .handshake = traffic });
+            self.keys = @unionInit(Keys, @tagName(tag), .{ .schedule = undefined, .handshake = .{} });
+            errdefer self.keys = null;
+            const k = &@field(self.keys.?, @tagName(tag));
+            try k.schedule.init(self.options.transport.prefix(), psk, response.agreed.bytes(), hello_hash[0..Hash.digest_length], &k.handshake);
         },
     }
     switch (self.keys.?) {
@@ -1417,7 +1420,8 @@ fn finishFlight(self: *Server) Client.Error!void {
             try k.schedule.application(after[0..Hash.digest_length], &app);
             const len = Hash.digest_length;
             try self.install(.write, .application, tag, len, app.server.expose(), "SERVER_TRAFFIC_SECRET_0");
-            self.app_read = self.makeTraffic(tag, len, app.client.expose(), "CLIENT_TRAFFIC_SECRET_0");
+            self.app_read = @as(Traffic, undefined);
+            self.makeTraffic(&self.app_read.?, tag, app.client.expose()[0..len], "CLIENT_TRAFFIC_SECRET_0");
             self.keyLog("EXPORTER_SECRET", k.schedule.exporter.expose());
         },
     }
@@ -1597,8 +1601,9 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.certificate_authorities);
         },
     }
-    try self.push(.{ .secret = .{ .direction = .read, .epoch = .application, .traffic = self.app_read.? } });
-    self.app_read.?.secret.deinit();
+    const emit = try self.claim();
+    emit.* = .{ .secret = .{ .direction = .read, .epoch = .application, .traffic = undefined } };
+    self.app_read.?.moveInto(&emit.secret.traffic);
     self.app_read = null;
     self.established = true;
     // A provisioned key authenticates the client; otherwise only a fully verified certificate does.

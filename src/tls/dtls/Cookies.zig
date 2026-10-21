@@ -14,6 +14,7 @@
 //! or the one before it.
 const std = @import("std");
 const aegis = @import("aegis");
+const Kernels = @import("../crypto/Kernels.zig");
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const Hello = @import("../handshake/Hello.zig");
@@ -128,6 +129,10 @@ fn fresh(self: *const Cookies, issued: u64, now: u64) bool {
 }
 
 fn mac(key: *const Key, label: []const u8, address: []const u8, parts: []const []const u8, out: *[32]u8) void {
+    aegis.secret.scrubbed(Kernels.depth, macKernel, .{ key, label, address, parts, out });
+}
+
+fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []const []const u8, out: *[32]u8) void {
     var h = Mac.init(key.material.expose());
     defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
     h.update(label);
@@ -311,4 +316,17 @@ fn respond(message: []const u8, record_sequence: u64, received: usize, out: []u8
 
 test {
     _ = @import("Cookies_test.zig");
+}
+
+test "F93 catalogue_secret_diagnostics_and_release_campaign (a cookie's MAC reaches less stack than the depth that erases it)" {
+    var deepest: usize = 0;
+    var key: Key = .{ .id = 1, .material = .init(@splat(2)) };
+    defer key.material.deinit();
+    var out: [32]u8 = undefined;
+    deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, macKernel, .{ &key, "label", "address", &[_][]const u8{"part"}, &out }));
+    deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, std.crypto.auth.hmac.sha2.HmacSha256.create, .{ &out, "cloak ticket key id", &@as([32]u8, @splat(2)) }));
+    std.testing.expect(deepest < Kernels.depth) catch |err| {
+        std.debug.print("reaches {d} bytes of stack, past the {d} that are erased\n", .{ deepest, Kernels.depth });
+        return err;
+    };
 }

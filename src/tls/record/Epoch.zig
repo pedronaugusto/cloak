@@ -3,6 +3,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Labels = @import("../crypto/Labels.zig");
+const Kernels = @import("../crypto/Kernels.zig");
 const Keys = @import("../offload/Keys.zig");
 pub const RecordCount = aegis.units.Count(struct {}, u64);
 pub const ByteCount = aegis.units.Count(struct {}, u64);
@@ -31,6 +32,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         const Self = @This();
         /// The traffic secret an epoch consumes.
         pub const TrafficSecret = aegis.Secret([Hash.digest_length]u8);
+        pub const key_length = A.key_length;
         key: aegis.Secret([A.key_length]u8),
         iv: aegis.Secret([12]u8),
         traffic: ?TrafficSecret = null,
@@ -39,25 +41,28 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         limits: struct { records: RecordCount, bytes: ByteCount },
         closed: bool = false,
         owner: Owner = .software,
-        pub fn init(key: [A.key_length]u8, iv: [12]u8, limits: Limits) InitError!Self {
+        /// Makes `self` an epoch of `key` and `iv`. Epochs are made where they are kept and never
+        /// copied: each copy of a key is one more to erase.
+        pub fn init(self: *Self, key: *const [A.key_length]u8, iv: *const [12]u8, limits: Limits) InitError!void {
             @setRuntimeSafety(true);
+            try self.initEmpty(limits);
+            self.key.exposeMut().* = key.*;
+            self.iv.exposeMut().* = iv.*;
+        }
+        /// Makes `self` an epoch of a traffic secret: its keys, and the secret for the next key
+        /// update.
+        pub fn initTraffic(self: *Self, secret: *const [Hash.digest_length]u8, limits: Limits) InitError!void {
+            @setRuntimeSafety(true);
+            try self.initEmpty(limits);
+            derive(secret, self.key.exposeMut(), self.iv.exposeMut());
+            self.traffic = .init(@splat(0));
+            self.traffic.?.exposeMut().* = secret.*;
+        }
+        fn initEmpty(self: *Self, limits: Limits) InitError!void {
             if (limits.records == 0 or limits.records > 1 << 24 or limits.bytes == 0 or limits.bytes > 1 << 38) return error.InvalidLimits;
             // A cipher with a lower record bound (CCM) caps the caller's.
             const records = @min(limits.records, comptime suites.cipherOf(suite).recordLimit());
-            return .{ .key = .init(key), .iv = .init(iv), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
-        }
-        /// Consumes the supplied traffic owner on success; error leaves it owned.
-        pub fn initTraffic(traffic: *TrafficSecret, limits: Limits) InitError!Self {
-            var key = aegis.Secret([A.key_length]u8).init(undefined);
-            defer key.deinit();
-            var iv = aegis.Secret([12]u8).init(undefined);
-            defer iv.deinit();
-            derive(traffic.expose(), key.exposeMut(), iv.exposeMut());
-            var result = try Self.init(key.expose().*, iv.expose().*, limits);
-            errdefer result.deinit();
-            result.traffic = .init(undefined);
-            traffic.moveInto(&result.traffic.?);
-            return result;
+            self.* = .{ .key = .init(@splat(0)), .iv = .init(@splat(0)), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
         }
         /// Copies the record keys and the next record's number into `keys` for a kernel to
         /// take; nothing changes here until `release`.
@@ -93,17 +98,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             defer next.deinit();
             // unreachable: fixed label and hash-sized output meet the HKDF bounds.
             Labels.expand(Hash, next.exposeMut(), self.traffic.?.expose(), "traffic upd", "") catch unreachable;
-            var key = aegis.Secret([A.key_length]u8).init(undefined);
-            defer key.deinit();
-            var iv = aegis.Secret([12]u8).init(undefined);
-            defer iv.deinit();
-            derive(next.expose(), key.exposeMut(), iv.exposeMut());
-            self.key.deinit();
-            self.iv.deinit();
-            self.traffic.?.deinit();
-            self.key = .init(key.expose().*);
-            self.iv = .init(iv.expose().*);
-            self.traffic = .init(next.expose().*);
+            derive(next.expose(), self.key.exposeMut(), self.iv.exposeMut());
+            self.traffic.?.exposeMut().* = next.expose().*;
             self.sequence = .fromRaw(0);
             self.bytes = .fromRaw(0);
             if (self.owner == .kernel) self.owner = .next;
@@ -136,14 +132,6 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.traffic = null;
             self.closed = true;
         }
-        fn nonce(self: *const Self) [12]u8 {
-            @setRuntimeSafety(true);
-            var value = self.iv.expose().*;
-            var counter: [8]u8 = undefined;
-            std.mem.writeInt(u64, &counter, self.sequence.raw(), .big);
-            for (value[4..], counter) |*byte, n| byte.* ^= n;
-            return value;
-        }
         fn admit(self: *Self, len: usize) error{RecordLimit}!void {
             @setRuntimeSafety(true);
             // unreachable: every admitted record kept the bytes within the limit.
@@ -173,7 +161,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (input.ptr != inner.ptr) @memcpy(inner[0..input.len], input);
             inner[input.len] = @backingInt(content);
             @memset(inner[input.len + 1 ..], 0);
-            A.encrypt(inner, wire[5 + inner_len ..][0..16], inner, wire[0..5], self.nonce(), self.key.expose().*);
+            Kernels.seal(A, inner, wire[5 + inner_len ..][0..16], inner, wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose());
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(inner_len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return wire;
@@ -211,7 +199,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             const cipher = wire[5..][0..len];
             if (overlap(wire, plain) and plain.ptr != cipher.ptr) return error.PartialOverlap;
             try self.admit(len);
-            A.decrypt(plain, cipher, wire[wire.len - 16 ..][0..16].*, wire[0..5], self.nonce(), self.key.expose().*) catch {
+            Kernels.open(A, plain, cipher, wire[wire.len - 16 ..][0..16], wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose()) catch {
                 std.crypto.secureZero(u8, plain);
                 if (trial) return error.Undecryptable;
                 return self.bad();

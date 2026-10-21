@@ -78,7 +78,16 @@ and ECDH each run in a frame of their own under data-independent timing
 (PSTATE.DIT where the target has FEAT_DIT), and the stack below the entry is
 zeroed when they return, to a depth a test measures for every key type,
 scheme and build mode. Keys are parsed into the owner that keeps them, so no
-copy of the material travels back through the parser's frames. Live registers,
+copy of the material travels back through the parser's frames. Traffic secrets
+and record keys take the same two rules. Every point where they meet a std
+primitive is a scrubbed kernel (`tls/crypto/Kernels.zig`): HMAC over a secret
+(HKDF-Expand-Label and Extract, the TLS 1.2 PRF, the DTLS cookie and ticket-key
+MACs, a ticket key's derivation) to 8 KiB, and record sealing, opening and DTLS
+1.3's record-number mask to 4 KiB of their own, since every record pays for it.
+The AEAD nonce is made inside the kernel from the IV and the public counter. And
+every owner of them is made where it is kept and moved, never passed or returned
+by value: the key schedule, the handshake's outputs (claimed in their queue slot,
+`Flight.claim`), stream and DTLS epochs and record protection. Live registers,
 the entry function's own frame and a signal stack stay out of reach. Wasm
 inspection cannot establish a downstream JIT's spill behavior.
 
@@ -1456,7 +1465,12 @@ logical origin as the reference (F18) and authorizing actions from the receipt (
 caller's; physical fault injection (F02) is out of scope; the compiler campaign (F03) and
 constant-time behaviour (F04) rest on the built binary's evidence (`zig build timing`), not on a
 source test; a native platform's own policy (F23) is the operating system's. F42's setter order
-is absent by construction: options are one immutable value given at creation. F40's lock across
+is absent by construction: options are one immutable value given at creation. F93 searches the
+stack below the caller in every build, but only optimized frames keep a copy long enough for it to
+be found, and released memory only in the builds that ship (under runtime safety, `free` writes
+over it first): its evidence is the ReleaseFast tier's. What it cannot see is the design's
+remainder: live registers, the entry function's own frame, and a QUIC caller's or key-log sink's
+copies of what cloak hands them. F40's lock across
 a wait: `Connection` holds none, it asks and returns; a `Session` signs on the task that reads
 and takes its write lock only to send the answer. Corpus rows (F10–F13, F16, F17, F19, F20, F24)
 name the x509-limbo cases they rest on; the batches run the whole corpus. Rows from F96 on are
@@ -1555,8 +1569,8 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F89 | `catalogue_delegated_parent_expiry_and_raw_key_namespace` | `tls/handshake/Delegation_test.zig`, `tls/RawKey_test.zig`, `tls/Delegated_test.zig` |  |
 | F90 | `catalogue_post_handshake_auth_context_and_action_gate` | `tls/PostAuth_test.zig` |  |
 | F91 | `catalogue_pq_group_specific_layout_and_auth_policy` | `tls/Pq_test.zig`, `tls/crypto/Exchange_test.zig`, `tls/MlDsa_test.zig` |  |
-| F92 | `catalogue_quic_transport_admission_boundary` | none yet (C7) |  |
-| F93 | `catalogue_secret_diagnostics_and_release_campaign` | none yet (C7) |  |
+| F92 | `catalogue_quic_transport_admission_boundary` | `tls/quic/Admission_test.zig` | the header limit, the straddle check, or either end's transport-parameter gate removed |
+| F93 | `catalogue_secret_diagnostics_and_release_campaign` | `tls/Secrets_test.zig`, `tls/crypto/Kernels.zig`, `tls/crypto/Labels.zig`, `tls/crypto/Prf.zig`, `tls/resumption/Ticket.zig`, `tls/dtls/Cookies.zig` | each in ReleaseFast: a DTLS epoch built on the stack and copied into its slot, a handshake secret passed by value, stream protection built on the stack, record sealing or HKDF unscrubbed (found by the campaign: DTLS 1.3 epochs and the handshake's outputs were passed by value, and a verifier's copy of a parsed certificate carried that stack into the heap) |
 | F94 | `catalogue_roca_fingerprinted_rsa_key_refused` | `Roca_test.zig` |  |
 | F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |
 | F96 | `catalogue_legacy_record_version_ignored` | `tls/ServerConnection_test.zig` | plaintext records held to 03,01-03,03 (found by tlsfuzzer: its hellos come as 03,00) |

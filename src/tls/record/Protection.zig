@@ -35,28 +35,29 @@ state: union(enum) {
     tls12_aes_128_ccm_8: Epoch12(.aes_128_ccm_8),
 },
 
-/// TLS 1.3 keys derived from a traffic secret of the suite's hash length; the copy is erased.
-pub fn init(suite: Suite13, secret: []const u8, limits: Limits) InitError!Protection {
+/// Makes `self` TLS 1.3 keys derived from a traffic secret of the suite's hash length, in place:
+/// protection is made where it is kept and never copied.
+pub fn init(self: *Protection, suite: Suite13, secret: []const u8, limits: Limits) InitError!void {
     @setRuntimeSafety(true);
     switch (suite) {
         inline else => |tag| {
             const Hash = suites.Hash(tag);
             aegis.assert.invariant(secret.len == Hash.digest_length, "a traffic secret is the suite's hash length");
-            var holder = aegis.Secret([Hash.digest_length]u8).init(secret[0..Hash.digest_length].*);
-            defer holder.deinit();
-            return .{ .state = @unionInit(@FieldType(Protection, "state"), @tagName(tag), try Epoch.Epoch(tag).initTraffic(&holder, limits)) };
+            self.* = .{ .state = @unionInit(@FieldType(Protection, "state"), @tagName(tag), undefined) };
+            try @field(self.state, @tagName(tag)).initTraffic(secret[0..Hash.digest_length], limits);
         },
     }
 }
 
-/// TLS 1.2 keys from the key block: the cipher's key and fixed IV.
-pub fn init12(cipher: suites.Cipher, key: []const u8, iv: []const u8, limits: Limits) InitError!Protection {
+/// Makes `self` TLS 1.2 keys from the key block: the cipher's key and fixed IV.
+pub fn init12(self: *Protection, cipher: suites.Cipher, key: []const u8, iv: []const u8, limits: Limits) InitError!void {
     @setRuntimeSafety(true);
     switch (cipher) {
         inline else => |tag| {
             const E = Epoch12(tag);
             aegis.assert.invariant(key.len == E.key_length and iv.len == E.iv_length, "TLS 1.2 keys are the cipher's lengths");
-            return .{ .state = @unionInit(@FieldType(Protection, "state"), "tls12_" ++ @tagName(tag), try E.init(key[0..E.key_length], iv[0..E.iv_length], limits)) };
+            self.* = .{ .state = @unionInit(@FieldType(Protection, "state"), "tls12_" ++ @tagName(tag), undefined) };
+            try @field(self.state, "tls12_" ++ @tagName(tag)).init(key[0..E.key_length], iv[0..E.iv_length], limits);
         },
     }
 }

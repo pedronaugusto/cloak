@@ -13,9 +13,9 @@ fn Context(comptime suite: Suite13, comptime size: usize) type {
         wire: [size + 22]u8 = undefined,
         out: [size + 1]u8 = undefined,
         fn setup(self: *Self) WorkError!void {
-            self.tx = try record.Epoch(suite).init(@splat(1), @splat(2), .{});
+            try self.tx.init(&@splat(1), &@splat(2), .{});
             errdefer self.tx.deinit();
-            self.rx = try record.Epoch(suite).init(@splat(1), @splat(2), .{});
+            try self.rx.init(&@splat(1), &@splat(2), .{});
         }
         fn teardown(self: *Self) WorkError!void {
             self.tx.deinit();

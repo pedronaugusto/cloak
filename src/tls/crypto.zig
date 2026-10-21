@@ -6,7 +6,9 @@ pub const Exchange = @import("crypto/Exchange.zig");
 pub const Prf = @import("crypto/Prf.zig");
 pub const Ccm = @import("crypto/Ccm.zig");
 pub const Hpke = @import("crypto/Hpke.zig");
+pub const Kernels = @import("crypto/Kernels.zig");
 test {
+    _ = Kernels;
     _ = Ccm;
     _ = Prf;
     _ = Labels;

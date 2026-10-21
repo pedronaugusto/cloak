@@ -8,6 +8,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Labels = @import("../crypto/Labels.zig");
+const Kernels = @import("../crypto/Kernels.zig");
 const Window = @import("Window.zig");
 
 const Cipher = suites.Cipher;
@@ -72,11 +73,13 @@ pub const Epoch = struct {
     failures: u64 = 0,
     record_limit: u64,
 
-    /// DTLS 1.3 keys of epoch `number` from a traffic secret ("dtls13" labels).
-    pub fn init13(suite: Suite13, number: u64, secret: []const u8) Epoch {
+    /// Makes `self` the DTLS 1.3 keys of epoch `number` from a traffic secret ("dtls13" labels).
+    /// Epochs are made where they are kept and never copied: each copy of a key is one more to
+    /// erase.
+    pub fn init13(self: *Epoch, suite: Suite13, number: u64, secret: []const u8) void {
         @setRuntimeSafety(true);
         const cipher = suites.cipherOf(suite);
-        var self: Epoch = .{
+        self.* = .{
             .version = .dtls13,
             .cipher = cipher,
             .number = number,
@@ -89,13 +92,12 @@ pub const Epoch = struct {
         };
         @memcpy(self.traffic.exposeMut()[0..secret.len], secret);
         self.derive();
-        return self;
     }
 
-    /// DTLS 1.2 keys of epoch 1 from the key block.
-    pub fn init12(cipher: Cipher, key: []const u8, iv: []const u8) Epoch {
+    /// Makes `self` the DTLS 1.2 keys of epoch 1 from the key block.
+    pub fn init12(self: *Epoch, cipher: Cipher, key: []const u8, iv: []const u8) void {
         @setRuntimeSafety(true);
-        var self: Epoch = .{
+        self.* = .{
             .version = .dtls12,
             .cipher = cipher,
             .number = 1,
@@ -107,7 +109,6 @@ pub const Epoch = struct {
         };
         @memcpy(self.key.exposeMut()[0..key.len], key);
         @memcpy(self.iv.exposeMut()[0..iv.len], iv);
-        return self;
     }
 
     fn derive(self: *Epoch) void {
@@ -127,12 +128,12 @@ pub const Epoch = struct {
         }
     }
 
-    /// The epoch a DTLS 1.3 key update moves to: the next traffic secret, its keys, a fresh
-    /// sequence and window.
-    pub fn next(self: *const Epoch) Epoch {
+    /// Makes `out` the epoch a DTLS 1.3 key update moves to: the next traffic secret, its keys, a
+    /// fresh sequence and window.
+    pub fn next(self: *const Epoch, out: *Epoch) void {
         @setRuntimeSafety(true);
         aegis.assert.invariant(self.version == .dtls13, "only DTLS 1.3 epochs advance this way");
-        var out: Epoch = .{
+        out.* = .{
             .version = .dtls13,
             .cipher = self.cipher,
             .number = self.number + 1,
@@ -151,7 +152,6 @@ pub const Epoch = struct {
             },
         }
         out.derive();
-        return out;
     }
 
     pub fn deinit(self: *Epoch) void {
@@ -172,64 +172,36 @@ pub const Epoch = struct {
         return self.failures >= failureLimit(self.cipher);
     }
 
-    fn nonce13(self: *const Epoch, sequence: u64) [12]u8 {
-        var value = self.iv.expose().*;
-        var counter: [8]u8 = undefined;
-        std.mem.writeInt(u64, &counter, sequence, .big);
-        for (value[4..], counter) |*byte, n| byte.* ^= n;
-        return value;
-    }
-
-    /// DTLS 1.2's nonce: GCM and CCM put the salt before the explicit epoch and sequence;
-    /// ChaCha20-Poly1305 masks the IV with them (RFC 7905).
-    fn nonce12(self: *const Epoch, explicit: u64) [12]u8 {
-        var value = self.iv.expose().*;
-        var counter: [8]u8 = undefined;
-        std.mem.writeInt(u64, &counter, explicit, .big);
-        if (self.cipher.explicitNonceLength12() == 0) {
-            for (value[4..], counter) |*byte, n| byte.* ^= n;
-        } else value[4..12].* = counter;
-        return value;
-    }
-
     /// The mask of a DTLS 1.3 record number (RFC 9147 section 4.2.3) from the first 16 bytes of
     /// the ciphertext.
     fn mask(self: *const Epoch, sample: *const [16]u8) [16]u8 {
         var out: [16]u8 = undefined;
         switch (self.cipher) {
-            .aes_128_gcm, .aes_128_ccm, .aes_128_ccm_8 => {
-                var ctx = std.crypto.core.aes.Aes128.initEnc(self.sn.expose()[0..16].*);
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&ctx));
-                ctx.encrypt(&out, sample);
-            },
-            .aes_256_gcm, .aes_256_ccm => {
-                var ctx = std.crypto.core.aes.Aes256.initEnc(self.sn.expose().*);
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&ctx));
-                ctx.encrypt(&out, sample);
-            },
-            .chacha20_poly1305 => {
-                const zeros: [16]u8 = @splat(0);
-                std.crypto.stream.chacha.ChaCha20IETF.xor(&out, &zeros, std.mem.readInt(u32, sample[0..4], .little), self.sn.expose().*, sample[4..16].*);
-            },
+            .aes_128_gcm, .aes_128_ccm, .aes_128_ccm_8 => Kernels.mask(.aes128, self.sn.expose(), sample, &out),
+            .aes_256_gcm, .aes_256_ccm => Kernels.mask(.aes256, self.sn.expose(), sample, &out),
+            .chacha20_poly1305 => Kernels.mask(.chacha20, self.sn.expose(), sample, &out),
         }
         return out;
     }
 
-    /// `tag` is the cipher's tag length.
-    fn encrypt(self: *const Epoch, out: []u8, tag: []u8, plain: []const u8, ad: []const u8, nonce: [12]u8) void {
+    /// `tag` is the cipher's tag length. The nonce is the IV xor `counter` in its last eight
+    /// bytes: DTLS 1.3's record number, DTLS 1.2's epoch and sequence (the explicit nonce of GCM
+    /// and CCM, over an IV whose tail is zero, is the same xor; ChaCha20-Poly1305 masks the IV
+    /// with them, RFC 7905).
+    fn encrypt(self: *const Epoch, out: []u8, tag: []u8, plain: []const u8, ad: []const u8, counter: u64) void {
         switch (self.cipher) {
             inline else => |cipher| {
                 const A = suites.AeadOf(cipher);
-                A.encrypt(out, tag[0..A.tag_length], plain, ad, nonce, self.key.expose()[0..A.key_length].*);
+                Kernels.seal(A, out, tag[0..A.tag_length], plain, ad, self.iv.expose(), counter, self.key.expose()[0..A.key_length]);
             },
         }
     }
 
-    fn decrypt(self: *const Epoch, out: []u8, cipher_bytes: []const u8, tag: []const u8, ad: []const u8, nonce: [12]u8) error{AuthenticationFailed}!void {
+    fn decrypt(self: *const Epoch, out: []u8, cipher_bytes: []const u8, tag: []const u8, ad: []const u8, counter: u64) error{AuthenticationFailed}!void {
         switch (self.cipher) {
             inline else => |cipher| {
                 const A = suites.AeadOf(cipher);
-                return A.decrypt(out, cipher_bytes, tag[0..A.tag_length].*, ad, nonce, self.key.expose()[0..A.key_length].*);
+                return Kernels.open(A, out, cipher_bytes, tag[0..A.tag_length], ad, self.iv.expose(), counter, self.key.expose()[0..A.key_length]);
             },
         }
     }
@@ -257,7 +229,7 @@ pub const Epoch = struct {
         const body = record[head..][0..inner];
         if (plain.ptr != body.ptr) @memmove(body[0..plain.len], plain);
         body[plain.len] = @backingInt(content);
-        self.encrypt(body, record[head + inner ..][0..tag_length], body, record[0..head], self.nonce13(self.sequence));
+        self.encrypt(body, record[head + inner ..][0..tag_length], body, record[0..head], self.sequence);
         const masked = self.mask(record[head..][0..16]);
         record[1 + cid.len] ^= masked[0];
         record[2 + cid.len] ^= masked[1];
@@ -284,7 +256,7 @@ pub const Epoch = struct {
         if (!self.window.fresh(sequence)) return error.Drop;
         const sealed_len = ciphertext.len - tag_length;
         const tag = ciphertext[sealed_len..][0..tag_length];
-        self.decrypt(ciphertext[0..sealed_len], ciphertext[0..sealed_len], tag, record[0..header.length], self.nonce13(sequence)) catch {
+        self.decrypt(ciphertext[0..sealed_len], ciphertext[0..sealed_len], tag, record[0..header.length], sequence) catch {
             self.failures +|= 1;
             return error.Drop;
         };
@@ -323,7 +295,7 @@ pub const Epoch = struct {
         if (with_cid) body[plain.len] = @backingInt(content);
         var ad: [23 + max_cid]u8 = undefined;
         const additional = additional12(&ad, @backingInt(content), .{ 0xfe, 0xfd }, number, cid, inner);
-        self.encrypt(body, record[head + explicit + inner ..][0..tag_len], body, additional, self.nonce12(number));
+        self.encrypt(body, record[head + explicit + inner ..][0..tag_len], body, additional, number);
         self.sequence += 1;
         return record;
     }
@@ -341,14 +313,14 @@ pub const Epoch = struct {
         // GCM and CCM carry the nonce's explicit part on the wire: any value the sender never
         // repeats (RFC 5288 section 3), not necessarily the record number, which the additional
         // data binds anyway.
-        const nonce = if (explicit != 0) self.nonce12(std.mem.readInt(u64, payload[0..8], .big)) else self.nonce12(number);
+        const counter = if (explicit != 0) std.mem.readInt(u64, payload[0..8], .big) else number;
         const sealed = payload[explicit .. payload.len - tag_len];
         const tag = payload[payload.len - tag_len ..];
         const outer: u8 = if (header.cid_len != 0) tls12_cid else record[0];
         var ad: [23 + max_cid]u8 = undefined;
         // The additional data names the record's own type and version as they came.
         const additional = additional12(&ad, outer, record[1..3].*, number, record[11..][0..header.cid_len], sealed.len);
-        self.decrypt(sealed, sealed, tag, additional, nonce) catch {
+        self.decrypt(sealed, sealed, tag, additional, counter) catch {
             self.failures +|= 1;
             return error.Drop;
         };

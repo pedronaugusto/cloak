@@ -7,6 +7,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("../crypto/Suite.zig");
 const Epoch = @import("Epoch.zig");
+const Kernels = @import("../crypto/Kernels.zig");
 const Keys = @import("../offload/Keys.zig");
 
 pub const Content = Epoch.Content;
@@ -36,15 +37,15 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         owner: Epoch.Owner = .software,
 
         /// `iv` is the key block's fixed IV: four bytes for GCM, twelve for ChaCha20-Poly1305.
-        pub fn init(key: *const [A.key_length]u8, iv: *const [fixed]u8, limits: Limits) InitError!Self {
+        /// Makes `self` an epoch of `key` and `iv`, in place: epochs are never copied.
+        pub fn init(self: *Self, key: *const [A.key_length]u8, iv: *const [fixed]u8, limits: Limits) InitError!void {
             @setRuntimeSafety(true);
             if (limits.records == 0 or limits.records > 1 << 24 or limits.bytes == 0 or limits.bytes > 1 << 38) return error.InvalidLimits;
-            var full: [12]u8 = @splat(0);
-            @memcpy(full[0..fixed], iv);
-            defer std.crypto.secureZero(u8, &full);
             // A cipher with a lower record bound (CCM) caps the caller's.
             const records = @min(limits.records, comptime cipher.recordLimit());
-            return .{ .key = .init(key.*), .iv = .init(full), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
+            self.* = .{ .key = .init(@splat(0)), .iv = .init(@splat(0)), .limits = .{ .records = .fromRaw(records), .bytes = .fromRaw(limits.bytes) } };
+            self.key.exposeMut().* = key.*;
+            @memcpy(self.iv.exposeMut()[0..fixed], iv);
         }
 
         pub fn deinit(self: *Self) void {
@@ -78,17 +79,6 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         /// The kernel's count of records under these keys; a stale count changes nothing.
         pub fn account(self: *Self, records: u64) void {
             if (self.owner == .kernel and Epoch.RecordCount.fromRaw(records).compare(self.sequence) == .gt) self.sequence = .fromRaw(records);
-        }
-
-        fn nonce(self: *const Self) [12]u8 {
-            @setRuntimeSafety(true);
-            var value = self.iv.expose().*;
-            var counter: [8]u8 = undefined;
-            std.mem.writeInt(u64, &counter, self.sequence.raw(), .big);
-            if (explicit == 0) {
-                for (value[4..], counter) |*byte, n| byte.* ^= n;
-            } else value[4..12].* = counter;
-            return value;
         }
 
         fn additional(self: *const Self, content: Content, len: usize) [13]u8 {
@@ -129,10 +119,10 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             wire[1..3].* = .{ 3, 3 };
             // safe: bounded by 2^14 plus the record overhead.
             std.mem.writeInt(u16, wire[3..5], @intCast(wire_len - 5), .big);
-            const n = self.nonce();
-            if (explicit != 0) wire[5..][0..explicit].* = n[4..12].*;
+            // GCM and CCM carry the record number as the explicit nonce.
+            if (explicit != 0) std.mem.writeInt(u64, wire[5..][0..8], self.sequence.raw(), .big);
             if (input.ptr != body.ptr) @memcpy(body, input);
-            A.encrypt(body, wire[wire_len - A.tag_length ..][0..A.tag_length], body, &self.additional(content, input.len), n, self.key.expose().*);
+            Kernels.seal(A, body, wire[wire_len - A.tag_length ..][0..A.tag_length], body, &self.additional(content, input.len), self.iv.expose(), self.sequence.raw(), self.key.expose());
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(input.len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return wire;
@@ -162,10 +152,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             const plain = out[skip..][0..len];
             if (overlap(wire, plain) and plain.ptr != cipher_text.ptr) return error.PartialOverlap;
             try self.admit(len);
-            var n = self.nonce();
             // The peer chooses the explicit nonce; it is authenticated through the tag.
-            if (explicit != 0) n[4..12].* = wire[5..13].*;
-            A.decrypt(plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length].*, &self.additional(content, len), n, self.key.expose().*) catch {
+            const counter = if (explicit != 0) std.mem.readInt(u64, wire[5..13], .big) else self.sequence.raw();
+            Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch {
                 std.crypto.secureZero(u8, plain);
                 return self.bad();
             };

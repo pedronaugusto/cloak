@@ -32,7 +32,9 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
         phase: enum { handshake, application, complete, erased } = .handshake,
         /// The handshake secrets from a resumption `psk` (null for a full handshake, whose early
         /// secret extracts zeros) and the (EC)DHE `shared` secret: PSK-DHE only, never PSK alone.
-        pub fn init(prefix: Labels.Prefix, psk: ?*const [length]u8, shared: []const u8, hello_hash: *const [length]u8, traffic: *Traffic) InitError!Self {
+        /// Makes `self` the schedule of a handshake, in place: a schedule is made where it is
+        /// kept and never copied.
+        pub fn init(self: *Self, prefix: Labels.Prefix, psk: ?*const [length]u8, shared: []const u8, hello_hash: *const [length]u8, traffic: *Traffic) InitError!void {
             @setRuntimeSafety(true);
             if (shared.len != 32 and shared.len != 48 and shared.len != 64 and shared.len != 80) return error.InvalidSharedSecret;
             var early = Secret.init(undefined);
@@ -42,11 +44,9 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             const zero: [length]u8 = @splat(0);
             Labels.extract(Hash, early.exposeMut(), &zero, if (psk) |key| key else &zero);
             expand(prefix, derived.exposeMut(), early.expose(), "derived", &emptyHash());
-            var self: Self = .{ .prefix = prefix, .root = .init(undefined) };
-            errdefer self.deinit();
+            self.* = .{ .prefix = prefix, .root = .init(undefined) };
             Labels.extract(Hash, self.root.exposeMut(), derived.expose(), shared);
             self.deriveTraffic(traffic, "c hs traffic", "s hs traffic", hello_hash);
-            return self;
         }
         pub fn application(self: *Self, server_finished_hash: *const [Hash.digest_length]u8, traffic: *Traffic) AdvanceError!void {
             @setRuntimeSafety(true);

@@ -1,6 +1,7 @@
 //! Bounded TLS 1.3 HKDF labels, with erased HMAC state and intermediate blocks.
 const std = @import("std");
 const aegis = @import("aegis");
+const Kernels = @import("Kernels.zig");
 pub const ExpandError = error{InvalidLabel};
 /// The label prefix of HKDF-Expand-Label: "tls13 " for TLS 1.3, "dtls13" for DTLS 1.3 (RFC 9147
 /// section 5.9). Both are six bytes, so the labels' bounds are the same.
@@ -23,8 +24,14 @@ pub fn expand(comptime Hash: type, out: []u8, secret: *const [Hash.digest_length
 /// own labels, none of them empty). The ceiling is the wire's: six prefix bytes and 249 more.
 pub fn expandWith(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) ExpandError!void {
     @setRuntimeSafety(true);
-    const Hmac = std.crypto.auth.hmac.Hmac(Hash);
     if (label.len > 249 or context.len > 255 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
+    aegis.secret.scrubbed(Kernels.depth, expandKernel, .{ Hash, prefix, out, secret, label, context });
+}
+/// HMAC keeps its key and hash states in std's frames: the expansion runs in a scrubbed one
+/// (`Kernels`).
+fn expandKernel(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) void {
+    @setRuntimeSafety(true);
+    const Hmac = std.crypto.auth.hmac.Hmac(Hash);
     var info: [514]u8 = undefined;
     // safe: HKDF output is bounded by 255 * Hash.digest_length, below u16 max.
     std.mem.writeInt(u16, info[0..2], @intCast(out.len), .big);
@@ -54,6 +61,9 @@ pub fn expandWith(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const
     }
 }
 pub fn extract(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []const u8, input: []const u8) void {
+    aegis.secret.scrubbed(Kernels.depth, extractKernel, .{ Hash, out, salt, input });
+}
+fn extractKernel(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []const u8, input: []const u8) void {
     var h = std.crypto.auth.hmac.Hmac(Hash).init(salt);
     defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
     h.update(input);
@@ -77,4 +87,18 @@ pub fn checkFinished(comptime Hash: type, prefix: Prefix, traffic: *const [Hash.
 }
 test {
     _ = @import("Labels_test.zig");
+}
+
+test "F93 catalogue_secret_diagnostics_and_release_campaign (HKDF over a secret reaches less stack than the depth that erases it)" {
+    var deepest: usize = 0;
+    inline for (.{ std.crypto.hash.sha2.Sha256, std.crypto.hash.sha2.Sha384 }) |Hash| {
+        const secret: [Hash.digest_length]u8 = @splat(3);
+        var out: [255 * Hash.digest_length]u8 = undefined;
+        deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, expandKernel, .{ Hash, Prefix.tls13, out[0..], &secret, "label", "context" }));
+        deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, extractKernel, .{ Hash, out[0..Hash.digest_length], &secret, &secret }));
+    }
+    std.testing.expect(deepest < Kernels.depth) catch |err| {
+        std.debug.print("reaches {d} bytes of stack, past the {d} that are erased\n", .{ deepest, Kernels.depth });
+        return err;
+    };
 }

@@ -700,40 +700,39 @@ fn sealCompatCcs(self: *Connection) Error!void {
 fn install(self: *Connection, s: anytype) Error!void {
     @setRuntimeSafety(true);
     const traffic = &s.traffic;
-    var protection = try Protection.init(traffic.suite, traffic.secret.expose()[0..traffic.len], .{ .records = self.limits.records, .bytes = self.limits.bytes });
-    errdefer protection.deinit();
+    const slot = self.claim(s.direction);
+    errdefer slot.* = null;
+    try slot.*.?.init(traffic.suite, traffic.secret.expose()[0..traffic.len], .{ .records = self.limits.records, .bytes = self.limits.bytes });
     switch (s.direction) {
         .read => {
-            if (self.rx) |*old| old.deinit();
-            self.rx = protection;
             self.rx_epoch = s.epoch;
             self.rx_asked_update = false;
         },
-        .write => {
-            if (self.tx) |*old| old.deinit();
-            self.tx = protection;
-            self.tx_epoch = s.epoch;
-        },
+        .write => self.tx_epoch = s.epoch,
     }
 }
 
 /// TLS 1.2 record keys for one direction; they protect the application epoch.
 fn install12(self: *Connection, direction: Flight.Direction, keys: *const Flight.Keys12) Error!void {
     @setRuntimeSafety(true);
-    var protection = try Protection.init12(keys.cipher, keys.keyBytes(), keys.ivBytes(), .{ .records = self.limits.records, .bytes = self.limits.bytes });
-    errdefer protection.deinit();
+    const slot = self.claim(direction);
+    errdefer slot.* = null;
+    try slot.*.?.init12(keys.cipher, keys.keyBytes(), keys.ivBytes(), .{ .records = self.limits.records, .bytes = self.limits.bytes });
     switch (direction) {
-        .read => {
-            if (self.rx) |*old| old.deinit();
-            self.rx = protection;
-            self.rx_epoch = .application;
-        },
-        .write => {
-            if (self.tx) |*old| old.deinit();
-            self.tx = protection;
-            self.tx_epoch = .application;
-        },
+        .read => self.rx_epoch = .application,
+        .write => self.tx_epoch = .application,
     }
+}
+
+/// The protection slot of `direction`, its old keys erased, for the next keys to be made in.
+fn claim(self: *Connection, direction: Flight.Direction) *?Protection {
+    const slot = switch (direction) {
+        .read => &self.rx,
+        .write => &self.tx,
+    };
+    if (slot.*) |*old| old.deinit();
+    slot.* = @as(Protection, undefined);
+    return slot;
 }
 
 /// Moves everything the handshake queued onto the wire and into the key slots, in order.

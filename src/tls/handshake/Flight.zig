@@ -12,11 +12,27 @@ const Transcripts = @import("Transcripts.zig");
 pub const Epoch = State.Epoch;
 pub const Direction = enum { read, write };
 
-/// A secret to install. The receiver owns and erases it.
+/// A secret to install. The receiver owns and erases it. Holders are made where they are kept
+/// and moved, never copied: each copy of a secret is one more to erase.
 pub const Traffic = struct {
     suite: Suite13,
     secret: aegis.Secret([Transcripts.max_digest]u8),
     len: u8,
+
+    /// Makes `self` a holder of `secret`, a digest of `suite`'s hash.
+    pub fn init(self: *Traffic, suite: Suite13, secret: []const u8) void {
+        @setRuntimeSafety(true);
+        // safe: the secret length is a digest length, at most 48.
+        self.* = .{ .suite = suite, .secret = .init(@splat(0)), .len = @intCast(secret.len) };
+        @memcpy(self.secret.exposeMut()[0..secret.len], secret);
+    }
+
+    /// Moves the secret into `out` and erases it here.
+    pub fn moveInto(self: *Traffic, out: *Traffic) void {
+        out.suite = self.suite;
+        out.len = self.len;
+        self.secret.moveInto(&out.secret);
+    }
 };
 
 /// TLS 1.2 record keys from the key block: the cipher's key and its fixed IV. The receiver owns
@@ -32,6 +48,13 @@ pub const Keys12 = struct {
 
     pub fn ivBytes(self: *const Keys12) []const u8 {
         return self.iv.expose()[0..self.cipher.fixedIvLength12()];
+    }
+
+    /// Moves the keys into `out` and erases them here.
+    pub fn moveInto(self: *Keys12, out: *Keys12) void {
+        out.cipher = self.cipher;
+        self.key.moveInto(&out.key);
+        self.iv.moveInto(&out.iv);
     }
 
     pub fn deinit(self: *Keys12) void {
@@ -94,7 +117,9 @@ pub const Secrets12 = struct {
             slot.* = null;
         };
         const keys = if (slot.*) |*keys| keys else return error.UnexpectedMessage;
-        try machine.push(.{ .keys12 = .{ .direction = direction, .keys = keys.* } });
+        const emit = try machine.claim();
+        emit.* = .{ .keys12 = .{ .direction = direction, .keys = undefined } };
+        keys.moveInto(&emit.keys12.keys);
     }
 
     pub fn clientRandom(self: *const Secrets12) *const [32]u8 {
@@ -174,11 +199,20 @@ len: usize = 0,
 buf: []u8 = &.{},
 used: usize = 0,
 
+/// Queues `emit`, which carries no secret.
 pub fn push(self: *Flight, emit: Emit) error{QueueFull}!void {
+    (try self.claim()).* = emit;
+}
+
+/// Claims the next queue slot for an output made in place: a secret is written straight into
+/// its slot, never passed by value.
+pub fn claim(self: *Flight) error{QueueFull}!*Emit {
     @setRuntimeSafety(true);
     if (self.len == self.queue.len) return error.QueueFull;
-    self.queue[(self.head + self.len) % self.queue.len] = emit;
+    const claimed = &self.queue[(self.head + self.len) % self.queue.len];
+    claimed.* = @as(Emit, .complete);
     self.len += 1;
+    return &claimed.*.?;
 }
 
 /// Moves the next output into `out`, which the caller then owns and erases with `eraseEmit`,

@@ -11,6 +11,7 @@
 //! of the policy it was made under.
 const std = @import("std");
 const aegis = @import("aegis");
+const Kernels = @import("../crypto/Kernels.zig");
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
 const TicketKeys = @import("TicketKeys.zig");
@@ -100,7 +101,8 @@ pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *co
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
     defer sealing.deinit();
     derive(key, salt, sealing.exposeMut());
-    Aead.encrypt(out[header_length..][0..plain.len], out[header_length + plain.len ..][0..Aead.tag_length], plain, out[0..header_length], @splat(0), sealing.expose().*);
+    // Each ticket's key is its own (from its salt): the nonce is zero.
+    Kernels.seal(Aead, out[header_length..][0..plain.len], out[header_length + plain.len ..][0..Aead.tag_length], plain, out[0..header_length], &@splat(0), 0, sealing.expose());
     return out[0..total];
 }
 
@@ -125,7 +127,7 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
     defer sealing.deinit();
     derive(key, salt, sealing.exposeMut());
-    Aead.decrypt(plain, ticket[header_length..][0..length], ticket[ticket.len - Aead.tag_length ..][0..Aead.tag_length].*, ticket[0..header_length], @splat(0), sealing.expose().*) catch return error.Undecryptable;
+    Kernels.open(Aead, plain, ticket[header_length..][0..length], ticket[ticket.len - Aead.tag_length ..][0..Aead.tag_length], ticket[0..header_length], &@splat(0), 0, sealing.expose()) catch return error.Undecryptable;
     decode(version, plain, out) catch {
         out.deinit();
         return error.Undecryptable;
@@ -134,6 +136,10 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
 }
 
 fn derive(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.key_length]u8) void {
+    aegis.secret.scrubbed(Kernels.depth, deriveKernel, .{ key, salt, out });
+}
+
+fn deriveKernel(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.key_length]u8) void {
     @setRuntimeSafety(true);
     var prk = Hkdf.extract(salt, key.material.expose());
     defer std.crypto.secureZero(u8, &prk);
@@ -222,4 +228,16 @@ fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid
 
 test {
     _ = @import("Ticket_test.zig");
+}
+
+test "F93 catalogue_secret_diagnostics_and_release_campaign (a ticket key's derivation reaches less stack than the depth that erases it)" {
+    var deepest: usize = 0;
+    var key: TicketKeys.Key = .{ .id = @splat(1), .material = .init(@splat(2)), .installed = 0, .issue_until = 0, .decrypt_until = 0 };
+    defer key.material.deinit();
+    var out: [Aead.key_length]u8 = undefined;
+    deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, deriveKernel, .{ &key, &@as([salt_length]u8, @splat(3)), &out }));
+    std.testing.expect(deepest < Kernels.depth) catch |err| {
+        std.debug.print("reaches {d} bytes of stack, past the {d} that are erased\n", .{ deepest, Kernels.depth });
+        return err;
+    };
 }

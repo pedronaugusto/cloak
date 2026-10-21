@@ -61,6 +61,9 @@ pub const Options = struct {
     client_psk: ?Psk.External = null,
     server_psk: ?Psk.Lookup = null,
     psk_only: bool = false,
+    /// Each end's key log (NSS key log lines), to know its secrets in a test.
+    client_key_log: ?Datagram.KeyLog = null,
+    server_key_log: ?Datagram.KeyLog = null,
 };
 
 const Packet = struct { bytes: []u8 };
@@ -145,6 +148,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .generation = .fromRaw(21),
         .connection_id = options.client_cid,
         .srtp = options.client_srtp,
+        .key_log = options.client_key_log,
     }) };
     errdefer self.client.dtls.deinit();
     self.server = .{ .dtls = undefined };
@@ -169,6 +173,7 @@ pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
         .generation = .fromRaw(23),
         .connection_id = self.options.server_cid,
         .srtp = self.options.server_srtp,
+        .key_log = self.options.server_key_log,
     };
 }
 

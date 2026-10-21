@@ -7,9 +7,11 @@ test "C4 TLS 1.2 records round-trip under every cipher and fail closed on damage
         const E = Epoch12(cipher);
         const key: [E.key_length]u8 = @splat(3);
         const iv: [E.iv_length]u8 = @splat(5);
-        var tx = try E.init(&key, &iv, .{});
+        var tx: E = undefined;
+        try tx.init(&key, &iv, .{});
         defer tx.deinit();
-        var rx = try E.init(&key, &iv, .{});
+        var rx: E = undefined;
+        try rx.init(&key, &iv, .{});
         defer rx.deinit();
         var wire: [2048]u8 = undefined;
         var plain: [2048]u8 = undefined;
@@ -27,11 +29,13 @@ test "C4 TLS 1.2 records round-trip under every cipher and fail closed on damage
         const damaged = damaged_buffer[0..sealed.len];
         @memcpy(damaged, sealed);
         damaged[0] = 23;
-        var victim = try E.init(&key, &iv, .{});
+        var victim: E = undefined;
+        try victim.init(&key, &iv, .{});
         defer victim.deinit();
         // Skip the victim to the same sequence number.
         var scratch: [2048]u8 = undefined;
-        var other = try E.init(&key, &iv, .{});
+        var other: E = undefined;
+        try other.init(&key, &iv, .{});
         defer other.deinit();
         for (0..3) |_| _ = try victim.open(try other.seal(.application, "", &scratch), &plain);
         try std.testing.expectError(error.BadRecord, victim.open(damaged, &plain));
@@ -41,7 +45,8 @@ test "C4 TLS 1.2 records round-trip under every cipher and fail closed on damage
         try std.testing.expectEqual(.handshake, opened.content);
         // Out of order: the next record under sequence 5 does not open as sequence 4.
         const later = try tx.seal(.application, "x", &wire);
-        var reordered = try E.init(&key, &iv, .{});
+        var reordered: E = undefined;
+        try reordered.init(&key, &iv, .{});
         defer reordered.deinit();
         try std.testing.expectError(error.BadRecord, reordered.open(later, &plain));
         // Empty handshake records are refused on both sides.
@@ -54,7 +59,8 @@ test "C4 TLS 1.2 GCM nonce is the salt and the explicit sequence; ChaCha XORs th
     const E = Epoch12(.aes_128_gcm);
     const key: [16]u8 = @splat(1);
     const salt: [4]u8 = .{ 9, 8, 7, 6 };
-    var tx = try E.init(&key, &salt, .{});
+    var tx: E = undefined;
+    try tx.init(&key, &salt, .{});
     defer tx.deinit();
     var wire: [64]u8 = undefined;
     _ = try tx.seal(.application, "a", &wire);
@@ -73,7 +79,8 @@ test "C4 TLS 1.2 GCM nonce is the salt and the explicit sequence; ChaCha XORs th
     const C = Epoch12(.chacha20_poly1305);
     const ckey: [32]u8 = @splat(2);
     const civ: [12]u8 = @splat(0x55);
-    var ctx = try C.init(&ckey, &civ, .{});
+    var ctx: C = undefined;
+    try ctx.init(&ckey, &civ, .{});
     defer ctx.deinit();
     _ = try ctx.seal(.application, "a", &wire);
     const csealed = try ctx.seal(.application, "hi", &wire);

@@ -5,7 +5,6 @@
 const std = @import("std");
 const Keys = @import("../tls/offload/Keys.zig");
 const Protection = @import("../tls/record/Protection.zig");
-const Epoch = @import("../tls/record/Epoch.zig");
 const suites = @import("../tls/crypto/Suite.zig");
 
 const Kernel = @This();
@@ -41,9 +40,11 @@ fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Ke
         .write => &self.tx,
     };
     if (slot.* != null and !self.rekeys) return error.RekeyUnsupported;
-    const fresh = protectionOf(keys) catch return error.Unsupported;
+    if (!acceptable(keys)) return error.Unsupported;
     if (slot.*) |*old| old.deinit();
-    slot.* = fresh;
+    slot.* = @as(Protection, undefined);
+    errdefer slot.* = null;
+    protectionOf(&slot.*.?, keys) catch return error.Unsupported;
     self.installs += 1;
     self.last = .{ .version = keys.version, .cipher = keys.cipher, .sequence = keys.sequence, .iv = keys.iv.expose().*, .max_payload = keys.max_payload };
 }
@@ -57,29 +58,33 @@ fn suiteOf(comptime cipher: Keys.Cipher) suites.Suite13 {
     };
 }
 
-/// Record protection from handed-out keys alone, at their record number. TLS 1.2 GCM and CCM
-/// records carry their number as the explicit nonce, so the IV's tail must be that number.
-fn protectionOf(keys: *const Keys) !Protection {
-    var protection: Protection = switch (keys.version) {
-        .tls12 => blk: {
+/// Whether handed-out keys alone make record protection: TLS 1.2 GCM and CCM records carry
+/// their number as the explicit nonce, so the IV's tail must be that number.
+fn acceptable(keys: *const Keys) bool {
+    if (keys.version != .tls12) return true;
+    const fixed = keys.cipher.record().fixedIvLength12();
+    return fixed != 4 or std.mem.readInt(u64, keys.iv.expose()[4..12], .big) == keys.sequence;
+}
+
+/// Makes `protection` from handed-out keys, at their record number.
+fn protectionOf(protection: *Protection, keys: *const Keys) !void {
+    switch (keys.version) {
+        .tls12 => {
             const cipher = keys.cipher.record();
-            const fixed = cipher.fixedIvLength12();
-            if (fixed == 4 and std.mem.readInt(u64, keys.iv.expose()[4..12], .big) != keys.sequence) return error.ExplicitNonce;
-            break :blk try Protection.init12(cipher, keys.keyBytes(), keys.iv.expose()[0..fixed], .{});
+            try protection.init12(cipher, keys.keyBytes(), keys.iv.expose()[0..cipher.fixedIvLength12()], .{});
         },
         .tls13 => switch (keys.cipher) {
-            inline else => |cipher| blk: {
+            inline else => |cipher| {
                 const suite = comptime suiteOf(cipher);
-                const E = Epoch.Epoch(suite);
                 const len = comptime cipher.keyLength();
-                break :blk .{ .state = @unionInit(@FieldType(Protection, "state"), @tagName(suite), try E.init(keys.key.expose()[0..len].*, keys.iv.expose().*, .{})) };
+                protection.* = .{ .state = @unionInit(@FieldType(Protection, "state"), @tagName(suite), undefined) };
+                try @field(protection.state, @tagName(suite)).init(keys.key.expose()[0..len], keys.iv.expose(), .{});
             },
         },
-    };
+    }
     switch (protection.state) {
         inline else => |*e| e.sequence = .fromRaw(keys.sequence),
     }
-    return protection;
 }
 
 /// Seals what the application writes to the socket: one record of `content`.

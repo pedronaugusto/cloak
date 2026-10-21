@@ -778,11 +778,10 @@ fn installSecret(self: *Datagram, direction: Flight.Direction, epoch: Flight.Epo
         .handshake => 2,
         .application => 3,
     };
-    const keys = Record.Epoch.init13(traffic.suite, number, traffic.secret.expose()[0..traffic.len]);
     switch (direction) {
-        .read => put(&self.readers, keys),
+        .read => claim(&self.readers, number).init13(traffic.suite, number, traffic.secret.expose()[0..traffic.len]),
         .write => {
-            put(&self.writers, keys);
+            claim(&self.writers, number).init13(traffic.suite, number, traffic.secret.expose()[0..traffic.len]);
             // Application data waits for the application epoch; the handshake epoch carries the
             // rest of the flight until then.
             if (number > self.write_current) self.write_current = number;
@@ -793,33 +792,31 @@ fn installSecret(self: *Datagram, direction: Flight.Direction, epoch: Flight.Epo
 fn install12(self: *Datagram, direction: Flight.Direction, keys: *const Flight.Keys12) Error!void {
     @setRuntimeSafety(true);
     self.learnCids();
-    const epoch = Record.Epoch.init12(keys.cipher, keys.keyBytes(), keys.ivBytes());
     switch (direction) {
-        .read => put(&self.readers, epoch),
+        .read => claim(&self.readers, 1).init12(keys.cipher, keys.keyBytes(), keys.ivBytes()),
         .write => {
-            put(&self.writers, epoch);
+            claim(&self.writers, 1).init12(keys.cipher, keys.keyBytes(), keys.ivBytes());
             self.write_current = 1;
         },
     }
 }
 
-/// Keeps `keys` in a slot: a free one, or the oldest epoch's, which it erases.
-fn put(slots: *[3]?Record.Epoch, keys: Record.Epoch) void {
-    var oldest: usize = 0;
-    for (slots, 0..) |*slot, i| {
-        const held = slot.* orelse {
-            slot.* = keys;
-            return;
+/// The slot epoch `number` is made in: a free one, the one holding that number, or the oldest
+/// epoch's; an epoch held there is erased first. Epochs are never copied out of their slots.
+fn claim(slots: *[3]?Record.Epoch, number: u64) *Record.Epoch {
+    const index = for (slots, 0..) |*slot, i| {
+        const held = if (slot.*) |*held| held else break i;
+        if (held.number == number) break i;
+    } else oldest: {
+        var oldest: usize = 0;
+        for (slots, 0..) |*slot, i| if (slot.*.?.number < slots[oldest].?.number) {
+            oldest = i;
         };
-        if (held.number == keys.number) {
-            slot.*.?.deinit();
-            slot.* = keys;
-            return;
-        }
-        if (held.number < slots[oldest].?.number) oldest = i;
-    }
-    slots[oldest].?.deinit();
-    slots[oldest] = keys;
+        break :oldest oldest;
+    };
+    if (slots[index]) |*held| held.deinit();
+    slots[index] = @as(Record.Epoch, undefined);
+    return &slots[index].?;
 }
 
 fn eraseAll(slots: *[3]?Record.Epoch) void {
@@ -838,8 +835,7 @@ fn onPeerKeyUpdate(self: *Datagram, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     // The next read epoch joins the current one, which stays until a record opens under the new.
     const current = self.highestRead() orelse return error.UnexpectedMessage;
-    const next = current.next();
-    put(&self.readers, next);
+    current.next(claim(&self.readers, current.number + 1));
     // A request while our own update is still unacknowledged is answered by that one.
     if (request_peer) self.keyUpdate(false) catch |err| switch (err) {
         error.UpdatePending => {},
@@ -1222,7 +1218,7 @@ fn onHandshake(self: *Datagram, body: []const u8, epoch: u64, record_sequence: ?
 /// (DTLS 1.2) keys are in, or the handshake is done.
 fn plaintextClosed(self: *const Datagram) bool {
     if (self.phase_now != .handshaking) return true;
-    for (self.readers) |slot| if (slot != null) return true;
+    for (&self.readers) |*slot| if (slot.* != null) return true;
     return false;
 }
 
@@ -1388,9 +1384,9 @@ fn flightAcknowledged(self: *Datagram, flight: *Outgoing) Error!void {
         const current = find(&self.writers, self.write_current) orelse return error.UnexpectedMessage;
         // Epochs never wrap; a sender stops at 2^48 (RFC 9147 section 8).
         if (current.number + 1 >= 1 << 48) return error.RecordLimit;
-        const next = current.next();
-        self.write_current = next.number;
-        put(&self.writers, next);
+        const number = current.number + 1;
+        current.next(claim(&self.writers, number));
+        self.write_current = number;
     }
 }
 

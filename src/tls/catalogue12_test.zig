@@ -157,7 +157,8 @@ test "F55 catalogue_sweet32_suite_and_usage_limits" {
     const Epoch12 = @import("record/Epoch12.zig").Epoch12(.aes_128_gcm);
     const key: [16]u8 = @splat(1);
     const iv: [4]u8 = @splat(2);
-    var epoch = try Epoch12.init(&key, &iv, .{ .records = 2 });
+    var epoch: Epoch12 = undefined;
+    try epoch.init(&key, &iv, .{ .records = 2 });
     defer epoch.deinit();
     var out: [64]u8 = undefined;
     _ = try epoch.seal(.application, "a", &out);

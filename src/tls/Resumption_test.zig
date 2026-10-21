@@ -764,7 +764,8 @@ fn acknowledgesName(duo: *Duo, log: *const HandshakeLog) !bool {
                 return carries(body[2 + 32 + 1 + sid + 2 + 1 ..], 0);
             },
             23 => {
-                var protection = try Protection.init(.aes_128_gcm_sha256, log.secret[0..log.len], .{});
+                var protection: Protection = undefined;
+                try protection.init(.aes_128_gcm_sha256, log.secret[0..log.len], .{});
                 defer protection.deinit();
                 var out: [16 * 1024 + 256]u8 = undefined;
                 const plain = try protection.open(record, &out);

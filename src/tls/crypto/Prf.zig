@@ -3,12 +3,18 @@
 //! material exports (RFC 5705). HMAC states and the chained A(i) values are erased.
 const std = @import("std");
 const aegis = @import("aegis");
+const Kernels = @import("Kernels.zig");
 
 pub const master_length = 48;
 pub const verify_length = 12;
 
 /// P_hash(secret, label || seeds...) truncated to `out.len`.
 pub fn prf(comptime Hash: type, out: []u8, secret: []const u8, label: []const u8, seeds: []const []const u8) void {
+    aegis.secret.scrubbed(Kernels.depth, prfKernel, .{ Hash, out, secret, label, seeds });
+}
+
+/// HMAC keeps its key and hash states in std's frames: P_hash runs in a scrubbed one (`Kernels`).
+fn prfKernel(comptime Hash: type, out: []u8, secret: []const u8, label: []const u8, seeds: []const []const u8) void {
     @setRuntimeSafety(true);
     const Hmac = std.crypto.auth.hmac.Hmac(Hash);
     var a = aegis.Secret([Hash.digest_length]u8).init(undefined);
@@ -95,4 +101,17 @@ pub fn exporter(comptime Hash: type, out: []u8, master: *const [master_length]u8
 
 test {
     _ = @import("Prf_test.zig");
+}
+
+test "F93 catalogue_secret_diagnostics_and_release_campaign (the TLS 1.2 PRF reaches less stack than the depth that erases it)" {
+    var deepest: usize = 0;
+    inline for (.{ std.crypto.hash.sha2.Sha256, std.crypto.hash.sha2.Sha384 }) |Hash| {
+        const secret: [master_length]u8 = @splat(3);
+        var out: [128]u8 = undefined;
+        deepest = @max(deepest, aegis.secret.stackReach(4 * Kernels.depth, prfKernel, .{ Hash, out[0..], secret[0..], "key expansion", &[_][]const u8{ &secret, &secret } }));
+    }
+    std.testing.expect(deepest < Kernels.depth) catch |err| {
+        std.debug.print("reaches {d} bytes of stack, past the {d} that are erased\n", .{ deepest, Kernels.depth });
+        return err;
+    };
 }

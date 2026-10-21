@@ -11,6 +11,7 @@
 //! processes or restarts share one ring key, and there is no nonce state to coordinate.
 const std = @import("std");
 const aegis = @import("aegis");
+const Kernels = @import("../crypto/Kernels.zig");
 const types = @import("../../certificates.zig").types;
 
 pub const Options = struct {
@@ -120,7 +121,7 @@ pub fn rotate(self: *TicketKeys, material: *const [32]u8, now: std.Io.Timestamp)
     if (std.mem.allEqual(u8, material, 0)) return error.InvalidKey;
     const at = types.seconds(now);
     var digest: [32]u8 = undefined;
-    std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, "cloak ticket key id", material);
+    aegis.secret.scrubbed(Kernels.depth, std.crypto.auth.hmac.sha2.HmacSha256.create, .{ &digest, "cloak ticket key id", material });
     const id = digest[0..8].*;
     while (true) {
         var old = self.acquire();

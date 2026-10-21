@@ -7,12 +7,14 @@ const S = @import("../crypto/Suite.zig");
 test "F35 catalogue_record_outer_type_and_wire_aad" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
-        var tx = try E.init(@splat(7), @splat(9), .{});
+        var tx: E = undefined;
+        try tx.init(&@splat(7), &@splat(9), .{});
         defer tx.deinit();
         var wire: [128]u8 = undefined;
         const sealed = try tx.seal(.application, "record payload", 7, &wire);
         for (0..sealed.len) |i| {
-            var rx = try E.init(@splat(7), @splat(9), .{});
+            var rx: E = undefined;
+            try rx.init(&@splat(7), &@splat(9), .{});
             defer rx.deinit();
             var changed = wire;
             changed[i] ^= 1;
@@ -25,9 +27,11 @@ test "F35 catalogue_record_outer_type_and_wire_aad" {
 }
 test "F36 catalogue_bad_tag_no_plaintext_or_alias_damage" {
     const E = R.Epoch(.aes_128_gcm_sha256);
-    var tx = try E.init(@splat(1), @splat(2), .{});
+    var tx: E = undefined;
+    try tx.init(&@splat(1), &@splat(2), .{});
     defer tx.deinit();
-    var rx = try E.init(@splat(1), @splat(2), .{});
+    var rx: E = undefined;
+    try rx.init(&@splat(1), &@splat(2), .{});
     defer rx.deinit();
     var wire: [128]u8 = @splat(0x55);
     @memcpy(wire[5..10], "hello");
@@ -44,7 +48,8 @@ test "F36 catalogue_bad_tag_no_plaintext_or_alias_damage" {
 test "F34 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
-        var tx = try E.init(@splat(1), @splat(2), .{ .records = 2, .bytes = 30 });
+        var tx: E = undefined;
+        try tx.init(&@splat(1), &@splat(2), .{ .records = 2, .bytes = 30 });
         defer tx.deinit();
         var wire: [64]u8 = @splat(0xa5);
         try std.testing.expectError(error.BufferTooSmall, tx.seal(.application, "same", 0, wire[0..20]));
@@ -56,19 +61,23 @@ test "F34 catalogue_nonce_uniqueness_partial_retry_and_wrap" {
         try std.testing.expectError(error.RecordLimit, tx.seal(.application, "same", 0, &wire));
         try std.testing.expectError(error.Closed, tx.seal(.application, "same", 0, &wire));
         try std.testing.expectEqualSlices(u8, &@as([S.Aead(suite).key_length]u8, @splat(0)), tx.key.expose());
-        var bytes = try E.init(@splat(1), @splat(2), .{ .bytes = 5 });
+        var bytes: E = undefined;
+        try bytes.init(&@splat(1), &@splat(2), .{ .bytes = 5 });
         defer bytes.deinit();
         _ = try bytes.seal(.application, "same", 0, &wire);
         try std.testing.expectError(error.RecordLimit, bytes.seal(.application, "", 0, &wire));
-        try std.testing.expectError(error.InvalidLimits, E.init(@splat(0), @splat(0), .{ .records = (1 << 24) + 1 }));
+        var invalid: E = undefined;
+        try std.testing.expectError(error.InvalidLimits, invalid.init(&@splat(0), &@splat(0), .{ .records = (1 << 24) + 1 }));
     }
 }
 test "C2 record padding empty application and authenticated inner rejection" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
-        var tx = try E.init(@splat(1), @splat(2), .{});
+        var tx: E = undefined;
+        try tx.init(&@splat(1), &@splat(2), .{});
         defer tx.deinit();
-        var rx = try E.init(@splat(1), @splat(2), .{});
+        var rx: E = undefined;
+        try rx.init(&@splat(1), &@splat(2), .{});
         defer rx.deinit();
         var wire: [64]u8 = undefined;
         var out: [64]u8 = undefined;
@@ -78,7 +87,8 @@ test "C2 record padding empty application and authenticated inner rejection" {
         const A = S.Aead(suite);
         var invalid: [22]u8 = .{ 23, 3, 3, 0, 17 } ++ @as([17]u8, @splat(0));
         A.encrypt(invalid[5..6], invalid[6..][0..16], &.{24}, invalid[0..5], rx.iv.expose().*, rx.key.expose().*);
-        var bad = try E.init(@splat(1), @splat(2), .{});
+        var bad: E = undefined;
+        try bad.init(&@splat(1), &@splat(2), .{});
         defer bad.deinit();
         try std.testing.expectError(error.UnexpectedRecord, bad.open(&invalid, &out));
     }
@@ -93,9 +103,11 @@ fn roundtrip(_: void, case: *shakedown.Case) !void {
     const padding = shakedown.gen.intRange(case.source, usize, 0, payload.len - len);
     inline for (std.enums.values(S.Suite13)) |suite| {
         const E = R.Epoch(suite);
-        var tx = try E.init(@splat(1), @splat(2), .{});
+        var tx: E = undefined;
+        try tx.init(&@splat(1), &@splat(2), .{});
         defer tx.deinit();
-        var rx = try E.init(@splat(1), @splat(2), .{});
+        var rx: E = undefined;
+        try rx.init(&@splat(1), &@splat(2), .{});
         defer rx.deinit();
         var wire: [R.max_ciphertext + 7]u8 = @splat(0xa5);
         var out: [R.max_inner + 2]u8 = @splat(0xa5);
@@ -110,15 +122,15 @@ test "C2 KeyUpdate old-key commitment then directional reset" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const Hash = S.Hash(suite);
         var write_secret = aegis.Secret([Hash.digest_length]u8).init(@splat(7));
-        errdefer write_secret.deinit();
+        defer write_secret.deinit();
         var read_secret = aegis.Secret([Hash.digest_length]u8).init(@splat(7));
-        errdefer read_secret.deinit();
-        var tx = try R.Epoch(suite).initTraffic(&write_secret, .{ .records = 2 });
+        defer read_secret.deinit();
+        var tx: R.Epoch(suite) = undefined;
+        try tx.initTraffic(write_secret.expose(), .{ .records = 2 });
         defer tx.deinit();
-        var rx = try R.Epoch(suite).initTraffic(&read_secret, .{ .records = 2 });
+        var rx: R.Epoch(suite) = undefined;
+        try rx.initTraffic(read_secret.expose(), .{ .records = 2 });
         defer rx.deinit();
-        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&write_secret), 0));
-        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&read_secret), 0));
         var wire: [128]u8 = undefined;
         var out: [128]u8 = undefined;
         _ = try rx.open(try tx.seal(.application, "before", 0, &wire), &out);

@@ -120,7 +120,8 @@ pub const Options = struct {
     /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
     client_record_size_limit: ?u16 = null,
     server_record_size_limit: ?u16 = null,
-    /// The server's key log (NSS key log lines), to read its records in a test.
+    /// Each end's key log (NSS key log lines), to read its records or know its secrets in a test.
+    client_key_log: ?Connection.KeyLog = null,
     server_key_log: ?Connection.KeyLog = null,
     /// A second client credential after the first: `dc_client` under the delegation root, with
     /// the client's key (a chain of another issuer).
@@ -249,6 +250,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .certificate_authorities = options.client_authorities,
         .accept_delegated = options.client_accept_delegated,
         .post_handshake_auth = options.client_post_auth,
+        .key_log = options.client_key_log,
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{

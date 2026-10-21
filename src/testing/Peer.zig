@@ -3,7 +3,6 @@
 //! reuses cloak's HKDF, key schedule and record protection, which the RFC 8448 vectors pin
 //! independently; its hello parsing, message assembly and signatures are its own.
 const std = @import("std");
-const aegis = @import("aegis");
 const suites = @import("../tls/crypto/Suite.zig");
 const Labels = @import("../tls/crypto/Labels.zig");
 const Group = @import("../tls/crypto/Group.zig").Group;
@@ -331,10 +330,12 @@ pub fn Peer(comptime suite: Suite13) type {
             self.out.shrinkRetainingCapacity(rest);
         }
 
-        fn epochFrom(secret: *const Secret) !E {
-            var holder = aegis.Secret(Secret).init(secret.*);
-            defer holder.deinit();
-            return E.initTraffic(&holder, .{});
+        /// Makes `slot` the epoch of `secret`, erasing the one it held.
+        fn epochFrom(slot: *?E, secret: *const Secret) !void {
+            if (slot.*) |*old| old.deinit();
+            slot.* = @as(E, undefined);
+            errdefer slot.* = null;
+            try slot.*.?.initTraffic(secret, .{});
         }
 
         // ------------------------------------------------------------ input
@@ -700,12 +701,13 @@ pub fn Peer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(.tls13, null, kex.secret[0..kex.secret_len], &hello_hash, &traffic);
+            self.schedule = @as(K, undefined);
+            try self.schedule.?.init(.tls13, null, kex.secret[0..kex.secret_len], &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
             if (!self.config.quic) {
-                self.tx = try epochFrom(&self.server_hs);
-                self.rx = try epochFrom(&self.client_hs);
+                try epochFrom(&self.tx, &self.server_hs);
+                try epochFrom(&self.rx, &self.client_hs);
             }
 
             if (self.config.raw_flight) |raw| {
@@ -1037,8 +1039,8 @@ pub fn Peer(comptime suite: Suite13) type {
             }
             self.tx.?.deinit();
             self.rx.?.deinit();
-            self.tx = try epochFrom(&self.server_app);
-            self.rx = try epochFrom(&self.client_app);
+            try epochFrom(&self.tx, &self.server_app);
+            try epochFrom(&self.rx, &self.client_app);
             const ticket = [_]u8{ 4, 0, 0, 18, 0, 0, 0x1c, 0x20, 0x12, 0x34, 0x56, 0x78, 1, 7, 0, 4, 't', 'k', 't', '!', 0, 0 };
             for (0..self.config.tickets) |_| try self.sealOne(.handshake, &ticket);
             if (self.config.tamper == .ticket_flood) for (0..200) |_| try self.sealOne(.handshake, &ticket);

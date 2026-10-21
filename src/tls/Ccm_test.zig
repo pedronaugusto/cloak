@@ -47,17 +47,21 @@ test "C8 the AES-CCM suites are spoken only when listed: the default offer leave
 
 test "C8 a CCM key protects at most 2^23 records, half GCM's" {
     const secret: [32]u8 = @splat(7);
-    var ccm = try Protection.init(.aes_128_ccm_sha256, &secret, .{});
+    var ccm: Protection = undefined;
+    try ccm.init(.aes_128_ccm_sha256, &secret, .{});
     defer ccm.deinit();
     try std.testing.expectEqual(@as(u64, 1 << 23), ccm.remaining().records);
-    var gcm = try Protection.init(.aes_128_gcm_sha256, &secret, .{});
+    var gcm: Protection = undefined;
+    try gcm.init(.aes_128_gcm_sha256, &secret, .{});
     defer gcm.deinit();
     try std.testing.expectEqual(@as(u64, 1 << 24), gcm.remaining().records);
-    var ccm12 = try Protection.init12(.aes_256_ccm, &@as([32]u8, @splat(1)), &@as([4]u8, @splat(2)), .{});
+    var ccm12: Protection = undefined;
+    try ccm12.init12(.aes_256_ccm, &@as([32]u8, @splat(1)), &@as([4]u8, @splat(2)), .{});
     defer ccm12.deinit();
     try std.testing.expectEqual(@as(u64, 1 << 23), ccm12.remaining().records);
     // A lower bound of the caller's still holds.
-    var low = try Protection.init(.aes_128_ccm_sha256, &secret, .{ .records = 5 });
+    var low: Protection = undefined;
+    try low.init(.aes_128_ccm_sha256, &secret, .{ .records = 5 });
     defer low.deinit();
     try std.testing.expectEqual(@as(u64, 5), low.remaining().records);
 }

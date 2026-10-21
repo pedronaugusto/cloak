@@ -18,7 +18,8 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
     var iv: [12]u8 = undefined;
     try L.expand(H, &key, &traffic, "key", "");
     try L.expand(H, &iv, &traffic, "iv", "");
-    var rx = try R.Epoch(.aes_128_gcm_sha256).init(key, iv, .{});
+    var rx: R.Epoch(.aes_128_gcm_sha256) = undefined;
+    try rx.init(&key, &iv, .{});
     defer rx.deinit();
     var out: [658]u8 = undefined;
     const plain = try rx.open(@embedFile("testdata/server-record.bin"), &out);
@@ -32,7 +33,8 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
         pos += size;
     }
     try std.testing.expectEqualSlices(u8, &hex("9608102a0f1ccc6db6250b7b7e417b1a000eaada3daae4777a7686c9ff83df13"), &transcript.digest());
-    var tx = try R.Epoch(.aes_128_gcm_sha256).init(key, iv, .{});
+    var tx: R.Epoch(.aes_128_gcm_sha256) = undefined;
+    try tx.init(&key, &iv, .{});
     defer tx.deinit();
     var wire: [679]u8 = undefined;
     try std.testing.expectEqualSlices(u8, @embedFile("testdata/server-record.bin"), try tx.seal(.handshake, plain.bytes, 0, &wire));

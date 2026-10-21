@@ -127,6 +127,7 @@ test {
     _ = @import("tls/PostAuth_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");
+    _ = @import("tls/Secrets_test.zig");
     _ = @import("tls/wire.zig");
     _ = @import("tls/handshake.zig");
     _ = @import("tls/crypto.zig");

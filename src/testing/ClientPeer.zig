@@ -3,7 +3,6 @@
 //! named ways. It reuses cloak's key schedule, HKDF, record protection and key shares, which
 //! the RFC 8448 vectors and the exchange tests pin; the messages and checks are its own.
 const std = @import("std");
-const aegis = @import("aegis");
 const suites = @import("../tls/crypto/Suite.zig");
 const Labels = @import("../tls/crypto/Labels.zig");
 const Exchange = @import("../tls/crypto/Exchange.zig");
@@ -216,10 +215,12 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             self.out.shrinkRetainingCapacity(rest);
         }
 
-        fn epochFrom(secret: *const Secret) !E {
-            var holder = aegis.Secret(Secret).init(secret.*);
-            defer holder.deinit();
-            return E.initTraffic(&holder, .{});
+        /// Makes `slot` the epoch of `secret`, erasing the one it held.
+        fn epochFrom(slot: *?E, secret: *const Secret) !void {
+            if (slot.*) |*old| old.deinit();
+            slot.* = @as(E, undefined);
+            errdefer slot.* = null;
+            try slot.*.?.initTraffic(secret, .{});
         }
 
         fn appendMessage(self: *Self, list: *std.ArrayList(u8), kind: u8, body: []const u8) !void {
@@ -574,13 +575,14 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             const hello_hash = self.transcript.digest();
             var traffic: K.Traffic = .{};
             defer traffic.deinit();
-            self.schedule = try K.init(.tls13, null, secret.bytes(), &hello_hash, &traffic);
+            self.schedule = @as(K, undefined);
+            try self.schedule.?.init(.tls13, null, secret.bytes(), &hello_hash, &traffic);
             self.client_hs = traffic.client.expose().*;
             self.server_hs = traffic.server.expose().*;
-            self.rx = try epochFrom(&self.server_hs);
+            try epochFrom(&self.rx, &self.server_hs);
             // The client's own writes switch to the handshake keys when it sends its flight.
             if (self.config.tamper == .finished_early) {
-                self.tx = try epochFrom(&self.client_hs);
+                try epochFrom(&self.tx, &self.client_hs);
                 var verify_data: Secret = undefined;
                 const digest = self.transcript.digest();
                 Labels.finished(Hash, .tls13, &verify_data, &self.client_hs, &digest);
@@ -690,7 +692,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             if (t == .double_ccs) try self.out.appendSlice(self.gpa, &.{ 20, 3, 3, 0, 1, 1 });
             if (t == .bad_record_after_second) try self.plainRecord(23, 0x0303, &@as([64]u8, @splat(0x5c)));
             if (t == .plaintext_alert) return self.plainRecord(21, 0x0303, &.{ 2, 48 });
-            if (self.tx == null) self.tx = try epochFrom(&self.client_hs);
+            if (self.tx == null) try epochFrom(&self.tx, &self.client_hs);
             var flight: std.ArrayList(u8) = .empty;
             defer flight.deinit(self.gpa);
             if (self.requested_certificate) {
@@ -753,8 +755,8 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             // Application keys after the flight.
             self.tx.?.deinit();
             self.rx.?.deinit();
-            self.tx = try epochFrom(&self.client_app);
-            self.rx = try epochFrom(&self.server_app);
+            try epochFrom(&self.tx, &self.client_app);
+            try epochFrom(&self.rx, &self.server_app);
             self.base = self.transcript;
             self.app_write = self.client_app;
             self.previous_write = self.client_app;

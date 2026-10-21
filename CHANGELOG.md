@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- Traffic secrets and record keys no longer stay on the stack. HKDF and the TLS 1.2 PRF over a secret, record sealing and opening, DTLS 1.3's record-number mask, ticket sealing and the cookie and ticket-key MACs now run in a scrubbed frame, as key parsing, signing and ECDH already did. Their stack is zeroed when they return, to a depth a test measures (8 KiB, 4 KiB for each record), and the AEAD nonce is made inside. The key schedule, the handshake's outputs, the DTLS and stream record epochs and record protection are now made where they are kept, never copied through the stack. The DTLS 1.3 copies had reached the heap through a certificate verifier's workspace.
+
 ## [0.19.0] - 2026-10-21
 
 ### Added

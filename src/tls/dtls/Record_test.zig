@@ -5,15 +5,16 @@ const suites = @import("../crypto/Suite.zig");
 const all13 = [_]suites.Suite13{ .aes_128_gcm_sha256, .aes_256_gcm_sha384, .chacha20_poly1305_sha256, .aes_128_ccm_sha256 };
 const all12 = [_]suites.Cipher{ .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305, .aes_128_ccm, .aes_256_ccm, .aes_128_ccm_8 };
 
-fn pair13(suite: suites.Suite13) [2]Record.Epoch {
+fn pair13(ends: *[2]Record.Epoch, suite: suites.Suite13) void {
     const secret: [48]u8 = @splat(0x5a);
     const len = suites.digestLength(suite);
-    return .{ Record.Epoch.init13(suite, 3, secret[0..len]), Record.Epoch.init13(suite, 3, secret[0..len]) };
+    for (ends) |*e| e.init13(suite, 3, secret[0..len]);
 }
 
 test "C8 DTLS 1.3 records seal and open under every suite, with and without a connection ID" {
     for (all13) |suite| for ([_][]const u8{ "", "cid-7" }) |cid| {
-        var ends = pair13(suite);
+        var ends: [2]Record.Epoch = undefined;
+        pair13(&ends, suite);
         defer for (&ends) |*e| e.deinit();
         var out: [256]u8 = undefined;
         for (0..3) |i| {
@@ -32,7 +33,8 @@ test "C8 DTLS 1.3 records seal and open under every suite, with and without a co
 }
 
 test "C8 a DTLS 1.3 record number is masked: the wire never shows the sequence after the first" {
-    var ends = pair13(.aes_128_gcm_sha256);
+    var ends: [2]Record.Epoch = undefined;
+    pair13(&ends, .aes_128_gcm_sha256);
     defer for (&ends) |*e| e.deinit();
     var seen_plain = true;
     var out: [128]u8 = undefined;
@@ -45,7 +47,8 @@ test "C8 a DTLS 1.3 record number is masked: the wire never shows the sequence a
 
 test "F81 catalogue_dtls_short_aead_ccm_tag_and_survival: a bad DTLS 1.3 record is dropped, the epoch lives on" {
     for (all13) |suite| {
-        var ends = pair13(suite);
+        var ends: [2]Record.Epoch = undefined;
+        pair13(&ends, suite);
         defer for (&ends) |*e| e.deinit();
         var out: [128]u8 = undefined;
         const good = try ends[0].seal13(.application, "payload", "", &out);
@@ -83,9 +86,11 @@ test "F81 catalogue_dtls_short_aead_ccm_tag_and_survival: a bad DTLS 1.3 record 
 }
 
 test "C8 a DTLS 1.3 key update moves both ends to the same next epoch" {
-    var ends = pair13(.chacha20_poly1305_sha256);
+    var ends: [2]Record.Epoch = undefined;
+    pair13(&ends, .chacha20_poly1305_sha256);
     defer for (&ends) |*e| e.deinit();
-    var next = [2]Record.Epoch{ ends[0].next(), ends[1].next() };
+    var next: [2]Record.Epoch = undefined;
+    for (&ends, &next) |*e, *n| e.next(n);
     defer for (&next) |*e| e.deinit();
     try std.testing.expectEqual(@as(u64, 4), next[0].number);
     try std.testing.expect(!std.mem.eql(u8, &ends[0].key.expose().*, &next[0].key.expose().*));
@@ -96,17 +101,18 @@ test "C8 a DTLS 1.3 key update moves both ends to the same next epoch" {
     try std.testing.expectEqualSlices(u8, "after update", (try next[1].open13(parsed.record, parsed.kind.unified)).bytes);
 }
 
-fn pair12(cipher: suites.Cipher) [2]Record.Epoch {
+fn pair12(ends: *[2]Record.Epoch, cipher: suites.Cipher) void {
     const key: [32]u8 = @splat(0x33);
     const iv: [12]u8 = @splat(0x44);
     const key_len = cipher.keyLength();
     const iv_len = cipher.fixedIvLength12();
-    return .{ Record.Epoch.init12(cipher, key[0..key_len], iv[0..iv_len]), Record.Epoch.init12(cipher, key[0..key_len], iv[0..iv_len]) };
+    for (ends) |*e| e.init12(cipher, key[0..key_len], iv[0..iv_len]);
 }
 
 test "C8 DTLS 1.2 records seal and open under every cipher, with and without a connection ID" {
     for (all12) |cipher| for ([_][]const u8{ "", "abc" }) |cid| {
-        var ends = pair12(cipher);
+        var ends: [2]Record.Epoch = undefined;
+        pair12(&ends, cipher);
         defer for (&ends) |*e| e.deinit();
         var out: [256]u8 = undefined;
         for (0..3) |i| {
@@ -123,7 +129,8 @@ test "C8 DTLS 1.2 records seal and open under every cipher, with and without a c
 }
 
 test "C8 a DTLS 1.2 CCM_8 record carries an 8-byte tag, and its key tolerates 2^7 failed openings" {
-    var ends = pair12(.aes_128_ccm_8);
+    var ends: [2]Record.Epoch = undefined;
+    pair12(&ends, .aes_128_ccm_8);
     defer for (&ends) |*e| e.deinit();
     var out: [128]u8 = undefined;
     const record = try ends[0].seal12(.application, "tiny", "", &out);
@@ -145,7 +152,8 @@ test "C8 a DTLS 1.2 CCM_8 record carries an 8-byte tag, and its key tolerates 2^
 
 test "C8 a DTLS 1.2 record is dropped when replayed or tampered" {
     for (all12) |cipher| {
-        var ends = pair12(cipher);
+        var ends: [2]Record.Epoch = undefined;
+        pair12(&ends, cipher);
         defer for (&ends) |*e| e.deinit();
         var out: [128]u8 = undefined;
         const record = try ends[0].seal12(.handshake, "finished", "", &out);
