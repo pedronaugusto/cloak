@@ -1234,20 +1234,24 @@ fn onHandshake(self: *Datagram, body: []const u8, epoch: u64, record_sequence: ?
     // with a fragment dropped is not (RFC 9147 section 7: an ACK of it could deadlock).
     var any_fragment = false;
     var any_dropped = false;
+    // A fragment that cannot be taken is dropped from a plaintext record, which anyone on the path
+    // can forge (RFC 9147 section 4.5.2), and refused from one under keys, which only the peer
+    // can have sent: it would never be taken however often it came (F160).
+    const keyed = epoch != 0;
     while (rest.len != 0) {
-        if (rest.len < 12) return;
+        if (rest.len < 12) return if (keyed) error.DecodeError else {};
         const kind = rest[0];
         const length = std.mem.readInt(u24, rest[1..4], .big);
         const sequence = std.mem.readInt(u16, rest[4..6], .big);
         const offset = std.mem.readInt(u24, rest[6..9], .big);
         const fragment_len = std.mem.readInt(u24, rest[9..12], .big);
-        if (rest.len - 12 < fragment_len) return;
+        if (rest.len - 12 < fragment_len) return if (keyed) error.DecodeError else {};
         const fragment = rest[12..][0..fragment_len];
         rest = rest[12 + fragment_len ..];
         // The fragment must lie inside its message.
-        if (@as(u32, offset) + fragment_len > length) return;
+        if (@as(u32, offset) + fragment_len > length) return if (keyed) error.DecodeError else {};
         // In usize: a 24-bit length plus its header can pass 2^24 (F77).
-        if (@as(usize, length) + 4 > self.limits.handshake.message) return;
+        if (@as(usize, length) + 4 > self.limits.handshake.message) return if (keyed) error.HandshakeLimit else {};
         // A server numbers the handshake from the client's first hello it takes: 0, or 1 and up
         // after a cookie exchange (RFC 6347 section 4.2.2).
         if (self.role == .server and !self.started) {

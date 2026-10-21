@@ -1283,7 +1283,10 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   counts only before any key. What the peer holding the keys sends against the protocol ends
   the association: application data under DTLS 1.3's handshake keys (RFC 9147 section 6.1,
   F144), an inner plaintext naming no content type (RFC 8446 section 5.4, F146), a handshake
-  message after the peer's KeyUpdate under the epoch it retired (RFC 8446 section 5.1, F150).
+  message after the peer's KeyUpdate under the epoch it retired (RFC 8446 section 5.1, F150), a
+  handshake fragment cut short, past its record or its message, or of a message past
+  `limits.handshake.message` (F160: a plaintext one is dropped, and one under keys would never
+  be taken however often it came).
   A record over the size limit is dropped unopened, as RFC 8449 section 4 allows a DTLS end.
   A fatal alert of a DTLS 1.3 handshake goes under the handshake keys until this end's
   Finished went out, since the peer reads no newer epoch before (F149).
@@ -1711,3 +1714,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F151 | `catalogue_dtls13_ack_skips_dropped_fragments` | `tls/dtls/Datagram_test.zig` | ACKing a record with a fragment dropped, and clearing the list after each ACK; before, a record was ACKed when any of its fragments was new, against RFC 9147 section 7's MUST (BoGo's DTLS-Retransmit-Server-DoNotACKDiscardedFragments) |
 | F152 | `catalogue_verified_leaf_must_allow_signing` | `tls/catalogue_test.zig`, `tls/PostAuth_test.zig` | the engine's Key Usage check removed at the client, the server and post-handshake authentication, each alone; before, a caller's verifier that did not look at key usage let a leaf whose key may not sign prove possession (BoGo's ECDSAKeyUsage-Server, RSAKeyUsage-Server-WantSignature-GotEncipherment; RFC 8446 4.4.2.2) |
 | F153 | `catalogue_revocation_verdict_surfaces` | `verify/Verifier_test.zig`, `tls/Session_test.zig` | the verifier's record of a revocation refusal removed, and the Revoked and status mappings, each alone; before, a path refused by its revocation evidence reported NoTrustedPath, so a revoked certificate went out as unknown_ca (found by the OCSP stapling interop rows) |
+| F160 | `catalogue_dtls_authenticated_fragment_refused` | `tls/dtls/Datagram_test.zig` | the refusal of each unfit fragment under keys alone (cut short, past its record, past its message, past the limit), DTLS 1.3 and 1.2; before, each was dropped as a forged plaintext one is, and the handshake waited out its timer (BoGo's LargeMessage-Reject-DTLS) |

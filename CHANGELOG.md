@@ -9,6 +9,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - A credential's own signature schemes: `Credential.schemes` and `ClientCredential.schemes` (at most 16) name the schemes its key signs under, in that end's order, as Go's `SupportedSignatureAlgorithms` and BoringSSL's per-credential signing preferences do: for a key held where only some schemes may be used, or an order other than cloak's. The list restricts and reorders cloak's schemes for the key and never adds one; a scheme the key or the version cannot make is passed over, and a credential with no scheme the peer takes is not chosen.
 - `Info.peer_scheme`: the signature scheme the peer proved possession under in the handshake (its CertificateVerify, or a TLS 1.2 server's ServerKeyExchange); null when it signed nothing.
 
+### Fixed
+
+- DTLS: a handshake fragment under keys that is cut short, lies past its record or its message, or belongs to a message past `limits.handshake.message` ends the association (decode_error; `DecodeError`, `HandshakeLimit`); it was dropped as a forged plaintext fragment is, so a peer's oversized Certificate left the handshake waiting out its timer. Plaintext fragments are still dropped. F160.
+
 ## [0.20.0] - 2026-10-21
 
 ### Added

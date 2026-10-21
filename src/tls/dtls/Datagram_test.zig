@@ -791,6 +791,38 @@ test "F151 catalogue_dtls13_ack_skips_dropped_fragments (a record with a fragmen
     try std.testing.expect(listed(&pair.client.dtls, alone_number));
 }
 
+test "F160 catalogue_dtls_authenticated_fragment_refused (a malformed or oversized handshake fragment under keys ends the association)" {
+    // BoGo's LargeMessage-Reject-DTLS: a DTLS 1.3 Certificate past the client's message limit,
+    // under the handshake keys, was dropped as a forged plaintext one is, and the handshake
+    // waited out its timer. Under keys the peer sent it: refused as on a stream. Each case once
+    // per version, after the handshake: a fragment header cut short, a fragment past its record,
+    // a fragment past its message, a message past the limit.
+    const Case = struct { body: []const u8, err: anyerror };
+    const cases = [_]Case{
+        .{ .body = &.{ 4, 0, 0, 12, 0 }, .err = error.DecodeError },
+        .{ .body = &.{ 4, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 50, 1, 2, 3 }, .err = error.DecodeError },
+        .{ .body = &.{ 4, 0, 0, 12, 0, 0, 0, 0, 10, 0, 0, 5, 1, 2, 3, 4, 5 }, .err = error.DecodeError },
+        .{ .body = &.{ 4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 1, 2, 3 }, .err = error.HandshakeLimit },
+    };
+    for ([_]bool{ true, false }) |tls13| for (cases) |case| {
+        const list = if (tls13) suites.Suite.tls13_only else &[_]suites.Suite{.ecdhe_ecdsa_aes_128_gcm_sha256};
+        const pair = try Pair.init(gpa, .{ .client_suites = list, .server_suites = list });
+        defer pair.deinit();
+        try pair.run();
+        var body: [32]u8 = undefined;
+        @memcpy(body[0..case.body.len], case.body);
+        // The message the client expects next, so no rule about order drops it first.
+        if (case.body.len >= 6) std.mem.writeInt(u16, body[4..6], pair.client.dtls.receive_sequence, .big);
+        var out: [256]u8 = undefined;
+        const record = if (tls13)
+            try writeEpoch(&pair.server.dtls, 3).seal13(.handshake, body[0..case.body.len], "", &out)
+        else
+            try writeEpoch(&pair.server.dtls, 1).seal12(.handshake, body[0..case.body.len], "", &out);
+        try std.testing.expectError(case.err, pair.client.dtls.receive(record, pair.now));
+        try std.testing.expectEqual(Datagram.Phase.failed, pair.client.dtls.phase());
+    };
+}
+
 test "C8 DTLS 1.3 connection IDs on request, spare and immediate" {
     const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .client_cid = "client", .server_cid = "server" });
     defer pair.deinit();
