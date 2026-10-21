@@ -87,7 +87,10 @@ pub const psk = struct {
     pub const Lookup = Psk.Lookup;
     pub const Query = Psk.Query;
     pub const Hash = Psk.Hash;
+    pub const Imported = Psk.Imported;
     pub const max_identity = Psk.max_identity;
+    pub const max_keys = Psk.max_keys;
+    pub const max_context = Psk.max_context;
     pub const min_secret12 = Psk.min_secret12;
     pub const max_secret12 = Psk.max_secret12;
 };
@@ -126,6 +129,7 @@ test {
     _ = @import("tls/Transparency_test.zig");
     _ = @import("tls/Stapling_test.zig");
     _ = @import("tls/Schemes_test.zig");
+    _ = @import("tls/PskImport_test.zig");
     _ = @import("tls/PostAuth_test.zig");
     _ = @import("tls/CodePoints_test.zig");
     _ = @import("tls/Timing_test.zig");

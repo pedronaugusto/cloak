@@ -68,11 +68,13 @@ pub const Options = struct {
     /// Encrypted Client Hello (RFC 9849). A config list makes it required and the connection
     /// TLS 1.3 only.
     ech: Ech.Mode = .off,
-    /// A provisioned key to offer, for its one version: TLS 1.3 (PSK-DHE), offered instead of a
-    /// ticket, never with one; or TLS 1.2 (plain PSK, RFC 4279), offered by listing its suites,
-    /// which have no forward secrecy. A server that selects it is authenticated by it, with no
-    /// certificate.
-    external_psk: ?Psk.External = null,
+    /// Provisioned keys to offer, each for its one version, at most `Psk.max_keys`: TLS 1.3
+    /// (PSK-DHE) keys, offered in this order instead of a ticket, never with one (a plain key
+    /// once, an imported one, RFC 9258, once per hash of the TLS 1.3 suites offered); at most one
+    /// TLS 1.2 key (plain PSK, RFC 4279), offered by listing its suites, which have no forward
+    /// secrecy. A server that selects one is authenticated by it, with no certificate
+    /// (`Info.external_psk`).
+    external_psks: []const Psk.External = &.{},
     /// The identity the server certificate must carry.
     identity: types.Identity = .none,
     verify: Verify,
@@ -110,8 +112,9 @@ pub const Info = struct {
     /// Encrypted Client Hello was offered and accepted: the true server name never crossed the
     /// wire in clear.
     ech_accepted: bool = false,
-    /// The handshake used a provisioned key: the peer is whoever holds it, no certificate.
-    external_psk: bool = false,
+    /// The identity of the provisioned key the handshake used (an imported key's external
+    /// identity): the peer is whoever holds it, no certificate. Null when none authenticated.
+    external_psk: ?[]const u8 = null,
     /// DTLS: the SRTP profile use_srtp agreed (RFC 5764), keyed by the "EXTRACTOR-dtls_srtp"
     /// exporter; null when none was offered or none agreed.
     srtp: ?Hello.Srtp = null,
@@ -231,8 +234,9 @@ ticket12: []u8 = &.{},
 ticket12_hint: u32 = 0,
 resumed: bool = false,
 ech_accepted: bool = false,
-/// The provisioned key is still on offer (until the server's answer, or a retry to another hash).
-external_offered: bool = false,
+/// The provisioned keys' TLS 1.3 offers still made, a bit each (`Scratch.externals`): until the
+/// server's answer, a retry drops those of another hash.
+external_live: u8 = 0,
 /// The server selected the provisioned key.
 external_used: bool = false,
 /// After an authenticated rejection: the server's retry configurations (empty when it sent none,
@@ -252,7 +256,13 @@ const Kept = struct {
     sni: []const u8,
     message_limit: usize,
     allows12: bool,
+    /// The identity of the provisioned key the server selected, borrowed from the options.
+    psk_identity: []const u8 = "",
 };
+
+/// A provisioned key's TLS 1.3 offer: its key in `external_psks`, the hash of the suites it
+/// serves, its binder label and its identity on the wire.
+const External13 = struct { key: u8, hash: Psk.Hash, kind: Schedule.BinderKind, identity: []const u8 };
 
 const Scratch = struct {
     options: Options = undefined,
@@ -284,6 +294,12 @@ const Scratch = struct {
     /// after the caller's.
     ocsp: []u8 = &.{},
     ocsp_lists: [max_evidence][]const u8 = undefined,
+    /// The provisioned keys' TLS 1.3 offers in the hello's order, the keys their binders and
+    /// schedules take (a plain key's own, an imported one's derived, `Psk.derive`), 48 bytes each,
+    /// and the imported identities' bytes; owned, allocated only for a client with such keys.
+    externals: []External13 = &.{},
+    external_keys: []u8 = &.{},
+    imported: []u8 = &.{},
     /// TLS 1.2: a ServerKeyExchange that came where a CertificateStatus might have, owned; it is
     /// taken once the chain it follows is verified.
     held_ske: []u8 = &.{},
@@ -407,13 +423,18 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     for (options.credentials) |credential| if (credential.delegated) |delegated| {
         if (options.verify != .full or !hello.allows13() or delegated.side() != .client or !delegated.belongsTo(credential.auth.identity)) return error.InvalidOptions;
     };
-    if (options.external_psk) |psk| {
+    if (options.external_psks.len > Psk.max_keys) return error.InvalidOptions;
+    var keys12: usize = 0;
+    var offers13: usize = 0;
+    for (options.external_psks) |psk| {
         Psk.validate(psk) catch return error.InvalidOptions;
         if (!offersKeySuite(hello, psk)) return error.InvalidOptions;
+        keys12 += @intFromBool(psk.version == .tls12);
+        if (psk.version == .tls13) offers13 += if (psk.imported != null) offeredHashes(hello).len else 1;
     }
+    if (keys12 > 1 or offers13 > Hello.max_psk_offers) return error.InvalidOptions;
     // The TLS 1.2 PSK suites are offered only with a TLS 1.2 key to complete them.
-    const key12 = if (options.external_psk) |psk| psk.version == .tls12 else false;
-    for (hello.suites) |suite| if (suite.tls12()) |s12| if (s12.authentication() == .psk and !key12) return error.InvalidOptions;
+    for (hello.suites) |suite| if (suite.tls12()) |s12| if (s12.authentication() == .psk and keys12 == 0) return error.InvalidOptions;
     const self = try gpa.create(Client);
     errdefer gpa.destroy(self);
     const scratch = try gpa.create(Scratch);
@@ -430,8 +451,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         .state = .init(.client, options.hello.transport),
         .scratch = scratch,
     };
-    // A TLS 1.3 key goes in the hello's pre_shared_key; a TLS 1.2 key waits for its suite.
-    self.external_offered = if (options.external_psk) |psk| psk.version == .tls13 else false;
+    // TLS 1.3 keys go in the hello's pre_shared_key; a TLS 1.2 key waits for its suite.
+    try self.offerExternals();
     self.need_now = .{ .entropy = .{ .len = self.initialEntropy() } };
     // A datagram hello that may be answered in DTLS 1.2 is hashed in its DTLS form too.
     if (options.hello.transport == .datagram and options.hello.allows12()) scratch.transcripts.startDatagram(0, 0, options.hello.allows13());
@@ -451,13 +472,84 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     return self;
 }
 
-/// Whether the hello offers a suite a provisioned key can complete: one of its version and hash.
+/// Whether the hello offers a suite a provisioned key can complete: one of its version and hash,
+/// any TLS 1.3 suite for an imported key.
 fn offersKeySuite(hello: Hello.Options, psk: Psk.External) bool {
     for (hello.suites) |suite| switch (psk.version) {
-        .tls13 => if (suite.tls13()) |s13| if (hello.allows13() and suites.digestLength(s13) == psk.hash.length()) return true,
+        .tls13 => if (suite.tls13()) |s13| if (hello.allows13() and (psk.imported != null or suites.digestLength(s13) == psk.hash.length())) return true,
         .tls12 => if (suite.tls12()) |s12| if (hello.allows12() and s12.authentication() == .psk) return true,
     };
     return false;
+}
+
+/// The hashes of the TLS 1.3 suites the hello offers, in its order, each once.
+fn offeredHashes(hello: Hello.Options) []const Psk.Hash {
+    if (!hello.allows13()) return &.{};
+    var sha256 = false;
+    var sha384 = false;
+    var first: ?Psk.Hash = null;
+    for (hello.suites) |suite| if (suite.tls13()) |s13| {
+        const hash: Psk.Hash = if (suites.digestLength(s13) == 48) .sha384 else .sha256;
+        if (first == null) first = hash;
+        if (hash == .sha256) sha256 = true else sha384 = true;
+    };
+    if (sha256 and sha384) return if (first.? == .sha256) &.{ .sha256, .sha384 } else &.{ .sha384, .sha256 };
+    if (sha256) return &.{.sha256};
+    if (sha384) return &.{.sha384};
+    return &.{};
+}
+
+/// Lays out the provisioned keys' TLS 1.3 offers (`Scratch.externals`) and puts them all on
+/// offer: a plain key under its own identity, an imported one under an ImportedIdentity for each
+/// offered hash with the key derived for it (RFC 9258 section 5).
+fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    const options = self.options;
+    const hashes = offeredHashes(options.hello);
+    var count: usize = 0;
+    var bytes: usize = 0;
+    for (options.external_psks) |psk| if (psk.version == .tls13) {
+        if (psk.imported) |imported| {
+            count += hashes.len;
+            bytes += hashes.len * (2 + psk.identity.len + 2 + imported.context.len + 4);
+        } else count += 1;
+    };
+    if (count == 0) return;
+    const gpa = self.gpa;
+    const externals = try gpa.alloc(External13, count);
+    errdefer gpa.free(externals);
+    const keys = try gpa.alloc(u8, count * 48);
+    errdefer gpa.free(keys);
+    const imported_bytes = try gpa.alloc(u8, bytes);
+    var at: usize = 0;
+    var n: usize = 0;
+    for (options.external_psks, 0..) |psk, key| {
+        if (psk.version != .tls13) continue;
+        if (psk.imported == null) {
+            externals[n] = .{ .key = @intCast(key), .hash = psk.hash, .kind = .external, .identity = psk.identity }; // safe: at most Psk.max_keys keys
+            @memcpy(keys[n * 48 ..][0..psk.secret.len], psk.secret);
+            n += 1;
+            continue;
+        }
+        for (hashes) |hash| {
+            const identity = Psk.importedIdentity(psk, options.hello.transport, hash).write(imported_bytes[at..]);
+            at += identity.len;
+            externals[n] = .{ .key = @intCast(key), .hash = hash, .kind = .imported, .identity = identity }; // safe: at most Psk.max_keys keys
+            Psk.derive(psk, options.hello.transport.prefix(), identity, keys[n * 48 ..][0..hash.length()]);
+            n += 1;
+        }
+    }
+    scratch.externals = externals;
+    scratch.external_keys = keys;
+    scratch.imported = imported_bytes;
+    self.external_live = @truncate((@as(u16, 1) << @intCast(n)) - 1); // safe: n is at most eight
+}
+
+/// The TLS 1.2 key: the one of that version in `external_psks`.
+pub fn key12(self: *const Client) ?Psk.External {
+    for (self.options.external_psks) |psk| if (psk.version == .tls12) return psk;
+    return null;
 }
 
 pub fn deinit(self: *Client) void {
@@ -670,6 +762,12 @@ fn releaseScratch(self: *Client) void {
     if (scratch.scts.len != 0) self.gpa.free(scratch.scts);
     if (scratch.ocsp.len != 0) self.gpa.free(scratch.ocsp);
     if (scratch.held_ske.len != 0) self.gpa.free(scratch.held_ske);
+    if (scratch.externals.len != 0) self.gpa.free(scratch.externals);
+    if (scratch.external_keys.len != 0) {
+        std.crypto.secureZero(u8, scratch.external_keys);
+        self.gpa.free(scratch.external_keys);
+    }
+    if (scratch.imported.len != 0) self.gpa.free(scratch.imported);
     std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
@@ -808,7 +906,7 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
 fn takeTicket(self: *Client) void {
     @setRuntimeSafety(true);
     const resumption = self.options.resumption orelse return;
-    if (self.options.hello.allows13() and !self.external_offered) if (resumption.cache.take(&self.cache_key, .tls13, self.origin)) |found| {
+    if (self.options.hello.allows13() and self.external_live == 0) if (resumption.cache.take(&self.cache_key, .tls13, self.origin)) |found| {
         var taken = found;
         if (self.options.hello.offers13(taken.entry.suite.tls13().?)) self.offered = taken else taken.release();
     };
@@ -834,20 +932,29 @@ pub fn releaseOffer(self: *Client) void {
 pub fn releaseOffer13(self: *Client) void {
     if (self.offered) |*taken| taken.release();
     self.offered = null;
-    self.external_offered = false;
+    self.external_live = 0;
 }
 
-/// The PSK the hello offers: the taken ticket, or the provisioned key.
-const Offer = struct { identity: []const u8, secret: []const u8, binder_len: usize, kind: enum { resumption, external } };
+/// A PSK the hello offers: the taken ticket, or a provisioned key's offer (`slot` in
+/// `Scratch.externals`).
+const Offer = struct { identity: []const u8, secret: []const u8, binder_len: usize, kind: Schedule.BinderKind, slot: u8 = 0 };
 
-fn pskOffer(self: *const Client) ?Offer {
+/// The PSKs the hello offers, in its order: the taken ticket, or the provisioned keys' offers
+/// still live.
+fn pskOffers(self: *const Client, out: *[Hello.max_psk_offers]Offer) []const Offer {
     @setRuntimeSafety(true);
-    if (self.offered) |taken| return .{ .identity = taken.entry.ticket, .secret = taken.entry.secretBytes(), .binder_len = suites.digestLength(taken.entry.suite.tls13().?), .kind = .resumption };
-    if (self.external_offered) {
-        const psk = self.options.external_psk.?;
-        return .{ .identity = psk.identity, .secret = psk.secret, .binder_len = psk.hash.length(), .kind = .external };
+    if (self.offered) |taken| {
+        out[0] = .{ .identity = taken.entry.ticket, .secret = taken.entry.secretBytes(), .binder_len = suites.digestLength(taken.entry.suite.tls13().?), .kind = .resumption };
+        return out[0..1];
     }
-    return null;
+    const scratch = self.scratch orelse return out[0..0];
+    var n: usize = 0;
+    for (scratch.externals, 0..) |external, slot| {
+        if (self.external_live & (@as(u8, 1) << @intCast(slot)) == 0) continue; // safe: at most eight slots
+        out[n] = .{ .identity = external.identity, .secret = scratch.external_keys[slot * 48 ..][0..external.hash.length()], .binder_len = external.hash.length(), .kind = external.kind, .slot = @intCast(slot) };
+        n += 1;
+    }
+    return out[0..n];
 }
 
 pub fn dropTicket12(self: *Client) void {
@@ -1078,7 +1185,8 @@ fn sendCompatCcs(self: *Client) Error!void {
 fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
     @setRuntimeSafety(true);
     var n: usize = 256 + self.options.hello.sni.len + self.options.hello.parameters.len + self.scratch.?.cookie_len;
-    if (self.pskOffer()) |offer| n += 64 + offer.identity.len;
+    var offers_buf: [Hello.max_psk_offers]Offer = undefined;
+    for (self.pskOffers(&offers_buf)) |offer| n += 64 + offer.identity.len;
     if (self.offered12) |taken| n += 8 + taken.entry.ticket.len;
     for (self.options.hello.alpn) |protocol| n += 1 + protocol.len;
     for (shares) |share| n += 4 + share.bytes.len;
@@ -1097,7 +1205,10 @@ fn sendHello(self: *Client) Error!void {
     }
     var offered: [2]Hello.Share = undefined;
     const shares = self.offeredShares(&offered);
-    const resumption = self.resumeOffer();
+    var offers_buf: [Hello.max_psk_offers]Offer = undefined;
+    const offers = self.pskOffers(&offers_buf);
+    var identities: [Hello.max_psk_offers]Hello.PskOffer = undefined;
+    const resumption = self.resumeOffer(offers, &identities);
     var form: Hello.Form = .plain;
     if (self.options.ech == .grease) {
         if (scratch.ech.ext.len == 0) try self.makeGrease(shares, resumption);
@@ -1105,47 +1216,51 @@ fn sendHello(self: *Client) Error!void {
     }
     const dst = try self.reserve(self.helloCapacity(shares) + scratch.ech.ext.len);
     const hello = try Hello.clientForm(dst, &scratch.random, scratch.session[0..scratch.session_len], scratch.legacy_cookie[0..scratch.legacy_cookie_len], shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption, form);
-    if (self.pskOffer()) |offer| self.writeBinder(&scratch.transcripts, offer, hello, resumption.binder_len);
+    self.writeBinders(&scratch.transcripts, offers, hello, resumption.bindersLength());
     try self.state.advance(.client_hello, .initial, .parsed, true);
     try self.queueMessage(.initial, hello);
 }
 
-/// What the hello says of resumption: PSK-DHE when there is a cache, and the ticket taken for it
-/// with its obfuscated age (its binder is filled after encoding).
-fn resumeOffer(self: *const Client) Hello.Resume {
+/// What the hello says of resumption: PSK-DHE when there is a cache, and the PSKs it offers
+/// (`pskOffers`), a ticket with its obfuscated age (their binders are filled after encoding).
+fn resumeOffer(self: *const Client, offers: []const Offer, out: *[Hello.max_psk_offers]Hello.PskOffer) Hello.Resume {
     @setRuntimeSafety(true);
     var resumption: Hello.Resume = .{ .modes = self.options.resumption != null };
     if (self.sendsTickets12()) resumption.ticket12 = if (self.offered12) |taken| taken.entry.ticket else "";
-    if (self.external_offered) {
+    for (offers, out[0..offers.len]) |offer, *identity| {
         // A provisioned key has no age: its obfuscated_ticket_age is zero (RFC 8446 4.2.11).
-        const psk = self.options.external_psk.?;
-        resumption.ticket = psk.identity;
-        resumption.binder_len = psk.hash.length();
+        identity.* = .{ .identity = offer.identity, .binder_len = offer.binder_len };
+        if (offer.kind == .resumption) {
+            const entry = self.offered.?.entry;
+            // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
+            const now_ms = @divFloor(self.now.?.nanoseconds, std.time.ns_per_ms);
+            const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
+            identity.age = @truncate(age +% entry.age_add);
+        }
     }
-    if (self.offered) |taken| {
-        const entry = taken.entry;
-        // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
-        const now_ms = @divFloor(self.now.?.nanoseconds, std.time.ns_per_ms);
-        const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
-        resumption.ticket = entry.ticket;
-        resumption.age = @truncate(age +% entry.age_add);
-        resumption.binder_len = suites.digestLength(entry.suite.tls13().?);
-    }
+    resumption.offers = out[0..offers.len];
     return resumption;
 }
 
-/// The binder covers the transcript so far and this hello up to its binders.
-fn writeBinder(self: *const Client, transcripts: *const Transcripts, offer: Offer, hello: []u8, n: usize) void {
+/// Each binder covers the transcript so far and this hello up to its binders (`binders` bytes,
+/// RFC 8446 section 4.2.11.2), under its offer's hash and key.
+fn writeBinders(self: *const Client, transcripts: *const Transcripts, offers: []const Offer, hello: []u8, binders: usize) void {
     @setRuntimeSafety(true);
-    var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const truncated = transcripts.digestWith(&digest_buf, n, hello[0 .. hello.len - (2 + 1 + n)]);
-    // The binder's schedule is the PSK's hash; any suite of that hash derives the same.
-    const kind: Schedule.BinderKind = if (offer.kind == .external) .external else .resumption;
-    switch (@as(Suite13, if (n == 48) .aes_256_gcm_sha384 else .aes_128_gcm_sha256)) {
-        inline else => |tag| {
-            const K = Schedule.Schedule(tag);
-            K.binderOf(self.options.hello.transport.prefix(), kind, offer.secret[0..K.length], truncated[0..K.length], hello[hello.len - K.length ..][0..K.length]);
-        },
+    if (offers.len == 0) return;
+    const truncated = hello[0 .. hello.len - binders];
+    var at = hello.len - binders + 2;
+    for (offers) |offer| {
+        at += 1;
+        var digest_buf: [Transcripts.max_digest]u8 = undefined;
+        const digest = transcripts.digestWith(&digest_buf, offer.binder_len, truncated);
+        // The binder's schedule is the PSK's hash; any suite of that hash derives the same.
+        switch (@as(Suite13, if (offer.binder_len == 48) .aes_256_gcm_sha384 else .aes_128_gcm_sha256)) {
+            inline else => |tag| {
+                const K = Schedule.Schedule(tag);
+                K.binderOf(self.options.hello.transport.prefix(), offer.kind, offer.secret[0..K.length], digest[0..K.length], hello[at..][0..K.length]);
+            },
+        }
+        at += offer.binder_len;
     }
 }
 
@@ -1176,22 +1291,26 @@ fn makeGrease(self: *Client, shares: []const Hello.Share, resumption: Hello.Resu
     scratch.ech.ext = ext[0..written.len];
 }
 
-/// Random bytes in the shape of the inner hello's PSK offer, for the outer hello (RFC 9849
+/// Random bytes in the shape of the inner hello's PSK offers, for the outer hello (RFC 9849
 /// section 6.1.2), the same each time from the GREASE seed.
-fn greasePsk(self: *const Client, storage: []u8, binder_len: usize) ?Hello.GreasePsk {
+fn greasePsk(self: *const Client, offers: []const Offer, storage: []u8, out: *[Hello.max_psk_offers]Hello.GreasePsk) []const Hello.GreasePsk {
     @setRuntimeSafety(true);
-    const offer = self.pskOffer() orelse return null;
-    const identity_len = offer.identity.len;
     var drbg = std.Random.ChaCha.init(self.scratch.?.ech.seed);
     defer std.crypto.secureZero(u8, std.mem.asBytes(&drbg));
     var skip: [34]u8 = undefined;
     drbg.fill(&skip);
-    drbg.fill(storage[0 .. identity_len + 4 + binder_len]);
-    return .{
-        .identity = storage[0..identity_len],
-        .age = std.mem.readInt(u32, storage[identity_len..][0..4], .big),
-        .binder = storage[identity_len + 4 ..][0..binder_len],
-    };
+    drbg.fill(storage);
+    var at: usize = 0;
+    for (offers, out[0..offers.len]) |offer, *grease| {
+        const identity_len = offer.identity.len;
+        grease.* = .{
+            .identity = storage[at..][0..identity_len],
+            .age = std.mem.readInt(u32, storage[at + identity_len ..][0..4], .big),
+            .binder = storage[at + identity_len + 4 ..][0..offer.binder_len],
+        };
+        at += identity_len + 4 + offer.binder_len;
+    }
+    return out[0..offers.len];
 }
 
 /// ClientHelloOuter carrying the encrypted ClientHelloInner (RFC 9849 section 6.1). The first
@@ -1207,7 +1326,11 @@ fn sendEchHello(self: *Client) Error!void {
     const shares = self.offeredShares(&offered);
     const session = scratch.session[0..scratch.session_len];
     const cookie = scratch.cookie[0..scratch.cookie_len];
-    const resumption = self.resumeOffer();
+    var offers_buf: [Hello.max_psk_offers]Offer = undefined;
+    const offers = self.pskOffers(&offers_buf);
+    var identities: [Hello.max_psk_offers]Hello.PskOffer = undefined;
+    const resumption = self.resumeOffer(offers, &identities);
+    const binders = resumption.bindersLength();
     const capacity = self.helloCapacity(shares) + 64;
     const inner_buf = try self.gpa.alloc(u8, capacity);
     defer {
@@ -1215,16 +1338,16 @@ fn sendEchHello(self: *Client) Error!void {
         self.gpa.free(inner_buf);
     }
     const inner = try Hello.clientForm(inner_buf, &scratch.random, session, "", shares, cookie, self.options.hello, resumption, .inner);
-    if (self.pskOffer()) |offer| self.writeBinder(&e.inner, offer, inner, resumption.binder_len);
+    self.writeBinders(&e.inner, offers, inner, binders);
     try e.inner.commitOwn(inner);
-    // The encoded inner hello, padded (RFC 9849 section 6.1.3): its binder is the inner one's.
+    // The encoded inner hello, padded (RFC 9849 section 6.1.3): its binders are the inner one's.
     const encoded_buf = try self.gpa.alloc(u8, capacity + 255 + 9 + 32);
     defer {
         std.crypto.secureZero(u8, encoded_buf);
         self.gpa.free(encoded_buf);
     }
     const encoded = try Hello.clientForm(encoded_buf, &scratch.random, session, "", shares, cookie, self.options.hello, resumption, .encoded);
-    if (self.pskOffer() != null) @memcpy(encoded[encoded.len - resumption.binder_len ..], inner[inner.len - resumption.binder_len ..]);
+    @memcpy(encoded[encoded.len - binders ..], inner[inner.len - binders ..]);
     const padded = Ech.paddedLength(encoded.len - 4, self.options.hello.sni.len, config.max_name_length);
     @memset(encoded_buf[encoded.len .. 4 + padded], 0);
     const plaintext = encoded_buf[4 .. 4 + padded];
@@ -1241,9 +1364,12 @@ fn sendEchHello(self: *Client) Error!void {
     const ext_buf = try self.gpa.alloc(u8, 8 + Hpke.enc_length + 2 + payload_len);
     defer self.gpa.free(ext_buf);
     const ext = try Ech.writeOuter(ext_buf, suite, config.id, if (first) &e.enc else "", payload_len);
-    const psk_buf = try self.gpa.alloc(u8, if (self.pskOffer()) |offer| offer.identity.len + 4 + resumption.binder_len else 0);
+    var psk_len: usize = 0;
+    for (offers) |offer| psk_len += offer.identity.len + 4 + offer.binder_len;
+    const psk_buf = try self.gpa.alloc(u8, psk_len);
     defer self.gpa.free(psk_buf);
-    const grease = self.greasePsk(psk_buf, resumption.binder_len);
+    var grease_buf: [Hello.max_psk_offers]Hello.GreasePsk = undefined;
+    const grease = self.greasePsk(offers, psk_buf, &grease_buf);
     const dst = try self.reserve(capacity + ext.len + config.public_name.len + psk_buf.len + 64);
     const outer = try Hello.clientForm(dst, &e.outer_random, session, "", shares, cookie, self.options.hello, resumption, .{ .outer = .{ .name = config.public_name, .ext = ext, .psk = grease } });
     // Seal with the outer hello, payload zeroed, as the associated data (RFC 9849 section 5.2).
@@ -1268,7 +1394,7 @@ fn sendOuterHello(self: *Client) Error!void {
     const shares = self.offeredShares(&offered);
     const resumption: Hello.Resume = .{ .modes = self.options.resumption != null };
     const dst = try self.reserve(self.helloCapacity(shares) + scratch.ech.ext.len + config.public_name.len + 64);
-    const outer = try Hello.clientForm(dst, &scratch.ech.outer_random, scratch.session[0..scratch.session_len], "", shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption, .{ .outer = .{ .name = config.public_name, .ext = scratch.ech.ext, .psk = null } });
+    const outer = try Hello.clientForm(dst, &scratch.ech.outer_random, scratch.session[0..scratch.session_len], "", shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption, .{ .outer = .{ .name = config.public_name, .ext = scratch.ech.ext, .psk = &.{} } });
     try self.state.advance(.client_hello, .initial, .parsed, true);
     try self.queueMessage(.initial, outer);
 }
@@ -1321,7 +1447,9 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     if (self.retry_suite != null and msg.len >= 4 + 2 + 32 and std.mem.eql(u8, msg[6..38], &Hello.retry_random)) return error.UnexpectedMessage;
     var offered: [2]Hello.Share = undefined;
     const ech_sent = self.options.ech == .config_list or self.scratch.?.ech.ext.len != 0;
-    const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, .{ .psk = self.pskOffer() != null, .ticket12 = self.sendsTickets12() and self.retry_suite == null, .session12 = self.offered12 != null and self.retry_suite == null, .ech = ech_sent });
+    var offers_buf: [Hello.max_psk_offers]Offer = undefined;
+    const offers = self.pskOffers(&offers_buf);
+    const answer = try Hello.server(msg, self.scratch.?.session[0..self.scratch.?.session_len], self.offeredShares(&offered), self.options.hello, .{ .psk = offers.len, .ticket12 = self.sendsTickets12() and self.retry_suite == null, .session12 = self.offered12 != null and self.retry_suite == null, .ech = ech_sent });
     const parsed = switch (answer) {
         // A DTLS 1.3 server never asks for a HelloVerifyRequest's cookie (RFC 9147 section 5.2).
         .tls13 => |hello| if (self.state.flags.verified != 0) return error.IllegalParameter else hello,
@@ -1340,8 +1468,8 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     // A ticket not taken is spent all the same: it is never offered again.
     defer self.releaseOffer();
     var psk: ?[]const u8 = null;
-    if (parsed.psk) {
-        const offer = self.pskOffer().?;
+    if (parsed.psk) |index| {
+        const offer = offers[index];
         // The PSK's hash must be the suite's (RFC 8446 section 4.2.11).
         if (offer.binder_len != suites.digestLength(parsed.suite)) return error.IllegalParameter;
         try self.state.markResumed();
@@ -1357,9 +1485,10 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
             },
             // The holder of the provisioned key is the peer: authenticated by it, with no X.509
             // identity and nothing to expire but the key itself, which is the caller's.
-            .external => {
+            .external, .imported => {
                 self.external_used = true;
                 self.authenticated = true;
+                self.kept.psk_identity = self.options.external_psks[self.scratch.?.externals[offer.slot].key].identity;
             },
         }
     }
@@ -1432,7 +1561,7 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
     // The handshake is the outer hello's now, and so is the random a key log names.
     scratch.random = e.outer_random;
     // The outer hello offered only a GREASE PSK: a server that selects it is lying.
-    if (parsed.psk) return error.IllegalParameter;
+    if (parsed.psk != null) return error.IllegalParameter;
     self.releaseOffer13();
 }
 
@@ -1511,7 +1640,11 @@ fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epo
     self.retry_suite = parsed.suite;
     // A ticket of another hash cannot follow the server's suite into the second hello.
     // (A TLS 1.2 ticket stays in it, unchanged as a second hello must be, though no longer usable.)
-    if (self.pskOffer()) |offer| if (offer.binder_len != suites.digestLength(parsed.suite)) self.releaseOffer13();
+    if (self.offered) |taken| if (suites.digestLength(taken.entry.suite.tls13().?) != suites.digestLength(parsed.suite)) self.releaseOffer13();
+    // So can no provisioned key's offer of another hash (RFC 8446 section 4.1.4).
+    for (self.scratch.?.externals, 0..) |external, slot| {
+        if (external.hash.length() != suites.digestLength(parsed.suite)) self.external_live &= ~(@as(u8, 1) << @intCast(slot)); // safe: at most eight slots
+    }
     @memcpy(self.scratch.?.cookie[0..parsed.cookie.len], parsed.cookie);
     // safe: Hello.server bounds the cookie at 4096 bytes.
     self.scratch.?.cookie_len = @intCast(parsed.cookie.len);
@@ -1959,7 +2092,7 @@ pub fn info(self: *const Client) ?Info {
         .peer_parameters = self.peer_parameters,
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
-        .external_psk = self.external_used,
+        .external_psk = if (self.external_used) self.kept.psk_identity else null,
         .srtp = self.srtp,
         .pin = self.pin,
         .peer_scheme = self.peer_scheme,

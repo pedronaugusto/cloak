@@ -240,6 +240,9 @@ ech_accepted: bool = false,
 /// The handshake uses a provisioned key: TLS 1.3 once its binder checked, TLS 1.2 once a PSK
 /// suite is chosen (the key itself proves at the client's Finished).
 external: bool = false,
+/// The identity of the provisioned key that authenticated the client (an imported key's external
+/// identity), owned; empty until one did.
+psk_identity: []const u8 = &.{},
 /// DTLS: the first hello was answered statelessly (`resumeRetry`), so the second is also the
 /// first this server sees whole: what a first hello records is recorded from it.
 stateless_retry: bool = false,
@@ -446,6 +449,10 @@ pub fn wipe(self: *Server) void {
     if (self.server_name_copy.len != 0) {
         self.gpa.free(self.server_name_copy);
         self.server_name_copy = &.{};
+    }
+    if (self.psk_identity.len != 0) {
+        self.gpa.free(self.psk_identity);
+        self.psk_identity = &.{};
     }
     self.state.fail();
 }
@@ -1022,31 +1029,54 @@ fn pskMode(self: *const Server) bool {
 
 /// The first offered identity the caller's lookup knows, for a suite of its key's hash and
 /// checked by its binder ("ext binder"); a binder that fails is fatal. Identities are compared as
-/// exact bytes. None found: tickets may still resume, or a full handshake follows.
+/// exact bytes. An identity no plain key answers is read as an ImportedIdentity (RFC 9258): for
+/// this protocol and the suite's hash, its external identity is looked up for an imported key of
+/// its context, whose derived key the binder ("imp binder") checks. None found: tickets may still
+/// resume, or a full handshake follows.
 fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Client.Error!bool {
     @setRuntimeSafety(true);
     const lookup = self.options.external_psk orelse return false;
     const scratch = self.scratch.?;
+    const hash: Psk.Hash = if (suites.digestLength(self.suite.?) == 48) .sha384 else .sha256;
+    const base: Psk.Query = .{ .identity = "", .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport, .version = .tls13 };
     var index: u16 = 0;
     while (index < 8) : (index += 1) {
         const offer = hello.pskIdentity(index) orelse return false;
-        if (offer.identity.len > Psk.max_identity) continue;
-        const found = lookup.find(lookup.context, .{ .identity = offer.identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport, .version = .tls13 }) orelse continue;
-        if (found.version != .tls13 or !std.mem.eql(u8, found.identity, offer.identity)) continue;
-        Psk.validate(found) catch continue;
-        if (found.hash.length() != suites.digestLength(self.suite.?)) continue;
+        var query = base;
+        query.identity = offer.identity;
+        var kind: Schedule.BinderKind = .external;
+        const found: Psk.External = plain: {
+            if (offer.identity.len <= Psk.max_identity) if (lookup.find(lookup.context, query)) |answer| {
+                if (query.takes(answer) and answer.hash == hash) break :plain answer;
+            };
+            const imported = Psk.ImportedIdentity.parse(offer.identity) orelse continue;
+            if (imported.protocol != Psk.targetProtocol(self.options.transport) or imported.kdf != Psk.targetKdf(hash) or imported.identity.len > Psk.max_identity or imported.context.len > Psk.max_context) continue;
+            query.identity = imported.identity;
+            query.imported = .{ .context = imported.context };
+            const answer = lookup.find(lookup.context, query) orelse continue;
+            if (!query.takes(answer)) continue;
+            kind = .imported;
+            break :plain answer;
+        };
+        var key: [48]u8 = undefined;
+        defer std.crypto.secureZero(u8, &key);
+        const secret = if (kind == .imported) derived: {
+            Psk.derive(found, self.options.transport.prefix(), offer.identity, key[0..hash.length()]);
+            break :derived key[0..hash.length()];
+        } else found.secret;
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         switch (self.suite.?) {
             inline else => |tag| {
                 const K = Schedule.Schedule(tag);
                 const truncated = scratch.transcripts.digestWith(&digest_buf, K.length, hello.truncated(msg));
-                try K.checkBinderOf(self.options.transport.prefix(), .external, found.secret[0..K.length], truncated[0..K.length], hello.pskBinder(index));
+                try K.checkBinderOf(self.options.transport.prefix(), kind, secret[0..K.length], truncated[0..K.length], hello.pskBinder(index));
             },
         }
         try self.state.markResumed();
-        @memcpy(scratch.psk.exposeMut()[0..found.secret.len], found.secret);
+        @memcpy(scratch.psk.exposeMut()[0..secret.len], secret);
         self.external = true;
         self.authenticated = true;
+        self.psk_identity = try self.gpa.dupe(u8, query.identity);
         scratch.psk_index = index;
         return true;
     }
@@ -1780,7 +1810,7 @@ pub fn info(self: *const Server) ?Info {
         .peer_parameters = self.peer_parameters,
         .resumed = self.resumed,
         .ech_accepted = self.ech_accepted,
-        .external_psk = self.external,
+        .external_psk = if (self.external and self.psk_identity.len != 0) self.psk_identity else null,
         .srtp = self.srtp,
         .pin = self.pin,
         .peer_scheme = self.peer_scheme,

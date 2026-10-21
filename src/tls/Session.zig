@@ -157,10 +157,10 @@ pub const Options = struct {
     ech_retry: ?*[]u8 = null,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
-    /// A provisioned key to offer, borrowed: TLS 1.3 PSK-DHE, or TLS 1.2 plain PSK with its
-    /// suites listed (no forward secrecy). A server that selects it is authenticated by it, with
-    /// no certificate.
-    external_psk: ?@import("handshake/Psk.zig").External = null,
+    /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
+    /// TLS 1.2 plain PSK key with its suites listed (no forward secrecy). A server that selects
+    /// one is authenticated by it, with no certificate.
+    external_psks: []const @import("handshake/Psk.zig").External = &.{},
     /// record_size_limit (RFC 8449): the most plaintext a protected record sent to this end may
     /// carry, as the extension counts it (64 to 2^14 + 1; TLS 1.3 counts the inner content type).
     /// Always offered; null names the version's maximum. Records are held to it only when the
@@ -252,7 +252,7 @@ pub fn open(
         .resumption = resumptionFor(options),
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
-        .external_psk = options.external_psk,
+        .external_psks = options.external_psks,
         .record_size_limit = options.record_size_limit,
         .limits = options.limits,
         .compat = options.compat,

@@ -130,11 +130,13 @@ test "F68 a ServerHello selects only the one identity the client offered" {
     std.mem.writeInt(u24, message[1..4], fixture.len + 6 - 4, .big);
     std.mem.writeInt(u16, message[42..44], std.mem.readInt(u16, fixture[42..44], .big) + 6, .big);
     message[fixture.len..].* = .{ 0, 41, 0, 2, 0, 0 };
-    try std.testing.expect((try H.server(&message, "", &shares, .{}, .{ .psk = true })).tls13.psk);
+    try std.testing.expectEqual(0, (try H.server(&message, "", &shares, .{}, .{ .psk = 1 })).tls13.psk.?);
     try std.testing.expectError(error.UnsolicitedExtension, H.server(&message, "", &shares, .{}, .{}));
     message[fixture.len + 5] = 1;
-    try std.testing.expectError(error.InvalidHello, H.server(&message, "", &shares, .{}, .{ .psk = true }));
-    try std.testing.expect(!(try H.server(fixture, "", &shares, .{}, .{ .psk = true })).tls13.psk);
+    try std.testing.expectError(error.InvalidHello, H.server(&message, "", &shares, .{}, .{ .psk = 1 }));
+    // An index within what was offered selects that identity.
+    try std.testing.expectEqual(1, (try H.server(&message, "", &shares, .{}, .{ .psk = 2 })).tls13.psk.?);
+    try std.testing.expectEqual(null, (try H.server(fixture, "", &shares, .{}, .{ .psk = 1 })).tls13.psk);
 }
 
 test "F118 catalogue_tls12_only_hello_offers_classical_groups (a hello offering TLS 1.2 alone lists no post-quantum group)" {

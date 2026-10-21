@@ -62,8 +62,8 @@ pub const Options = struct {
     ech: Ech.Mode = .off,
     /// Certificate decoders to offer (RFC 8879); borrowed.
     certificate_compression: []const Compression.Codec = &.{},
-    /// A provisioned key to offer (PSK-DHE); borrowed.
-    external_psk: ?Psk.External = null,
+    /// Provisioned keys to offer (PSK-DHE), plain or imported (RFC 9258); borrowed.
+    external_psks: []const Psk.External = &.{},
     limits: Client.Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -190,7 +190,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
         },
         .resumption = options.resumption,
         .ech = options.ech,
-        .external_psk = options.external_psk,
+        .external_psks = options.external_psks,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,

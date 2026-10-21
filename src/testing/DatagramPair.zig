@@ -61,7 +61,7 @@ pub const Options = struct {
     server_record_size_limit: ?u16 = null,
     /// Provisioned keys: the client's and the server's lookup; with `psk_only` the server holds
     /// no credential and the client verifies nothing but the key.
-    client_psk: ?Psk.External = null,
+    client_psks: []const Psk.External = &.{},
     server_psk: ?Psk.Lookup = null,
     psk_only: bool = false,
     /// Each end's key log (NSS key log lines), to know its secrets in a test.
@@ -139,7 +139,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
     self.client = .{ .dtls = try Datagram.client(gpa, .{
         .identity = .{ .dns = "example.com" },
         .verify = if (options.psk_only) .none else if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
-        .external_psk = options.client_psk,
+        .external_psks = options.client_psks,
         .record_size_limit = options.client_record_size_limit,
         .suites = options.client_suites,
         .min_version = options.client_min,

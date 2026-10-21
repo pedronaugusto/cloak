@@ -24,7 +24,7 @@ fn duoOptions(listed: *const [1]Suite) Duo.Options {
     };
     const psk = if (suite.tls12()) |s12| s12.authentication() == .psk else false;
     if (!psk) return .{ .client_suites = listed, .server_suites = listed };
-    return .{ .client_suites = listed, .server_suites = listed, .client_psk = Keys.psk, .server_psk = .{ .find = Keys.find }, .server_psk_only = true, .client_verify_none = true };
+    return .{ .client_suites = listed, .server_suites = listed, .client_psks = &.{Keys.psk}, .server_psk = .{ .find = Keys.find }, .server_psk_only = true, .client_verify_none = true };
 }
 
 /// A finished handshake, with the server's kernel.

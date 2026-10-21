@@ -55,6 +55,7 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
         try self.state.markPsk12();
         self.external_used = true;
         self.authenticated = true;
+        self.kept.psk_identity = self.key12().?.identity;
     } else {
         // RFC 7250: a client pinning the server's key refuses the X.509 a server that did not
         // select the raw key would send, before anything is verified.
@@ -396,7 +397,7 @@ fn deriveMaster(self: anytype, premaster: []const u8) void {
 /// alone (RFC 4279 section 2), then ChangeCipherSpec and Finished.
 fn sendPskFlight(self: anytype) Error!void {
     @setRuntimeSafety(true);
-    const psk = self.options.external_psk.?;
+    const psk = self.key12().?;
     const exchange = try Messages12.buildPskClientKeyExchange(try self.reserve(8 + psk.identity.len), psk.identity);
     try self.state.advance(.local_key_exchange, .initial, .parsed, true);
     try self.queueMessage(.initial, exchange);

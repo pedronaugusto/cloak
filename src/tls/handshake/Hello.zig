@@ -305,16 +305,29 @@ pub fn validate(options: Options) ValidateError!void {
 }
 pub const EncodeError = ValidateError || Writer.WriteError;
 /// What a client says of resumption: that it takes tickets (psk_key_exchange_modes, PSK-DHE
-/// only), and the ticket it offers, if any, with its obfuscated age. The offer's one binder is
-/// written as zeros, `binder_len` bytes ending the hello, for the caller to fill.
+/// only), and the PSKs it offers, if any: a ticket with its obfuscated age, or provisioned keys.
+/// Each offer's binder is written as zeros, `binder_len` bytes, in the binders that end the
+/// hello, for the caller to fill.
 pub const Resume = struct {
     modes: bool = false,
-    ticket: []const u8 = "",
-    age: u32 = 0,
-    binder_len: usize = 0,
+    offers: []const PskOffer = &.{},
     /// TLS 1.2 SessionTicket (RFC 5077): null sends none, empty asks for one, else the ticket.
     ticket12: ?[]const u8 = null,
+
+    /// The bytes of the binders vector that ends a hello with these offers; 0 with none.
+    pub fn bindersLength(resumption: Resume) usize {
+        if (resumption.offers.len == 0) return 0;
+        var n: usize = 2;
+        for (resumption.offers) |offer| n += 1 + offer.binder_len;
+        return n;
+    }
 };
+
+/// One identity of a pre_shared_key offer.
+pub const PskOffer = struct { identity: []const u8, age: u32 = 0, binder_len: usize };
+
+/// The most identities a hello offers, and a server looks at.
+pub const max_psk_offers = 8;
 /// A ClientHello. `legacy_cookie` is a datagram hello's cookie field (RFC 6347 section 4.2.1):
 /// empty, or a DTLS 1.2 HelloVerifyRequest's cookie; a stream hello has no such field. `cookie`
 /// is a HelloRetryRequest's cookie extension.
@@ -322,8 +335,9 @@ pub fn client(out: []u8, random: *const [32]u8, session: []const u8, legacy_cook
     return clientForm(out, random, session, legacy_cookie, shares, cookie, options, resumption, .plain);
 }
 
-/// A PSK offer with nothing behind it, for a ClientHelloOuter whose inner hello resumes: an
-/// identity, age and binder of the inner offer's lengths, all random (RFC 9849 section 6.1.2).
+/// A PSK offer with nothing behind it, for a ClientHelloOuter whose inner hello resumes: for
+/// each inner identity, an identity, age and binder of its lengths, all random (RFC 9849 section
+/// 6.1.2).
 pub const GreasePsk = struct { identity: []const u8, age: u32, binder: []const u8 };
 
 /// Which hello `clientForm` writes. ECH needs three encodings of one hello (RFC 9849 section 5):
@@ -340,7 +354,7 @@ pub const Form = union(enum) {
     encoded,
     /// ClientHelloOuter: `name` in server_name, `ext` as encrypted_client_hello, and `psk` in
     /// place of the real offer.
-    outer: struct { name: []const u8, ext: []const u8, psk: ?GreasePsk },
+    outer: struct { name: []const u8, ext: []const u8, psk: []const GreasePsk },
 };
 
 pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, legacy_cookie: []const u8, shares: []const Share, cookie: []const u8, options: Options, resumption: Resume, form: Form) EncodeError![]u8 {
@@ -447,11 +461,11 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         .inner, .encoded => try extension(&w, Ech.extension_id, &.{1}),
         .outer => |o| try extension(&w, Ech.extension_id, o.ext),
     }
-    if (tls13 and (resumption.modes or resumption.ticket.len != 0)) try extension(&w, 45, &.{ 1, 1 });
+    if (tls13 and (resumption.modes or resumption.offers.len != 0)) try extension(&w, 45, &.{ 1, 1 });
     if (form == .outer) {
         // Random bytes in the shape of the inner offer: nothing a client-facing server can resume.
-        if (form.outer.psk) |psk| try greasePsk(&w, psk);
-    } else if (tls13 and resumption.ticket.len != 0) try offeredPsk(&w, resumption);
+        if (form.outer.psk.len != 0) try greasePsk(&w, form.outer.psk);
+    } else if (tls13 and resumption.offers.len != 0) try offeredPsk(&w, resumption);
     if (w.pos - ext_at - 2 > 65535 or w.pos - 4 > 128 * 1024) return error.InvalidOptions;
     // safe: total extension and handshake lengths have just been bounded.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
@@ -572,34 +586,54 @@ fn outerExtensions(w: *Writer, options: Options, cookie: []const u8) EncodeError
     try extension(w, Ech.outer_extensions_id, list[0..l.pos]);
 }
 
-/// pre_shared_key, the last extension (RFC 8446 section 4.2.11): the ticket, its age and a binder
-/// of zeros for the caller to fill.
+/// pre_shared_key, the last extension (RFC 8446 section 4.2.11): each offer's identity and age,
+/// then a binder of zeros for each, for the caller to fill.
 fn offeredPsk(w: *Writer, resumption: Resume) EncodeError!void {
     @setRuntimeSafety(true);
-    if (resumption.ticket.len > 65535 - 6 or resumption.binder_len < 32 or resumption.binder_len > 255) return error.InvalidOptions;
+    if (resumption.offers.len > max_psk_offers) return error.InvalidOptions;
+    var identities: usize = 0;
+    for (resumption.offers) |offer| {
+        if (offer.identity.len == 0 or offer.identity.len > 65535 - 6 or offer.binder_len < 32 or offer.binder_len > 255) return error.InvalidOptions;
+        identities += 2 + offer.identity.len + 4;
+    }
+    const binders = resumption.bindersLength();
+    if (identities > 65535 or 2 + identities + binders > 65535) return error.InvalidOptions;
     try w.int(u16, 41);
-    // safe: the ticket was bounded just above; the binder at 255 bytes.
-    try w.int(u16, @intCast(2 + 2 + resumption.ticket.len + 4 + 2 + 1 + resumption.binder_len));
-    try w.int(u16, @intCast(2 + resumption.ticket.len + 4)); // safe: bounded above
-    try w.vector(u16, resumption.ticket);
-    try w.int(u32, resumption.age);
-    try w.int(u16, @intCast(1 + resumption.binder_len)); // safe: at most 256
-    try w.int(u8, @intCast(resumption.binder_len)); // safe: at most 255
-    if (w.bytes.len - w.pos < resumption.binder_len) return error.BufferTooSmall;
-    @memset(w.bytes[w.pos..][0..resumption.binder_len], 0);
-    w.pos += resumption.binder_len;
+    try w.int(u16, @intCast(2 + identities + binders)); // safe: bounded just above
+    try w.int(u16, @intCast(identities)); // safe: bounded above
+    for (resumption.offers) |offer| {
+        try w.vector(u16, offer.identity);
+        try w.int(u32, offer.age);
+    }
+    try w.int(u16, @intCast(binders - 2)); // safe: at most eight binders of 256 bytes
+    for (resumption.offers) |offer| {
+        try w.int(u8, @intCast(offer.binder_len)); // safe: at most 255
+        if (w.bytes.len - w.pos < offer.binder_len) return error.BufferTooSmall;
+        @memset(w.bytes[w.pos..][0..offer.binder_len], 0);
+        w.pos += offer.binder_len;
+    }
 }
 
-fn greasePsk(w: *Writer, psk: GreasePsk) EncodeError!void {
+fn greasePsk(w: *Writer, offers: []const GreasePsk) EncodeError!void {
     @setRuntimeSafety(true);
-    if (psk.identity.len == 0 or psk.identity.len > 65535 - 6 or psk.binder.len < 32 or psk.binder.len > 255) return error.InvalidOptions;
+    if (offers.len > max_psk_offers) return error.InvalidOptions;
+    var identities: usize = 0;
+    var binders: usize = 0;
+    for (offers) |psk| {
+        if (psk.identity.len == 0 or psk.identity.len > 65535 - 6 or psk.binder.len < 32 or psk.binder.len > 255) return error.InvalidOptions;
+        identities += 2 + psk.identity.len + 4;
+        binders += 1 + psk.binder.len;
+    }
+    if (identities > 65535 or 4 + identities + binders > 65535) return error.InvalidOptions;
     try w.int(u16, 41);
-    try w.int(u16, @intCast(2 + 2 + psk.identity.len + 4 + 2 + 1 + psk.binder.len)); // safe: bounded just above
-    try w.int(u16, @intCast(2 + psk.identity.len + 4)); // safe: bounded above
-    try w.vector(u16, psk.identity);
-    try w.int(u32, psk.age);
-    try w.int(u16, @intCast(1 + psk.binder.len)); // safe: at most 256
-    try w.vector(u8, psk.binder);
+    try w.int(u16, @intCast(4 + identities + binders)); // safe: bounded just above
+    try w.int(u16, @intCast(identities)); // safe: bounded above
+    for (offers) |psk| {
+        try w.vector(u16, psk.identity);
+        try w.int(u32, psk.age);
+    }
+    try w.int(u16, @intCast(binders)); // safe: bounded above
+    for (offers) |psk| try w.vector(u8, psk.binder);
 }
 
 fn extension(w: *Writer, id: u16, bytes: []const u8) Writer.WriteError!void {
@@ -612,7 +646,8 @@ pub const ServerHello = struct {
     share: []const u8,
     retry: bool,
     cookie: []const u8,
-    psk: bool = false,
+    /// The offered identity the server selected (pre_shared_key); null for none.
+    psk: ?u16 = null,
     /// A retry request's encrypted_client_hello: the eight bytes that may confirm ECH.
     ech: ?*const [8]u8 = null,
     /// DTLS: the connection ID the server receives on, when it answered connection_id.
@@ -645,10 +680,10 @@ pub const ServerHello12 = struct {
 };
 pub const Answer = union(Version) { tls12: ServerHello12, tls13: ServerHello };
 pub const ParseError = Reader.ReadError || Extensions.NextError || error{ DecodeError, InvalidHello, UnsolicitedExtension, UnofferedSelection, HybridRequired, UnsupportedVersion, Downgrade, NoApplicationProtocol, MissingExtension, NoExtendedMasterSecret, NoSecureRenegotiation };
-/// What a client's hello offered for resumption: one TLS 1.3 PSK identity, which a ServerHello may
-/// select; a TLS 1.2 SessionTicket extension, which a ServerHello may answer, and a ticket in it,
+/// What a client's hello offered for resumption: how many TLS 1.3 PSK identities, one of which a
+/// ServerHello may select; a TLS 1.2 SessionTicket extension, which a ServerHello may answer, and a ticket in it,
 /// which it may resume by echoing the session id.
-pub const Offered = struct { psk: bool = false, ticket12: bool = false, session12: bool = false, ech: bool = false };
+pub const Offered = struct { psk: usize = 0, ticket12: bool = false, session12: bool = false, ech: bool = false };
 pub fn server(message: []const u8, session: []const u8, shares: []const Share, options: Options, sent: Offered) ParseError!Answer {
     @setRuntimeSafety(true);
     if (message.len < 4 or message[0] != 2 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
@@ -670,7 +705,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
     var alpn: []const u8 = "";
     var ems = false;
     var renegotiation = false;
-    var psk = false;
+    var psk: ?u16 = null;
     var ticket = false;
     var ech: ?*const [8]u8 = null;
     var answered: DatagramAnswer = .{};
@@ -693,10 +728,12 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
                 if (!retry) share = (try value.vector(u16)).bytes;
             },
             41 => {
-                // The client offered one identity; a retry request selects none.
-                if (!sent.psk) return error.UnsolicitedExtension;
-                if (retry or try value.int(u16) != 0) return error.InvalidHello;
-                psk = true;
+                // One of the identities the client offered (RFC 8446 section 4.2.11); a retry
+                // request selects none.
+                if (sent.psk == 0) return error.UnsolicitedExtension;
+                const index = try value.int(u16);
+                if (retry or index >= sent.psk) return error.InvalidHello;
+                psk = index;
             },
             Ech.extension_id => {
                 // Only a retry request carries it, and only to a hello that offered ECH; its
@@ -750,7 +787,7 @@ pub fn server(message: []const u8, session: []const u8, shares: []const Share, o
         try value.finish();
     }
     if (version13 and !options.allows13()) return error.UnsupportedVersion;
-    if (!version13 and psk) return error.InvalidHello;
+    if (!version13 and psk != null) return error.InvalidHello;
     if (!version13) return server12(legacy_version, random, echoed, session, suite_id, .{ .group = group != null or cookie.len != 0, .alpn = alpn, .ems = ems, .renegotiation = renegotiation, .ticket = ticket, .session12 = sent.session12, .connection_id = answered.connection_id, .srtp = answered.srtp, .types = types, .scts = delivered.scts, .ocsp = delivered.ocsp, .record_size_limit = record_size_limit }, options);
     // DTLS 1.3 answers use_srtp in EncryptedExtensions, never in its ServerHello.
     if (only12 or groups_answered or answered.srtp != null) return error.InvalidHello;

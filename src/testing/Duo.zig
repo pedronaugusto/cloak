@@ -88,7 +88,7 @@ pub const Options = struct {
     client_codecs: []const Compression.Codec = &.{},
     server_codecs: []const Compression.Codec = &.{},
     /// Provisioned keys: the client's and the server's lookup.
-    client_psk: ?Psk.External = null,
+    client_psks: []const Psk.External = &.{},
     server_psk: ?Psk.Lookup = null,
     /// The server holds no credential: provisioned keys are its only authentication.
     server_psk_only: bool = false,
@@ -258,7 +258,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency, .revocation = .{ .mode = if (options.client_revocation_off) .off else .if_present } }, .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
-        .external_psk = options.client_psk,
+        .external_psks = options.client_psks,
         .record_size_limit = options.client_record_size_limit,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,

@@ -111,9 +111,9 @@ pub const ClientOptions = struct {
     ech: Ech.Mode = .off,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
-    /// A provisioned key to offer, borrowed: TLS 1.3 PSK-DHE, or TLS 1.2 plain PSK with its
-    /// suites listed (no forward secrecy).
-    external_psk: ?Psk.External = null,
+    /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
+    /// TLS 1.2 plain PSK key with its suites listed (no forward secrecy).
+    external_psks: []const Psk.External = &.{},
     /// record_size_limit (RFC 8449): the most plaintext a protected record sent to this end may
     /// carry, as the extension counts it (64 to 2^14 + 1; TLS 1.3 counts the inner content type).
     /// Always offered; null names the version's maximum. Records are held to it only when the
@@ -271,7 +271,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         },
         .resumption = options.resumption,
         .ech = options.ech,
-        .external_psk = options.external_psk,
+        .external_psks = options.external_psks,
         .identity = identity,
         .verify = options.verify,
         .credentials = options.credentials,

@@ -6,9 +6,10 @@ const Labels = @import("../crypto/Labels.zig");
 pub const InitError = error{InvalidSharedSecret};
 pub const AdvanceError = error{WrongPhase};
 pub const ExportError = AdvanceError || Labels.ExpandError;
-/// Which binder key: a ticket's ("res binder") or a provisioned key's ("ext binder"), so a key of
-/// one kind never passes for the other (RFC 8446 section 7.1).
-pub const BinderKind = enum { resumption, external };
+/// Which binder key: a ticket's ("res binder"), a provisioned key's ("ext binder") or an imported
+/// one's ("imp binder", RFC 9258 section 5.2), so a key of one kind never passes for another
+/// (RFC 8446 section 7.1).
+pub const BinderKind = enum { resumption, external, imported };
 pub fn Schedule(comptime suite: suites.Suite13) type {
     const Hash = suites.Hash(suite);
     const Secret = aegis.Secret([Hash.digest_length]u8);
@@ -91,7 +92,11 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             defer key.deinit();
             const zero: [length]u8 = @splat(0);
             Labels.extract(Hash, early.exposeMut(), &zero, psk);
-            expand(prefix, key.exposeMut(), early.expose(), if (kind == .external) "ext binder" else "res binder", &emptyHash());
+            expand(prefix, key.exposeMut(), early.expose(), switch (kind) {
+                .resumption => "res binder",
+                .external => "ext binder",
+                .imported => "imp binder",
+            }, &emptyHash());
             Labels.finished(Hash, prefix, out, key.expose(), truncated_hash);
         }
         pub const BinderError = error{BadBinder};

@@ -93,9 +93,10 @@ pub const Options = struct {
     /// verified certificate that signed it. TLS 1.3, with full verification.
     accept_delegated: bool = false,
     resumption: ?Resumption = null,
-    /// A provisioned key to offer, borrowed: DTLS 1.3 PSK-DHE, or DTLS 1.2 plain PSK with its
-    /// suites listed (CoAP's and LwM2M's PSK mode; no forward secrecy).
-    external_psk: ?Psk.External = null,
+    /// Provisioned keys to offer, borrowed: DTLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
+    /// DTLS 1.2 plain PSK key with its suites listed (CoAP's and LwM2M's PSK mode; no forward
+    /// secrecy).
+    external_psks: []const Psk.External = &.{},
     /// The largest datagram this end sends, without IP and UDP headers.
     mtu: u16 = 1200,
     timing: Timing = .{},
@@ -417,7 +418,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
             .record_size_limit = options.record_size_limit,
         },
         .resumption = options.resumption,
-        .external_psk = options.external_psk,
+        .external_psks = options.external_psks,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,

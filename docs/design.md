@@ -739,19 +739,36 @@ the codec.
 ## Provisioned PSKs
 
 A key both ends hold beforehand (RFC 8446 section 4.2.11, RFC 9257's guidance), PSK-DHE only:
-the exchange is always a fresh (EC)DHE one. A client's `external_psk` is an identity (1 to 1,024
-opaque bytes), the key and its hash; it is offered instead of a ticket, with an obfuscated age of
-zero and a binder under "ext binder", and needs a TLS 1.3 suite of its hash. A server's
+the exchange is always a fresh (EC)DHE one. A client's `external_psks` are up to four keys, each
+an identity (1 to 1,024 opaque bytes), the key and its hash, offered in that order instead of a
+ticket, each with an obfuscated age of zero and a binder under "ext binder", and each needing a
+TLS 1.3 suite of its hash; after a retry request the second hello keeps the offers of the chosen
+suite's hash alone (RFC 8446 section 4.1.2), and the server's index counts that list. A server's
 `external_psk` is a lookup: it sees the offered identity, the server name, the protocol the server
 chose and the transport, so the caller decides what each key is bound to (endpoint, application,
 transport); its answer must name the queried identity byte for byte and be a valid key, or it is
 passed over, and a binder that fails is fatal (decrypt_error). Keys are tried before tickets. A
 handshake on a key sends no certificate either way and authenticates both ends by the key alone,
-whatever the certificate policy; `Info.external_psk` says so, and no X.509 identity is implied.
+whatever the certificate policy; `Info.external_psk` names the key's identity at both ends (a
+server learns which provisioned client it is talking to), and no X.509 identity is implied.
 Such a session issues no tickets and the client keeps none: it resumes by offering the key again.
 Reflection (an endpoint that is both client and server answering its own hello) needs the same
 key provisioned for both roles, which is the caller's to avoid (RFC 9257 section 4.1). Live peer:
 OpenSSL's `-psk` both roles; Go has no provisioned PSKs.
+
+A key may be imported (RFC 9258, `External.imported`; owner's call 2026-10-21): an external key
+of 16 to 1,024 bytes, never used as it is. The client offers it once for each hash of the TLS 1.3
+suites it offers, under an ImportedIdentity (the external identity, the key's `context`, the
+target protocol, TLS 1.3's 0x0304 or DTLS 1.3's 0xfefc with QUIC counted as TLS 1.3, and the
+target KDF), and under the key derived for that protocol and hash: HKDF-Extract of the key under
+a zero salt, expanded by "derived psk" over the hash of the ImportedIdentity, both by the hash the
+key is imported with (`External.hash`), with the protocol's label prefix; its binder is under
+"imp binder". So one provisioned key serves both hashes and never the same derived key for two
+protocols (RFC 9257 section 6). A server reads an offered identity no plain key answers as an
+ImportedIdentity: one for its own protocol and the chosen suite's hash is looked up by its
+external identity with the context in the query (`Query.imported`), and only an imported key of
+that context answers it, as only a plain key answers a plain identity: a key provisioned for
+import is never used directly, nor a direct one imported.
 
 A key is for one version (`External.version`; RFC 8446 appendix E.7 forbids sharing one), and a
 lookup is told the version it answers for (`Query.version`); an answer of the other version is
