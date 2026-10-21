@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-21
+
 ### Added
 
 - OCSP stapling (status_request, RFC 6066 section 8; RFC 8446 section 4.4.2.1): `Credential.ocsp` is the OCSPResponse a server staples to a client that asks (TLS 1.3 in the leaf's entry, TLS 1.2 as a CertificateStatus). A client verifying with revocation on asks for the status and hands it to the verifier as evidence; a Must-Staple certificate now verifies with its staple, where only a caller holding the response could verify one before.
