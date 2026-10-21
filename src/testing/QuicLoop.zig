@@ -35,6 +35,13 @@ pub const Options = struct {
     /// Trust no root on the client, so the server chain fails.
     distrust: bool = false,
     chunk: usize = 1 << 20,
+    /// Each side's CRYPTO bytes reach `receive` as a copy the loop overwrites once the call
+    /// returns, as a QUIC stack reuses its packet buffers.
+    poison: bool = false,
+    /// Neither side answers the peer's transport parameters; the test does.
+    hold_parameters: bool = false,
+    /// What both handshakes allocate from, when not the loop's allocator.
+    handshake_gpa: ?std.mem.Allocator = null,
     /// The identities carry no key: every signature comes from the harness, as for a key held elsewhere.
     external: bool = false,
     /// Resumption: the client's ticket cache and the server's ticket keys.
@@ -110,7 +117,8 @@ pub fn QuicLoop(comptime suite: Suite13) type {
             }
             errdefer if (self.client_auth) |auth| auth.deinit();
             const creds = [_]Server.Credential{.{ .identity = self.server_identity }};
-            self.client = .{ .hs = try Handshake.client(gpa, .{
+            const hs_gpa = options.handshake_gpa orelse gpa;
+            self.client = .{ .hs = try Handshake.client(hs_gpa, .{
                 .identity = .{ .dns = options.server_name },
                 .verify = .{ .full = .{ .trust_generation = self.snapshot.generation() } },
                 .parameters = options.client_parameters,
@@ -122,7 +130,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 .generation = .fromRaw(9),
             }) };
             errdefer self.client.deinit(gpa);
-            self.server = .{ .hs = try Handshake.server(gpa, .{
+            self.server = .{ .hs = try Handshake.server(hs_gpa, .{
                 .credentials = &creds,
                 .parameters = options.server_parameters,
                 .alpn = options.server_alpn,
@@ -219,6 +227,7 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                         try side.peer_parameters.appendSlice(self.gpa, p);
                         try side.events.append(self.gpa, 'p');
                         side.hs.ack(0);
+                        if (self.options.hold_parameters) continue;
                         if (reject) side.hs.rejectParameters(.illegal_parameter) else try side.hs.acceptParameters();
                     },
                     .authenticated => {
@@ -244,7 +253,12 @@ pub fn QuicLoop(comptime suite: Suite13) type {
                 const list = &side.inbox[@backingInt(level)];
                 if (list.items.len != 0) {
                     const take = list.items[0..@min(list.items.len, self.options.chunk)];
-                    const n = side.hs.receive(level, take) catch |err| {
+                    const copy = if (self.options.poison) try self.gpa.dupe(u8, take) else take;
+                    defer if (self.options.poison) {
+                        @memset(copy, 0xa5);
+                        self.gpa.free(copy);
+                    };
+                    const n = side.hs.receive(level, copy) catch |err| {
                         _ = try self.drain(side, other);
                         return err;
                     };

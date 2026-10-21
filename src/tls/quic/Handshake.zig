@@ -481,4 +481,5 @@ pub fn ack(self: *Handshake, consumed: usize) void {
 test {
     _ = @import("Handshake_test.zig");
     _ = @import("ServerHandshake_test.zig");
+    _ = @import("Admission_test.zig");
 }
