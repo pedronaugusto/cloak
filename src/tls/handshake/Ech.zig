@@ -7,6 +7,10 @@ const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
 const Labels = @import("../crypto/Labels.zig");
 const Hpke = @import("../crypto/Hpke.zig");
+const Suites = @import("../crypto/Suite.zig");
+const Transport = Suites.Transport;
+const Suite13 = Suites.Suite13;
+const Transcripts = @import("Transcripts.zig");
 
 /// The ECHConfig version and the extension's code point.
 pub const version: u16 = 0xfe0d;
@@ -190,6 +194,16 @@ pub fn checkKeys(keys: []const Key) error{InvalidConfig}!void {
     }
 }
 
+/// How a stateless retry request answered a first hello's ECH (`dtls.Cookies`), for the server
+/// that takes the second: no ECH offered (or no keys to open it), not opened (the second is not
+/// opened either), or opened, with what the second opens under again and the inner hello's
+/// random, which the request's confirmation is made with.
+pub const Retried = union(enum) {
+    none,
+    rejected,
+    accepted: struct { config_id: u8, suite: Hpke.Suite, enc: [Hpke.enc_length]u8, random: [32]u8 },
+};
+
 /// What a ClientHello's encrypted_client_hello extension holds.
 pub const Offer = union(enum) {
     inner,
@@ -248,12 +262,14 @@ pub fn paddedLength(len: usize, name_len: usize, max_name_length: u8) usize {
     return padded + (31 - ((padded - 1) % 32));
 }
 
-/// Where a ClientHello's encrypted_client_hello extension body sits in `message`.
-pub fn extensionSpan(message: []const u8) ?struct { start: usize, len: usize } {
+/// Where a ClientHello's encrypted_client_hello extension body sits in `message`, a hello of
+/// `transport` (a datagram hello has its cookie field).
+pub fn extensionSpan(message: []const u8, transport: Transport) ?struct { start: usize, len: usize } {
     @setRuntimeSafety(true);
     var r: Reader = .{ .bytes = message };
     _ = r.take(4 + 2 + 32) catch return null;
     _ = r.vector(u8) catch return null;
+    if (transport == .datagram) _ = r.vector(u8) catch return null;
     _ = r.vector(u16) catch return null;
     _ = r.vector(u8) catch return null;
     const block = r.vector(u16) catch return null;
@@ -268,17 +284,84 @@ pub fn extensionSpan(message: []const u8) ?struct { start: usize, len: usize } {
 }
 
 pub const ReconstructError = error{ IllegalParameter, OutOfMemory };
+pub const OpenError = ReconstructError || error{DecryptFailed};
+
+/// A first hello's ECH opened: the context it opened under, past that nonce, and the
+/// ClientHelloInner, the caller's to free.
+pub const Opened = struct { context: Hpke.Context, inner: []u8 };
+
+/// Opens the encrypted_client_hello `offer` of the ClientHelloOuter `wire` (a whole handshake
+/// message of `transport`) under each of `keys` with its config id and suite, a bounded trial,
+/// the HPKE context set up from `enc` and at its nonce `seq`: zero for a first hello, one for a
+/// second whose first a stateless retry request answered. Null when no key opens it, which is no
+/// error: the server goes on with the outer hello.
+pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: Offer.Outer, enc: []const u8, seq: u64, transport: Transport) ReconstructError!?Opened {
+    @setRuntimeSafety(true);
+    if (offer.payload.len <= Hpke.tag_length) return null;
+    const aad = try outerAad(gpa, wire, offer.payload);
+    defer gpa.free(aad);
+    const encoded = try gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
+    defer {
+        std.crypto.secureZero(u8, encoded);
+        gpa.free(encoded);
+    }
+    var context = for (keys) |key| {
+        const config = (parseConfig(key.config) catch continue).config orelse continue;
+        if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
+        const info_buf = try gpa.alloc(u8, 8 + key.config.len);
+        defer gpa.free(info_buf);
+        var context = Hpke.setupRecipient(offer.suite, enc, key.secret, info(info_buf, key.config)) catch continue;
+        context.seq = seq;
+        context.open(encoded, aad, offer.payload) catch {
+            context.deinit();
+            continue;
+        };
+        break context;
+    } else return null;
+    errdefer context.deinit();
+    return .{ .context = context, .inner = try reconstruct(gpa, wire, encoded, transport) };
+}
+
+/// Opens a second hello's `offer` under the first one's `context`, at its next nonce: the
+/// ClientHelloInner, the caller's to free.
+pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u8, offer: Offer.Outer, transport: Transport) OpenError![]u8 {
+    @setRuntimeSafety(true);
+    if (offer.payload.len <= Hpke.tag_length) return error.DecryptFailed;
+    const aad = try outerAad(gpa, wire, offer.payload);
+    defer gpa.free(aad);
+    const encoded = try gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
+    defer {
+        std.crypto.secureZero(u8, encoded);
+        gpa.free(encoded);
+    }
+    context.open(encoded, aad, offer.payload) catch return error.DecryptFailed;
+    return reconstruct(gpa, wire, encoded, transport);
+}
+
+/// ClientHelloOuterAAD (RFC 9849 section 5.2): the hello `wire` without its four-byte header,
+/// the payload zeroed; the caller's to free.
+fn outerAad(gpa: std.mem.Allocator, wire: []const u8, payload: []const u8) error{OutOfMemory}![]u8 {
+    @setRuntimeSafety(true);
+    const at = @intFromPtr(payload.ptr) - @intFromPtr(wire.ptr); // safe: the payload is a slice of `wire`
+    const aad = try gpa.dupe(u8, wire[4..]);
+    @memset(aad[at - 4 ..][0..payload.len], 0);
+    return aad;
+}
 
 /// ClientHelloInner from the ClientHelloOuter `outer` (a whole handshake message) and the opened
-/// EncodedClientHelloInner (RFC 9849 section 5.1): the outer session id restored and every
-/// extension `ech_outer_extensions` names copied from the outer hello, which must hold each, once
-/// and in the same order. Linear in both inputs; the result is at most their sum.
-pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u8) ReconstructError![]u8 {
+/// EncodedClientHelloInner (RFC 9849 section 5.1), hellos of `transport`: the outer session id
+/// restored and every extension `ech_outer_extensions` names copied from the outer hello, which
+/// must hold each, once and in the same order. A datagram hello's cookie field is the inner
+/// hello's own (RFC 9849 section 5.1 takes RFC 9147's ClientHello). Linear in both inputs; the
+/// result is at most their sum.
+pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u8, transport: Transport) ReconstructError![]u8 {
     @setRuntimeSafety(true);
+    const datagram = transport == .datagram;
     var r: Reader = .{ .bytes = encoded };
     const head = r.take(2 + 32) catch return error.IllegalParameter;
     const session = (r.vector(u8) catch return error.IllegalParameter).bytes;
     if (session.len != 0) return error.IllegalParameter;
+    const legacy_cookie = if (datagram) (r.vector(u8) catch return error.IllegalParameter).bytes else "";
     const suites = (r.vector(u16) catch return error.IllegalParameter).bytes;
     const compression = (r.vector(u8) catch return error.IllegalParameter).bytes;
     const block = (r.vector(u16) catch return error.IllegalParameter).bytes;
@@ -288,6 +371,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     var o: Reader = .{ .bytes = outer };
     _ = o.take(4 + 2 + 32) catch return error.IllegalParameter;
     const outer_session = (o.vector(u8) catch return error.IllegalParameter).bytes;
+    if (datagram) _ = o.vector(u8) catch return error.IllegalParameter;
     _ = o.vector(u16) catch return error.IllegalParameter;
     _ = o.vector(u8) catch return error.IllegalParameter;
     var outer_ext: Reader = .{ .bytes = (o.vector(u16) catch return error.IllegalParameter).bytes };
@@ -303,6 +387,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     try put(&w, &.{ 1, 0, 0, 0 });
     try put(&w, head);
     w.vector(u8, outer_session) catch return error.IllegalParameter;
+    if (datagram) w.vector(u8, legacy_cookie) catch return error.IllegalParameter;
     w.vector(u16, suites) catch return error.IllegalParameter;
     w.vector(u8, compression) catch return error.IllegalParameter;
     const ext_at = w.pos;
@@ -349,14 +434,33 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
 /// The eight bytes that confirm acceptance (RFC 9849 section 7.2): HKDF-Expand-Label over
 /// HKDF-Extract(0, ClientHelloInner.random), under the transcript hash `digest`. `label` is
 /// "ech accept confirmation" for a ServerHello, "hrr ech accept confirmation" for a retry request.
-pub fn confirmation(comptime Hash: type, inner_random: *const [32]u8, label: []const u8, digest: *const [Hash.digest_length]u8) [8]u8 {
+/// DTLS takes its own label prefix (RFC 9849 section 7.2, RFC 9147 section 5.9).
+pub fn confirmation(comptime Hash: type, transport: Transport, inner_random: *const [32]u8, label: []const u8, digest: *const [Hash.digest_length]u8) [8]u8 {
     var prk: [Hash.digest_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &prk);
     const zero: [Hash.digest_length]u8 = @splat(0);
     Labels.extract(Hash, &prk, &zero, inner_random);
     var out: [8]u8 = undefined;
-    Labels.expand(Hash, &out, &prk, label, digest) catch unreachable; // unreachable: fixed labels, hash-sized context
+    Labels.expandWith(Hash, transport.prefix(), &out, &prk, label, digest) catch unreachable; // unreachable: fixed labels, hash-sized context
     return out;
+}
+
+/// Confirms a retry request answered statelessly (RFC 9849 section 7.2.1): its last eight bytes,
+/// zero as built, become the confirmation over the inner hello's hash `hello_hash` (as the
+/// synthetic message_hash) and the request.
+pub fn confirmRetry(transport: Transport, suite: Suite13, inner_random: *const [32]u8, hello_hash: []const u8, hrr: []u8) Transcripts.CommitError!void {
+    @setRuntimeSafety(true);
+    var transcript: Transcripts = .{};
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&transcript));
+    try transcript.restoreRetry(suite, hello_hash, hrr);
+    var digest_buf: [Transcripts.max_digest]u8 = undefined;
+    switch (suite) {
+        inline else => |tag| {
+            const Hash = Suites.Hash(tag);
+            const digest = transcript.digest(&digest_buf);
+            hrr[hrr.len - 8 ..][0..8].* = confirmation(Hash, transport, inner_random, retry_accept_label, digest[0..Hash.digest_length]);
+        },
+    }
 }
 
 pub const accept_label = "ech accept confirmation";

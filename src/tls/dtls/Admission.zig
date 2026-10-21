@@ -3,10 +3,14 @@
 //! admits with `.{}`.
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
+const Ech = @import("../handshake/Ech.zig");
 
-/// The longest cookie: kind, key id, time, suite, group, hash length, fingerprint, hello hash and
-/// MAC.
-pub const max_cookie = 15 + 32 + 48 + 32;
+/// The longest cookie: kind, key id, time, suite, group, hash length, fingerprint, hello hash,
+/// the first hello's ECH (`ech_length`) and MAC.
+pub const max_cookie = 15 + 32 + 48 + ech_length + 32;
+/// What a cookie keeps of the first hello's ECH: its outcome, config id, suite, enc and the inner
+/// hello's random.
+pub const ech_length = 1 + 1 + 4 + 32 + 32;
 
 retry: ?Retry = null,
 
@@ -20,6 +24,8 @@ pub const Retry = struct {
     fingerprint: [32]u8,
     cookie: [max_cookie]u8,
     cookie_len: u8,
+    /// The first hello's ECH as the retry request answered it.
+    ech: Ech.Retried = .none,
 
     pub fn cookieBytes(self: *const Retry) []const u8 {
         return self.cookie[0..self.cookie_len];

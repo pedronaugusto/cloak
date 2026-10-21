@@ -5,6 +5,7 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const inputs = @import("../../testing/inputs.zig");
 const Pair = @import("../../testing/DatagramPair.zig");
+const EchKeys = @import("../../testing/EchKeys.zig");
 const Datagram = @import("Datagram.zig");
 const Cookies = @import("Cookies.zig");
 const Record = @import("Record.zig");
@@ -81,7 +82,12 @@ fn fuzzCookies(_: void, case: *shakedown.Case) !void {
     var cookies: Cookies = .{};
     defer cookies.deinit();
     try cookies.rotate(@splat(9));
-    const pair = try Pair.init(gpa, .{});
+    // With ECH keys, half the cases: the check then opens a hello's ECH as well.
+    var keys: EchKeys = undefined;
+    try keys.init(6, 4, "public.example.org");
+    defer keys.deinit();
+    const ech = shakedown.gen.boolean(case.source);
+    const pair = try Pair.init(gpa, .{ .client_suites = if (ech) suites.Suite.tls13_only else suites.Suite.default, .client_ech = if (ech) .{ .config_list = keys.list } else .off, .server_ech = if (ech) &.{keys.key()} else &.{} });
     defer pair.deinit();
     // A real first hello as a seed.
     try pair.serveClient();
@@ -100,7 +106,7 @@ fn fuzzCookies(_: void, case: *shakedown.Case) !void {
     // A server of both versions, or of DTLS 1.2 alone, which answers hello fragments too.
     var options = pair.serverOptions();
     if (shakedown.gen.boolean(case.source)) options.max_version = .tls12;
-    switch (cookies.check(&options, "addr", pair.now, input, &out)) {
+    switch (cookies.check(gpa, &options, "addr", pair.now, input, &out)) {
         .respond => |answer| try std.testing.expect(answer.len <= 3 * input.len),
         // No hello the client sent carries a cookie of this key: nothing is admitted.
         .admit => return error.AdmittedWithoutCookie,

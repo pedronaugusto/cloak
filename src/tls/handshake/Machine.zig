@@ -275,10 +275,10 @@ pub fn firstSequence(self: Machine, sequence: u16) void {
 
 /// DTLS: a server that answered the first hello with a stateless retry request starts from it
 /// (`Server.resumeRetry`).
-pub fn resumeRetry(self: Machine, suite: @import("../crypto/Suite.zig").Suite13, group: @import("../crypto/Group.zig").Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8) Error!void {
+pub fn resumeRetry(self: Machine, suite: @import("../crypto/Suite.zig").Suite13, group: @import("../crypto/Group.zig").Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8, ech: @import("Ech.zig").Retried) Error!void {
     return switch (self.state) {
         .client => error.UnexpectedMessage,
-        .server => |m| m.resumeRetry(suite, group, hello_hash, fingerprint, retry),
+        .server => |m| m.resumeRetry(suite, group, hello_hash, fingerprint, retry, ech),
     };
 }
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const Cookies = @import("Cookies.zig");
 const Datagram = @import("Datagram.zig");
 const Record = @import("Record.zig");
+const gpa = std.testing.allocator;
 const Hello = @import("../handshake/Hello.zig");
 const suites = @import("../crypto/Suite.zig");
 
@@ -61,7 +62,7 @@ test "F80 catalogue_dtls_client_random_cookie_and_amplification: a cookie is ans
         var first_buf: [2048]u8 = undefined;
         const first = try hello(&first_buf, version, "", 0);
         var out: [4096]u8 = undefined;
-        const verdict = cookies.check(&options, "198.51.100.7:4433", now, first, &out);
+        const verdict = cookies.check(gpa, &options, "198.51.100.7:4433", now, first, &out);
         const response = verdict.respond;
         // At most three times the hello: no more before the address is proven.
         try std.testing.expect(response.len <= 3 * first.len);
@@ -73,12 +74,12 @@ test "F80 catalogue_dtls_client_random_cookie_and_amplification: a cookie is ans
         var second_buf: [2048]u8 = undefined;
         const second = try hello(&second_buf, version, cookie, 1);
         // The cookie admits this address, now and within its lifetime.
-        try std.testing.expect(cookies.check(&options, "198.51.100.7:4433", now, second, &out) == .admit);
-        try std.testing.expect(cookies.check(&options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds + 59 * std.time.ns_per_s), second, &out) == .admit);
+        try std.testing.expect(cookies.check(gpa, &options, "198.51.100.7:4433", now, second, &out) == .admit);
+        try std.testing.expect(cookies.check(gpa, &options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds + 59 * std.time.ns_per_s), second, &out) == .admit);
         // Not another address, not after its lifetime, not from the far future.
-        try std.testing.expect(cookies.check(&options, "198.51.100.8:4433", now, second, &out) == .drop);
-        try std.testing.expect(cookies.check(&options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds + 61 * std.time.ns_per_s), second, &out) == .drop);
-        try std.testing.expect(cookies.check(&options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds - 120 * std.time.ns_per_s), second, &out) == .drop);
+        try std.testing.expect(cookies.check(gpa, &options, "198.51.100.8:4433", now, second, &out) == .drop);
+        try std.testing.expect(cookies.check(gpa, &options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds + 61 * std.time.ns_per_s), second, &out) == .drop);
+        try std.testing.expect(cookies.check(gpa, &options, "198.51.100.7:4433", .fromNanoseconds(now.nanoseconds - 120 * std.time.ns_per_s), second, &out) == .drop);
         // A flipped bit anywhere in the cookie is refused.
         for (0..cookie.len * 8) |bit| {
             var bad: [512]u8 = undefined;
@@ -86,7 +87,7 @@ test "F80 catalogue_dtls_client_random_cookie_and_amplification: a cookie is ans
             bad[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
             var forged_buf: [2048]u8 = undefined;
             const forged = try hello(&forged_buf, version, bad[0..cookie.len], 1);
-            try std.testing.expect(cookies.check(&options, "198.51.100.7:4433", now, forged, &out) != .admit);
+            try std.testing.expect(cookies.check(gpa, &options, "198.51.100.7:4433", now, forged, &out) != .admit);
         }
     }
 }
@@ -99,16 +100,16 @@ test "C8 a rotated cookie key keeps the previous one's cookies, not older ones" 
     const first = try hello(&first_buf, .tls13, "", 0);
     var out: [4096]u8 = undefined;
     var cookie_buf: [512]u8 = undefined;
-    const cookie = cookieOf(cookies.check(&options, "a", now, first, &out).respond, &cookie_buf);
+    const cookie = cookieOf(cookies.check(gpa, &options, "a", now, first, &out).respond, &cookie_buf);
     var second_buf: [2048]u8 = undefined;
     const second = try hello(&second_buf, .tls13, cookie, 1);
     var copy: [2048]u8 = undefined;
     try cookies.rotate(@splat(0x42));
     @memcpy(copy[0..second.len], second);
-    try std.testing.expect(cookies.check(&options, "a", now, copy[0..second.len], &out) == .admit);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, copy[0..second.len], &out) == .admit);
     try cookies.rotate(@splat(0x43));
     @memcpy(copy[0..second.len], second);
-    try std.testing.expect(cookies.check(&options, "a", now, copy[0..second.len], &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, copy[0..second.len], &out) == .drop);
     try std.testing.expectError(error.InvalidKey, cookies.rotate(@splat(0)));
 }
 
@@ -119,19 +120,19 @@ test "C8 the cookie check answers only first-epoch hellos and keeps nothing" {
     const now: std.Io.Timestamp = .fromNanoseconds(1);
     // Junk, an alert, a record of another epoch, an empty datagram: dropped.
     var junk = [_]u8{ 0x40, 1, 2, 3 };
-    try std.testing.expect(cookies.check(&options, "a", now, &junk, &out) == .drop);
-    try std.testing.expect(cookies.check(&options, "a", now, &.{}, &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, &junk, &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, &.{}, &out) == .drop);
     var alert_buf: [64]u8 = undefined;
     const alert = try Record.plaintext(.alert, 0, &.{ 2, 40 }, &alert_buf);
-    try std.testing.expect(cookies.check(&options, "a", now, alert, &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, alert, &out) == .drop);
     var first_buf: [2048]u8 = undefined;
     const first = try hello(&first_buf, .tls13, "", 0);
     first[4] = 1;
-    try std.testing.expect(cookies.check(&options, "a", now, first, &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "a", now, first, &out) == .drop);
     // No key yet: nothing is answered.
     var empty: Cookies = .{};
     var again_buf: [2048]u8 = undefined;
-    try std.testing.expect(empty.check(&options, "a", now, try hello(&again_buf, .tls13, "", 0), &out) == .drop);
+    try std.testing.expect(empty.check(gpa, &options, "a", now, try hello(&again_buf, .tls13, "", 0), &out) == .drop);
 }
 
 /// The first fragment of `record`'s hello, its first `keep` bytes of body, as the only record.
@@ -154,7 +155,7 @@ test "C8 a first hello in fragments: a DTLS 1.2 server answers its first fragmen
     const fragment = firstFragment(whole, 60);
     var only12 = options;
     only12.max_version = .tls12;
-    const answer = switch (cookies.check(&only12, "client:1", now, fragment, &out)) {
+    const answer = switch (cookies.check(gpa, &only12, "client:1", now, fragment, &out)) {
         .respond => |bytes| bytes,
         else => return error.TestUnexpectedResult,
     };
@@ -165,14 +166,14 @@ test "C8 a first hello in fragments: a DTLS 1.2 server answers its first fragmen
     const second = try hello(&second_buffer, .tls12, cookie, 1);
     var copy: [2048]u8 = undefined;
     @memcpy(copy[0..second.len], second);
-    try std.testing.expect(cookies.check(&only12, "client:1", now, copy[0..second.len], &out) == .admit);
-    try std.testing.expect(cookies.check(&only12, "client:1", now, firstFragment(second, 80), &out) == .admit);
+    try std.testing.expect(cookies.check(gpa, &only12, "client:1", now, copy[0..second.len], &out) == .admit);
+    try std.testing.expect(cookies.check(gpa, &only12, "client:1", now, firstFragment(second, 80), &out) == .admit);
     // A server that speaks DTLS 1.3 cannot tell the hello's versions from the fragment.
     const again = try hello(&buffer, .tls12, "", 0);
-    try std.testing.expect(cookies.check(&options, "client:1", now, firstFragment(again, 60), &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &options, "client:1", now, firstFragment(again, 60), &out) == .drop);
     // A fragment cut before its suites is dropped.
     const short = try hello(&buffer, .tls12, "", 0);
-    try std.testing.expect(cookies.check(&only12, "client:1", now, firstFragment(short, 36), &out) == .drop);
+    try std.testing.expect(cookies.check(gpa, &only12, "client:1", now, firstFragment(short, 36), &out) == .drop);
 }
 
 test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code points: a cookie names only a group cloak speaks)" {
@@ -187,7 +188,7 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     const at = std.mem.find(u8, first, &.{ 0x11, 0xec, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18 }).?;
     first[at + 4 ..][0..2].* = .{ 0x01, 0x00 };
     var out: [4096]u8 = undefined;
-    const response = cookies.check(&listing, "a", .fromNanoseconds(1), first, &out).respond;
+    const response = cookies.check(gpa, &listing, "a", .fromNanoseconds(1), first, &out).respond;
     // The retry request's key_share: the selected group.
     const body = response[Record.header12 + 12 ..];
     const share = std.mem.find(u8, body, &.{ 0, 51, 0, 2 }).?;

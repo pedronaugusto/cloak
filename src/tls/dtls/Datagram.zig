@@ -27,6 +27,7 @@ const Record = @import("Record.zig");
 const RecordLimits = @import("../handshake/RecordLimits.zig");
 const Hello = @import("../handshake/Hello.zig");
 const Psk = @import("../handshake/Psk.zig");
+const Ech = @import("../handshake/Ech.zig");
 pub const Admission = @import("Admission.zig");
 
 pub const Suite = suites.Suite;
@@ -111,6 +112,10 @@ pub const Options = struct {
     /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
     /// connection; a server that refuses them is found now rather than when a real one comes.
     grease: bool = false,
+    /// Encrypted Client Hello (RFC 9849 with DTLS 1.3). With a config list it is required: the
+    /// association is DTLS 1.3 only, and fails with `EchRejected` when the server does not
+    /// accept it (`echRetryConfigs`).
+    ech: Ech.Mode = .off,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -151,6 +156,9 @@ pub const ServerOptions = struct {
     accept_delegated: bool = false,
     tickets: ?*TicketKeys = null,
     tls12_tickets: bool = false,
+    /// Encrypted Client Hello keys (RFC 9849 with DTLS 1.3), borrowed for the life of the
+    /// association; `Cookies.check` takes the same.
+    ech_keys: []const Ech.Key = &.{},
     /// Provisioned keys, looked up by the offered identity: DTLS 1.3 PSK-DHE, DTLS 1.2 plain PSK
     /// when its suites are listed. With them a server needs no credential.
     external_psk: ?Psk.Lookup = null,
@@ -434,6 +442,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
         .resumption = options.resumption,
         .external_psks = options.external_psks,
         .grease = options.grease,
+        .ech = options.ech,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,
@@ -482,6 +491,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
         .accept_delegated = options.accept_delegated,
         .tickets = options.tickets,
         .tls12_tickets = options.tls12_tickets,
+        .ech_keys = options.ech_keys,
         .external_psk = options.external_psk,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
@@ -504,9 +514,10 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
     self.keepOwnCid(options.connection_id);
     if (admission) |admitted| if (admitted.retry) |*retry| {
         // The association starts where the stateless retry request left the handshake.
-        var buffer: [256]u8 = undefined;
-        const hrr = Hello.buildRetry(&buffer, .datagram, "", retry.suite, if (retry.asked) retry.group else null, retry.cookieBytes(), false) catch return error.InvalidOptions;
-        self.hs.resumeRetry(retry.suite, retry.group, retry.helloHash(), retry.fingerprint, hrr) catch return error.InvalidOptions;
+        var buffer: [320]u8 = undefined;
+        const hrr = Hello.buildRetry(&buffer, .datagram, "", retry.suite, if (retry.asked) retry.group else null, retry.cookieBytes(), retry.ech == .accepted) catch return error.InvalidOptions;
+        if (retry.ech == .accepted) Ech.confirmRetry(.datagram, retry.suite, &retry.ech.accepted.random, retry.helloHash(), hrr) catch return error.InvalidOptions;
+        self.hs.resumeRetry(retry.suite, retry.group, retry.helloHash(), retry.fingerprint, hrr, retry.ech) catch return error.InvalidOptions;
     };
     return self;
 }
@@ -552,6 +563,13 @@ pub fn alerts(self: *const Datagram) struct { sent: ?Alert, received: ?Alert } {
 pub fn info(self: *const Datagram) ?Info {
     if (self.phase_now == .failed) return null;
     return self.negotiated;
+}
+
+/// After a failure with `EchRejected`: the ECHConfigList the server offered for a retry on a new
+/// association, authenticated by its public name, or empty when it offered none (ECH securely
+/// disabled for it). Null for every other outcome. Valid until `deinit`.
+pub fn echRetryConfigs(self: *const Datagram) ?[]const u8 {
+    return self.hs.echRetryConfigs();
 }
 
 pub fn exportKeyingMaterial(self: *const Datagram, out: []u8, label: []const u8, context: ?[]const u8) Client.ExportError!void {
@@ -708,13 +726,18 @@ fn fail(self: *Datagram, err: Error) Error {
             else => self.services.alertFor(err),
         };
     }
+    // A client whose ECH the server refused completes its last flight to that server before
+    // ech_required, as a stream does (RFC 9849 section 6.1.6): the flight goes once, then the
+    // alert, under the keys that flight ends with.
+    const parting = err == error.EchRejected and self.flightOf(.handshake) != null;
+    if (parting) self.fatal_epoch = self.write_current;
     self.phase_now = .failed;
     self.hs.wipe();
     // The read keys go now; the write keys once the fatal alert went out under them.
     eraseAll(&self.readers);
     if (self.fatal_due == null) eraseAll(&self.writers);
     self.dropPartials();
-    self.dropFlights();
+    for (&self.flights) |*slot| if (slot.*) |*flight| if (!parting or flight.category != .handshake) self.dropFlight(flight);
     return err;
 }
 
@@ -797,7 +820,6 @@ fn drainEngine(self: *Datagram) Error!void {
                 self.negotiated = self.hs.info();
                 self.phase_now = .connected;
             },
-            // ECH over datagrams is not built: a datagram client offers none to reject.
             .rejected => return error.EchRejected,
         }
     }
@@ -1678,6 +1700,16 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     defer timing.end();
     if (out.len < self.mtu) return error.BufferTooSmall;
     if (self.fatal_due) |alert| {
+        // The parting flight a refused ECH client still sends (`fail`), once.
+        if (self.flightOf(.handshake)) |flight| {
+            const datagram = out[0..self.mtu];
+            var used: usize = 0;
+            var filling: ?Filling = null;
+            try self.transmit(flight, datagram, &used, &filling, now);
+            used = try self.closeRecord(&filling, datagram, used);
+            if (!flight.transmitting) self.dropFlight(flight);
+            if (used != 0) return datagram[0..used];
+        }
         self.fatal_due = null;
         // The alert goes under the write keys, which then go too.
         defer eraseAll(&self.writers);

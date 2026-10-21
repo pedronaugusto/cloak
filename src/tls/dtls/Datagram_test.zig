@@ -1111,3 +1111,94 @@ test "C8 a repeated flight is answered once, at its last message, however its re
     try std.testing.expect(records >= 3);
     try std.testing.expectEqual(@as(usize, 1), answers);
 }
+
+// ---------------------------------------------------------------- Encrypted Client Hello
+
+const EchKeys = @import("../../testing/EchKeys.zig");
+const Group = @import("../crypto/Group.zig").Group;
+
+/// The test certificate answers for example.com, the inner name, and *.example.org: the public
+/// name is one of those.
+const public_name = "public.example.org";
+
+test "C8 ECH over DTLS 1.3 accepted however the server meets its client: a stateless cookie, a validated path, an unproven one" {
+    var keys: EchKeys = undefined;
+    try keys.init(1, 7, public_name);
+    defer keys.deinit();
+    for ([_]@FieldType(Pair.Options, "admission"){ .cookies, .validated, .unvalidated }) |admission| {
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = admission, .client_ech = .{ .config_list = keys.list }, .server_ech = &.{keys.key()} });
+        defer pair.deinit();
+        try pair.run();
+        const client = pair.client.dtls.info().?;
+        const server = pair.server.dtls.info().?;
+        try std.testing.expect(client.ech_accepted and server.ech_accepted and client.peer_authenticated);
+        try std.testing.expectEqualStrings("example.com", server.server_name);
+        try std.testing.expectEqual(@as(usize, @intFromBool(admission == .cookies)), pair.cookie_answers);
+        try exportersAgree(pair);
+        try carriesData(pair);
+    }
+}
+
+test "C8 ECH over DTLS 1.3 accepted across a retry request asking for a group, stateless or the association's own, and with a small MTU" {
+    var keys: EchKeys = undefined;
+    try keys.init(2, 9, public_name);
+    defer keys.deinit();
+    // A stateless check reads a first hello whole, and an ECH hello is some 400 bytes: a smaller
+    // MTU needs a path validated otherwise.
+    const Case = struct { admission: @FieldType(Pair.Options, "admission"), mtu: u16 };
+    for ([_]Case{ .{ .admission = .cookies, .mtu = 1200 }, .{ .admission = .validated, .mtu = 1200 }, .{ .admission = .validated, .mtu = 256 } }) |case| {
+        const admission = case.admission;
+        const mtu = case.mtu;
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{ .x25519, .p256 }, .server_groups = &.{.p256}, .admission = admission, .mtu = mtu, .client_ech = .{ .config_list = keys.list }, .server_ech = &.{keys.key()} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expect(pair.client.dtls.info().?.ech_accepted and pair.server.dtls.info().?.ech_accepted);
+        try std.testing.expectEqual(Group.p256, pair.client.dtls.info().?.group);
+        try carriesData(pair);
+    }
+}
+
+test "C8 ECH over DTLS 1.3 rejected: the client ends with ech_required after its flight and keeps the retry configs" {
+    var stale: EchKeys = undefined;
+    try stale.init(3, 1, public_name);
+    defer stale.deinit();
+    var current: EchKeys = undefined;
+    try current.init(4, 2, public_name);
+    defer current.deinit();
+    for ([_]@FieldType(Pair.Options, "admission"){ .cookies, .validated }) |admission| for ([_]?[]const Group{ null, &.{.p256} }) |server_groups| {
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .groups = &.{ .x25519, .p256 }, .server_groups = server_groups, .admission = admission, .client_ech = .{ .config_list = stale.list }, .server_ech = &.{current.key()} });
+        defer pair.deinit();
+        try std.testing.expectError(error.EchRejected, pair.run());
+        try std.testing.expectEqualSlices(u8, current.list, pair.client.dtls.echRetryConfigs().?);
+        // The client's flight and then its alert go out; the server takes them, and the failed
+        // client takes nothing more: `flush` ends when it is handed the server's answer.
+        pair.flush() catch |err| switch (err) {
+            error.Closed => {},
+            else => return err,
+        };
+        try std.testing.expectEqual(@as(?@import("../wire/Alert.zig").Alert, .ech_required), pair.client.dtls.alerts().sent);
+        while (pair.server.inbox.items.len != 0) {
+            const packet = pair.server.inbox.orderedRemove(0);
+            defer gpa.free(packet.bytes);
+            // The alert ends the server's association: that is what is checked below.
+            pair.server.dtls.receive(packet.bytes, pair.now) catch |err| switch (err) {
+                error.PeerAlert => {},
+                else => return err,
+            };
+        }
+        try std.testing.expectEqual(@as(?@import("../wire/Alert.zig").Alert, .ech_required), pair.server.dtls.alerts().received);
+    };
+}
+
+test "C8 ECH GREASE over DTLS 1.3 changes nothing, and a server with keys serves a client without ECH" {
+    var keys: EchKeys = undefined;
+    try keys.init(5, 3, public_name);
+    defer keys.deinit();
+    for ([_]@import("../handshake/Ech.zig").Mode{ .grease, .off }) |mode| for ([_]@FieldType(Pair.Options, "admission"){ .cookies, .validated }) |admission| {
+        const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = admission, .client_ech = mode, .server_ech = &.{keys.key()} });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expect(!pair.client.dtls.info().?.ech_accepted and !pair.server.dtls.info().?.ech_accepted);
+        try carriesData(pair);
+    };
+}

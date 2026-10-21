@@ -427,7 +427,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     @setRuntimeSafety(true);
     try validate(options);
     const ech = form == .inner or form == .encoded or form == .outer;
-    if (ech and (options.allows12() or options.transport == .datagram)) return error.InvalidOptions;
+    if (ech and options.allows12()) return error.InvalidOptions;
     const session = if (form == .encoded) "" else session_in;
     const sni = switch (form) {
         .outer => |o| o.name,
@@ -458,7 +458,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try w.int(u16, 0);
     // A datagram hello answering a retry request leads with its cookie, so that when the hello
     // is cut to the path's MTU a stateless server finds the cookie in the first fragment, the
-    // only one it reads, whatever follows (no ECH over datagrams moves it).
+    // only one it reads, whatever follows: in every ECH form too, never left to the outer hello.
     if (datagram and cookie.len != 0) try cookieExtension(&w, cookie);
     if (options.grease) |grease| try extension(&w, grease.first, "");
     if (sni.len != 0) try serverName(&w, sni);
@@ -471,7 +471,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     // The names say what the client trusts: an ECH outer hello carries none.
     if (tls13 and form != .outer and options.certificate_authorities.len != 0) try authoritiesExtension(&w, options.certificate_authorities);
     const compress = form == .encoded;
-    if (compress) try outerExtensions(&w, options, cookie);
+    if (compress) try outerExtensions(&w, options, if (datagram) "" else cookie);
     if (!compress) try supportedGroups(&w, options, tls13);
     // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
     if (tls12) try extension(&w, 11, &.{ 1, 0 });

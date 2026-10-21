@@ -5,7 +5,6 @@ const certificates = @import("../certificates.zig");
 const types = certificates.types;
 const Duo = @import("../testing/Duo.zig");
 const Ech = @import("handshake/Ech.zig");
-const Hpke = @import("crypto/Hpke.zig");
 const SessionCache = @import("resumption/SessionCache.zig");
 const TicketKeys = @import("resumption/TicketKeys.zig");
 const Suite = @import("crypto/Suite.zig").Suite;
@@ -17,27 +16,7 @@ const gpa = std.testing.allocator;
 /// the public name one of the second.
 const public_name = "public.example.org";
 
-const Keys = struct {
-    pair: Hpke.KeyPair,
-    config_buf: [128]u8,
-    config: []u8,
-    list_buf: [140]u8,
-    list: []u8,
-
-    fn init(self: *Keys, seed: u8, id: u8, name: []const u8) !void {
-        self.pair = Hpke.deriveKeyPair(&(@as([32]u8, @splat(seed))));
-        self.config = try Ech.writeConfig(&self.config_buf, .{ .id = id, .public_key = self.pair.public, .public_name = name, .max_name_length = 24 });
-        self.list = try Ech.writeList(&self.list_buf, &.{self.config});
-    }
-
-    fn deinit(self: *Keys) void {
-        self.pair.deinit();
-    }
-
-    fn key(self: *const Keys) Ech.Key {
-        return .{ .config = self.config, .secret = self.pair.secret.expose() };
-    }
-};
+const Keys = @import("../testing/EchKeys.zig");
 
 fn connect(options: Duo.Options) !*Duo {
     const duo = try Duo.init(gpa, options);

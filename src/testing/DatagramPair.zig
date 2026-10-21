@@ -70,6 +70,9 @@ pub const Options = struct {
     /// Each end's key log (NSS key log lines), to know its secrets in a test.
     client_key_log: ?Datagram.KeyLog = null,
     server_key_log: ?Datagram.KeyLog = null,
+    /// Encrypted Client Hello: the client's mode and the server's keys.
+    client_ech: @import("../tls/handshake/Ech.zig").Mode = .off,
+    server_ech: []const @import("../tls/handshake/Ech.zig").Key = &.{},
 };
 
 const Packet = struct { bytes: []u8 };
@@ -159,6 +162,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
         .connection_id = options.client_cid,
         .srtp = options.client_srtp,
         .key_log = options.client_key_log,
+        .ech = options.client_ech,
     }) };
     errdefer self.client.dtls.deinit();
     self.server = .{ .dtls = undefined };
@@ -184,6 +188,7 @@ pub fn serverOptions(self: *const Pair) Datagram.ServerOptions {
         .connection_id = self.options.server_cid,
         .srtp = self.options.server_srtp,
         .key_log = self.options.server_key_log,
+        .ech_keys = self.options.server_ech,
     };
 }
 
@@ -311,7 +316,7 @@ fn deliver(self: *Pair, side: *Side) !bool {
         // The stateless check meets the client first.
         var out: [16 * 1024]u8 = undefined;
         const options = self.serverOptions();
-        switch (self.cookies.check(&options, "client:1", self.now, packet.bytes, &out)) {
+        switch (self.cookies.check(self.gpa, &options, "client:1", self.now, packet.bytes, &out)) {
             .respond => |answer| {
                 self.cookie_answers += 1;
                 if (self.options.trace) self.show(&self.server, answer);

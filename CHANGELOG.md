@@ -6,9 +6,14 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
+- Encrypted Client Hello over DTLS 1.3 (RFC 9849 with RFC 9147): `Datagram`'s `ech` (client) and `ech_keys` (server), and `Datagram.echRetryConfigs` after `EchRejected`. The stateless cookie check opens a first hello's ECH as the association would and answers the inner hello, its retry request confirming acceptance; the cookie keeps what the second hello opens under. A rejected client sends its last flight, then ech_required.
 - `Credential.must_match_issuer` and `ClientCredential.must_match_issuer` (BoringSSL's must-match-issuer): a credential taken only when the peer's certificate_authorities names an issuer in its chain, never as a fallback; a server left with none ends with handshake_failure (`NoMatchingIssuer`).
 - `max_fragment` (Connection and Session, both roles): the most plaintext one record this end sends carries, 64 to 2^14, handshake records included and a kernel's write direction too (BoringSSL's and OpenSSL's max_send_fragment); a lower record_size_limit from the peer holds over it. Datagrams have none: the MTU bounds their records.
 - `Credential.delegated_only`: a server credential that signs only through its delegated credential (RFC 9345's server that never holds the certificate's key). It needs no signer, is offered only to a TLS 1.3 client that takes its delegated credential, and is passed over for the next credential otherwise.
+
+### Changed
+
+- `dtls.Cookies.check` takes an allocator, used only while it runs and only with `ech_keys` (to open a first hello's ECH); breaking.
 
 ### Fixed
 

@@ -345,6 +345,9 @@ const EchScratch = struct {
     suite: Hpke.Suite = undefined,
     config_id: u8 = 0,
     context: ?Hpke.Context = null,
+    /// The first hello's enc, when a stateless retry request opened it: the second opens under
+    /// its context again.
+    enc: [Hpke.enc_length]u8 = undefined,
     inner: []u8 = &.{},
 };
 
@@ -400,7 +403,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     Ech.checkKeys(options.ech_keys) catch return error.InvalidOptions;
     Compression.validate(options.certificate_compression, .compress) catch return error.InvalidOptions;
     // ECH is TLS 1.3: a server that cannot speak it has no use for the keys.
-    if (options.ech_keys.len != 0 and (options.max_version != .tls13 or options.transport == .datagram)) return error.InvalidOptions;
+    if (options.ech_keys.len != 0 and options.max_version != .tls13) return error.InvalidOptions;
     if (options.post_handshake_auth and (options.max_version != .tls13 or options.transport != .stream)) return error.InvalidOptions;
     // Names go in a CertificateRequest: a server that never sends one has nowhere to put them.
     Authorities.validate(options.certificate_authorities) catch return error.InvalidOptions;
@@ -955,9 +958,10 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
 /// (`dtls.Cookies`): the transcript holds that hello's hash and the request, the table stands
 /// after the retry, and the second hello must have the first's `fingerprint`, a share of
 /// `group`, `suite` among its offer and the cookie the request carried.
-pub fn resumeRetry(self: *Server, suite: Suite13, group: Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8) Client.Error!void {
+pub fn resumeRetry(self: *Server, suite: Suite13, group: Group, hello_hash: []const u8, fingerprint: [32]u8, retry: []const u8, ech: Ech.Retried) Client.Error!void {
     @setRuntimeSafety(true);
     if (self.options.transport != .datagram or self.state.phase() != .start or self.scratch != null) return error.UnexpectedMessage;
+    if (ech != .none and self.options.ech_keys.len == 0) return error.UnexpectedMessage;
     errdefer self.state.fail();
     const scratch = try self.startScratch();
     try self.state.advance(.client_hello, .initial, .parsed, true);
@@ -965,6 +969,16 @@ pub fn resumeRetry(self: *Server, suite: Suite13, group: Group, hello_hash: []co
     try scratch.transcripts.restoreRetry(suite, hello_hash, retry);
     scratch.first = fingerprint;
     scratch.retry_group = group;
+    switch (ech) {
+        .none => {},
+        .rejected => scratch.ech.status = .rejected,
+        .accepted => |accepted| {
+            scratch.ech.status = .accepted;
+            scratch.ech.suite = accepted.suite;
+            scratch.ech.config_id = accepted.config_id;
+            scratch.ech.enc = accepted.enc;
+        },
+    }
     self.retried = true;
     self.stateless_retry = true;
     self.suite = suite;
@@ -1325,7 +1339,7 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = confirm.digest(&digest_buf);
-                hrr[hrr.len - 8 ..][0..8].* = Ech.confirmation(Hash, &scratch.client_random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
+                hrr[hrr.len - 8 ..][0..8].* = Ech.confirmation(Hash, self.options.transport, &scratch.client_random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
             },
         }
     }
@@ -1374,7 +1388,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = scratch.transcripts.digestWith(&digest_buf, Hash.digest_length, hello);
-                confirmed.* = Ech.confirmation(Hash, &scratch.client_random, Ech.accept_label, digest[0..Hash.digest_length]);
+                confirmed.* = Ech.confirmation(Hash, self.options.transport, &scratch.client_random, Ech.accept_label, digest[0..Hash.digest_length]);
             },
         }
     }
@@ -1558,44 +1572,33 @@ fn openEch(self: *Server, wire: []const u8, outer: *const ClientHello, second: b
         .outer => |o| o,
     };
     if (second and e.status != .accepted) return null;
-    const payload_at = @intFromPtr(offer.payload.ptr) - @intFromPtr(wire.ptr); // safe: the payload is a slice of `wire`
-    const aad = try self.gpa.dupe(u8, wire[4..]);
-    defer self.gpa.free(aad);
-    @memset(aad[payload_at - 4 ..][0..offer.payload.len], 0);
-    if (offer.payload.len <= Hpke.tag_length) return if (second) error.EchDecryptFailed else self.notDecrypted();
-    const encoded = try self.gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
-    defer {
-        std.crypto.secureZero(u8, encoded);
-        self.gpa.free(encoded);
-    }
-    if (second) {
-        // The same config and suite, no new key: the first hello's context, its next nonce.
+    const transport = self.options.transport;
+    const inner = if (second) inner: {
+        // The same config and suite, no new key.
         if (offer.config_id != e.config_id or offer.suite.kdf != e.suite.kdf or offer.suite.aead != e.suite.aead or offer.enc.len != 0) return error.IllegalParameter;
-        e.context.?.open(encoded, aad, offer.payload) catch return error.EchDecryptFailed;
-        // No third hello: the context has done its work.
-        e.context.?.deinit();
-        e.context = null;
-    } else {
-        const opened = for (self.options.ech_keys) |key| {
-            const config = (Ech.parseConfig(key.config) catch continue).config orelse continue;
-            if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
-            const info_buf = try self.gpa.alloc(u8, 8 + key.config.len);
-            defer self.gpa.free(info_buf);
-            var context = Hpke.setupRecipient(offer.suite, offer.enc, key.secret, Ech.info(info_buf, key.config)) catch continue;
-            context.open(encoded, aad, offer.payload) catch {
+        if (e.context) |*context| {
+            // The first hello's context, its next nonce; no third hello, so it is done with.
+            defer {
                 context.deinit();
-                continue;
+                e.context = null;
+            }
+            break :inner Ech.openUnder(self.gpa, context, wire, offer, transport) catch |err| return switch (err) {
+                error.DecryptFailed => error.EchDecryptFailed,
+                else => |other| other,
             };
-            break context;
-        } else return self.notDecrypted();
-        e.context = opened;
+        }
+        // A stateless retry request opened the first hello (`resumeRetry`): its context again,
+        // from the enc it kept, at the second nonce.
+        var opened = (try Ech.open(self.gpa, self.options.ech_keys, wire, offer, &e.enc, 1, transport)) orelse return error.EchDecryptFailed;
+        opened.context.deinit();
+        break :inner opened.inner;
+    } else inner: {
+        const opened = (try Ech.open(self.gpa, self.options.ech_keys, wire, offer, offer.enc, 0, transport)) orelse return self.notDecrypted();
+        e.context = opened.context;
         e.suite = offer.suite;
         e.config_id = offer.config_id;
         e.status = .accepted;
-    }
-    const inner = Ech.reconstruct(self.gpa, wire, encoded) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.IllegalParameter => error.IllegalParameter,
+        break :inner opened.inner;
     };
     if (e.inner.len != 0) {
         std.crypto.secureZero(u8, e.inner);
@@ -1612,8 +1615,9 @@ fn notDecrypted(self: *Server) ?[]const u8 {
 }
 
 /// A ClientHelloInner carries the inner marker and offers TLS 1.3 and nothing older, GREASE
-/// aside (RFC 9849 section 7.1).
-fn checkInner(hello: *const ClientHello) Client.Error!void {
+/// aside (RFC 9849 section 7.1): no TLS version before 1.3, and in a datagram neither DTLS 1.0
+/// nor 1.2, which DTLS numbers above DTLS 1.3 (0xfeff, 0xfefd).
+pub fn checkInner(hello: *const ClientHello) Client.Error!void {
     @setRuntimeSafety(true);
     const body = hello.ech orelse return error.IllegalParameter;
     if ((Ech.parseOffer(body) catch return error.IllegalParameter) != .inner) return error.IllegalParameter;
@@ -1622,7 +1626,7 @@ fn checkInner(hello: *const ClientHello) Client.Error!void {
     while (at + 2 <= hello.versions.len) : (at += 2) {
         const v = std.mem.readInt(u16, hello.versions[at..][0..2], .big);
         const grease = v & 0x0f0f == 0x0a0a and v >> 8 == v & 0xff;
-        if (!grease and v < 0x0304) return error.IllegalParameter;
+        if (!grease and (v < 0x0304 or v == 0xfeff or v == 0xfefd)) return error.IllegalParameter;
     }
 }
 

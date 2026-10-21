@@ -85,6 +85,11 @@ test "C6 ECH offers: inner and outer forms parse; anything else is refused" {
 
 /// A minimal ClientHello with the given extensions, in order.
 fn hello(buf: []u8, session: []const u8, extensions: []const struct { u16, []const u8 }) []u8 {
+    return helloOf(buf, session, null, extensions);
+}
+
+/// A minimal ClientHello of a stream, or of a datagram with `legacy_cookie` in its cookie field.
+fn helloOf(buf: []u8, session: []const u8, legacy_cookie: ?[]const u8, extensions: []const struct { u16, []const u8 }) []u8 {
     var at: usize = 4;
     buf[at] = 3;
     buf[at + 1] = 3;
@@ -94,6 +99,11 @@ fn hello(buf: []u8, session: []const u8, extensions: []const struct { u16, []con
     buf[at] = @intCast(session.len);
     @memcpy(buf[at + 1 ..][0..session.len], session);
     at += 1 + session.len;
+    if (legacy_cookie) |field| {
+        buf[at] = @intCast(field.len);
+        @memcpy(buf[at + 1 ..][0..field.len], field);
+        at += 1 + field.len;
+    }
     @memcpy(buf[at..][0..4], &[_]u8{ 0, 2, 0x13, 0x01 });
     at += 4;
     @memcpy(buf[at..][0..2], &[_]u8{ 1, 0 });
@@ -120,7 +130,7 @@ test "C6 ECH reconstruction copies named outer extensions once, in order, and re
     const encoded_msg = hello(&encoded_buf, "", &.{ .{ 0, "secret" }, .{ 0xfd00, &.{ 4, 0, 10, 0, 51 } }, .{ 0xfe0d, &.{1} } });
     // Padding of zeros follows the hello.
     @memset(encoded_buf[encoded_msg.len..][0..7], 0);
-    const inner = try Ech.reconstruct(gpa, outer, encoded_buf[4 .. encoded_msg.len + 7]);
+    const inner = try Ech.reconstruct(gpa, outer, encoded_buf[4 .. encoded_msg.len + 7], .stream);
     defer gpa.free(inner);
     var want_buf: [256]u8 = undefined;
     const want = hello(&want_buf, "sess", &.{ .{ 0, "secret" }, .{ 10, "groups" }, .{ 51, "share" }, .{ 0xfe0d, &.{1} } });
@@ -137,14 +147,37 @@ test "C6 ECH reconstruction copies named outer extensions once, in order, and re
     };
     for (refusals) |list| {
         const bad = hello(&encoded_buf, "", &.{ .{ 0xfd00, list }, .{ 0xfe0d, &.{1} } });
-        try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, bad[4..]));
+        try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, bad[4..], .stream));
     }
     // Nonzero padding, and a session id inside the encoded hello.
     const padded = hello(&encoded_buf, "", &.{.{ 0xfe0d, &.{1} }});
     encoded_buf[padded.len] = 1;
-    try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, encoded_buf[4 .. padded.len + 1]));
+    try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, encoded_buf[4 .. padded.len + 1], .stream));
     const with_session = hello(&encoded_buf, "x", &.{.{ 0xfe0d, &.{1} }});
-    try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, with_session[4..]));
+    try std.testing.expectError(error.IllegalParameter, Ech.reconstruct(gpa, outer, with_session[4..], .stream));
+}
+
+test "C8 ECH over DTLS: a datagram hello's cookie field is read past, and the inner hello keeps its own" {
+    const gpa = std.testing.allocator;
+    var outer_buf: [256]u8 = undefined;
+    const outer = helloOf(&outer_buf, "", "", &.{ .{ 0, "public" }, .{ 10, "groups" }, .{ 0xfe0d, "payload" } });
+    const span = Ech.extensionSpan(outer, .datagram).?;
+    try std.testing.expectEqualSlices(u8, "payload", outer[span.start..][0..span.len]);
+    // Read as a stream hello, the cookie field shifts every field after it.
+    try std.testing.expect(Ech.extensionSpan(outer, .stream) == null);
+    var encoded_buf: [256]u8 = undefined;
+    const encoded = helloOf(&encoded_buf, "", "", &.{ .{ 0, "secret" }, .{ 0xfd00, &.{ 2, 0, 10 } }, .{ 0xfe0d, &.{1} } });
+    const inner = try Ech.reconstruct(gpa, outer, encoded[4..], .datagram);
+    defer gpa.free(inner);
+    var want_buf: [256]u8 = undefined;
+    const want = helloOf(&want_buf, "", "", &.{ .{ 0, "secret" }, .{ 10, "groups" }, .{ 0xfe0d, &.{1} } });
+    try std.testing.expectEqualSlices(u8, want, inner);
+    // The inner hello's cookie field is its own, whatever the outer one holds: the server refuses
+    // a non-empty one as it refuses it in any DTLS 1.3 hello.
+    const with_field = helloOf(&encoded_buf, "", "c", &.{.{ 0xfe0d, &.{1} }});
+    const kept = try Ech.reconstruct(gpa, outer, with_field[4..], .datagram);
+    defer gpa.free(kept);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 'c' }, kept[4 + 2 + 32 + 1 ..][0..2]);
 }
 
 test "C6 ECH server keys must match their configs" {
@@ -197,10 +230,32 @@ fn fuzzEchInput(_: void, case: *shakedown.Case) !void {
         .inner => try std.testing.expectEqual(1, input.len),
         .outer => |o| try std.testing.expect(o.payload.len != 0 and o.enc.len + o.payload.len + 10 == input.len),
     } else |_| {}
-    if (Ech.reconstruct(gpa_fuzz, outer, input)) |inner| {
+    if (Ech.reconstruct(gpa_fuzz, outer, input, .stream)) |inner| {
         defer gpa_fuzz.free(inner);
         // Never larger than what both hellos hold.
         try std.testing.expect(inner.len <= outer.len + input.len + 4);
         try std.testing.expectEqual(inner.len - 4, std.mem.readInt(u24, inner[1..4], .big));
     } else |_| {}
+}
+
+test "C8 ECH over DTLS: an inner hello offering DTLS 1.2 (or 1.0) is no inner hello" {
+    const Hello = @import("Hello.zig");
+    const ClientHello = @import("ClientHello.zig");
+    const Server = @import("Server.zig");
+    const share: [32]u8 = @splat(1);
+    const shares = [_]Hello.Share{.{ .group = .x25519, .bytes = &share }};
+    const random: [32]u8 = @splat(2);
+    for ([_]@import("../crypto/Suite.zig").Version{ .tls12, .tls13 }) |min| {
+        var buf: [1024]u8 = undefined;
+        const plain = try Hello.client(&buf, &random, "", "", &shares, "", .{ .transport = .datagram, .min_version = min }, .{});
+        // The inner marker appended as the last extension: the block's and the message's
+        // lengths grow by its five bytes.
+        @memcpy(buf[plain.len..][0..5], &[_]u8{ 0xfe, 0x0d, 0, 1, 1 });
+        const message = buf[0 .. plain.len + 5];
+        std.mem.writeInt(u24, message[1..4], @intCast(message.len - 4), .big);
+        const block = 4 + 2 + 32 + 1 + 1 + 2 + std.mem.readInt(u16, message[4 + 2 + 32 + 2 ..][0..2], .big) + 2;
+        std.mem.writeInt(u16, message[block..][0..2], std.mem.readInt(u16, message[block..][0..2], .big) + 5, .big);
+        const parsed = try ClientHello.parse(message, .datagram);
+        if (min == .tls13) try Server.checkInner(&parsed) else try std.testing.expectError(error.IllegalParameter, Server.checkInner(&parsed));
+    }
 }

@@ -402,8 +402,6 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     for (options.credentials) |credential| if (credential.schemes.len > Possession.max_schemes) return error.InvalidOptions;
     hello.client_types = clientTypes(options.credentials);
     Hello.validate(hello) catch return error.InvalidOptions;
-    // ECH over datagrams (RFC 9849 with DTLS 1.3) is not built: refused rather than ignored.
-    if (options.ech != .off and options.hello.transport == .datagram) return error.InvalidOptions;
     switch (options.ech) {
         .off => {},
         // GREASE needs a TLS 1.3 offer to ride on.
@@ -1383,7 +1381,7 @@ fn sendEchHello(self: *Client) Error!void {
     const dst = try self.reserve(capacity + ext.len + config.public_name.len + psk_buf.len + 64);
     const outer = try Hello.clientForm(dst, &e.outer_random, session, "", shares, cookie, self.options.hello, resumption, .{ .outer = .{ .name = config.public_name, .ext = ext, .psk = grease } });
     // Seal with the outer hello, payload zeroed, as the associated data (RFC 9849 section 5.2).
-    const span = Ech.extensionSpan(outer) orelse unreachable; // unreachable: the outer form writes it
+    const span = Ech.extensionSpan(outer, self.options.hello.transport) orelse unreachable; // unreachable: the outer form writes it
     const sealed = try self.gpa.alloc(u8, payload_len);
     defer self.gpa.free(sealed);
     e.context.?.seal(sealed, outer[4..], plaintext) catch return error.InvalidOptions;
@@ -1550,7 +1548,7 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
         inline else => |tag| blk: {
             const Hash = suites.Hash(tag);
             const digest = e.inner.digestWith(&digest_buf, Hash.digest_length, zeroed);
-            const expected = Ech.confirmation(Hash, &scratch.random, Ech.accept_label, digest[0..Hash.digest_length]);
+            const expected = Ech.confirmation(Hash, self.options.hello.transport, &scratch.random, Ech.accept_label, digest[0..Hash.digest_length]);
             break :blk aegis.secret.equal(8, &expected, msg[4 + 2 + 24 ..][0..8]).declassify("ECH acceptance shows in the keys that follow");
         },
     };
@@ -1689,7 +1687,7 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = confirm.digest(&digest_buf);
-                const expected = Ech.confirmation(Hash, &scratch.random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
+                const expected = Ech.confirmation(Hash, self.options.hello.transport, &scratch.random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
                 accepted = aegis.secret.equal(8, &expected, got).declassify("ECH acceptance shows in the keys that follow");
             },
         }

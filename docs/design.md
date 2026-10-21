@@ -223,7 +223,7 @@ integers. Published aegis has no typestate API, so full TLS 1.3 transitions are
 an explicit always-checked table with proof and epoch requirements, version as one
 of its keys (TLS 1.2 edges sit beside the TLS 1.3 ones). A resumed TLS 1.3 handshake
 has edges of its own, chosen by a flag set once, as the ServerHello accepts a PSK: no
-certificate flight in either direction. ECH and DTLS branches are absent until their phases. The table alone is
+certificate flight in either direction. The table alone is
 not a certificate/signature verifier: its internal proof arguments must be
 issued by the crypto/verification driver. Each catalogue row's tests are listed in
 "Failure catalogue: the test map" below.
@@ -718,7 +718,9 @@ rejected handshake reaches the caller: no info, plaintext, exporter or ticket. T
 not reconnect. GREASE sends a random ECH extension as long as a real one would be (kept for a
 second hello) and is otherwise an ordinary handshake; its retry configs are checked for syntax
 and dropped. The ticket cache key holds the ECH config list, so a session from an ECH handshake
-resumes only inside the same ECH policy.
+resumes only inside the same ECH policy. Those six extensions are one contiguous run in every
+form, in that order, and everything of the inner hello's own goes before or after it, so the
+hello the server rebuilds is the one the client hashed (F157).
 
 A server holds `ech_keys` (at most 16, borrowed): each an ECHConfig and the X25519 secret of its
 public key, checked against each other at init. It tries the keys of the offered config id
@@ -727,11 +729,30 @@ handshake goes on with the outer hello and EncryptedExtensions offers the config
 `retry`. A decrypted inner hello is rebuilt linearly (section 5.1: the outer session id, and
 each named outer extension copied once, in order, never encrypted_client_hello itself; nonzero
 padding refused), parsed like any hello, and must carry the inner marker and offer TLS 1.3 and
-nothing older. From then on it is the hello: its name, ALPN, PSK and transcript. Acceptance is
+nothing older (in a datagram neither DTLS 1.0 nor 1.2, numbered above DTLS 1.3). From then on it is the hello: its name, ALPN, PSK and transcript. Acceptance is
 confirmed in the ServerHello random and, after a retry request, in the retry request's own
 extension; the second outer hello must name the same config and suite with an empty enc and open
 under the first one's context, or the handshake ends with decrypt_error. An inner hello arriving
 from the network is illegal_parameter. A server without keys ignores the extension entirely.
+
+ECH over DTLS 1.3 (`dtls.Datagram`'s `ech` and `ech_keys`) is the same handshake with RFC 9147's
+ClientHello: the encoded inner hello and the associated data keep the cookie field (the inner
+hello's own, empty in DTLS 1.3), the confirmations take DTLS's label prefix, and the cookie
+extension a datagram hello leads with (below) leads every form and is never left to the outer
+hello, so a stateless server finds it where it always does; the encrypted hello carries it twice.
+A rejected client sends its last flight once and then ech_required under the keys that flight
+ends with; `Datagram.echRetryConfigs` hands back the retry configurations as above. A stateless
+cookie check holding the same keys (`Cookies.check`, its `gpa` used only while it runs) opens a
+first hello's ECH as the association would: a hello it opens is answered for the inner hello
+(the suite, the group, the transcript hash and the fingerprint are the inner hello's) and the
+retry request confirms acceptance; the cookie then also keeps the config id, suite, enc and inner
+random, under its MAC, so the admitted association rebuilds the request with its confirmation and
+opens the second hello under the first one's context again, at its second nonce. A hello it cannot
+open is answered for the outer hello and the cookie records the rejection: the second is not
+opened either, and EncryptedExtensions carries the retry configs. An ECH hello is some 400 bytes
+before the path's MTU fragments it, and a stateless check reads only a whole first hello: below
+that, a server admits on a path validated otherwise. The BoGo rows run with the TLS ones; those
+whose TLS twins are classified carry the same reason.
 
 Live peers (trials): cloak against OpenSSL 4.0.3 and Go 1.27.1 both roles, accepted, across a
 retry request, resumed inside ECH, rejected with retry configs, GREASE, and QUIC against Go.
@@ -1396,7 +1417,8 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
 - Return routability. A server first checks a ClientHello with `dtls.Cookies`, statelessly:
   a hello without a valid cookie gets a HelloVerifyRequest (DTLS 1.2) or a HelloRetryRequest
   with a cookie (DTLS 1.3) written into the caller's buffer, at most three times the
-  datagram's size, and nothing is allocated. A cookie is an HMAC-SHA256 under the current or
+  datagram's size, and nothing is kept (with ECH keys, a hello's ECH is opened in memory freed
+  before the check returns: ECH above). A cookie is an HMAC-SHA256 under the current or
   the previous caller-rotated key over the client's address as the caller names it, a time
   (honoured for a minute) and: for DTLS 1.3 the transcript hash of the first hello, the
   suite and group the retry request named, whether it asked for a share and the hello's
@@ -1587,9 +1609,8 @@ a usable delegated credential, TLS 1.2 a shared suite, curve and scheme). A clie
 credentials in a list (`credentials`, at most 32, certificates or raw keys or both, each with its
 delegated credential), walked the same way: the type the server selected, then a scheme the request lists or
 a usable delegated credential (TLS 1.2: a certificate type it names and a scheme). The request's
-names are reduced to a bit per credential when it arrives, so nothing of the list outlives it.
-BoringSSL's per-credential `must_match_issuer`, which refuses, is not built. An external signer is
-told which credential signs (`SignRequest.credential`).
+names are reduced to a bit per credential when it arrives, so nothing of the list outlives it. An
+external signer is told which credential signs (`SignRequest.credential`).
 
 Sending is the caller's: `certificate_authorities` lists DER Names (borrowed, each checked to be a
 Name), at most `max_authorities_bytes` (8 KiB on the wire, about a hundred names; a system store's
