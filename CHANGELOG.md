@@ -6,6 +6,12 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
+- `max_fragment` (Connection and Session, both roles): the most plaintext one record this end sends carries, 64 to 2^14, handshake records included and a kernel's write direction too (BoringSSL's and OpenSSL's max_send_fragment); a lower record_size_limit from the peer holds over it. Datagrams have none: the MTU bounds their records.
+
+## [0.21.0] - 2026-10-21
+
+### Added
+
 - A credential's own signature schemes: `Credential.schemes` and `ClientCredential.schemes` (at most 16) name the schemes its key signs under, in that end's order, as Go's `SupportedSignatureAlgorithms` and BoringSSL's per-credential signing preferences do: for a key held where only some schemes may be used, or an order other than cloak's. The list restricts and reorders cloak's schemes for the key and never adds one; a scheme the key or the version cannot make is passed over, and a credential with no scheme the peer takes is not chosen.
 - `Info.peer_scheme`: the signature scheme the peer proved possession under in the handshake (its CertificateVerify, or a TLS 1.2 server's ServerKeyExchange); null when it signed nothing.
 - `Datagram.setTiming`: the retransmission timer changed mid-association, as a caller learns its path's round trip (BoringSSL's `DTLSv1_set_initial_timeout_duration`). A running wait becomes the new first wait doubled once per retransmission so far, counted from when it started (one already past is due at once); a waiting ACK moves with it.
@@ -15,7 +21,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `Identity.initExternalPem` and `ClientAuth.initExternalPem`: a chain whose key is held elsewhere, from PEM, read as `initPem` reads it.
 - `SignRequest.signWith`: signs a request with a `PrivateKey`, as cloak signs with a key it holds, for a driver that signs away from the handshake (a worker thread, a process holding the key); the connection still checks the signature against the credential before sending it.
 - GREASE (RFC 8701) in a client's hello: `grease` (Connection, Session, the datagram and QUIC clients; off by default) puts a reserved value first in the suites, groups (with a one-byte share), versions and signature schemes, and two reserved extensions around the rest, drawn per connection and kept across a retry; a server choosing any of them is refused.
-- `max_fragment` (Connection and Session, both roles): the most plaintext one record this end sends carries, 64 to 2^14, handshake records included and a kernel's write direction too (BoringSSL's and OpenSSL's max_send_fragment); a lower record_size_limit from the peer holds over it. Datagrams have none: the MTU bounds their records.
 
 ### Changed
 
