@@ -139,6 +139,9 @@ pub const Options = struct {
     /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
     client_record_size_limit: ?u16 = null,
     server_record_size_limit: ?u16 = null,
+    /// The most plaintext each end puts in one record it sends (`max_fragment`).
+    client_max_fragment: ?u16 = null,
+    server_max_fragment: ?u16 = null,
     /// Each end's key log (NSS key log lines), to read its records or know its secrets in a test.
     client_key_log: ?Connection.KeyLog = null,
     server_key_log: ?Connection.KeyLog = null,
@@ -266,6 +269,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .grease = options.client_grease,
         .external_psks = options.client_psks,
         .record_size_limit = options.client_record_size_limit,
+        .max_fragment = options.client_max_fragment,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,
         .suites = options.client_suites,
         .min_version = options.client_min,
@@ -305,6 +309,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .certificate_compression = options.server_codecs,
         .external_psk = options.server_psk,
         .record_size_limit = options.server_record_size_limit,
+        .max_fragment = options.server_max_fragment,
         .accept_delegated = options.server_accept_delegated,
         .post_handshake_auth = options.server_post_auth,
         .key_log = options.server_key_log,

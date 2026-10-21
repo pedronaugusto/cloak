@@ -24,5 +24,13 @@ pub fn content(limit: u16, inner_type: bool) usize {
     return @min(bound, 1 << 14);
 }
 
+/// A caller's `max_fragment`, the most plaintext one record this end sends carries: 64 (RFC 8449's
+/// smallest limit) to 2^14; null is 2^14.
+pub fn fragment(option: ?u16) error{InvalidOptions}!u16 {
+    const value = option orelse return 1 << 14;
+    if (value < min or value > 1 << 14) return error.InvalidOptions;
+    return value;
+}
+
 /// The extension's number (RFC 8449 section 7).
 pub const extension: u16 = 28;

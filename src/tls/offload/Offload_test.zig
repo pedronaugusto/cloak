@@ -450,3 +450,20 @@ test "C7 record_size_limit under a kernel: the write direction takes the peer's 
     try std.testing.expectEqual(@as(?u16, null), plain.kernel.last.?.max_payload);
     try plain.server().offload(.read, plain.kernel.installer());
 }
+
+test "C7 max_fragment under a kernel: the write direction takes the lower of it and the peer's limit" {
+    const Case = struct { own: u16, peer: ?u16, payload: u16 };
+    for ([_]Case{ .{ .own = 300, .peer = null, .payload = 300 }, .{ .own = 300, .peer = 201, .payload = 200 }, .{ .own = 1000, .peer = 501, .payload = 500 } }) |case| {
+        const listed: [1]Suite = .{.aes_128_gcm_sha256};
+        var options = duoOptions(&listed);
+        options.server_max_fragment = case.own;
+        options.client_record_size_limit = case.peer;
+        const duo = try Duo.init(gpa, options);
+        defer duo.deinit();
+        try duo.handshake();
+        var kernel: Kernel = .{};
+        defer kernel.deinit();
+        try duo.server.offload(.write, kernel.installer());
+        try std.testing.expectEqual(@as(?u16, case.payload), kernel.last.?.max_payload);
+    }
+}

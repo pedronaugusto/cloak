@@ -1140,6 +1140,12 @@ a kernel without it refuses, and the direction stays in software. A kernel opens
 2^14 bytes whatever this end named, so a read direction under a limit below the version's
 maximum stays in software (`Unsupported`).
 
+This end may bound its own records lower, whatever the peer takes: `max_fragment` (Connection
+and Session, both roles; BoringSSL's and OpenSSL's max_send_fragment), the most plaintext one
+record it sends carries, 64 to 2^14, handshake records included. It is not negotiated: the lower
+of it and the peer's limit holds, and a kernel's write direction takes that lower one. Datagrams
+have no such option: the MTU already bounds their records.
+
 ## TLS 1.2
 
 TLS 1.2 is a second path through the same `Client` and `Server`: the ServerHello (client)

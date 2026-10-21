@@ -125,6 +125,11 @@ pub const ClientOptions = struct {
     /// Always offered; null names the version's maximum. Records are held to it only when the
     /// server answers the extension; this end holds its own records to the limit the peer names.
     record_size_limit: ?u16 = null,
+    /// The most plaintext one record this end sends carries, 64 to 2^14 (BoringSSL's and
+    /// OpenSSL's max_send_fragment): smaller records for a peer's small buffers or a stream's
+    /// latency, handshake records included. A lower record_size_limit from the peer holds over
+    /// it; null is 2^14.
+    max_fragment: ?u16 = null,
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
@@ -182,6 +187,8 @@ rx_epoch: Epoch = .initial,
 tx_epoch: Epoch = .initial,
 /// RFC 8449: what protected records may carry each way, as the handshake negotiated.
 record_limits: RecordLimits = .{},
+/// The most plaintext one record this end sends carries (`max_fragment`).
+max_fragment: u16 = 1 << 14,
 phase_now: std.atomic.Value(Phase) = .init(.handshaking),
 /// Set once the handshake completes: from then on the halves may run on two tasks.
 split: bool = false,
@@ -244,6 +251,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
+    const max_fragment = try RecordLimits.fragment(options.max_fragment);
     // A fully qualified name's trailing dot names the same host; neither the server name
     // sent (RFC 6066 section 3) nor a certificate's names carry it.
     const identity: types.Identity = switch (options.identity) {
@@ -288,7 +296,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .key_log = options.key_log,
         .generation = options.generation,
     });
-    return .{ .gpa = gpa, .hs = .{ .state = .{ .client = hs } }, .limits = options.limits, .services = .init(options.generation) };
+    return .{ .gpa = gpa, .hs = .{ .state = .{ .client = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
 }
 
 pub const ServerOptions = struct {
@@ -342,6 +350,11 @@ pub const ServerOptions = struct {
     /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
     /// this server seals for it.
     record_size_limit: ?u16 = null,
+    /// The most plaintext one record this end sends carries, 64 to 2^14 (BoringSSL's and
+    /// OpenSSL's max_send_fragment): smaller records for a peer's small buffers or a stream's
+    /// latency, handshake records included. A lower record_size_limit from the peer holds over
+    /// it; null is 2^14.
+    max_fragment: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -352,6 +365,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
+    const max_fragment = try RecordLimits.fragment(options.max_fragment);
     const hs = try Server.init(gpa, .{
         .suites = options.suites,
         .min_version = options.min_version,
@@ -379,7 +393,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .key_log = options.key_log,
         .generation = options.generation,
     });
-    return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .limits = options.limits, .services = .init(options.generation) };
+    return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
 }
 
 pub fn deinit(self: *Connection) void {
@@ -677,8 +691,8 @@ fn sealMessage(self: *Connection, epoch: Epoch, message: []const u8) Error!void 
 /// after the ServerHello) are cut to it too, for a constrained peer's buffer takes no larger
 /// record whatever protects it, and GnuTLS refuses one.
 fn sealLimit(self: *const Connection) usize {
-    const protection = if (self.tx) |*p| p else return RecordLimits.content(self.record_limits.send, false);
-    return RecordLimits.content(self.record_limits.send, !protection.tls12());
+    const protection = if (self.tx) |*p| p else return @min(RecordLimits.content(self.record_limits.send, false), self.max_fragment);
+    return @min(RecordLimits.content(self.record_limits.send, !protection.tls12()), self.max_fragment);
 }
 
 /// A protected record whose plaintext would pass the record_size_limit this end named is
@@ -1045,12 +1059,15 @@ pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installe
     var keys: Keys = .{ .version = .tls13, .cipher = .aes_128_gcm, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
     defer keys.deinit();
     // RFC 8449 under a kernel: it opens records up to 2^14 bytes whatever this end named, so a
-    // read direction under a lower limit stays here; the write direction takes the peer's.
+    // read direction under a lower limit stays here; the write direction takes the peer's limit
+    // or this end's `max_fragment`, the lower.
     const max = RecordLimits.max(if (protection.tls12()) .tls12 else .tls13);
     switch (direction) {
         .read => if (self.record_limits.receive < max) return error.Unsupported,
-        .write => if (!rekey and self.record_limits.send < max) {
-            keys.max_payload = @intCast(RecordLimits.content(self.record_limits.send, !protection.tls12())); // safe: at most 2^14
+        .write => if (!rekey) {
+            // The peer's limit and this end's `max_fragment`, the lower.
+            const content = @min(RecordLimits.content(self.record_limits.send, !protection.tls12()), self.max_fragment);
+            if (content < 1 << 14) keys.max_payload = @intCast(content); // safe: below 2^14
         },
     }
     protection.exportKeys(&keys);

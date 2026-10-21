@@ -269,3 +269,34 @@ test "C7 datagrams: each end seals within the peer's limit, writes past it are r
         try std.testing.expect(pair.client.dtls.failure() == null);
     };
 }
+
+test "C7 max_fragment: each end seals no record past its own bound, handshake records included, and the peer's lower limit still holds" {
+    const Case = struct { suite: Suite, client: ?u16 = null, server: ?u16 = null, client_limit: ?u16 = null, server_limit: ?u16 = null };
+    for ([_]Case{
+        .{ .suite = .aes_128_gcm_sha256, .client = 512 },
+        .{ .suite = .aes_128_gcm_sha256, .server = 512 },
+        .{ .suite = .ecdhe_ecdsa_aes_128_gcm_sha256, .client = 700, .server = 512 },
+        // The lower of this end's bound and the peer's limit holds.
+        .{ .suite = .aes_128_gcm_sha256, .server = 512, .client_limit = 301 },
+        .{ .suite = .ecdhe_ecdsa_aes_128_gcm_sha256, .client = 300, .server_limit = 1000 },
+    }) |case| {
+        const tls13 = case.suite.version() == .tls13;
+        const longest = try exchange(.{ .client_suites = &.{case.suite}, .server_suites = &.{case.suite}, .client_max_fragment = case.client, .server_max_fragment = case.server, .client_record_size_limit = case.client_limit, .server_record_size_limit = case.server_limit });
+        // A record carries its plaintext, TLS 1.3's inner content type and tag, or TLS 1.2's
+        // explicit nonce and tag.
+        const expansion: usize = if (tls13) 1 + 16 else 8 + 16;
+        const inner: usize = @intFromBool(tls13);
+        const sent_by = [2]?u16{ case.client, case.server };
+        const limit_of = [2]?u16{ case.server_limit, case.client_limit };
+        for (longest, sent_by, limit_of) |got, own, peer| {
+            const bound = @min(own orelse 1 << 14, if (peer) |p| p - inner else 1 << 14);
+            // Within the bound, and filled to it when it is below the 5000 bytes sent.
+            try std.testing.expect(got <= expansion + bound);
+            if (bound < 4000) try std.testing.expectEqual(expansion + bound, got);
+        }
+    }
+    for ([_]u16{ 0, 63, (1 << 14) + 1 }) |bad| {
+        try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .client_max_fragment = bad }));
+        try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_max_fragment = bad }));
+    }
+}

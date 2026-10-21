@@ -172,6 +172,11 @@ pub const Options = struct {
     /// Always offered; null names the version's maximum. Records are held to it only when the
     /// server answers the extension; this end holds its own records to the limit the peer names.
     record_size_limit: ?u16 = null,
+    /// The most plaintext one record this end sends carries, 64 to 2^14 (BoringSSL's and
+    /// OpenSSL's max_send_fragment): smaller records for a peer's small buffers or a stream's
+    /// latency, handshake records included. A lower record_size_limit from the peer holds over
+    /// it; null is 2^14.
+    max_fragment: ?u16 = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
@@ -262,6 +267,7 @@ pub fn open(
         .external_psks = options.external_psks,
         .grease = options.grease,
         .record_size_limit = options.record_size_limit,
+        .max_fragment = options.max_fragment,
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
@@ -359,6 +365,11 @@ pub const ServerOptions = struct {
     /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
     /// this server seals for it.
     record_size_limit: ?u16 = null,
+    /// The most plaintext one record this end sends carries, 64 to 2^14 (BoringSSL's and
+    /// OpenSSL's max_send_fragment): smaller records for a peer's small buffers or a stream's
+    /// latency, handshake records included. A lower record_size_limit from the peer holds over
+    /// it; null is 2^14.
+    max_fragment: ?u16 = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
     eof: Eof = .strict,
@@ -413,6 +424,7 @@ pub fn accept(
         .certificate_compression = options.certificate_compression,
         .external_psk = options.external_psk,
         .record_size_limit = options.record_size_limit,
+        .max_fragment = options.max_fragment,
         .limits = options.limits,
         .key_log = options.key_log,
     });
