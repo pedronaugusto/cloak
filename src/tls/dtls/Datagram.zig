@@ -317,6 +317,13 @@ ccs_waiting: bool = false,
 /// DTLS 1.3: records of the peer's handshake flight to acknowledge, and whether an ACK is due.
 acks: std.ArrayList([2]u64) = .empty,
 ack_due: bool = false,
+/// When the ACK becomes due (DTLS 1.3): a quarter of the retransmission wait after the first
+/// record it names, so the records arriving meanwhile share it; a flight of this end's that
+/// answers them first stops it (RFC 9147 section 7.1; BoringSSL's delay, which its test runner
+/// holds a peer to).
+ack_at: ?std.Io.Timestamp = null,
+/// A record joined `acks` since the receive loop last looked.
+ack_noted: bool = false,
 /// DTLS 1.3: records arrived under keys this end does not hold yet: an ACK of nothing tells the
 /// peer to send its flight again (RFC 9147 section 7.1).
 empty_ack_due: bool = false,
@@ -890,7 +897,10 @@ fn queue(self: *Datagram, entry: Sent, category: Category) Error!void {
             }
             self.answered = false;
             // A handshake flight acknowledges the peer's before it implicitly (RFC 9147 section 7.1).
-            if (self.phase_now == .handshaking) self.acks.clearRetainingCapacity();
+            if (self.phase_now == .handshaking) {
+                self.acks.clearRetainingCapacity();
+                self.ack_at = null;
+            }
             break :blk try self.openFlight(.handshake);
         },
         // Each post-handshake message is a flight of its own (RFC 9147 section 5.8.4).
@@ -983,6 +993,10 @@ pub fn receive(self: *Datagram, datagram: []u8, now: std.Io.Timestamp) Error!voi
         rest = next.rest;
         self.onRecord(next, now) catch |err| return self.fail(err);
         if (self.phase_now == .failed or self.phase_now == .closed) return;
+        if (self.ack_noted) {
+            self.ack_noted = false;
+            if (self.ack_at == null) self.ack_at = .{ .nanoseconds = now.nanoseconds + @divTrunc(self.ackWait().nanoseconds, 4) };
+        }
         // Each record's messages reach the engine before the next record is opened: the keys a
         // ServerHello or ChangeCipherSpec brings open the records after it in the same datagram.
         self.pump() catch |err| return self.fail(err);
@@ -993,10 +1007,10 @@ pub fn receive(self: *Datagram, datagram: []u8, now: std.Io.Timestamp) Error!voi
             if (self.flightOf(.handshake)) |flight| self.dropFlight(flight);
             self.answered = false;
         }
-        // What no flight of ours answers is ACKed: the client's final flight at a server, and
-        // every message after the handshake (RFC 9147 section 7.1). The server's last
-        // handshake flight is answered by the client's final one, never ACKed.
-        if (self.dtls13() and self.acked_now and (connected_before or self.role == .server)) self.ack_due = true;
+        // What no flight of ours answers is ACKed when `ack_at` comes (RFC 9147 section 7.1),
+        // but the client's final flight at a server at once: it ends the client's handshake. The
+        // server's last handshake flight is answered by the client's final one, never ACKed.
+        if (self.dtls13() and self.acked_now and !connected_before and self.role == .server) self.ack_due = true;
     }
 }
 
@@ -1197,7 +1211,7 @@ fn onHandshake(self: *Datagram, body: []const u8, epoch: u64, record_sequence: ?
                 // (RFC 9147 section 7.1).
                 any_repeat = true;
             }
-            self.onRetransmission(sequence, now);
+            self.onRetransmission(sequence, offset, now);
             continue;
         }
         // New plaintext messages end where keys begin: once the peer's keys are in, a plaintext
@@ -1279,13 +1293,16 @@ fn overlapAgrees(partial: *const Partial, offset: u24, fragment: []const u8) boo
 }
 
 /// The peer sent an old message again. One our handshake flight answers means our flight was
-/// lost: it goes again, at most once a half timer period. One that answered our flight was
-/// covered by our ACK (DTLS 1.3), which was lost: the ACK goes again.
-fn onRetransmission(self: *Datagram, sequence: u16, now: std.Io.Timestamp) void {
+/// lost: it goes again once for the peer's repeated flight, at its last message's first
+/// fragment (as BoringSSL answers a repeated Finished; RFC 6347 section 4.2.4), and at most once
+/// a half timer period. One that answered our flight was covered by our ACK (DTLS 1.3), which
+/// was lost: the ACK goes again.
+fn onRetransmission(self: *Datagram, sequence: u16, offset: u24, now: std.Io.Timestamp) void {
     if (sequence -% self.answer_from < 0x8000) {
         if (self.dtls13() and self.acks.items.len != 0) self.ack_due = true;
         return;
     }
+    if (sequence != self.answer_from -% 1 or offset != 0) return;
     const flight = self.flightOf(.handshake) orelse return;
     if (flight.transmitting) return;
     if (flight.deadline) |when| if (when.nanoseconds - now.nanoseconds > @divTrunc(flight.backoff.nanoseconds, 2)) {
@@ -1323,6 +1340,14 @@ fn noteAck(self: *Datagram, epoch: u64, sequence: u64) Error!void {
     if (self.acks.items.len == 64) _ = self.acks.orderedRemove(0);
     try self.acks.append(self.gpa, .{ epoch, sequence });
     self.acked_now = true;
+    self.ack_noted = true;
+}
+
+/// The retransmission wait an ACK's delay is a quarter of: the handshake flight's, as it has
+/// grown, or the first.
+fn ackWait(self: *Datagram) std.Io.Duration {
+    const flight = self.flightOf(.handshake) orelse return self.timing.initial;
+    return flight.backoff;
 }
 
 fn onAck(self: *Datagram, body: []const u8, now: std.Io.Timestamp) Error!void {
@@ -1531,10 +1556,10 @@ pub fn read(self: *Datagram) ?[]const u8 {
 
 // ---------------------------------------------------------------- sending
 
-/// When `send` must be called again to retransmit, if a flight waits on the peer.
+/// When `send` must be called again: to retransmit, if a flight waits on the peer, or to ACK.
 pub fn timeout(self: *const Datagram) ?std.Io.Timestamp {
     if (self.phase_now == .failed or self.transmitting()) return null;
-    var earliest: ?std.Io.Timestamp = null;
+    var earliest: ?std.Io.Timestamp = self.ack_at;
     for (self.flights) |slot| if (slot) |flight| if (flight.deadline) |when| {
         if (earliest == null or when.nanoseconds < earliest.?.nanoseconds) earliest = when;
     };
@@ -1566,16 +1591,22 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     }
     const datagram = out[0..budget];
     var used: usize = 0;
-    // The handshake's flight first, then the post-handshake messages'.
-    if (self.flightOf(.handshake)) |flight| used += try self.transmit(flight, datagram[used..], now);
-    for (&self.flights) |*slot| if (slot.*) |*flight| if (flight.category != .handshake) {
-        used += try self.transmit(flight, datagram[used..], now);
+    // The handshake's flight first, then the ACK (it answers the peer's flight, and a peer
+    // waiting on it reads it before anything newer), then the post-handshake messages in the
+    // order they were made, so their message_seq goes out in order; one record carries the
+    // fragments of several flights of an epoch.
+    var filling: ?Filling = null;
+    if (self.flightOf(.handshake)) |flight| try self.transmit(flight, datagram, &used, &filling, now);
+    used = try self.closeRecord(&filling, datagram, used);
+    if (self.ack_at) |when| if (now.nanoseconds >= when.nanoseconds) {
+        self.ack_due = true;
     };
     if (self.ack_due and self.dtls13()) {
         const written = self.writeAck(datagram[used..]) catch 0;
         if (written != 0) {
             used += written;
             self.ack_due = false;
+            self.ack_at = null;
             self.empty_ack_due = false;
             // During the handshake the records stay listed: a peer that lost this ACK repeats
             // its flight and gets it again. After it, a repeat is ACKed by its own record.
@@ -1589,6 +1620,15 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
             self.empty_ack_due = false;
         }
     }
+    var later: [max_flights]u8 = undefined;
+    var count: usize = 0;
+    for (self.flights, 0..) |slot, i| if (slot) |flight| if (flight.category != .handshake) {
+        later[count] = @intCast(i); // safe: max_flights slots
+        count += 1;
+    };
+    std.mem.sort(u8, later[0..count], &self.flights, madeEarlier);
+    for (later[0..count]) |i| try self.transmit(&self.flights[i].?, datagram, &used, &filling, now);
+    used = try self.closeRecord(&filling, datagram, used);
     if (self.close_due and !self.transmitting() and used == 0) {
         self.close_due = false;
         const alert = try self.alertDatagram(1, .close_notify, out);
@@ -1627,16 +1667,21 @@ fn expire(self: *Datagram, flight: *Outgoing, now: std.Io.Timestamp) Error!void 
     } else restartTransmission(flight);
 }
 
-/// Writes what is due of `flight` into `out`, and arms its timer once all of it went.
-fn transmit(self: *Datagram, flight: *Outgoing, out: []u8, now: std.Io.Timestamp) Error!usize {
+/// Whether slot `a`'s flight was made before slot `b`'s (generations count up).
+fn madeEarlier(flights: *const [max_flights]?Outgoing, a: u8, b: u8) bool {
+    return flights[a].?.generation -% flights[b].?.generation > std.math.maxInt(u32) / 2;
+}
+
+/// Writes what is due of `flight` into `out` after its first `used.*` bytes, and arms its timer
+/// once all of it went.
+fn transmit(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filling: *?Filling, now: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
-    if (!flight.transmitting) return 0;
-    const used = try self.packFlight(flight, out);
+    if (!flight.transmitting) return;
+    try self.packFlight(flight, out, used, filling);
     if (flight.sent()) {
         flight.transmitting = false;
         if (self.expectsAnswer(flight)) flight.deadline = .{ .nanoseconds = now.nanoseconds + flight.backoff.nanoseconds };
     }
-    return used;
 }
 
 fn bodyLength(entry: Sent) usize {
@@ -1654,10 +1699,12 @@ fn expectsAnswer(self: *const Datagram, flight: *const Outgoing) bool {
 }
 
 /// Fragments of a flight into `out`, record by record, until it is full.
-fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8) Error!usize {
+/// Writes what is due of `flight` into `out` after its first `used.*` bytes: into the record
+/// being filled while it is of the same epoch, then into new ones. The caller seals the last
+/// (`closeRecord`).
+fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filling: *?Filling) Error!void {
     @setRuntimeSafety(true);
     const slot = self.slotOf(flight);
-    var used: usize = 0;
     for (flight.entries.items, 0..) |*entry, index| {
         if (entry.acked) continue;
         // Keys a later update retired cannot resend what went under them: given up on.
@@ -1667,41 +1714,111 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8) Error!usize {
             continue;
         }
         while (entry.pending) {
-            const overhead = self.recordOverhead(entry.epoch);
-            const room = out.len - used;
             switch (entry.kind) {
                 .ccs => {
-                    if (room < Record.header12 + 1) return used;
-                    const record = try Record.plaintext(.change_cipher_spec, self.nextPlainSequence(), &.{1}, out[used..]);
-                    used += record.len;
+                    used.* = try self.closeRecord(filling, out, used.*);
+                    if (out.len - used.* < Record.header12 + 1) return;
+                    const record = try Record.plaintext(.change_cipher_spec, self.nextPlainSequence(), &.{1}, out[used.*..]);
+                    used.* += record.len;
                     entry.cursor = 1;
                     entry.pending = false;
                 },
                 .message => {
+                    if (filling.*) |f| if (f.epoch != entry.epoch or f.count == Filling.max_fragments or !self.packs(entry.epoch)) {
+                        used.* = try self.closeRecord(filling, out, used.*);
+                    };
                     const body = entry.bytes[4..];
                     const left = body.len - entry.cursor;
-                    // A fragment worth sending: the rest, or at least 64 bytes of it.
-                    if (room <= overhead + 12 or (room - overhead - 12 < left and room - overhead - 12 < 64)) return used;
-                    const n = @min(left, room - overhead - 12, self.sealLimit(entry.epoch) - 12);
-                    var fragment: [12]u8 = undefined;
+                    const offset = self.contentOffset(entry.epoch);
+                    const trailer = self.recordOverhead(entry.epoch) - offset;
+                    const start = if (filling.*) |f| f.content + f.len else used.* + offset;
+                    const space = out.len -| (start + trailer);
+                    const content_room = self.sealLimit(entry.epoch) - (if (filling.*) |f| f.len else 0);
+                    // A fragment carries a byte at least, or the empty rest of an empty message.
+                    const needed = @as(usize, 12) + @min(left, 1);
+                    // The datagram is full.
+                    if (space < needed) return;
+                    if (content_room < needed) {
+                        // The record is full: the next fragment starts another.
+                        used.* = try self.closeRecord(filling, out, used.*);
+                        continue;
+                    }
+                    const n = @min(left, space - 12, content_room - 12);
+                    if (filling.* == null) filling.* = .{ .epoch = entry.epoch, .at = used.*, .content = used.* + offset, .number = self.nextRecordNumber(entry.epoch) };
+                    const f = &filling.*.?;
+                    const fragment = out[start..][0..12];
                     fragment[0] = entry.bytes[0];
                     fragment[1..4].* = entry.bytes[1..4].*;
                     std.mem.writeInt(u16, fragment[4..6], entry.sequence, .big);
                     // safe: offsets and lengths are below the 24-bit message length.
                     std.mem.writeInt(u24, fragment[6..9], @intCast(entry.cursor), .big);
                     std.mem.writeInt(u24, fragment[9..12], @intCast(n), .big);
-                    const number = self.nextRecordNumber(entry.epoch);
-                    const record = try self.sealHandshake(entry.epoch, &fragment, body[entry.cursor..][0..n], out[used..]);
-                    used += record.len;
+                    @memcpy(out[start + 12 ..][0..n], body[entry.cursor..][0..n]);
+                    f.len += 12 + n;
                     // safe: a flight holds at most a few dozen entries and 256 KiB.
-                    self.logRecord(.{ .epoch = entry.epoch, .sequence = number, .slot = slot, .generation = flight.generation, .entry = @intCast(index), .offset = @intCast(entry.cursor), .len = @intCast(n) });
+                    f.logs[f.count] = .{ .epoch = entry.epoch, .sequence = f.number, .slot = slot, .generation = flight.generation, .entry = @intCast(index), .offset = @intCast(entry.cursor), .len = @intCast(n) };
+                    f.count += 1;
                     entry.cursor += n;
                     if (entry.cursor == body.len) entry.pending = false;
                 },
             }
         }
     }
-    return used;
+}
+
+/// A handshake record being filled at `out[at..]`: fragments of one epoch's messages, as many as
+/// the datagram and the record's limit take (RFC 9147 section 5.5: a record may carry several),
+/// so a flight costs one record header and tag per epoch and datagram.
+const Filling = struct {
+    epoch: u64,
+    /// Where the record starts, and where its content does.
+    at: usize,
+    content: usize,
+    len: usize = 0,
+    /// The record number it is sealed with.
+    number: u64,
+    logs: [max_fragments]Sent_record = undefined,
+    count: usize = 0,
+
+    const max_fragments = 16;
+};
+
+/// Seals the record being filled, if any, and logs each fragment it carries under its number
+/// for the ACKs (RFC 9147 section 7). Returns the bytes of the datagram used after it.
+fn closeRecord(self: *Datagram, filling: *?Filling, out: []u8, used: usize) Error!usize {
+    @setRuntimeSafety(true);
+    const f = filling.* orelse return used;
+    filling.* = null;
+    const content = out[f.content..][0..f.len];
+    const record = if (f.epoch == 0) try Record.plaintext(.handshake, self.nextPlainSequence(), content, out[f.at..]) else blk: {
+        const keys = find(&self.writers, f.epoch) orelse return error.UnexpectedMessage;
+        break :blk switch (keys.version) {
+            .dtls13 => try keys.seal13(.handshake, content, self.sendCid(), out[f.at..]),
+            .dtls12 => try keys.seal12(.handshake, content, self.sendCid(), out[f.at..]),
+        };
+    };
+    for (f.logs[0..f.count]) |sent| self.logRecord(sent);
+    return f.at + record.len;
+}
+
+/// Whether records of `epoch` carry several messages: DTLS 1.3's protected ones. Plaintext and
+/// DTLS 1.2 records carry one each, as peers such as tinydtls read no more from a record.
+fn packs(self: *Datagram, epoch: u64) bool {
+    if (epoch == 0) return false;
+    const keys = find(&self.writers, epoch) orelse return false;
+    return keys.version == .dtls13;
+}
+
+/// Where a record of `epoch` starts its content: after the header, and for DTLS 1.2 the
+/// explicit nonce.
+fn contentOffset(self: *Datagram, epoch: u64) usize {
+    if (epoch == 0) return Record.header12;
+    const keys = find(&self.writers, epoch) orelse return Record.header12;
+    const cid = self.sendCid().len;
+    return switch (keys.version) {
+        .dtls13 => 5 + cid,
+        .dtls12 => Record.header12 + cid + keys.cipher.explicitNonceLength12(),
+    };
 }
 
 /// The record number the next record of `epoch` gets.
@@ -1729,32 +1846,6 @@ fn recordOverhead(self: *Datagram, epoch: u64) usize {
     return switch (keys.version) {
         .dtls13 => Record.overhead13(self.sendCid().len),
         .dtls12 => Record.overhead12(keys.cipher, self.sendCid().len),
-    };
-}
-
-/// One handshake fragment as a record of `epoch`: the twelve-byte DTLS header, then its bytes.
-fn sealHandshake(self: *Datagram, epoch: u64, header: *const [12]u8, bytes: []const u8, out: []u8) Error![]u8 {
-    @setRuntimeSafety(true);
-    if (epoch == 0) {
-        if (out.len < Record.header12 + 12 + bytes.len) return error.BufferTooSmall;
-        @memcpy(out[Record.header12..][0..12], header);
-        @memcpy(out[Record.header12 + 12 ..][0..bytes.len], bytes);
-        return Record.plaintext(.handshake, self.nextPlainSequence(), out[Record.header12..][0 .. 12 + bytes.len], out);
-    }
-    const keys = find(&self.writers, epoch) orelse return error.UnexpectedMessage;
-    // The content is assembled where the record's body goes, then sealed in place.
-    const cid = self.sendCid();
-    const at = switch (keys.version) {
-        .dtls13 => 5 + cid.len,
-        .dtls12 => Record.header12 + cid.len + keys.cipher.explicitNonceLength12(),
-    };
-    if (out.len < at + 12 + bytes.len + Record.tag_length + 1) return error.BufferTooSmall;
-    @memcpy(out[at..][0..12], header);
-    @memcpy(out[at + 12 ..][0..bytes.len], bytes);
-    const content = out[at..][0 .. 12 + bytes.len];
-    return switch (keys.version) {
-        .dtls13 => keys.seal13(.handshake, content, cid, out),
-        .dtls12 => keys.seal12(.handshake, content, cid, out),
     };
 }
 

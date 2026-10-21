@@ -41,6 +41,9 @@ pub const Options = struct {
     drop_server: []const usize = &.{},
     /// Prints each datagram's records as it goes, for a failing test.
     trace: bool = false,
+    /// Keeps a copy of each datagram the server sends, the caller's to free, and an empty one
+    /// after each burst (what one turn sent: a flight, or what is due of it).
+    server_sent: ?*std.ArrayList([]u8) = null,
     /// How the server meets its client: a stateless cookie check first, a path validated
     /// otherwise, or an unproven address held to three times what it sent.
     admission: enum { cookies, validated, unvalidated } = .cookies,
@@ -244,6 +247,7 @@ fn transmit(self: *Pair, side: *Side, other: *Side) !bool {
         moved = true;
         side.sent += 1;
         if (self.options.trace) self.show(side, datagram);
+        if (side == &self.server) if (self.options.server_sent) |kept| try kept.append(self.gpa, try self.gpa.dupe(u8, datagram));
         const lost = if (side == &self.client) self.options.drop_client else self.options.drop_server;
         if (std.mem.findScalar(usize, lost, side.sent) != null) continue;
         if (side.sent <= self.options.drop_first or self.chance(self.options.loss)) continue;
@@ -259,6 +263,7 @@ fn transmit(self: *Pair, side: *Side, other: *Side) !bool {
         }
         if (self.chance(self.options.duplicate)) try other.inbox.append(self.gpa, .{ .bytes = try self.gpa.dupe(u8, datagram) });
     }
+    if (moved and side == &self.server) if (self.options.server_sent) |kept| try kept.append(self.gpa, &.{});
     return moved;
 }
 

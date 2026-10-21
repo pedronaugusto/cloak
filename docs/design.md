@@ -1251,7 +1251,15 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   are plaintext (a forged fragment that came first is undone by the genuine one), and always
   wins with keys over plaintext; at most 16 incomplete messages and 256 KiB. The flight cache
   keeps each sent message's exact bytes; a retransmission re-fragments from it at the current
-  MTU (`setMtu`) into fresh records, never from a send cursor. The timer (1 s, doubling to
+  MTU (`setMtu`) into fresh records, never from a send cursor. Under DTLS 1.3 keys a datagram
+  carries one record per epoch, holding as many messages and fragments as fit (RFC 9147
+  section 5.5 lets a record carry several): a flight costs one header and tag per epoch and
+  datagram, which counts at a 256-byte MTU. Plaintext and DTLS 1.2 records carry one message
+  each, as tinydtls reads no more from a record. A datagram is left only when not one byte more
+  of the next message fits. An ACK waits a quarter of the retransmission wait after the first
+  record it names, so what arrives meanwhile shares it, and goes before post-handshake flights;
+  the client's final flight is ACKed at once, and a flight of this end's answering the records
+  stops the wait. A repeated peer flight is answered once, at its last message. The timer (1 s, doubling to
   60 s, at most 7 retransmissions, then `HandshakeTimeout`) runs until the peer's whole answer
   has made the engine speak again or the handshake ends (RFC 9147 section 5.8.1): a partial
   answer does not stop it, and at its expiry DTLS 1.3 ACKs what it has (the peer resends the

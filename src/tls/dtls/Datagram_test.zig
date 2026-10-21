@@ -2,6 +2,7 @@
 const std = @import("std");
 const Pair = @import("../../testing/DatagramPair.zig");
 const suites = @import("../crypto/Suite.zig");
+const Record = @import("Record.zig");
 
 const gpa = std.testing.allocator;
 
@@ -151,6 +152,8 @@ test "C8 DTLS 1.3 key updates, either side and both, move both ends to the next 
     const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
     defer pair.deinit();
     try pair.run();
+    // An update takes over when its ACK comes, which waits its timer: run until none waits.
+    pair.settle = true;
     // The client updates and asks the server to: both write epochs move from 3 to 4.
     try pair.client.dtls.keyUpdate(true);
     try pair.run();
@@ -416,8 +419,8 @@ test "C8 a peer's key update request does not stop a NewSessionTicket waiting fo
     var t = try ticketsAndKeys();
     defer t.cache.deinit();
     defer t.keys.deinit();
-    // The server's third datagram (its tickets and its ACK of the client's Finished) is lost.
-    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .cache = &t.cache, .tickets = &t.keys, .drop_server = &.{3} });
+    // The server's second datagram (its tickets and its ACK of the client's Finished) is lost.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .cache = &t.cache, .tickets = &t.keys, .drop_server = &.{2} });
     defer pair.deinit();
     try pair.run();
     try std.testing.expectEqual(@as(usize, 0), t.cache.count());
@@ -568,4 +571,129 @@ test "C8 connection ID messages: only after an agreement that allows them, and a
         try std.testing.expectError(error.TooManyConnectionIdsRequested, pair.run());
         try std.testing.expectEqual(@import("../wire/Alert.zig").Alert.too_many_cids_requested, pair.server.dtls.fatal_due.?);
     }
+}
+
+test "C8 a flight puts each epoch's messages in one record per datagram, and fills each datagram it leaves" {
+    // RFC 9147 section 5.5: a record may carry several handshake messages; one DTLS 1.3 record
+    // per epoch and datagram spends one header and tag, and a datagram is left only when no byte
+    // more of the next message fits (BoGo holds a shim to thirteen bytes: a fragment header and
+    // one). Plaintext and DTLS 1.2 records keep one message each, as tinydtls reads them.
+    // MTUs from the least an association takes (256) up, so tails of every length come up.
+    var mtu: u16 = 256;
+    while (mtu <= 1200) : (mtu += if (mtu < 700) 7 else 100) {
+        for ([_][]const suites.Suite{ suites.Suite.tls13_only, &.{.ecdhe_ecdsa_aes_128_gcm_sha256} }) |offer| {
+            var sent: std.ArrayList([]u8) = .empty;
+            defer {
+                for (sent.items) |datagram| gpa.free(datagram);
+                sent.deinit(gpa);
+            }
+            const pair = try Pair.init(gpa, .{ .client_suites = offer, .mtu = mtu, .server_sent = &sent });
+            defer pair.deinit();
+            try pair.run();
+            // The server's first flight is its first burst, up to the empty mark.
+            const burst = for (sent.items, 0..) |datagram, i| {
+                if (datagram.len == 0) break i;
+            } else return error.NoFlight;
+            for (sent.items[0..burst], 0..) |datagram, i| {
+                var protected: usize = 0;
+                var rest = datagram;
+                while (Record.split(rest, 0)) |next| : (rest = next.rest) {
+                    switch (next.kind) {
+                        .unified => protected += 1,
+                        .classic => |header| if (header.epoch != 0) {
+                            protected += 1;
+                        } else if (next.record[0] == 22) {
+                            // A plaintext record carries one fragment (tinydtls reads no more).
+                            const body = next.record[13..];
+                            try std.testing.expectEqual(body.len, 12 + @as(usize, std.mem.readInt(u24, body[9..12], .big)));
+                        },
+                    }
+                }
+                try std.testing.expect(protected <= 1);
+                // Every datagram but the flight's last is full: no fragment header and byte more
+                // fit its record (DTLS 1.3), or no record header, fragment header and byte more
+                // (one message a record).
+                const room: usize = if (offer[0].tls13() != null) 13 else 13 + 12;
+                if (i + 1 < burst) try std.testing.expect(datagram.len + room >= mtu);
+            }
+            try std.testing.expect(burst >= 2 or mtu >= 1000);
+        }
+    }
+}
+
+test "C8 after the handshake the ACK goes first, then the post-handshake flights in the order they were made, the tickets in one record" {
+    // Each ticket is a flight of its own, in whichever slot is free; they go in creation order,
+    // and in one record, as fragments of one epoch do.
+    var t = try ticketsAndKeys();
+    defer t.cache.deinit();
+    defer t.keys.deinit();
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .cache = &t.cache, .tickets = &t.keys });
+    defer pair.deinit();
+    try pair.run();
+    try std.testing.expectEqual(@as(usize, 2), t.cache.count());
+    const server = &pair.server.dtls;
+    var tickets: usize = 0;
+    var record: ?u64 = null;
+    var last_generation: ?u32 = null;
+    for (server.sent_records[0..server.sent_records_len]) |sent| {
+        if (sent.epoch != 3) continue;
+        tickets += 1;
+        if (record) |number| try std.testing.expectEqual(number, sent.sequence) else record = sent.sequence;
+        if (last_generation) |before| try std.testing.expect(sent.generation > before);
+        last_generation = sent.generation;
+    }
+    try std.testing.expectEqual(@as(usize, 2), tickets);
+    // The ACK of the client's Finished went first under the application keys, record 0: a peer
+    // waiting on it reads it before the tickets (BoGo's runner refused tickets ahead of it).
+    try std.testing.expectEqual(@as(?u64, 1), record);
+}
+
+test "C8 post-handshake messages are ACKed a quarter of the first retransmission wait later, together" {
+    // RFC 9147 section 7.1 leaves the delay to the implementation; BoringSSL's is a quarter of
+    // its first retransmission wait, and its test runner refuses an ACK it is not waiting for.
+    var t = try ticketsAndKeys();
+    defer t.cache.deinit();
+    defer t.keys.deinit();
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .cache = &t.cache, .tickets = &t.keys });
+    defer pair.deinit();
+    try pair.run();
+    // Both tickets arrived, and the client's only timer is their ACK's.
+    try std.testing.expectEqual(@as(usize, 2), t.cache.count());
+    try std.testing.expectEqual(@as(i96, std.time.ns_per_s / 4), pair.client.dtls.timeout().?.nanoseconds - pair.now.nanoseconds);
+    var out: [2048]u8 = undefined;
+    try std.testing.expect(try pair.client.dtls.send(&out, pair.now) == null);
+    // Once it passes, one ACK covers both, and the server holds no flight.
+    pair.settle = true;
+    try pair.run();
+    for (pair.server.dtls.flights) |slot| try std.testing.expect(slot == null);
+    try std.testing.expect(pair.client.dtls.timeout() == null);
+}
+
+test "C8 a repeated flight is answered once, at its last message, however its records come" {
+    // A DTLS 1.2 server's final flight has no timer: it goes again when the client's final flight
+    // does (RFC 6347 section 4.2.4). It went again for each repeated message, so a flight of
+    // several asked for several answers (BoGo's DTLS-Retransmit-Client-Basic-TLS12 counts them).
+    // The server's final flight, its second datagram, is lost.
+    const pair = try Pair.init(gpa, .{ .client_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .server_suites = &.{.ecdhe_ecdsa_aes_128_gcm_sha256}, .drop_server = &.{2} });
+    defer pair.deinit();
+    try pair.flush();
+    try std.testing.expect(pair.server.dtls.phase() == .connected and pair.client.dtls.phase() == .handshaking);
+    // The client's timer sends its final flight again; its records reach the server one per
+    // datagram, as a peer may send them.
+    const later = pair.client.dtls.timeout().?;
+    var out: [2048]u8 = undefined;
+    const again = (try pair.client.dtls.send(&out, later)).?;
+    var records: usize = 0;
+    var answers: usize = 0;
+    var rest = again;
+    while (Record.split(rest, 0)) |next| : (rest = next.rest) {
+        records += 1;
+        var copy: [2048]u8 = undefined;
+        @memcpy(copy[0..next.record.len], next.record);
+        try pair.server.dtls.receive(copy[0..next.record.len], later);
+        var answer: [2048]u8 = undefined;
+        while (try pair.server.dtls.send(&answer, later)) |_| answers += 1;
+    }
+    try std.testing.expect(records >= 3);
+    try std.testing.expectEqual(@as(usize, 1), answers);
 }

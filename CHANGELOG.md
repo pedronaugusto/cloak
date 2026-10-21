@@ -4,6 +4,12 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Changed
+
+- DTLS 1.3 puts a flight's messages of one epoch in one protected record per datagram, as many as fit, and DTLS fills each datagram it leaves down to a byte of the next message; it sent a record per message, and left a datagram once less than 64 bytes of the next message fit. Plaintext and DTLS 1.2 records keep one message each (tinydtls reads no more from a record). Fewer records and datagrams for every flight; BoGo checks for this packing.
+- DTLS 1.3 ACKs post-handshake messages a quarter of the first retransmission wait after the first that waits (250 ms by default), one ACK for what arrives meanwhile, as BoringSSL does; it ACKed each at once. The ACK of a client's final flight still goes at once, and now before the server's tickets; post-handshake flights go out in the order they were made.
+- DTLS answers a peer's repeated flight once, at its last message, as BoringSSL does with a repeated Finished; it answered each repeated message of a flight that had no timer of its own (a DTLS 1.2 final flight).
+
 ## [0.19.1] - 2026-10-21
 
 ### Added
