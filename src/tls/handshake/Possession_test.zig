@@ -105,3 +105,60 @@ test "C4 a key restricted to PSS parameters signs only under the schemes they na
     try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseClient12(sha384, Accepts{}).?);
     try std.testing.expect(P.choose(long_salt, Accepts{}) == null);
 }
+
+test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (every TLS 1.2 scheme a chooser takes for a key, the key signs and the peer accepts)" {
+    // RFC 8446 section 4.2.3: TLS 1.2's ECDSA pairs name a hash, not a curve, so a P-384 key may
+    // sign under ecdsa_secp256r1_sha256 and a P-256 key under ecdsa_secp384r1_sha384, as Go and
+    // BoringSSL do. The server's chooser took such a scheme and the signer refused it; the
+    // client's never offered one.
+    const gpa = std.testing.allocator;
+    // A peer listing one scheme.
+    const Only = struct {
+        id: u16,
+        pub fn accepts(self: @This(), scheme: u16) bool {
+            return scheme == self.id;
+        }
+    };
+    const Case = struct { cert: []const u8, pem: []const u8 };
+    for ([_]Case{ .{ .cert = pki.p256, .pem = pki.p256_pem }, .{ .cert = pki.p384, .pem = pki.p384_pem }, .{ .cert = pki.ed25519, .pem = pki.ed25519_pem }, .{ .cert = pki.rsa, .pem = pki.rsa_pem } }) |case| {
+        const private = try certificates.PrivateKey.parse(gpa, case.pem, .{});
+        defer private.deinit();
+        const identity = try certificates.Identity.init(gpa, &.{case.cert}, private, .{});
+        defer identity.deinit();
+        const public = identity.publicKey();
+        var noise: [certificates.PrivateKey.max_noise]u8 = @splat(0x5a);
+        const fresh = noise[0 .. identity.noiseLength() orelse 0];
+        var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+        for (Hello.schemes12) |scheme| {
+            const only: Only = .{ .id = @backingInt(scheme) };
+            if (P.chooseServer12(public, only)) |chosen| {
+                try std.testing.expectEqual(scheme, chosen);
+                const signature = try P.sign12(identity, chosen, content, fresh, &out);
+                try P.verifyMessage12(@backingInt(chosen), &.{chosen}, public, content, signature);
+            }
+            if (P.chooseClient12(public, only)) |chosen| {
+                try std.testing.expectEqual(scheme, chosen);
+                if (chosen == .ed25519) {
+                    // Ed25519 signs the handshake messages themselves (RFC 8422 section 5.10).
+                    const signature = try P.sign12(identity, chosen, content, fresh, &out);
+                    try P.verifyMessage12(@backingInt(chosen), &.{chosen}, public, content, signature);
+                    continue;
+                }
+                var digest: [64]u8 = undefined;
+                const length = P.transcriptHash12(chosen).?;
+                std.crypto.hash.sha2.Sha512.hash(content, &digest, .{});
+                const signature = try P.signDigest12(identity, chosen, digest[0..length], fresh, &out);
+                try P.verifyDigest12(@backingInt(chosen), &.{chosen}, public, digest[0..length], signature);
+            }
+        }
+    }
+    // The pairs that were missing, by name: each curve under the other's hash, both roles.
+    const p256 = try key(pki.p256);
+    const p384 = try key(pki.p384);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseClient12(p384, Only{ .id = 0x0403 }).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p384_sha384, P.chooseClient12(p256, Only{ .id = 0x0503 }).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseServer12(p384, Only{ .id = 0x0403 }).?);
+    // TLS 1.3 binds the curve (RFC 8446 section 4.2.3): no such pair.
+    try std.testing.expect(P.choose(p384, Only{ .id = 0x0403 }) == null);
+    try std.testing.expect(P.choose(p256, Only{ .id = 0x0503 }) == null);
+}

@@ -71,6 +71,7 @@ test "C10 a provisioned key authenticates both ends with no certificate, each ha
         try std.testing.expect(!client.resumed);
         // The server asked nobody to verify anything: no certificate went either way.
         try std.testing.expect(!duo.client.certificateRequested());
+        try std.testing.expect(client.credential == null and server.credential == null);
         try exportsMatch(duo);
         var out: [8]u8 = undefined;
         try std.testing.expectEqualSlices(u8, "psk", try duo.echo(&duo.client, &duo.server, "psk", &out));

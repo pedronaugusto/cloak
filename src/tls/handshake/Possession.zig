@@ -212,12 +212,13 @@ pub fn chooseServer12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
     return null;
 }
 
-/// The CertificateVerify scheme for a client leaf among those the server lists. It must hash
-/// with SHA-256 or SHA-384, the transcript hashes cloak keeps; an Ed25519 key has none.
+/// The CertificateVerify scheme for a client leaf among those the server lists, in cloak's order
+/// as `chooseServer12`. It must hash with SHA-256 or SHA-384, the transcript hashes cloak keeps;
+/// an Ed25519 key has none.
 pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
-        .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
+        .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
         .mldsa => &.{},

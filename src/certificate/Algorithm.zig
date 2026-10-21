@@ -200,3 +200,68 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
     }
     return error.UnsupportedAlgorithm;
 }
+
+/// The longest SubjectPublicKeyInfo `encodePublicKey` writes: ML-DSA-87's, 2,614 bytes (a
+/// 4096-bit RSA key's is 556).
+pub const max_public_key_info = 22 + mldsa.Scheme(.mldsa87).public_key_length;
+
+/// `key` as the DER SubjectPublicKeyInfo `publicKey` reads, in `out` (RFC 5280 section 4.1.2.7):
+/// rsaEncryption with NULL parameters (RFC 3279), id-ecPublicKey with the named curve and the
+/// uncompressed point (RFC 5480), id-Ed25519 (RFC 8410) and id-ML-DSA-* (RFC 9881), with no
+/// parameters. A key restricted to RSASSA-PSS is UnsupportedAlgorithm: its parameters are its
+/// certificate's to carry.
+pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{UnsupportedAlgorithm}![]const u8 {
+    @setRuntimeSafety(true);
+    // The AlgorithmIdentifier, and the subjectPublicKey's bytes (for RSA, their length).
+    const identifier: []const u8, const raw: []const u8 = switch (key) {
+        .rsa => |rsa| if (rsa.pss_only) return error.UnsupportedAlgorithm else .{ "\x30\x0d\x06\x09" ++ rsa_oid ++ "\x05\x00", "" },
+        .ec => |ec| .{ switch (ec.curve) {
+            .p256 => "\x30\x13\x06\x07" ++ ec_oid ++ "\x06\x08" ++ p256_oid,
+            .p384 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p384_oid,
+        }, ec.bytes },
+        .ed25519 => |bytes| .{ "\x30\x05\x06\x03" ++ ed_oid, bytes },
+        .mldsa => |m| .{ switch (m.level) {
+            .mldsa44 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x11",
+            .mldsa65 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x12",
+            .mldsa87 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x13",
+        }, m.bytes },
+    };
+    const rsa_body = if (key == .rsa) integerLength(key.rsa.modulus) + integerLength(key.rsa.exponent) else 0;
+    const subject = if (key == .rsa) Der.headerLength(rsa_body) + rsa_body else raw.len;
+    const bit_string = 1 + subject;
+    const body = identifier.len + Der.headerLength(bit_string) + bit_string;
+    std.debug.assert(Der.headerLength(body) + body <= out.len);
+    var at = Der.header(out, 0, 0x30, body);
+    @memcpy(out[at..][0..identifier.len], identifier);
+    at += identifier.len;
+    at = Der.header(out, at, 0x03, bit_string);
+    out[at] = 0;
+    at += 1;
+    if (key == .rsa) {
+        at = Der.header(out, at, 0x30, rsa_body);
+        at = putInteger(out, at, key.rsa.modulus);
+        at = putInteger(out, at, key.rsa.exponent);
+    } else {
+        @memcpy(out[at..][0..raw.len], raw);
+        at += raw.len;
+    }
+    return out[0..at];
+}
+
+/// The encoded size of a positive INTEGER of `magnitude` (big-endian, no leading zero byte).
+fn integerLength(magnitude: []const u8) usize {
+    const len = magnitude.len + @intFromBool(magnitude[0] & 0x80 != 0);
+    return Der.headerLength(len) + len;
+}
+
+fn putInteger(out: []u8, at: usize, magnitude: []const u8) usize {
+    @setRuntimeSafety(true);
+    const pad = magnitude[0] & 0x80 != 0;
+    var next = Der.header(out, at, 0x02, magnitude.len + @intFromBool(pad));
+    if (pad) {
+        out[next] = 0;
+        next += 1;
+    }
+    @memcpy(out[next..][0..magnitude.len], magnitude);
+    return next + magnitude.len;
+}

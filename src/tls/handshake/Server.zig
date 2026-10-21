@@ -174,7 +174,9 @@ group: ?Group = null,
 alpn: []const u8 = "",
 /// DTLS: the SRTP profile chosen.
 srtp: ?Hello.Srtp = null,
-credential: usize = 0,
+/// The credential the client is answered with: its index in `options.credentials`; null until
+/// one is chosen, and in a handshake a ticket or provisioned key authenticates.
+credential: ?u8 = null,
 scheme: Hello.SignatureScheme = .ed25519,
 keys: ?Keys = null,
 peer_parameters: []u8 = &.{},
@@ -184,6 +186,9 @@ authenticated: bool = false,
 pin: ?u16 = null,
 /// The chosen credential's delegated credential is sent and signs (RFC 9345).
 delegating: bool = false,
+/// The server proved a raw public key (RFC 7250) in this session's full handshake, this one's or
+/// the resumed one's: what its tickets keep and a resumption answers server_certificate_type with.
+session_raw: bool = false,
 /// The chosen credential's SCTs go to a client that asked for them (RFC 6962).
 sends_scts: bool = false,
 /// Post-handshake authentication, kept from the client's Finished when the client offered it and
@@ -558,8 +563,7 @@ pub fn rejectVerification(self: *Server) void {
 pub fn signRequest(self: *const Server) SignRequest {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    // safe: at most 32 credentials.
-    const credential: u8 = @intCast(self.credential);
+    const credential = self.credential.?;
     if (self.version == .tls12) return .{ .scheme = self.scheme, .content = scratch.params12[0..scratch.params12_len], .credential = credential };
     return .{ .scheme = self.scheme, .content = scratch.sign_content[0..scratch.sign_content_len], .credential = credential };
 }
@@ -569,7 +573,7 @@ pub fn provideSignature(self: *Server, signature: []const u8) Client.Error!void 
     @setRuntimeSafety(true);
     if (self.need_now != .sign) return error.UnexpectedService;
     if (self.version == .tls12) return Server12.onSignature(self, signature);
-    const key = self.options.credentials[self.credential].identity.publicKey();
+    const key = self.options.credentials[self.credential.?].identity.publicKey();
     Possession.verifyKey(@backingInt(self.scheme), &.{self.scheme}, key, self.signRequest().content, signature) catch return error.BadSignature;
     try self.sendCertificateVerify(signature);
     self.need_now = .none;
@@ -588,7 +592,7 @@ fn sendCertificateVerify(self: *Server, signature: []const u8) Client.Error!void
 /// The fresh noise the chosen credential's signature draws with the key exchange's entropy; zero
 /// when its key is held elsewhere or signs without noise.
 pub fn signNoiseLength(self: *const Server) usize {
-    const credential = self.options.credentials[self.credential];
+    const credential = self.options.credentials[self.credential.?];
     if (self.delegating) return credential.delegated.?.noiseLength();
     return credential.identity.noiseLength() orelse 0;
 }
@@ -721,11 +725,7 @@ pub fn receive(self: *Server, bytes_in: []const u8, epoch: Epoch, boundary: bool
 /// Whether a client takes a credential of `identity`'s form (RFC 7250's server_certificate_type):
 /// X.509 unless it lists only other types, a raw key when it lists one.
 fn takesForm(hello: *const ClientHello, identity: certificates.Identity) bool {
-    const kind: Hello.CertificateType = switch (identity.form()) {
-        .x509 => .x509,
-        .raw_public_key => .raw_public_key,
-    };
-    return ClientHello.admitsType(hello.server_certificate_types, @backingInt(kind));
+    return hello.takesServerForm(identity.form() == .raw_public_key);
 }
 
 /// The credential a client is answered with (RFC 8446 section 4.4.2.2, RFC 5246 section 7.4.2),
@@ -754,7 +754,7 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
         if (pick.offer(i, found, Authorities.prefers(credential.identity, hello.authorities))) break;
     }
     const chosen = pick.chosen() orelse return refusal;
-    self.credential = chosen.index;
+    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
     self.scheme = chosen.value.scheme;
     return chosen.value;
 }
@@ -947,7 +947,7 @@ fn chooseAuthentication(self: *Server, hello: *const ClientHello) Client.Error!v
     // A server authenticating by certificate needs the client's schemes (RFC 8446 section 4.2.3).
     if (!hello.has_schemes) return error.MissingExtension;
     self.delegating = (try self.chooseCredential(hello, fits13)).delegating;
-    const credential = self.options.credentials[self.credential];
+    const credential = self.options.credentials[self.credential.?];
     self.sends_scts = hello.scts and credential.scts.len != 0;
     self.negotiateTypes(hello);
 }
@@ -961,7 +961,7 @@ fn mayDelegate(self: *const Server, hello: *const ClientHello) bool {
 
 /// What a ticket must agree with to resume: this policy, this name and protocol, a suite of its
 /// hash, its own and the client authentication's lifetimes.
-fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
+fn resumable(self: *const Server, state: *const Ticket.State, hello: *const ClientHello, now: i64) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     if (state.version != .tls13 or state.datagram != (self.options.transport == .datagram)) return false;
@@ -972,6 +972,8 @@ fn resumable(self: *const Server, state: *const Ticket.State, now: i64) bool {
     if (!std.ascii.eqlIgnoreCase(state.serverName(), scratch.server_name[0..scratch.server_name_len])) return false;
     if (!std.mem.eql(u8, state.alpnBytes(), self.alpn)) return false;
     if (!std.mem.eql(u8, &state.policy, &self.policyDigest())) return false;
+    // A client that does not take the session's type takes no answer a resumption could give.
+    if (!hello.takesServerForm(state.server_raw)) return false;
     if (state.client_authenticated) {
         if (now >= state.auth_expires) return false;
     } else if (self.options.client_auth == .required) return false;
@@ -1032,7 +1034,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
         var state: Ticket.State = undefined;
         Ticket.open(snapshot.ring(), offer.identity, now, &state) catch continue;
         defer state.deinit();
-        if (!self.resumable(&state, now)) continue;
+        if (!self.resumable(&state, hello, now)) continue;
         const scratch = self.scratch.?;
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         switch (self.suite.?) {
@@ -1050,6 +1052,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
         self.authenticated = state.client_authenticated;
         self.pin = state.client_pin;
         self.scratch.?.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
+        self.resumeTypes(hello, state.server_raw);
         return;
     }
 }
@@ -1151,11 +1154,12 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
 pub fn negotiateTypes(self: *Server, hello: *const ClientHello) void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const own: Hello.CertificateType = switch (self.options.credentials[self.credential].identity.form()) {
+    const own: Hello.CertificateType = switch (self.options.credentials[self.credential.?].identity.form()) {
         .x509 => .x509,
         .raw_public_key => .raw_public_key,
     };
     scratch.server_type = if (hello.server_certificate_types != null) own else null;
+    self.session_raw = own == .raw_public_key;
     scratch.client_type = null;
     scratch.peer_raw = false;
     if (self.options.client_auth == .none) return;
@@ -1164,6 +1168,18 @@ pub fn negotiateTypes(self: *Server, hello: *const ClientHello) void {
         scratch.client_type = want;
         scratch.peer_raw = want == .raw_public_key;
     };
+}
+
+/// A resumption's certificate types: server_certificate_type answered, when the client sent it,
+/// with the type the session's server proved (no answer reads as X.509, so a client taking raw
+/// keys alone would refuse a resumption answered with nothing); no client certificate is asked.
+pub fn resumeTypes(self: *Server, hello: *const ClientHello, raw: bool) void {
+    @setRuntimeSafety(true);
+    const scratch = self.scratch.?;
+    self.session_raw = raw;
+    scratch.server_type = if (hello.server_certificate_types == null) null else if (raw) .raw_public_key else .x509;
+    scratch.client_type = null;
+    scratch.peer_raw = false;
 }
 
 /// DTLS: connection IDs when the client offers them and this server answers them, and the
@@ -1319,8 +1335,9 @@ fn sendEncrypted(self: *Server) Client.Error!void {
         // A client whose ECH did not decrypt (or was GREASE) learns the current configs.
         .ech_retry = if (scratch.ech.status == .rejected) self.options.ech_keys else &.{},
         .srtp = self.srtp,
-        // A PSK handshake sends no certificate either way: no type to answer.
-        .server_certificate_type = if (self.pskMode()) null else scratch.server_type,
+        // A resumption answers with its session's type (`resumeTypes`); a provisioned key has
+        // no certificate type, and a PSK handshake asks for no client certificate.
+        .server_certificate_type = if (self.external) null else scratch.server_type,
         .client_certificate_type = if (self.pskMode()) null else scratch.client_type,
         .record_size_limit = scratch.record_size_answer,
     });
@@ -1345,8 +1362,8 @@ fn sendRequest(self: *Server) Client.Error!void {
 fn sendCertificate(self: *Server) Client.Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const identity = self.options.credentials[self.credential].identity;
-    const credential = self.options.credentials[self.credential];
+    const identity = self.options.credentials[self.credential.?].identity;
+    const credential = self.options.credentials[self.credential.?];
     const leaf: Messages.Leaf = .{
         .delegated = if (self.delegating) credential.delegated.?.wire() else null,
         .scts = if (self.sends_scts) credential.scts else null,
@@ -1384,7 +1401,7 @@ fn signCertificate(self: *Server, identity: certificates.Identity) Client.Error!
     scratch.sign_content_len = @intCast(content.len);
     scratch.signing = true;
     if (self.delegating) {
-        const delegated = self.options.credentials[self.credential].delegated.?;
+        const delegated = self.options.credentials[self.credential.?].delegated.?;
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
         const signature = delegated.sign(content, scratch.sign_noise[0..delegated.noiseLength()], &out) catch return error.SigningFailed;
         return self.sendCertificateVerify(signature);
@@ -1641,6 +1658,7 @@ fn issueTickets(self: *Server) Client.Error!void {
             .client_authenticated = self.authenticated,
             .client_pin = self.pin,
             .auth_expires = if (self.authenticated) self.scratch.?.client_auth_expires else 0,
+            .server_raw = self.session_raw,
             .policy = self.policyDigest(),
         };
         defer state.deinit();
@@ -1730,6 +1748,7 @@ pub fn info(self: *const Server) ?Info {
         .srtp = self.srtp,
         .pin = self.pin,
         .delegated_credential = self.delegated_used,
+        .credential = self.credential,
     };
 }
 

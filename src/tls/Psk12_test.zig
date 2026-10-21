@@ -85,6 +85,8 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
         defer duo.deinit();
         try duo.handshake();
         try std.testing.expect(duo.client.info().?.external_psk);
+        // The key authenticated the server: its credential, weighed for the suite, went nowhere.
+        try std.testing.expectEqual(@as(?u8, null), duo.server.info().?.credential);
     }
     {
         const duo = try Duo.init(gpa, .{ .client_suites = both, .client_max = .tls12, .client_psk = psk, .server_suites = &.{ .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 }, .server_psk = table.lookup() });
@@ -92,6 +94,7 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
         try duo.handshake();
         const info = duo.client.info().?;
         try std.testing.expect(!info.external_psk and info.peer_authenticated and info.group != null);
+        try std.testing.expectEqual(@as(?u8, 0), duo.server.info().?.credential);
     }
     // A client of PSK suites alone meets a server with certificates alone: nothing shared.
     {

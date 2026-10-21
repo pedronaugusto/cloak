@@ -4,9 +4,17 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- `Info.credential`: the credential this end presented in the handshake, by its index in the options' `credentials` (the server's answer, or the client's to a CertificateRequest); null on a resumption, with a provisioned key, or for a client not asked or answering with an empty Certificate.
+- `PrivateKey.publicKeyInfo`: the key's public half as the DER SubjectPublicKeyInfo its certificate would carry (RSA, P-256, P-384, Ed25519, ML-DSA), so a raw public key (`Identity.initRawKey`, `ClientAuth.initRawKey`) is made from its private key alone. `certificate.Algorithm.encodePublicKey` writes any parsed key but one restricted to RSASSA-PSS.
+- A client may hold credentials of both forms, certificates and raw public keys (RFC 7250): client_certificate_type lists both, in the order they first appear in `credentials`, and the client answers with a credential of the type the server selected. Mixed lists were InvalidOptions.
+
 ### Fixed
 
 - Traffic secrets and record keys no longer stay on the stack. HKDF and the TLS 1.2 PRF over a secret, record sealing and opening, DTLS 1.3's record-number mask, ticket sealing and the cookie and ticket-key MACs now run in a scrubbed frame, as key parsing, signing and ECDH already did. Their stack is zeroed when they return, to a depth a test measures (8 KiB, 4 KiB for each record), and the AEAD nonce is made inside. The key schedule, the handshake's outputs, the DTLS and stream record epochs and record protection are now made where they are kept, never copied through the stack. The DTLS 1.3 copies had reached the heap through a certificate verifier's workspace.
+- TLS 1.2 ECDSA signs under a hash other than its curve's own, as RFC 8446 section 4.2.3 reads TLS 1.2's pairs: a P-384 key under ecdsa_secp256r1_sha256, a P-256 key under ecdsa_secp384r1_sha384. A server holding only a P-384 credential answered a client listing only ecdsa_secp256r1_sha256 with internal_error (the scheme was chosen and the signer refused it), and a client never answered such a request with its certificate. `PrivateKey.sign` and `signDigest` take ECDSA under SHA-256, SHA-384 or SHA-512 on either curve (RFC 6979's bits2int). F142.
+- A resumed handshake answers server_certificate_type with the type the session's server proved (the ticket keeps it), and a session whose type the client's list leaves out is not resumed. It answered nothing, which RFC 7250 reads as X.509: a client offering raw public keys alone, as BoringSSL's, refused the resumption. Tickets sealed before this release open as X.509 sessions. F143.
 
 ## [0.19.0] - 2026-10-21
 

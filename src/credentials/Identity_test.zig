@@ -78,9 +78,10 @@ test "credential identity signs for the keys cloak holds and says so for the res
         if (case.noise) |length| {
             const made = try identity.sign(case.algorithm, "content", noise[0..length], &out);
             try signature.verify(leaf.public_key, case.algorithm, "content", made);
-            // The algorithm must be the one the key fixes, and the noise the length it draws.
+            // The algorithm must be one the key's type makes (an ECDSA key under any hash, F142),
+            // and the noise the length it draws.
             const other: certificate.Algorithm.Signature = switch (case.algorithm) {
-                .ecdsa => |hash| .{ .ecdsa = if (hash == .sha256) .sha384 else .sha256 },
+                .ecdsa => .ed25519,
                 else => .{ .ecdsa = .sha256 },
             };
             try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(other, "content", noise[0..length], &out));

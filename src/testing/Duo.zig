@@ -124,8 +124,10 @@ pub const Options = struct {
     client_key_log: ?Connection.KeyLog = null,
     server_key_log: ?Connection.KeyLog = null,
     /// A second client credential after the first: `dc_client` under the delegation root, with
-    /// the client's key (a chain of another issuer).
+    /// the client's key (a chain of another issuer), or with `client_second_raw` the client's key
+    /// as a raw public key (RFC 7250).
     client_second: bool = false,
+    client_second_raw: bool = false,
     /// certificate_authorities (RFC 8446 section 4.2.4): the names each end sends.
     client_authorities: []const []const u8 = &.{},
     server_authorities: []const []const u8 = &.{},
@@ -223,7 +225,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     if (options.client_second) {
         const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
         defer client_key.deinit();
-        self.second = try certificates.ClientAuth.init(gpa, &.{ pki.dc_client, pki.dc_ca }, client_key, .{});
+        self.second = if (options.client_second_raw)
+            try certificates.ClientAuth.initRawKey(gpa, (try certificates.certificate.parse(pki.client, .{})).spki, client_key, .{})
+        else
+            try certificates.ClientAuth.init(gpa, &.{ pki.dc_client, pki.dc_ca }, client_key, .{});
     }
     errdefer if (self.second) |second| second.deinit();
     self.peer_leaf = @splat(@splat(0));

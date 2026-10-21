@@ -473,7 +473,11 @@ no candidate fitting, the refusal is the furthest one got: unsupported_certifica
 is of a form the client takes, handshake_failure otherwise. The chain's own signatures
 (signature_algorithms_cert) do not rank credentials: RFC 8446 lets a server send a chain the
 client may not verify, and the client's verifier decides. The signature scheme is the first
-the client accepts that the leaf's key type and curve can make.
+the client accepts that the leaf's key type and curve can make. `Info.credential` names the
+credential each end presented by its index (the server's answer, a client's to a
+CertificateRequest), null on a resumption, a provisioned key or an empty client Certificate;
+TLS 1.2 weighs a credential while choosing the suite and drops it when a ticket or a key then
+authenticates instead.
 
 Cloak signs the CertificateVerify itself with the key its identity holds (`Sign.zig`):
 ECDSA on P-256 and P-384, Ed25519, and RSA (rsa_pss_rsae with SHA-256, SHA-384 or
@@ -796,13 +800,16 @@ anything is verified. The Certificate must carry exactly one
 entry, a SubjectPublicKeyInfo that parses and whose SHA-256 one pin names (every pin compared;
 which one matched is released, as `Info.pin`); the CertificateVerify is then checked
 against that key under the schemes offered, as for a leaf. No service is asked: there is no
-time, chain or trust store in it. A client whose own credential is a raw key
-(`ClientAuth.initRawKey`) sends client_certificate_type with the raw key alone and presents it
-only when the server selected that type; otherwise it answers a CertificateRequest with an
+time, chain or trust store in it. A client whose credentials include a raw key
+(`ClientAuth.initRawKey`) sends client_certificate_type listing the forms it holds in the order
+they first appear in `credentials` (no extension for certificates alone, which is what its absence
+means) and presents a credential of the type the server selected; a server that answers nothing
+asks for X.509, and a client holding raw keys alone then answers a CertificateRequest with an
 empty Certificate.
 
 An `Identity` has a form: certificates, or a raw key (`initRawKey`, `initRawKeyExternal`), whose
-`chain()` is empty and whose `entries()` is the one SubjectPublicKeyInfo a Certificate carries;
+`chain()` is empty and whose `entries()` is the one SubjectPublicKeyInfo a Certificate carries
+(`PrivateKey.publicKeyInfo` writes it from the key alone, the bytes its certificate would hold);
 `publicKey()` is the key either form signs with, so no step reads a raw key as a certificate. A
 server picks the first credential answering the name whose form the client takes (X.509
 unless its server_certificate_type lists only other types; the raw key when it lists one) and
@@ -815,7 +822,11 @@ pinned ends with unsupported_certificate.
 
 Resumption keeps the trust apart: the client's cache key holds the pins (or the verification
 policy) and the server's ticket policy digest holds them too, so a session from one kind of
-trust never resumes under the other, and a ticket keeps which pin the client proved. A rejected
+trust never resumes under the other, and a ticket keeps which pin the client proved. A ticket
+also keeps the form the server proved itself with: a resumption answers a client's
+server_certificate_type with that type (no answer reads as X.509, RFC 7250 section 4.2, and a
+client taking raw keys alone, as BoringSSL's, refuses it), and a client whose list leaves the
+session's type out gets a full handshake instead. A rejected
 ECH attempt authenticates the public name's certificate, which a client pinning a key cannot,
 so ECH with a config list is refused with `.raw_key`. Post-quantum authentication with a pinned
 key is an ML-DSA key: the CertificateVerify schemes offered are ML-DSA's alone.
@@ -1090,8 +1101,11 @@ plaintext record, where the table expects it; the keys it switches to are derive
 and installed by the connection when the record arrives. Handshake and alert records under
 TLS 1.2 keys are decrypted like application data, in place after the explicit nonce. The
 ServerKeyExchange signature covers both randoms and the parameters; TLS 1.2 binds an ECDSA
-scheme to its hash rather than to the key's curve, and PKCS#1 v1.5 RSA signatures are
-accepted and made only in TLS 1.2. A CertificateVerify signs the transcript hash of its
+scheme to its hash rather than to the key's curve (RFC 8446 section 4.2.3), in both
+directions: a P-384 key signs under ecdsa_secp256r1_sha256 when that is what the peer lists
+(its own curve's scheme first), the signer taking a hash not the curve's own as RFC 6979's
+bits2int, as Go and BoringSSL do, and such signatures are accepted. PKCS#1 v1.5 RSA signatures
+are accepted and made only in TLS 1.2. A CertificateVerify signs the transcript hash of its
 scheme: both SHA-256 and SHA-384 transcripts run through a TLS 1.2 handshake, so the
 signature goes through `signDigest`/`verifyDigest`. Ed25519 signs the handshake messages
 themselves rather than a digest (RFC 8422 section 5.10), so the transcript also keeps the messages whole when an Ed25519 signature may be needed: in
@@ -1440,8 +1454,8 @@ named one, as Go's `SupportsCertificate` decides; a raw public key never does. O
 the peer can take, the first that chains to a name answers, else the first. The server's walk is
 the one it always made (the name, the form the client takes, the version's fit: TLS 1.3 schemes or
 a usable delegated credential, TLS 1.2 a shared suite, curve and scheme). A client holds its
-credentials in a list (`credentials`, at most 32, all of one form, each with its delegated
-credential), walked the same way: the type the server selected, then a scheme the request lists or
+credentials in a list (`credentials`, at most 32, certificates or raw keys or both, each with its
+delegated credential), walked the same way: the type the server selected, then a scheme the request lists or
 a usable delegated credential (TLS 1.2: a certificate type it names and a scheme). The request's
 names are reduced to a bit per credential when it arrives, so nothing of the list outlives it.
 BoringSSL's per-credential `must_match_issuer`, which refuses, is not built. An external signer is
@@ -1621,3 +1635,5 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F139 | `catalogue_server_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in `Server.chooseCredential`, and the issuer comparison in `Authorities.chains`; before, the client's names were not read (RFC 8446 4.2.4, main's call 2026-10-20) |
 | F140 | `catalogue_client_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in each client walk (TLS 1.3, TLS 1.2, post-handshake); before, a client held one credential and read no names (RFC 8446 4.2.4, RFC 5246 7.4.4) |
 | F141 | `catalogue_pin_without_authorities` | `tls/LeafKey_test.zig` | the pin check made to pass in each role's leaf-key branch (TLS 1.3 and 1.2 client and server), the cache key's mode label, and the empty-pins refusal; before, a pin was checked only beside full verification, so a caller verifying no chain could not hold a pinned key (main's call 2026-10-21, designs/cloak.md §5.2) |
+| F142 | `catalogue_tls12_ecdsa_scheme_names_hash_not_curve` | `tls/handshake/Possession_test.zig`, `credentials/Key_test.zig` | the signer bound back to each curve's own hash, and the client's TLS 1.2 chooser to its curve's scheme; before, a TLS 1.2 server took a P-384 key for a client listing only ecdsa_secp256r1_sha256 and failed to sign (internal_error), and the client never offered the pairing (BoGo's CertificateSelection-*-SignatureAlgorithmECDSACurve-TLS-TLS12) |
+| F143 | `catalogue_resumed_server_certificate_type` | `tls/RawKey_test.zig`, `tls/resumption/Ticket_test.zig` | each resumption's answer (TLS 1.3 EncryptedExtensions, TLS 1.2 ServerHello) and each server's type check on a ticket removed; before, a resumed handshake answered server_certificate_type with nothing, which a client offering raw keys alone reads as X.509 and refuses (BoGo's ServerCertificateType-Server-*) |

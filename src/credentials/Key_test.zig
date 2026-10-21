@@ -141,7 +141,7 @@ test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a messag
     try std.testing.expectError(error.UnsupportedAlgorithm, ed.signDigest(.ed25519, &@as([64]u8, @splat(0)), "", &out));
 }
 
-test "ECDSA keys sign as DER or as r || s (P1363), each verified in its own form only" {
+test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as DER or as r || s (P1363), each verified in its own form only, under every hash on either curve)" {
     @setRuntimeSafety(true);
     const signature = @import("../verify/signature.zig");
     const certificate = @import("../certificate.zig");
@@ -182,7 +182,25 @@ test "ECDSA keys sign as DER or as r || s (P1363), each verified in its own form
         var digest: [width]u8 = undefined;
         if (width == 32) std.crypto.hash.sha2.Sha256.hash("content", digest[0..32], .{}) else std.crypto.hash.sha2.Sha384.hash("content", digest[0..48], .{});
         try std.testing.expectEqualSlices(u8, made_fixed, try key.signDigest(.{ .ecdsa_p1363 = hash }, &digest, noise[0..key.noiseLength()], &digest_out));
-        try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .ecdsa_p1363 = if (hash == .sha256) .sha384 else .sha256 }, "content", noise[0..key.noiseLength()], &fixed));
+        // F142: every hash on either curve, from the message or its digest, as RFC 6979's
+        // bits2int takes a hash not the curve's own; the verifier, which already took them,
+        // accepts each, and a digest of another length is InvalidDigest.
+        inline for (comptime std.enums.values(certificate.Algorithm.Hash)) |other| {
+            const Hash = switch (other) {
+                .sha256 => std.crypto.hash.sha2.Sha256,
+                .sha384 => std.crypto.hash.sha2.Sha384,
+                .sha512 => std.crypto.hash.sha2.Sha512,
+            };
+            inline for (.{ certificate.Algorithm.Signature{ .ecdsa = other }, certificate.Algorithm.Signature{ .ecdsa_p1363 = other } }) |algorithm| {
+                const made = try key.sign(algorithm, "content", noise[0..key.noiseLength()], &der);
+                try signature.verify(public, algorithm, "content", made);
+                try std.testing.expectError(error.InvalidSignature, signature.verify(public, algorithm, "other", made));
+                var other_digest: [Hash.digest_length]u8 = undefined;
+                Hash.hash("content", &other_digest, .{});
+                try std.testing.expectEqualSlices(u8, made, try key.signDigest(algorithm, &other_digest, noise[0..key.noiseLength()], &digest_out));
+                try std.testing.expectError(error.InvalidDigest, key.signDigest(algorithm, other_digest[1..], noise[0..key.noiseLength()], &digest_out));
+            }
+        }
     }
 }
 
@@ -280,4 +298,37 @@ test "C10 private keys from their components: the same key as parsed, and every 
     other_x[0] ^= 1;
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed, .public = &other_x } }));
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed[1..] } }));
+}
+
+test "C10 a private key writes its public half as the SubjectPublicKeyInfo its certificate carries" {
+    const certificate = @import("../certificate.zig");
+    const pki = @import("../testing/Peer.zig").pki;
+    const gpa = std.testing.allocator;
+    const Case = struct { cert: []const u8, pem: []const u8 };
+    // OpenSSL made each certificate: RSA (a modulus with its high bit set, so a leading zero),
+    // both curves, Ed25519 and the three ML-DSA sets.
+    for ([_]Case{
+        .{ .cert = pki.rsa, .pem = pki.rsa_pem },
+        .{ .cert = pki.p256, .pem = pki.p256_pem },
+        .{ .cert = pki.p384, .pem = pki.p384_pem },
+        .{ .cert = pki.ed25519, .pem = pki.ed25519_pem },
+        .{ .cert = pki.mldsa44, .pem = pki.mldsa44_pem },
+        .{ .cert = pki.mldsa65, .pem = pki.mldsa65_pem },
+        .{ .cert = pki.mldsa87, .pem = pki.mldsa87_pem },
+    }) |case| {
+        const key = try PrivateKey.parse(gpa, case.pem, .{});
+        defer key.deinit();
+        var out: [PrivateKey.max_public_key_info]u8 = undefined;
+        const spki = key.publicKeyInfo(&out);
+        try std.testing.expectEqualSlices(u8, (try certificate.parse(case.cert, .{})).spki, spki);
+        try std.testing.expect(key.matchesKey(try certificate.Algorithm.publicKey(spki)));
+    }
+    // ML-DSA-87's is the longest.
+    const key = try PrivateKey.parse(gpa, pki.mldsa87_pem, .{});
+    defer key.deinit();
+    var out: [PrivateKey.max_public_key_info]u8 = undefined;
+    try std.testing.expectEqual(out.len, key.publicKeyInfo(&out).len);
+    // A key restricted to RSASSA-PSS carries its parameters in its certificate: not written.
+    const rsa = try certificate.Algorithm.publicKey((try certificate.parse(pki.rsa, .{})).spki);
+    try std.testing.expectError(error.UnsupportedAlgorithm, certificate.Algorithm.encodePublicKey(.{ .rsa = .{ .modulus = rsa.rsa.modulus, .exponent = rsa.rsa.exponent, .pss_only = true } }, &out));
 }

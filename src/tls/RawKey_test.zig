@@ -240,6 +240,18 @@ test "C10 raw public keys: EncryptedExtensions answers only what was offered, wi
     try std.testing.expectError(error.UnofferedSelection, Hello.encrypted(&x509, raw, false));
     const two = [_]u8{ 8, 0, 0, 8, 0, 6, 0, 20, 0, 2, 2, 2 };
     try std.testing.expectError(error.DecodeError, Hello.encrypted(&two, raw, false));
+    // A client holding both forms takes either answer to client_certificate_type; one holding
+    // raw keys alone takes X.509 nowhere.
+    const client_raw = [_]u8{ 8, 0, 0, 7, 0, 5, 0, 19, 0, 1, 2 };
+    const client_x509 = [_]u8{ 8, 0, 0, 7, 0, 5, 0, 19, 0, 1, 0 };
+    for ([_]Hello.ClientTypes{ .raw_then_x509, .x509_then_raw }) |both| {
+        try std.testing.expect((try Hello.encrypted(&client_raw, .{ .client_types = both }, false)).raw_client_key);
+        try std.testing.expect(!(try Hello.encrypted(&client_x509, .{ .client_types = both }, false)).raw_client_key);
+    }
+    try std.testing.expectError(error.UnofferedSelection, Hello.encrypted(&client_x509, .{ .client_types = .raw }, false));
+    try std.testing.expectError(error.UnsolicitedExtension, Hello.encrypted(&client_raw, .{}, false));
+    try std.testing.expectEqualSlices(u8, &.{ 2, 0 }, Hello.ClientTypes.raw_then_x509.list());
+    try std.testing.expectEqualSlices(u8, &.{ 0, 2 }, Hello.ClientTypes.x509_then_raw.list());
 }
 
 test "C10 raw public keys over TLS 1.2: a client trusts the server's pinned key, every key type TLS 1.2 signs with" {
@@ -416,4 +428,126 @@ test "C10 raw public keys over TLS 1.2: a ServerHello answers only what was offe
     var buf2: [256]u8 = undefined;
     const x509 = try Hello.buildServer12(&buf2, .stream, &random, "", .ecdhe_ecdsa_aes_128_gcm_sha256, "", .{ .server_name = false, .renegotiation_info = true, .point_formats = false, .server_certificate_type = .x509 });
     try std.testing.expectError(error.UnofferedSelection, Hello.server(x509, "", &.{}, raw, .{}));
+}
+
+/// An NSS key log sink.
+const Lines = struct {
+    text: std.ArrayList(u8) = .empty,
+
+    fn write(context: ?*anyopaque, line: []const u8) void {
+        const self: *Lines = @ptrCast(@alignCast(context.?));
+        self.text.appendSlice(gpa, line) catch @panic("the key log is out of memory");
+    }
+
+    fn log(self: *Lines) @import("Connection.zig").KeyLog {
+        return .{ .context = self, .write = write };
+    }
+};
+
+/// The extension `id`'s body in an extension block, or null.
+fn extensionIn(block: []const u8, id: u16) ?[]const u8 {
+    var at: usize = 0;
+    while (at + 4 <= block.len) {
+        const len = std.mem.readInt(u16, block[at + 2 ..][0..2], .big);
+        if (std.mem.readInt(u16, block[at..][0..2], .big) == id) return block[at + 4 ..][0..len];
+        at += 4 + len;
+    }
+    return null;
+}
+
+/// The type a TLS 1.2 server's first flight answers server_certificate_type with, from its
+/// ServerHello; null when it does not answer.
+fn typeAnswer12(flight: []const u8) ?u8 {
+    const hello = flight[5..];
+    var at: usize = 4 + 2 + 32;
+    at += 1 + hello[at];
+    at += 3;
+    const block = hello[at + 2 ..][0..std.mem.readInt(u16, hello[at..][0..2], .big)];
+    return if (extensionIn(block, Hello.server_certificate_type)) |body| body[0] else null;
+}
+
+/// The type a TLS 1.3 server's first flight answers server_certificate_type with, from its
+/// EncryptedExtensions opened with the handshake secret the server's key log gave; null when it
+/// does not answer.
+fn typeAnswer13(flight: []const u8, log: []const u8) !?u8 {
+    const label = "SERVER_HANDSHAKE_TRAFFIC_SECRET ";
+    const line_at = std.mem.findLast(u8, log, label).?;
+    var secret: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&secret, log[line_at + label.len + 65 ..][0..64]);
+    var epoch: @import("record/Epoch.zig").Epoch(.aes_128_gcm_sha256) = undefined;
+    try epoch.initTraffic(&secret, .{});
+    defer epoch.release();
+    var at: usize = 0;
+    while (at + 5 <= flight.len) {
+        const record = flight[at..][0 .. 5 + std.mem.readInt(u16, flight[at + 3 ..][0..2], .big)];
+        at += record.len;
+        if (record[0] != 23) continue;
+        var out: [1 << 15]u8 = undefined;
+        const plain = try epoch.open(record, &out);
+        const message = plain.bytes;
+        // EncryptedExtensions comes first under the handshake keys.
+        try std.testing.expectEqual(@as(u8, 8), message[0]);
+        const block = message[6..][0..std.mem.readInt(u16, message[4..6], .big)];
+        return if (extensionIn(block, Hello.server_certificate_type)) |body| body[0] else null;
+    }
+    return error.NoEncryptedExtensions;
+}
+
+test "F143 catalogue_resumed_server_certificate_type (a resumption answers server_certificate_type with the session's type, and resumes only for a client that takes it)" {
+    // RFC 7250 section 4.2 reads a missing answer as X.509: a client taking raw keys alone, as
+    // BoringSSL's, refused a resumption cloak answered with nothing (BoGo's
+    // ServerCertificateType-Server-*). The session's type is the ticket's to keep.
+    const pins = [_][32]u8{Duo.pinOf(pki.p256)};
+    for ([_]@import("crypto/Suite.zig").Version{ .tls13, .tls12 }) |version| {
+        var cache = try SessionCache.init(gpa, .{});
+        defer cache.deinit();
+        var ring = try TicketKeys.init(gpa, .{});
+        defer ring.deinit();
+        try ring.rotate(&@as([32]u8, @splat(0x7a)), certificates.types.instant(pki.time));
+        const tls12 = version == .tls12;
+        const raw_client: Duo.Options = .{ .server_raw = .both, .client_raw_pins = &pins, .cache = &cache, .tickets = &ring, .client_max = version, .client_suites = if (tls12) &.{.ecdhe_ecdsa_aes_128_gcm_sha256} else &.{.aes_128_gcm_sha256}, .client_tls12_tickets = tls12, .server_tls12_tickets = tls12 };
+        {
+            const duo = try connect(raw_client);
+            defer duo.deinit();
+            try std.testing.expect(!duo.client.info().?.resumed);
+        }
+        {
+            var lines: Lines = .{};
+            defer lines.text.deinit(gpa);
+            var options = raw_client;
+            options.server_key_log = lines.log();
+            const duo = try Duo.init(gpa, options);
+            defer duo.deinit();
+            try duo.handshakeUntilServerFlight();
+            const flight = duo.server.output();
+            const answer = if (tls12) typeAnswer12(flight) else try typeAnswer13(flight, lines.text.items);
+            try std.testing.expectEqual(@as(?u8, @backingInt(Hello.CertificateType.raw_public_key)), answer);
+            try duo.handshake();
+            try std.testing.expect(duo.server.info().?.resumed and duo.client.info().?.resumed);
+        }
+        // An X.509 session's ticket offered by a client taking raw keys alone: not resumed (no type
+        // it takes could answer), a full handshake under the raw key instead.
+        var x509_client = raw_client;
+        x509_client.client_raw_pins = null;
+        {
+            const duo = try connect(x509_client);
+            defer duo.deinit();
+            try std.testing.expect(duo.client.info().?.pin == null);
+        }
+        {
+            var guard = cache.table.acquire();
+            defer guard.deinit();
+            var raw_key: [32]u8 = undefined;
+            for (guard.value().slots) |slot| if (slot) |entry| if (entry.pin != null) {
+                raw_key = entry.key;
+            };
+            for (guard.value().slots) |slot| if (slot) |entry| {
+                entry.key = if (entry.pin != null) @splat(0) else raw_key;
+            };
+        }
+        const duo = try connect(raw_client);
+        defer duo.deinit();
+        try std.testing.expect(!duo.server.info().?.resumed);
+        try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.pin);
+    }
 }

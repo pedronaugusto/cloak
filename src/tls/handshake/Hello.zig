@@ -58,6 +58,25 @@ pub const server_certificate_type = 20;
 /// post_handshake_auth (RFC 8446 section 4.2.6): empty, from a client only.
 pub const post_handshake_auth = 49;
 pub const CertificateType = enum(u8) { x509 = 0, raw_public_key = 2, _ };
+/// The certificate types a client can present, in its order (RFC 7250 client_certificate_type).
+pub const ClientTypes = enum {
+    x509,
+    raw,
+    raw_then_x509,
+    x509_then_raw,
+
+    /// The types the extension lists, in order: none for X.509 alone.
+    pub fn list(self: ClientTypes) []const u8 {
+        const x509 = @backingInt(CertificateType.x509);
+        const raw = @backingInt(CertificateType.raw_public_key);
+        return switch (self) {
+            .x509 => &.{},
+            .raw => &.{raw},
+            .raw_then_x509 => &.{ raw, x509 },
+            .x509_then_raw => &.{ x509, raw },
+        };
+    }
+};
 /// The connection_id extension's number (RFC 9146 section 3).
 pub const connection_id_extension = 54;
 /// The use_srtp extension's number (RFC 5764 section 4.1.1).
@@ -80,8 +99,9 @@ pub const Options = struct {
     /// The server presents a raw public key (RFC 7250), which this client trusts by its pin:
     /// server_certificate_type offers that type alone. Either version.
     raw_server_key: bool = false,
-    /// This client's credential is a raw public key: client_certificate_type offers that type alone.
-    raw_client_key: bool = false,
+    /// The certificate types this client can present (RFC 7250 client_certificate_type), in the
+    /// order of its credentials. X.509 alone sends no extension: a hello without it means X.509.
+    client_types: ClientTypes = .x509,
     /// The client answers a CertificateRequest after the handshake (RFC 8446 section 4.6.2):
     /// post_handshake_auth is offered. TLS 1.3 over a stream only: QUIC forbids it (RFC 9001
     /// section 4.4), and cloak's datagrams do not build it.
@@ -466,11 +486,17 @@ fn delegatedExtension(w: *Writer, require_pq_auth: bool) EncodeError!void {
     for (list) |scheme| try w.int(u16, @backingInt(scheme));
 }
 
-/// What the client's certificate may be and when it may be asked for: RFC 7250's types, one each,
-/// the raw key (X.509 is what a hello without the extension means), and post_handshake_auth.
+/// What the client's certificate may be and when it may be asked for: RFC 7250's types (X.509 is
+/// what a hello without the extension means) and post_handshake_auth.
 fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
     const raw: []const u8 = &.{ 1, @backingInt(CertificateType.raw_public_key) };
-    if (options.raw_client_key) try extension(w, client_certificate_type, raw);
+    const offered = options.client_types.list();
+    if (offered.len != 0) {
+        var body: [3]u8 = undefined;
+        body[0] = @intCast(offered.len); // safe: at most two types
+        @memcpy(body[1..][0..offered.len], offered);
+        try extension(w, client_certificate_type, body[0 .. 1 + offered.len]);
+    }
     if (options.raw_server_key) try extension(w, server_certificate_type, raw);
     if (options.post_handshake_auth and options.allows13()) try extension(w, post_handshake_auth, "");
 }
@@ -831,18 +857,25 @@ fn answers12(id: u16) bool {
 }
 
 /// A server's answers to client_certificate_type and server_certificate_type (RFC 7250 section
-/// 4.2): one type each, among those offered, which is the raw key alone.
+/// 4.2): one type each, among those offered (the server's, the raw key alone).
 const CertificateTypes = struct {
     raw_server_key: bool = false,
     raw_client_key: bool = false,
 
     fn read(self: *CertificateTypes, id: u16, value: *Reader, options: Options) ParseError!void {
         @setRuntimeSafety(true);
-        const offered = if (id == server_certificate_type) options.raw_server_key else options.raw_client_key;
+        const offered = if (id == server_certificate_type) options.raw_server_key else options.client_types != .x509;
         if (!offered) return error.UnsolicitedExtension;
         if (value.bytes.len != 1) return error.DecodeError;
-        if (try value.int(u8) != @backingInt(CertificateType.raw_public_key)) return error.UnofferedSelection;
-        if (id == server_certificate_type) self.raw_server_key = true else self.raw_client_key = true;
+        const kind = try value.int(u8);
+        const raw = @backingInt(CertificateType.raw_public_key);
+        if (id == server_certificate_type) {
+            if (kind != raw) return error.UnofferedSelection;
+            self.raw_server_key = true;
+        } else {
+            if (std.mem.findScalar(u8, options.client_types.list(), kind) == null) return error.UnofferedSelection;
+            self.raw_client_key = kind == raw;
+        }
     }
 };
 fn server12(legacy_version: u16, random: *const [32]u8, echoed: []const u8, session: []const u8, suite_id: u16, seen: Seen12, options: Options) ParseError!Answer {

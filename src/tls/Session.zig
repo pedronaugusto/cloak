@@ -126,7 +126,8 @@ pub const Options = struct {
     require_pq_auth: bool = false,
     /// What a CertificateRequest is answered with, in this client's order, each with its
     /// delegated credential (RFC 9345): the first the request takes that chains to an authority
-    /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, of one form.
+    /// it names (RFC 8446 section 4.2.4), else the first; borrowed. At most 32, certificates or
+    /// raw keys (RFC 7250) or both, of the type the server selects.
     credentials: []const @import("handshake/Client.zig").Credential = &.{},
     /// certificate_authorities (RFC 8446 section 4.2.4): the DER Names of the anchors this client
     /// trusts, named in a hello offering TLS 1.3, a server's preference among its credentials;

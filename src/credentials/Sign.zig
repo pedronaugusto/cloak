@@ -71,6 +71,17 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             return write(signature, form, out);
         }
 
+        /// The signature over a digest of another hash: its leftmost bits when longer than the
+        /// scalar, all of it when shorter, as RFC 6979's bits2int takes it (section 2.3.2; both
+        /// orders are whole bytes), then as `signDigest`. TLS 1.2 and X.509 bind an ECDSA
+        /// signature to a hash, not to the curve (RFC 8446 section 4.2.3).
+        pub fn signAnyDigest(secret: *const [secret_length]u8, digest: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
+            @setRuntimeSafety(true);
+            var e: [Hash.digest_length]u8 = @splat(0);
+            if (digest.len >= e.len) @memcpy(&e, digest[0..e.len]) else @memcpy(e[e.len - digest.len ..], digest);
+            return signDigest(secret, &e, noise, form, out);
+        }
+
         /// P-256 through cloak's own kernel: comb multiplication by the nonce, Montgomery
         /// scalars with a fixed-exponent inversion. Every secret scalar is erased.
         fn signP256(secret: *const [32]u8, digest: *const [32]u8, k_bytes: *const [32]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {

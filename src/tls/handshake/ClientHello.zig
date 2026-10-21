@@ -332,6 +332,14 @@ pub fn admitsType(list: ?[]const u8, kind: u8) bool {
     return std.mem.findScalar(u8, types, kind) != null;
 }
 
+/// Whether this client takes a server authenticated by a raw public key (`raw`) or by a
+/// certificate (RFC 7250 section 4.2): its server_certificate_type list names the type, or the
+/// type is X.509 and it sent none.
+pub fn takesServerForm(self: *const ClientHello, raw: bool) bool {
+    // RFC 7250 section 3: X509 is 0, RawPublicKey 2.
+    return admitsType(self.server_certificate_types, if (raw) 2 else 0);
+}
+
 /// OfferedPsks (RFC 8446 section 4.2.11): identities, then one binder of 32 bytes or more for each.
 fn offeredPsks(self: *ClientHello, value: *Reader) ParseError!void {
     @setRuntimeSafety(true);

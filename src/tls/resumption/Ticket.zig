@@ -54,6 +54,9 @@ pub const State = struct {
     /// The client proved a raw public key (RFC 7250): its index in the policy's pins.
     client_pin: ?u16 = null,
     auth_expires: i64 = 0,
+    /// The server proved a raw public key (RFC 7250) in the session's full handshake, not a
+    /// certificate: the type a resumption answers server_certificate_type with.
+    server_raw: bool = false,
     policy: [32]u8,
 
     /// The secret's length: the suite's digest for a TLS 1.3 PSK, 48 bytes for a master secret.
@@ -173,8 +176,10 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
         @memcpy(out[at + 1 ..][0..name.len], name);
         at += 1 + name.len;
     }
-    // 0: no client authentication; 1: a certificate; 2: a raw key, then its pin's index.
-    out[at] = if (!state.client_authenticated) 0 else if (state.client_pin == null) 1 else 2;
+    // Low bits 0: no client authentication; 1: a certificate; 2: a raw key, then its pin's
+    // index. Bit 2: the server proved a raw key.
+    const client: u8 = if (!state.client_authenticated) 0 else if (state.client_pin == null) 1 else 2;
+    out[at] = client | @as(u8, if (state.server_raw) 4 else 0);
     at += 1;
     if (state.client_authenticated) if (state.client_pin) |pin| {
         std.mem.writeInt(u16, out[at..][0..2], pin, .big);
@@ -217,8 +222,10 @@ fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid
     if (name_len > out.server_name.len) return error.Invalid;
     @memcpy(out.server_name[0..name_len], try take(plain, &at, name_len));
     out.server_name_len = name_len;
-    const auth = (try take(plain, &at, 1))[0];
-    if (auth > 2) return error.Invalid;
+    const flags = (try take(plain, &at, 1))[0];
+    const auth = flags & 3;
+    if (flags & ~@as(u8, 7) != 0 or auth > 2) return error.Invalid;
+    out.server_raw = flags & 4 != 0;
     out.client_authenticated = auth != 0;
     if (auth == 2) out.client_pin = std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big);
     out.auth_expires = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);

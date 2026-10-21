@@ -77,7 +77,8 @@ pub const Options = struct {
     identity: types.Identity = .none,
     verify: Verify,
     /// What a CertificateRequest is answered with, in this client's order, at most
-    /// `max_credentials`, all of one form (certificates or raw keys): the first the request takes
+    /// `max_credentials`: of the form the server selected (certificates, or raw keys, RFC 7250:
+    /// the types are offered in the order the forms first appear), the first the request takes
     /// that chains to an authority it names, else the first it takes (`Credential`). A key cloak
     /// does not hold signs through a signing request.
     credentials: []const Credential = &.{},
@@ -96,8 +97,6 @@ pub const SignRequest = Terms.SignRequest;
 
 pub const Info = struct {
     version: suites.Version,
-    /// The handshake resumed a session from a ticket: the peer's authentication is the original
-    /// handshake's.
     suite: suites.Suite,
     /// The key exchange's group; null for a TLS 1.2 provisioned key, which has none.
     group: ?Group,
@@ -105,6 +104,8 @@ pub const Info = struct {
     server_name: []const u8,
     peer_authenticated: bool,
     peer_parameters: []const u8,
+    /// The handshake resumed a session from a ticket: the peer's authentication is the original
+    /// handshake's.
     resumed: bool = false,
     /// Encrypted Client Hello was offered and accepted: the true server name never crossed the
     /// wire in clear.
@@ -120,6 +121,11 @@ pub const Info = struct {
     /// The peer proved possession with a delegated credential (RFC 9345) its verified certificate
     /// signed, not with the certificate's own key.
     delegated_credential: bool = false,
+    /// The credential this end authenticated with in the handshake: its index in the options'
+    /// `credentials`, the server's answer to the client or the client's to a CertificateRequest.
+    /// Null when this end presented none: a resumption, a provisioned key, a client not asked
+    /// for a certificate or answering with an empty one. Post-handshake answers are not counted.
+    credential: ?u8 = null,
 };
 
 pub const InitError = Hello.ValidateError || std.mem.Allocator.Error || error{InvalidOptions};
@@ -195,8 +201,9 @@ pin: ?u16 = null,
 /// The server proved possession with a delegated credential (RFC 9345).
 delegated_used: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
-/// The credential answering the CertificateRequest: its index in `kept.credentials`.
-credential: u8 = 0,
+/// The credential answering the CertificateRequest: its index in `kept.credentials`; null until
+/// one is chosen, and when none answers it (an empty Certificate).
+credential: ?u8 = null,
 established: bool = false,
 /// The client's application write secret, queued after its Finished.
 app_write: ?Traffic = null,
@@ -351,8 +358,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         if (hello.request_scts and full.evidence.scts.len >= types.TransparencyPolicy.max_lists) return error.InvalidOptions;
     } else hello.request_scts = false;
     if (options.credentials.len > max_credentials) return error.InvalidOptions;
-    for (options.credentials) |credential| if (credential.auth.identity.form() != options.credentials[0].auth.identity.form()) return error.InvalidOptions;
-    hello.raw_client_key = options.credentials.len != 0 and options.credentials[0].auth.identity.form() == .raw_public_key;
+    hello.client_types = clientTypes(options.credentials);
     Hello.validate(hello) catch return error.InvalidOptions;
     // ECH over datagrams (RFC 9849 with DTLS 1.3) is not built: refused rather than ignored.
     if (options.ech != .off and options.hello.transport == .datagram) return error.InvalidOptions;
@@ -693,6 +699,16 @@ pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
 }
 
 /// The cache key: SHA-256 over every input a session's authority depended on, each length-prefixed.
+/// The certificate types `credentials` can present, in the order their forms first appear.
+fn clientTypes(credentials: []const Credential) Hello.ClientTypes {
+    if (credentials.len == 0) return .x509;
+    const first_raw = credentials[0].auth.identity.form() == .raw_public_key;
+    for (credentials[1..]) |credential| {
+        if ((credential.auth.identity.form() == .raw_public_key) != first_raw) return if (first_raw) .raw_then_x509 else .x509_then_raw;
+    }
+    return if (first_raw) .raw else .x509;
+}
+
 fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -902,8 +918,8 @@ pub fn signRequest(self: *const Client) SignRequest {
     @setRuntimeSafety(true);
     if (self.established) return self.post_auth.?.signRequest();
     // Ed25519 in TLS 1.2 signs the handshake messages, not their digest.
-    if (self.version == .tls12 and self.sign_scheme == .ed25519) return .{ .scheme = .ed25519, .content = self.scratch.?.transcripts.keptBytes(), .credential = self.credential };
-    return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12, .credential = self.credential };
+    if (self.version == .tls12 and self.sign_scheme == .ed25519) return .{ .scheme = .ed25519, .content = self.scratch.?.transcripts.keptBytes(), .credential = self.credential.? };
+    return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12, .credential = self.credential.? };
 }
 
 /// Checks the signature against the identity's public key before using it.
@@ -912,7 +928,7 @@ pub fn provideSignature(self: *Client, signature: []const u8) Error!void {
     if (self.need() != .sign) return error.UnexpectedService;
     if (self.established) return self.postAnswered(self.post_auth.?.provideSignature(signature, self.kept.credentials));
     if (self.version == .tls12) return Client12.onSignature(self, signature);
-    const auth = self.kept.credentials[self.credential].auth;
+    const auth = self.kept.credentials[self.credential.?].auth;
     Possession.verifyKey(@backingInt(self.sign_scheme), &.{self.sign_scheme}, auth.identity.publicKey(), self.signRequest().content, signature) catch return error.BadSignature;
     self.need_now = .none;
     try self.sendCertificateVerify(signature);
@@ -1895,6 +1911,7 @@ pub fn info(self: *const Client) ?Info {
         .srtp = self.srtp,
         .pin = self.pin,
         .delegated_credential = self.delegated_used,
+        .credential = self.credential,
     };
 }
 

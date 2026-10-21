@@ -71,6 +71,7 @@ test "C5 a second connection resumes from the first's ticket, for every TLS 1.3 
         const first = try connect(options);
         try std.testing.expect(!first.client.info().?.resumed);
         try std.testing.expect(first.client.info().?.peer_authenticated);
+        try std.testing.expectEqual(@as(?u8, 0), first.server.info().?.credential);
         first.deinit();
         // The server sent two tickets; the client kept both.
         try std.testing.expectEqual(@as(usize, 2), fixture.cache.count());
@@ -81,6 +82,8 @@ test "C5 a second connection resumes from the first's ticket, for every TLS 1.3 
         try std.testing.expect(info.resumed and second.server.info().?.resumed);
         // The original handshake's authentication stands; the keys are fresh and shared.
         try std.testing.expect(info.peer_authenticated);
+        // The ticket authenticated the server this time; no credential was presented.
+        try std.testing.expectEqual(@as(?u8, null), second.server.info().?.credential);
         try std.testing.expectEqual(Suite.from13(suite.tls13().?), info.suite);
         try exportsMatch(second);
         var out: [16]u8 = undefined;
@@ -108,6 +111,8 @@ test "C5 resumption across a retry request, and a chain of resumptions" {
         const duo = try connect(options);
         defer duo.deinit();
         try std.testing.expect(duo.client.info().?.resumed);
+        // Nothing of the first hello's choice outlives the retry: no credential was presented.
+        try std.testing.expectEqual(@as(?u8, null), duo.server.info().?.credential);
     }
 }
 
@@ -648,11 +653,16 @@ test "C5 TLS 1.2 tickets stay off unless both ends ask, and a client certificate
     mutual.client_auth = .required;
     mutual.client_cert = true;
     const first = try connect(mutual);
+    try std.testing.expectEqual(@as(?u8, 0), first.client.info().?.credential);
+    try std.testing.expectEqual(@as(?u8, 0), first.server.info().?.credential);
     first.deinit();
     mutual.seed = 4;
     const second = try connect(mutual);
     defer second.deinit();
     try std.testing.expect(second.server.info().?.resumed and second.server.info().?.peer_authenticated);
+    // Neither end presented a credential to resume.
+    try std.testing.expectEqual(@as(?u8, null), second.client.info().?.credential);
+    try std.testing.expectEqual(@as(?u8, null), second.server.info().?.credential);
 }
 
 test "F70 a ticket of one version never resumes the other" {

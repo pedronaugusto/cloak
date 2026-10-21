@@ -113,8 +113,8 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
     @setRuntimeSafety(true);
     _ = try self.chooseCredential(hello, fits12);
     // RFC 6962 section 3.3.1: the credential's SCTs, in the ServerHello, for a client that asks.
-    self.sends_scts = hello.scts and self.options.credentials[self.credential].scts.len != 0;
-    return authenticationOf(self.options.credentials[self.credential].identity.publicKey(), hello) catch unreachable; // unreachable: fits12 took it
+    self.sends_scts = hello.scts and self.options.credentials[self.credential.?].scts.len != 0;
+    return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello) catch unreachable; // unreachable: fits12 took it
 }
 
 /// The kind of suite a key authenticates for this client.
@@ -175,6 +175,9 @@ pub fn answer(self: anytype, msg: []const u8, hello: *const ClientHello) Error!v
         issue = false;
     }
     self.state.ticket12 = issue;
+    // The suite was chosen with a credential's key in view; a ticket or a provisioned key
+    // authenticates this handshake instead, and no credential is presented.
+    if (self.resumed or psk) self.credential = null;
     // A client may answer the CertificateRequest with Ed25519, which signs the messages themselves.
     if (self.options.client_auth != .none and !self.resumed and !psk) scratch.transcripts.keep(self.gpa);
     // DTLS 1.2 numbers both sides' messages from the client's hello.
@@ -201,6 +204,8 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     if (!std.ascii.eqlIgnoreCase(state.serverName(), scratch.server_name[0..scratch.server_name_len])) return;
     if (!std.mem.eql(u8, state.alpnBytes(), self.alpn)) return;
     if (!std.mem.eql(u8, &state.policy, &self.policyDigest())) return;
+    // A client that does not take the session's type takes no answer a resumption could give.
+    if (!hello.takesServerForm(state.server_raw)) return;
     if (state.client_authenticated) {
         if (now >= state.auth_expires) return;
     } else if (self.options.client_auth == .required) return;
@@ -213,6 +218,7 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     self.authenticated = state.client_authenticated;
     self.pin = state.client_pin;
     scratch.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
+    self.resumeTypes(hello, state.server_raw);
 }
 
 /// The server random, its ECDHE share and signing noise (and a ticket's salt): send the flight.
@@ -245,11 +251,11 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     @memcpy(self.tls12.?.randoms[32..64], &random);
     @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [1024 + Hello.max_scts]u8 = undefined;
-    const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential].scts else null;
+    const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential.?].scts else null;
     const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
-    const identity = self.options.credentials[self.credential].identity;
+    const identity = self.options.credentials[self.credential.?].identity;
     const certificate = if (identity.rawKey()) |spki|
         try Messages12.buildRawKey(try self.reserve(8 + spki.len), spki)
     else chain: {
@@ -295,7 +301,7 @@ fn sendResumed(self: anytype, random: *const [32]u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var hello_buffer: [1024]u8 = undefined;
-    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = false, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp });
+    const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, random, scratch.session[0..scratch.session_len], self.suite12.?, self.alpn, .{ .server_name = false, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type });
     try self.state.advance(.server_hello, .initial, .parsed, true);
     try queue(self, hello);
     if (self.state.ticket12) try sendTicket(self);
@@ -346,6 +352,7 @@ fn sendTicket(self: anytype) Error!void {
                 .client_authenticated = self.authenticated,
                 .client_pin = self.pin,
                 .auth_expires = if (self.authenticated) scratch.client_auth_expires else 0,
+                .server_raw = self.session_raw,
                 .policy = self.policyDigest(),
             };
             defer state.deinit();
@@ -373,7 +380,7 @@ fn queue(self: anytype, message: []const u8) Error!void {
 pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    const own = self.options.credentials[self.credential].identity.publicKey();
+    const own = self.options.credentials[self.credential.?].identity.publicKey();
     Possession.verifyMessage12(@backingInt(self.scheme), &.{self.scheme}, own, scratch.params12[0..scratch.params12_len], signature) catch return error.BadSignature;
     self.need_now = .none;
     try sendKeyExchange(self, signature);

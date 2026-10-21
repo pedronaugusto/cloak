@@ -32,6 +32,21 @@ test "C5 ticket seals and opens the session state under its ring key alone" {
     try std.testing.expectEqualSlices(u8, "example.com", opened.serverName());
     try std.testing.expect(opened.client_authenticated);
     try std.testing.expectEqual(@as(i64, 1500), opened.auth_expires);
+    try std.testing.expect(!opened.server_raw);
+    // The server's form is kept beside the client's authentication (F143), each pin form too.
+    for ([_]?u16{ null, 7 }) |pin| {
+        var raw = sample();
+        defer raw.deinit();
+        raw.server_raw = true;
+        raw.client_pin = pin;
+        var raw_buffer: [Ticket.max_length]u8 = undefined;
+        const raw_sealed = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(6)), &raw, &raw_buffer);
+        var raw_opened: Ticket.State = undefined;
+        try Ticket.open(snapshot.ring(), raw_sealed, 1001, &raw_opened);
+        defer raw_opened.deinit();
+        try std.testing.expect(raw_opened.server_raw and raw_opened.client_authenticated);
+        try std.testing.expectEqual(pin, raw_opened.client_pin);
+    }
     // The PSK is not in the clear.
     try std.testing.expect(std.mem.find(u8, sealed, state.secretBytes()) == null);
     // Every flipped bit, a truncation and a wrong version refuse.

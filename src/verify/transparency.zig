@@ -290,16 +290,16 @@ pub fn precertificate(gpa: std.mem.Allocator, tbs: []const u8) Error![]u8 {
     if (found != 1) return error.InvalidTransparency;
     const prefix = body[0..extensions.start];
     const suffix = body[r.offset..];
-    const inner = if (kept == 0) 0 else headerLength(kept) + kept;
-    const fields = if (kept == 0) 0 else headerLength(inner) + inner;
+    const inner = if (kept == 0) 0 else Der.headerLength(kept) + kept;
+    const fields = if (kept == 0) 0 else Der.headerLength(inner) + inner;
     const total = prefix.len + fields + suffix.len;
-    const out = try gpa.alloc(u8, headerLength(total) + total);
-    var at = header(out, 0, 0x30, total);
+    const out = try gpa.alloc(u8, Der.headerLength(total) + total);
+    var at = Der.header(out, 0, 0x30, total);
     @memcpy(out[at..][0..prefix.len], prefix);
     at += prefix.len;
     if (kept != 0) {
-        at = header(out, at, 0xa3, inner);
-        at = header(out, at, 0x30, kept);
+        at = Der.header(out, at, 0xa3, inner);
+        at = Der.header(out, at, 0x30, kept);
         list = sequence.reader();
         while (!list.empty()) {
             // unreachable: the first pass read every extension and its OID.
@@ -315,27 +315,6 @@ pub fn precertificate(gpa: std.mem.Allocator, tbs: []const u8) Error![]u8 {
     at += suffix.len;
     std.debug.assert(at == out.len);
     return out;
-}
-
-/// A DER tag and definite length's size.
-fn headerLength(len: usize) usize {
-    if (len < 0x80) return 2;
-    return 2 + (@sizeOf(usize) - @clz(len) / 8);
-}
-
-fn header(out: []u8, at: usize, tag: u8, len: usize) usize {
-    @setRuntimeSafety(true);
-    out[at] = tag;
-    if (len < 0x80) {
-        // safe: below 0x80.
-        out[at + 1] = @intCast(len);
-        return at + 2;
-    }
-    const bytes = headerLength(len) - 2;
-    // safe: a usize has at most eight bytes.
-    out[at + 1] = 0x80 | @as(u8, @intCast(bytes));
-    for (0..bytes) |i| out[at + 2 + i] = @truncate(len >> @intCast(8 * (bytes - 1 - i)));
-    return at + 2 + bytes;
 }
 
 test {

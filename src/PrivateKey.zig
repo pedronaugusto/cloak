@@ -114,6 +114,33 @@ pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
         },
     };
 }
+/// The longest SubjectPublicKeyInfo `publicKeyInfo` writes: ML-DSA-87's.
+pub const max_public_key_info = certificate.Algorithm.max_public_key_info;
+
+/// This key's public half as the DER SubjectPublicKeyInfo its certificate would carry, in `out`:
+/// what a raw public key (RFC 7250, `Identity.initRawKey`) or a pin is made of.
+pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 {
+    @setRuntimeSafety(true);
+    var point: [97]u8 = undefined;
+    const public: certificate.PublicKey = switch (key.state.material.expose().*) {
+        .rsa => |*k| .{ .rsa = .{ .modulus = k.n[0..k.size], .exponent = k.e[0..k.exponent_size] } },
+        .p256 => |*k| blk: {
+            point[0..65].* = k.public_key.toUncompressedSec1();
+            break :blk .{ .ec = .{ .curve = .p256, .bytes = point[0..65] } };
+        },
+        .p384 => |*k| blk: {
+            point = k.public_key.toUncompressedSec1();
+            break :blk .{ .ec = .{ .curve = .p384, .bytes = &point } };
+        },
+        .ed25519 => |*k| blk: {
+            point[0..32].* = k.public_key.toBytes();
+            break :blk .{ .ed25519 = point[0..32] };
+        },
+        .mldsa => |*k| .{ .mldsa = .{ .level = k.level, .bytes = k.publicKey() } },
+    };
+    // unreachable: a private key is never restricted to RSASSA-PSS.
+    return certificate.Algorithm.encodePublicKey(public, out) catch unreachable;
+}
 /// The most noise bytes one signature draws: RSA's blinding seed and salt.
 pub const max_noise = @max(Sign.P384.noise_length, Sign.rsa.noise_length);
 /// The longest signature `sign` writes: ML-DSA-87's, 4627 bytes.
@@ -136,7 +163,9 @@ pub fn noiseLength(key: PrivateKey) usize {
 }
 
 /// Signs `message` under `algorithm`, which must be one this key's type and curve can make:
-/// ECDSA with SHA-256 on P-256, with SHA-384 on P-384, Ed25519, and for RSA `.pss` (MGF1 on
+/// ECDSA with SHA-256, SHA-384 or SHA-512 on P-256 or P-384 (a hash other than the curve's own
+/// as RFC 6979's bits2int takes it: TLS 1.2 and X.509 bind the hash, not the curve), Ed25519,
+/// and for RSA `.pss` (MGF1 on
 /// the same hash, a salt as long as the hash, as TLS requires) or `.rsa` (PKCS#1 v1.5, for
 /// TLS 1.2) on SHA-256, SHA-384 or SHA-512, and ML-DSA of the key's parameter set (pure, an
 /// empty context, hedged). `noise` is exactly `noiseLength` fresh bytes. Returns the DER
@@ -152,10 +181,10 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
     switch (key.state.material.expose().*) {
         .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
-            return Sign.P256.sign(&pair.secret_key.bytes, message, noise[0..Sign.P256.noise_length], try ecdsaForm(algorithm, .sha256), out[0..Sign.max_signature]) catch error.SigningFailed;
+            return ecdsaSign(SignError, Sign.P256, &pair.secret_key.bytes, algorithm, message, false, noise[0..Sign.P256.noise_length], out);
         },
         .p384 => |*pair| {
-            return Sign.P384.sign(&pair.secret_key.bytes, message, noise[0..Sign.P384.noise_length], try ecdsaForm(algorithm, .sha384), out[0..Sign.max_signature]) catch error.SigningFailed;
+            return ecdsaSign(SignError, Sign.P384, &pair.secret_key.bytes, algorithm, message, false, noise[0..Sign.P384.noise_length], out);
         },
         .ed25519 => |*pair| {
             if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
@@ -179,7 +208,7 @@ pub const SignDigestError = SignError || error{InvalidDigest};
 
 /// `sign` over a digest the caller already computed with `algorithm`'s hash, as TLS 1.2 keeps
 /// its transcript: 32, 48 or 64 bytes for SHA-256, SHA-384 or SHA-512, `InvalidDigest`
-/// otherwise. ECDSA on the key's own curve hash, or RSA (PSS or PKCS#1 v1.5, with the same
+/// otherwise. ECDSA under any of them (as `sign`), or RSA (PSS or PKCS#1 v1.5, with the same
 /// public check); Ed25519 signs the message itself and has no digest form.
 pub fn signDigest(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignDigestError![]const u8 {
     return aegis.secret.scrubbed(sign_stack, signPrehashed, .{ key, algorithm, digest, noise, out });
@@ -191,25 +220,36 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
     return switch (key.state.material.expose().*) {
         .rsa => |*rsa| rsaSign(SignDigestError, &rsa.crt, algorithm, digest, true, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*pair| {
-            if (digest.len != 32) return error.InvalidDigest;
-            return Sign.P256.signDigest(&pair.secret_key.bytes, digest[0..32], noise[0..Sign.P256.noise_length], try ecdsaForm(algorithm, .sha256), out[0..Sign.max_signature]) catch error.SigningFailed;
+            return ecdsaSign(SignDigestError, Sign.P256, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P256.noise_length], out);
         },
         .p384 => |*pair| {
-            if (digest.len != 48) return error.InvalidDigest;
-            return Sign.P384.signDigest(&pair.secret_key.bytes, digest[0..48], noise[0..Sign.P384.noise_length], try ecdsaForm(algorithm, .sha384), out[0..Sign.max_signature]) catch error.SigningFailed;
+            return ecdsaSign(SignDigestError, Sign.P384, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P384.noise_length], out);
         },
         .ed25519, .mldsa => error.UnsupportedAlgorithm,
     };
 }
 
-/// The form an ECDSA algorithm writes its signature in, when it is ECDSA with `hash`, the hash of the
-/// key's curve.
-fn ecdsaForm(algorithm: certificate.Algorithm.Signature, hash: certificate.Algorithm.Hash) error{UnsupportedAlgorithm}!Sign.Form {
-    return switch (algorithm) {
-        .ecdsa => |h| if (h == hash) .der else error.UnsupportedAlgorithm,
-        .ecdsa_p1363 => |h| if (h == hash) .p1363 else error.UnsupportedAlgorithm,
-        else => error.UnsupportedAlgorithm,
+/// An ECDSA signature under `algorithm` over `input`, a message or, when `prehashed`, its digest:
+/// any of the three hashes on either curve, a hash not the curve's own taken as RFC 6979's
+/// bits2int (`Sign.Ecdsa.signAnyDigest`), in DER or P1363 form as `algorithm` names.
+fn ecdsaSign(comptime E: type, comptime S: type, secret: *const [S.secret_length]u8, algorithm: certificate.Algorithm.Signature, input: []const u8, comptime prehashed: bool, noise: *const [S.noise_length]u8, out: *[max_signature]u8) E![]const u8 {
+    @setRuntimeSafety(true);
+    const hash: certificate.Algorithm.Hash, const form: Sign.Form = switch (algorithm) {
+        .ecdsa => |h| .{ h, .der },
+        .ecdsa_p1363 => |h| .{ h, .p1363 },
+        else => return error.UnsupportedAlgorithm,
     };
+    switch (hash) {
+        inline else => |tag| {
+            const Hash = HashOf(tag);
+            var digest: [Hash.digest_length]u8 = undefined;
+            if (prehashed) {
+                if (input.len != Hash.digest_length) return error.InvalidDigest;
+                @memcpy(&digest, input);
+            } else Hash.hash(input, &digest, .{});
+            return S.signAnyDigest(secret, &digest, noise, form, out[0..Sign.max_signature]) catch error.SigningFailed;
+        },
+    }
 }
 
 /// An RSA signature under `algorithm` over `input`, a message or, when `prehashed`, its digest.

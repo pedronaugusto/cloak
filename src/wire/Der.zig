@@ -117,6 +117,29 @@ pub fn oid(bytes: []const u8) Error!void {
     if (!begin) return error.InvalidDer;
 }
 /// Validate constructed contents, canonical primitive representations and SET ordering.
+/// The size of a tag and the definite length of `len` content bytes.
+pub fn headerLength(len: usize) usize {
+    if (len < 0x80) return 2;
+    return 2 + (@sizeOf(usize) - @clz(len) / 8);
+}
+
+/// Writes a tag and the definite length of `len` content bytes at `out[at..]`, which holds
+/// `headerLength(len)` bytes; returns the offset after them.
+pub fn header(out: []u8, at: usize, tag: u8, len: usize) usize {
+    @setRuntimeSafety(true);
+    out[at] = tag;
+    if (len < 0x80) {
+        // safe: below 0x80.
+        out[at + 1] = @intCast(len);
+        return at + 2;
+    }
+    const bytes = headerLength(len) - 2;
+    // safe: a usize has at most eight bytes.
+    out[at + 1] = 0x80 | @as(u8, @intCast(bytes));
+    for (0..bytes) |i| out[at + 2 + i] = @truncate(len >> @intCast(8 * (bytes - 1 - i)));
+    return at + 2 + bytes;
+}
+
 pub fn validate(bytes: []const u8, limits: Limits) Error!void {
     @setRuntimeSafety(true);
     if (limits.depth > 64) return error.DerLimit; // Recursive parser stack has a hard ceiling.
