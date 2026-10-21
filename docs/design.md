@@ -171,11 +171,13 @@ each kept ticket holding its reservation until it leaves its slot. TLS-specific 
 refcount and job lifetime are not generic owner substitutes.
 Existing fixed-width constant-time arithmetic/select and volatile spill barriers
 remain the reviewed local kernels pending published constant-time values.
-Secret owners erase their explicit storage on ordinary success/error cleanup;
-they do not prove erasure of prior compiler copies, registers, arbitrary spills,
-OS paging or process abort, nor hardware constant-time behavior.
+Secret owners erase their explicit storage on ordinary success/error cleanup,
+are made where they are kept, and every std primitive that takes their bytes runs
+in a scrubbed frame ("Parsing and private material"; F93 searches the stack and
+released memory); none of this reaches registers, the entry frame, OS paging or
+process abort, nor proves hardware constant-time behavior.
 
-## TLS 1.3 foundations (C2 in progress)
+## TLS 1.3 foundations
 
 Certificates and keys are the `certificates` namespace of the one `cloak` module,
 and TLS is `tls`. A separate build module buys something only where it keeps
@@ -195,7 +197,7 @@ it brings no dependency of its own. The private TLS handshake imports crypto and
 record protection imports crypto only. Neither imports an adapter or facade.
 
 `record.Epoch` owns one direction's key, IV, sequence and byte/record counts.
-Seal commits a nonce exactly once; a future Connection retains those committed
+Seal commits a nonce exactly once; the Connection retains those committed
 bytes across partial output acknowledgement. Insufficient space and partial
 overlap leave state untouched. Open validates the actual header as AAD and
 withholds plaintext until tag verification; a malformed/authentication failure
