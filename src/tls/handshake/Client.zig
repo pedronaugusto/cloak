@@ -64,6 +64,9 @@ pub const max_credentials = Terms.ClientCredential.max;
 
 pub const Options = struct {
     hello: Hello.Options = .{},
+    /// GREASE (RFC 8701): reserved values in the hello, drawn per connection, so servers that
+    /// would choke on what they do not know are found now rather than when it is real.
+    grease: bool = false,
     resumption: ?Resumption = null,
     /// Encrypted Client Hello (RFC 9849). A config list makes it required and the connection
     /// TLS 1.3 only.
@@ -667,6 +670,7 @@ fn initialEntropy(self: *const Client) usize {
     const initial = self.initialGroups();
     for (initial.groups[0..initial.count]) |group| len += Exchange.entropyLength(group.?);
     len += self.echEntropy();
+    if (self.options.grease) len += 6;
     // A client certificate whose key cloak holds is signed for here, with noise drawn up front.
     // A delegated credential signs instead when the server takes it: noise for either.
     var noise: usize = 0;
@@ -725,6 +729,10 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
                 e.seed = entropy[at + 64 ..][0..32].*;
                 at += 96;
             },
+        }
+        if (self.options.grease) {
+            self.options.hello.grease = Hello.Grease.fromSeed(entropy[at..][0..6]);
+            at += 6;
         }
         @memcpy(self.scratch.?.sign_noise[0 .. entropy.len - at], entropy[at..]);
         self.need_now = .none;
@@ -1185,6 +1193,8 @@ fn sendCompatCcs(self: *Client) Error!void {
 fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
     @setRuntimeSafety(true);
     var n: usize = 256 + self.options.hello.sni.len + self.options.hello.parameters.len + self.scratch.?.cookie_len;
+    // GREASE: a suite, a group with its share, a version, a scheme and two extensions.
+    if (self.options.hello.grease != null) n += 32;
     var offers_buf: [Hello.max_psk_offers]Offer = undefined;
     for (self.pskOffers(&offers_buf)) |offer| n += 64 + offer.identity.len;
     if (self.offered12) |taken| n += 8 + taken.entry.ticket.len;
@@ -1650,6 +1660,8 @@ fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epo
     self.scratch.?.cookie_len = @intCast(parsed.cookie.len);
     if (parsed.group) |group| {
         self.retry_group = group;
+        // The second hello carries the named group's share alone (RFC 8446 section 4.1.2).
+        if (self.options.hello.grease) |*grease| grease.share = false;
         self.need_now = .{ .entropy = .{ .len = Exchange.entropyLength(group) } };
         return;
     }

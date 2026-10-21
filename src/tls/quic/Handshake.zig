@@ -60,6 +60,9 @@ pub const Options = struct {
     resumption: ?Client.Resumption = null,
     /// Encrypted Client Hello (RFC 9849); a config list makes it required.
     ech: Ech.Mode = .off,
+    /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
+    /// connection; a server that refuses them is found now rather than when a real one comes.
+    grease: bool = false,
     /// Certificate decoders to offer (RFC 8879); borrowed.
     certificate_compression: []const Compression.Codec = &.{},
     /// Provisioned keys to offer (PSK-DHE), plain or imported (RFC 9258); borrowed.
@@ -191,6 +194,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Handshake {
         .resumption = options.resumption,
         .ech = options.ech,
         .external_psks = options.external_psks,
+        .grease = options.grease,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,

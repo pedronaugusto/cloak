@@ -105,6 +105,9 @@ pub const Options = struct {
     /// Always offered; null names the version's maximum. Records are held to it only when the
     /// server answers the extension; the peer's bounds this end's records; both stand beside the MTU to the limit the peer names.
     record_size_limit: ?u16 = null,
+    /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
+    /// connection; a server that refuses them is found now rather than when a real one comes.
+    grease: bool = false,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
@@ -419,6 +422,7 @@ pub fn client(gpa: std.mem.Allocator, options: Options) InitError!Datagram {
         },
         .resumption = options.resumption,
         .external_psks = options.external_psks,
+        .grease = options.grease,
         .identity = options.identity,
         .verify = options.verify,
         .credentials = options.credentials,

@@ -58,6 +58,8 @@ pub const Options = struct {
     server_require_pq_auth: bool = false,
     /// The client's key is held elsewhere: the harness signs (Ed25519 only).
     client_external: bool = false,
+    /// The client puts GREASE values (RFC 8701) in its hello.
+    client_grease: bool = false,
     /// Bytes moved per receive call, to cut records and messages at every boundary.
     chunk: usize = 1 << 20,
     /// Resumption: the client's ticket cache and the server's ticket keys.
@@ -258,6 +260,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency, .revocation = .{ .mode = if (options.client_revocation_off) .off else .if_present } }, .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
+        .grease = options.client_grease,
         .external_psks = options.client_psks,
         .record_size_limit = options.client_record_size_limit,
         .resumption = if (options.cache) |cache| .{ .cache = cache, .namespace = options.namespace, .max_age = options.max_age, .tls12 = options.client_tls12_tickets } else null,

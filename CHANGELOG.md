@@ -13,6 +13,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - A client offers several provisioned keys, in its order (at most four, `psk.max_keys`); after a retry request it keeps the offers of the chosen suite's hash alone.
 - `Identity.initExternalPem` and `ClientAuth.initExternalPem`: a chain whose key is held elsewhere, from PEM, read as `initPem` reads it.
 - `SignRequest.signWith`: signs a request with a `PrivateKey`, as cloak signs with a key it holds, for a driver that signs away from the handshake (a worker thread, a process holding the key); the connection still checks the signature against the credential before sending it.
+- GREASE (RFC 8701) in a client's hello: `grease` (Connection, Session, the datagram and QUIC clients; off by default) puts a reserved value first in the suites, groups (with a one-byte share), versions and signature schemes, and two reserved extensions around the rest, drawn per connection and kept across a retry; a server choosing any of them is refused.
 
 ### Changed
 

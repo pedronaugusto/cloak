@@ -346,6 +346,17 @@ is signed inside the engine; one held elsewhere is signed through a request, and
 engine verifies the answer against the identity's public key before it leaves, so a
 bad signer cannot put a bad CertificateVerify on the wire.
 
+GREASE (RFC 8701) is the caller's choice, off by default: a hello under `grease` leads its
+suites, supported_groups (with a one-byte key share in a first hello), supported_versions and
+signature_algorithms with a reserved value each, opens its extensions with an empty reserved one
+and closes them, before pre_shared_key, with another of one zero byte. The six values come from
+the hello's entropy, one per kind, the two extensions apart, and stay across a retry, whose
+second hello drops the reserved share (RFC 8446 section 4.1.2: the named group's share alone).
+An ECH inner, encoded and outer hello carry the same values, so the server rebuilds the inner
+hello the client hashed. The lists a ServerHello, retry request or EncryptedExtensions is
+checked against never hold a reserved value, so a server choosing one is refused (RFC 8701
+section 3.1). A server sends none (section 3.2 is a MAY).
+
 Key shares are fresh per hello and per retry. The caller's group order decides which go in the
 first hello: a share for the first post-quantum or hybrid group listed and one for the first
 classical group, at most two, in supported_groups' order (RFC 8446 section 4.2.8 lets a client

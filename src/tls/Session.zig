@@ -150,6 +150,9 @@ pub const Options = struct {
     /// Encrypted Client Hello (RFC 9849): GREASE, or the server's ECHConfigList, which makes it
     /// required (TLS 1.3 only; `EchRejected` when the server does not accept it).
     ech: @import("handshake/Ech.zig").Mode = .off,
+    /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
+    /// connection; a server that refuses them is found now rather than when a real one comes.
+    grease: bool = false,
     /// After `open` fails with `EchRejected` and the server authenticated as the config's public
     /// name: the ECHConfigList it offered for a retry on a new connection, or empty when it
     /// offered none (ECH securely disabled). Allocated with the session's allocator; the caller
@@ -253,6 +256,7 @@ pub fn open(
         .ech = options.ech,
         .certificate_compression = options.certificate_compression,
         .external_psks = options.external_psks,
+        .grease = options.grease,
         .record_size_limit = options.record_size_limit,
         .limits = options.limits,
         .compat = options.compat,

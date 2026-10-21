@@ -116,6 +116,7 @@ test {
     _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/Resumption_test.zig");
     _ = @import("tls/Ech_test.zig");
+    _ = @import("tls/Grease_test.zig");
     _ = @import("tls/CertificateCompression_test.zig");
     _ = @import("tls/Pq_test.zig");
     _ = @import("tls/MlDsa_test.zig");

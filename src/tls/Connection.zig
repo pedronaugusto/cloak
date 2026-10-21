@@ -109,6 +109,9 @@ pub const ClientOptions = struct {
     /// Encrypted Client Hello (RFC 9849). With a config list it is required: the connection is
     /// TLS 1.3 only, and fails with `EchRejected` when the server does not accept it.
     ech: Ech.Mode = .off,
+    /// GREASE (RFC 8701): reserved values in the hello, which servers must ignore, drawn per
+    /// connection; a server that refuses them is found now rather than when a real one comes.
+    grease: bool = false,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
     certificate_compression: []const Compression.Codec = &.{},
     /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
@@ -272,6 +275,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .resumption = options.resumption,
         .ech = options.ech,
         .external_psks = options.external_psks,
+        .grease = options.grease,
         .identity = identity,
         .verify = options.verify,
         .credentials = options.credentials,

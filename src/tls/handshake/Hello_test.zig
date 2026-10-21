@@ -272,3 +272,51 @@ test "F136 catalogue_server_hello_without_key_share_missing_extension (a TLS 1.3
     const retry = server13.of(H.retry_random, "\x00\x2b\x00\x02\x03\x04");
     try std.testing.expectError(error.InvalidHello, H.server(&retry, "", &shares, .{}, .{}));
 }
+
+test "C2 GREASE (RFC 8701): a reserved value leads each list, two reserved extensions frame the rest, and none is taken back" {
+    const ClientHello = @import("ClientHello.zig");
+    const Suite13 = @import("../crypto/Suite.zig").Suite13;
+    const Group = @import("../crypto/Group.zig").Group;
+    const grease = H.Grease.fromSeed(&.{ 0x10, 0x21, 0x32, 0x43, 0x54, 0x54 });
+    // Each value one of RFC 8701's sixteen, the two extensions apart.
+    for ([_]u16{ grease.suite, grease.group, grease.version, grease.scheme, grease.first, grease.last }) |value| try std.testing.expect(H.Grease.is(value));
+    try std.testing.expect(grease.first != grease.last);
+    try std.testing.expect(!H.Grease.is(0x0a0b) and !H.Grease.is(0x1a2a));
+    var out: [4096]u8 = undefined;
+    for ([_]bool{ true, false }) |share| {
+        var values = grease;
+        values.share = share;
+        const ch = try H.client(&out, &@as([32]u8, @splat(2)), "", "", &shares, "", .{ .sni = "example.com", .grease = values }, .{});
+        const parsed = try ClientHello.parse(ch, .stream);
+        try std.testing.expectEqual(grease.suite, std.mem.readInt(u16, parsed.suites[0..2], .big));
+        try std.testing.expectEqual(grease.group, std.mem.readInt(u16, parsed.groups[0..2], .big));
+        try std.testing.expectEqual(grease.version, std.mem.readInt(u16, parsed.versions[0..2], .big));
+        try std.testing.expectEqual(grease.scheme, std.mem.readInt(u16, parsed.schemes[0..2], .big));
+        // A one-byte share for the reserved group, except in a hello answering a retry request.
+        const first_share = std.mem.readInt(u16, parsed.shares[0..2], .big);
+        try std.testing.expectEqual(if (share) grease.group else @backingInt(Group.x25519), first_share);
+        var r: Reader = .{ .bytes = ch[4..] };
+        _ = try r.take(34);
+        _ = try r.vector(u8);
+        _ = try r.vector(u16);
+        _ = try r.vector(u8);
+        var ext: Extensions = .{ .reader = try r.vector(u16) };
+        var ids: [16]u16 = undefined;
+        var count: usize = 0;
+        while (try ext.next()) |item| {
+            ids[count] = item.id;
+            count += 1;
+        }
+        try std.testing.expectEqual(grease.first, ids[0]);
+        try std.testing.expectEqual(grease.last, ids[count - 1]);
+    }
+    // A server that selects a reserved value is refused: the client never offered it.
+    var server_hello: [512]u8 = undefined;
+    const options: H.Options = .{ .grease = grease };
+    const chosen = try H.buildServer(&server_hello, .stream, &@as([32]u8, @splat(3)), "", .aes_128_gcm_sha256, .x25519, &x, null, null);
+    // The suite follows the type, length, legacy version, random and an empty session id.
+    std.mem.writeInt(u16, chosen[39..41], grease.suite, .big);
+    try std.testing.expect(if (H.server(chosen, "", &shares, options, .{})) |_| false else |_| true);
+    const retry = try H.buildRetry(&server_hello, .stream, "", Suite13.aes_128_gcm_sha256, @fromBackingInt(grease.group), "", false);
+    try std.testing.expect(if (H.server(retry, "", &shares, options, .{})) |_| false else |_| true);
+}

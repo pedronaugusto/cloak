@@ -81,6 +81,40 @@ pub const ClientTypes = enum {
 pub const connection_id_extension = 54;
 /// The use_srtp extension's number (RFC 5764 section 4.1.1).
 pub const srtp_extension = 14;
+/// GREASE (RFC 8701): reserved values a client puts in its hello so that servers keep ignoring
+/// what they do not know: one of the sixteen (0x0a0a, 0x1a1a, ... 0xfafa) for each kind, chosen
+/// per connection and kept across a retry, and two extensions that differ. A server choosing any
+/// of them is refused: the lists the answer is checked against never hold them.
+pub const Grease = struct {
+    suite: u16,
+    group: u16,
+    version: u16,
+    scheme: u16,
+    /// The extensions: an empty one first, one of a single zero byte last before pre_shared_key.
+    first: u16,
+    last: u16,
+    /// A one-byte key share for `group`; none in a hello answering a retry request, which
+    /// carries the named group's share alone (RFC 8446 section 4.1.2).
+    share: bool = true,
+
+    /// The values from six random bytes, one a kind.
+    pub fn fromSeed(seed: *const [6]u8) Grease {
+        const first = value(seed[4]);
+        const last = value(seed[5]);
+        return .{ .suite = value(seed[0]), .group = value(seed[1]), .version = value(seed[2]), .scheme = value(seed[3]), .first = first, .last = if (last == first) last ^ 0x1010 else last };
+    }
+
+    /// Whether `id` is one of RFC 8701's reserved values.
+    pub fn is(id: u16) bool {
+        return id & 0x0f0f == 0x0a0a and id >> 8 == id & 0xff;
+    }
+
+    fn value(byte: u8) u16 {
+        const half: u16 = (byte & 0x0f) << 4 | 0x0a;
+        return half << 8 | half;
+    }
+};
+
 pub const Options = struct {
     /// Suites of both versions, in preference order.
     suites: []const Suite = Suite.default,
@@ -136,6 +170,8 @@ pub const Options = struct {
     /// alone), a server's preference among its credentials; borrowed. None by default; at most
     /// `Authorities.max_bytes` on the wire.
     certificate_authorities: []const []const u8 = &.{},
+    /// GREASE values (RFC 8701) a client's hello carries; set by `Client` from its entropy.
+    grease: ?Grease = null,
 
     /// The record_size_limit this end names: its own, or the most the versions it allows take.
     pub fn recordSizeLimit(options: Options) u16 {
@@ -386,11 +422,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     try w.put(random);
     try w.vector(u8, session);
     if (datagram) try w.vector(u8, legacy_cookie);
-    var offered_suites: usize = 0;
-    for (options.suites) |suite| offered_suites += @intFromBool(if (suite.version() == .tls13) tls13 else tls12);
-    // safe: the allowlist has at most nine two-byte suite identifiers.
-    try w.int(u16, @intCast(offered_suites * 2));
-    for (options.suites) |suite| if (if (suite.version() == .tls13) tls13 else tls12) try w.int(u16, @backingInt(suite));
+    try cipherSuites(&w, options, tls12, tls13);
     try w.put(&.{ 1, 0 });
     const ext_at = w.pos;
     try w.int(u16, 0);
@@ -398,6 +430,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     // is cut to the path's MTU a stateless server finds the cookie in the first fragment, the
     // only one it reads, whatever follows (no ECH over datagrams moves it).
     if (datagram and cookie.len != 0) try cookieExtension(&w, cookie);
+    if (options.grease) |grease| try extension(&w, grease.first, "");
     if (sni.len != 0) try serverName(&w, sni);
     // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
     try leadingOffers(&w, options, tls13);
@@ -407,10 +440,11 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2).
     if (tls12) try extension(&w, 11, &.{ 1, 0 });
     const offered: []const SignatureScheme = if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12;
-    var signature_bytes: [2 + schemes_both.len * 2]u8 = undefined;
+    var signature_bytes: [4 + schemes_both.len * 2]u8 = undefined;
     var s: Writer = .{ .bytes = &signature_bytes };
-    // safe: at most fifteen two-byte schemes.
-    try s.int(u16, @intCast(offered.len * 2));
+    // safe: at most fifteen two-byte schemes, and GREASE one more.
+    try s.int(u16, @intCast((offered.len + @intFromBool(options.grease != null)) * 2));
+    if (options.grease) |grease| try s.int(u16, grease.scheme);
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
     if (!compress) try extension(&w, 13, signature_bytes[0..s.pos]);
     if (tls12) {
@@ -420,13 +454,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         if (resumption.ticket12) |ticket| try extension(&w, 35, ticket);
     }
     // A TLS 1.2-only client sends no supported_versions, as TLS 1.2 clients do.
-    if (tls13 and !compress) {
-        var versions: [5]u8 = undefined;
-        versions[0] = if (tls12) 4 else 2;
-        std.mem.writeInt(u16, versions[1..3], options.transport.wire(.tls13), .big);
-        std.mem.writeInt(u16, versions[3..5], options.transport.wire(.tls12), .big);
-        try extension(&w, 43, versions[0 .. 1 + @as(usize, versions[0])]);
-    }
+    if (tls13 and !compress) try supportedVersions(&w, options, tls12);
     if (options.alpn.len != 0 and !compress) {
         // Bounded client offer, not a record buffer retained by an idle connection.
         var alpn: [8194]u8 = undefined;
@@ -445,6 +473,10 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (tls13 and !compress) {
         const share_at = w.pos;
         try w.put(&.{ 0, 51, 0, 0, 0, 0 });
+        if (options.grease) |grease| if (grease.share) {
+            try w.int(u16, grease.group);
+            try w.vector(u16, &.{0});
+        };
         for (shares) |share| {
             try w.int(u16, @backingInt(share.group));
             try w.vector(u16, share.bytes);
@@ -461,6 +493,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         .inner, .encoded => try extension(&w, Ech.extension_id, &.{1}),
         .outer => |o| try extension(&w, Ech.extension_id, o.ext),
     }
+    if (options.grease) |grease| try extension(&w, grease.last, &.{0});
     if (tls13 and (resumption.modes or resumption.offers.len != 0)) try extension(&w, 45, &.{ 1, 1 });
     if (form == .outer) {
         // Random bytes in the shape of the inner offer: nothing a client-facing server can resume.
@@ -473,6 +506,27 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
+/// The cipher suites of the versions offered, in the caller's order, after a GREASE one.
+fn cipherSuites(w: *Writer, options: Options, tls12: bool, tls13: bool) EncodeError!void {
+    var offered: usize = @intFromBool(options.grease != null);
+    for (options.suites) |suite| offered += @intFromBool(if (suite.version() == .tls13) tls13 else tls12);
+    // safe: the allowlist has at most nine two-byte suite identifiers, and GREASE one more.
+    try w.int(u16, @intCast(offered * 2));
+    if (options.grease) |grease| try w.int(u16, grease.suite);
+    for (options.suites) |suite| if (if (suite.version() == .tls13) tls13 else tls12) try w.int(u16, @backingInt(suite));
+}
+
+/// supported_versions of a hello offering TLS 1.3: a GREASE version first, then 1.3 and 1.2.
+fn supportedVersions(w: *Writer, options: Options, tls12: bool) EncodeError!void {
+    var versions: [7]u8 = undefined;
+    var v: Writer = .{ .bytes = &versions };
+    try v.int(u8, (@as(u8, @intFromBool(options.grease != null)) + 1 + @intFromBool(tls12)) * 2);
+    if (options.grease) |grease| try v.int(u16, grease.version);
+    try v.int(u16, options.transport.wire(.tls13));
+    if (tls12) try v.int(u16, options.transport.wire(.tls12));
+    try extension(w, 43, versions[0..v.pos]);
+}
+
 /// What the hello offers ahead of the extensions an ECH outer hello may share: certificate
 /// decoders (TLS 1.3), the evidence `evidenceExtensions` asks for, and record_size_limit, which a
 /// record layer of streams or datagrams takes (RFC 8449).
@@ -993,12 +1047,13 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
 /// ones (F118).
 fn supportedGroups(w: *Writer, options: Options, tls13: bool) Writer.WriteError!void {
     @setRuntimeSafety(true);
-    var group_bytes: [2 + 2 * std.enums.values(Group).len]u8 = undefined;
+    var group_bytes: [4 + 2 * std.enums.values(Group).len]u8 = undefined;
     var g: Writer = .{ .bytes = &group_bytes };
-    var listed: usize = 0;
+    var listed: usize = @intFromBool(options.grease != null);
     for (options.groups) |group| listed += @intFromBool(tls13 or group.classical());
     // safe: at most every group once, each two bytes.
     try g.int(u16, @intCast(listed * 2));
+    if (options.grease) |grease| try g.int(u16, grease.group);
     for (options.groups) |group| if (tls13 or group.classical()) try g.int(u16, @backingInt(group));
     try extension(w, 10, group_bytes[0..g.pos]);
 }
