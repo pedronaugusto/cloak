@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-21
+
 ### Added
 
 - A pin with no authorities: `Verify.leaf_key` (Session's `Trust.leaf_keys`, client and server) takes certificates and trusts the leaf's key by its pin alone, the SHA-256 of its SubjectPublicKeyInfo; no path, name, validity, usage or revocation is checked, a mismatch is `PinMismatch` (bad_certificate), and the peer is authenticated by the key. curl's pinned public key with peer verification off (git's `http.pinnedPubkey` under `http.sslVerify=false`). TLS 1.3 and 1.2, every carrier; the cache key and ticket digest keep the mode and its pins. F141.
