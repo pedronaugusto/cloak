@@ -289,6 +289,7 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     const scratch = self.scratch.?;
     var pick: Authorities.Pick(Hello.SignatureScheme) = .{};
     for (self.kept.credentials, 0..) |credential, i| {
+        if (credential.must_match_issuer and !Authorities.required(scratch.cr_named, i)) continue;
         const scheme = fits12(scratch, credential) orelse continue;
         if (pick.offer(i, scheme, Authorities.marked(scratch.cr_named, i))) break;
     }

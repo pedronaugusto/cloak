@@ -81,6 +81,10 @@ pub const Credential = struct {
     /// cloak's schemes and never adds one. A delegated credential signs under its own. At most
     /// `max_schemes`.
     schemes: []const Hello.SignatureScheme = &.{},
+    /// Chosen only when the client's certificate_authorities names an issuer in the chain
+    /// (BoringSSL's must-match-issuer): a credential for clients that ask for its authority
+    /// alone, never a fallback. With none to choose, `NoMatchingIssuer`.
+    must_match_issuer: bool = false,
     pub const max_scts = Hello.max_scts;
     pub const max_schemes = Possession.max_schemes;
     pub const max_ocsp = 16 * 1024;
@@ -804,6 +808,10 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
     for (self.options.credentials, 0..) |credential, i| {
         if (named and !answers(credential, hello.server_name)) continue;
         if (!takesForm(hello, credential.identity)) continue;
+        if (credential.must_match_issuer and !Authorities.matches(credential.identity, hello.authorities)) {
+            if (refusal == error.UnsupportedCertificate) refusal = error.NoMatchingIssuer;
+            continue;
+        }
         const found = fit(self, credential, hello) catch |err| {
             if (refusal == error.UnsupportedCertificate) refusal = err;
             continue;

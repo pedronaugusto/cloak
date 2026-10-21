@@ -94,6 +94,9 @@ pub const ClientCredential = struct {
     /// The signature schemes `auth`'s key signs under, in this client's order, borrowed; empty for
     /// every scheme the key can make, in cloak's order. As a server credential's `schemes`.
     schemes: []const Hello.SignatureScheme = &.{},
+    /// Presented only when the CertificateRequest names an issuer in the chain (BoringSSL's
+    /// must-match-issuer); otherwise passed over, as one the request does not take.
+    must_match_issuer: bool = false,
 
     /// The most a client holds, as a server.
     pub const max = 32;

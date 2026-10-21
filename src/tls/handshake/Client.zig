@@ -146,7 +146,7 @@ pub fn alertFor(err: anyerror) Alert {
     return switch (err) {
         error.UnexpectedMessage, error.WrongEpoch, error.MissingProof, error.RecordAlignment => .unexpected_message,
         error.InvalidLength, error.InvalidMessage, error.EmptyCertificate, error.CertificateLimit => .decode_error,
-        error.NoSharedGroup, error.NoSharedSuite, error.NoSignatureScheme => .handshake_failure,
+        error.NoSharedGroup, error.NoSharedSuite, error.NoSignatureScheme, error.NoMatchingIssuer => .handshake_failure,
         error.UnrecognizedName => .unrecognized_name,
         error.CertificateRequired => .certificate_required,
         error.DecodeError => .decode_error,
@@ -1963,6 +1963,7 @@ fn chooseCredential(self: *const Client) ?Authorities.Pick(Possession.Fit).Choic
     var pick: Authorities.Pick(Possession.Fit) = .{};
     for (self.kept.credentials, 0..) |credential, i| {
         if ((credential.auth.identity.form() == .raw_public_key) != scratch.client_raw) continue;
+        if (credential.must_match_issuer and !Authorities.required(scratch.cr_named, i)) continue;
         const fit: Possession.Fit = fit: {
             if (credential.delegated) |delegated| if (scratch.cr_delegated_len) |listed| if (self.now) |now| {
                 if (delegated.usable(types.seconds(now), scratch.cr_delegated[0..listed], request)) break :fit .{ .scheme = delegated.keyScheme(), .delegating = true };

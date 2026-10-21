@@ -1571,7 +1571,14 @@ field of the TLS 1.2 CertificateRequest (RFC 5246 section 7.4.4). Received, the 
 whole (`authorities<3..2^16-1>` of `DistinguishedName<1..2^16-1>`, TLS 1.2's list may be empty,
 nothing trailing; decode_error otherwise) and the names are compared as bytes, never parsed.
 
-It is a preference in credential choice, never a refusal (the RFC's SHOULD): a credential chains to
+A credential may require a match instead (`Credential.must_match_issuer`,
+`ClientCredential.must_match_issuer`; BoringSSL's must-match-issuer, owner's call 2026-10-22): it
+is taken only when the peer named an issuer in its chain, never as the first that fits, so it
+serves only the peers that ask for its authority. A server left with no credential for that reason
+ends with handshake_failure (`NoMatchingIssuer`); a client passes such a credential over as one the
+request does not take (an empty Certificate when none other fits).
+
+Otherwise it is a preference in credential choice, never a refusal (the RFC's SHOULD): a credential chains to
 a named authority when a certificate of its chain, the leaf included, has an issuer Name equal to a
 named one, as Go's `SupportsCertificate` decides; a raw public key never does. Of the credentials
 the peer can take, the first that chains to a name answers, else the first. The server's walk is

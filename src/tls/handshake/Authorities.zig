@@ -60,6 +60,20 @@ pub fn prefers(identity: certificates.Identity, list: ?[]const u8) bool {
     return if (list) |names| chains(identity, names) else true;
 }
 
+/// Whether the peer named an authority `identity` chains to: a credential that must match an
+/// issuer needs that, where `prefers` takes a peer that named none.
+pub fn matches(identity: certificates.Identity, list: ?[]const u8) bool {
+    @setRuntimeSafety(true);
+    const names = list orelse return false;
+    return chains(identity, names);
+}
+
+/// Whether credential `i` chains to an authority the peer named: `marked` with names required.
+pub fn required(set: ?u32, i: usize) bool {
+    const bits = set orelse return false;
+    return bits & bit(i) != 0;
+}
+
 /// Credential `i`'s bit in a set of at most 32 that chain to the named authorities.
 pub fn bit(i: usize) u32 {
     return @as(u32, 1) << @intCast(i); // safe: client credentials are at most 32

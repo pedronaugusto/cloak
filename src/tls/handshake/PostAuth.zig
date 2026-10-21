@@ -214,6 +214,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     for (credentials, 0..) |credential, i| {
         const identity = credential.auth.identity;
         if ((identity.form() == .raw_public_key) != self.raw_client) continue;
+        if (credential.must_match_issuer and !Authorities.matches(identity, parsed.authorities)) continue;
         const fit = Possession.choose(identity.publicKey(), credential.schemes, parsed) orelse continue;
         if (pick.offer(i, fit, Authorities.prefers(identity, parsed.authorities))) break;
     }

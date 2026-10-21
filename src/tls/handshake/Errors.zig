@@ -28,6 +28,8 @@ pub const Error = State.AdvanceError || Hello.ParseError || Hello.EncodeError ||
     NoSharedGroup,
     NoSharedSuite,
     NoSignatureScheme,
+    /// No server credential could answer: those that must match an issuer were not named.
+    NoMatchingIssuer,
     UnrecognizedName,
     CertificateRequired,
     UnexpectedCookie,

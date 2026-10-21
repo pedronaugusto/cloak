@@ -152,6 +152,10 @@ pub const Options = struct {
     /// as a raw public key (RFC 7250).
     client_second: bool = false,
     client_second_raw: bool = false,
+    /// The server's first credential and the client's first are chosen only when the peer names
+    /// an issuer in their chains (`must_match_issuer`).
+    server_must_match: bool = false,
+    client_must_match: bool = false,
     /// certificate_authorities (RFC 8446 section 4.2.4): the names each end sends.
     client_authorities: []const []const u8 = &.{},
     server_authorities: []const []const u8 = &.{},
@@ -339,7 +343,7 @@ pub fn deinit(self: *Duo) void {
 fn clientCredentials(self: *Duo) []const Client.Credential {
     var n: usize = 0;
     if (self.auth) |auth| {
-        self.client_credentials[n] = .{ .auth = auth, .delegated = self.client_dc, .schemes = self.options.client_schemes };
+        self.client_credentials[n] = .{ .auth = auth, .delegated = self.client_dc, .schemes = self.options.client_schemes, .must_match_issuer = self.options.client_must_match };
         n += 1;
     }
     if (self.second) |second| {
@@ -351,7 +355,7 @@ fn clientCredentials(self: *Duo) []const Client.Credential {
 
 /// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
 fn credentials(self: *Duo) []const Server.Credential {
-    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .delegated_only = self.options.server_delegated_only, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp, .schemes = self.options.server_schemes };
+    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .delegated_only = self.options.server_delegated_only, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp, .schemes = self.options.server_schemes, .must_match_issuer = self.options.server_must_match };
     for (self.also[0..self.also_count], 1..) |identity, i| self.credential_list[i] = .{ .identity = identity };
     return self.credential_list[0 .. 1 + self.also_count];
 }

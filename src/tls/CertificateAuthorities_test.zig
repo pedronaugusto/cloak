@@ -143,3 +143,35 @@ test "C7 a client's credentials are at most 32, of either form or both" {
         }
     }
 }
+
+test "C7 a credential that must match an issuer is chosen only when the peer names one in its chain" {
+    const test_root = subject(pki.ca);
+    const ct = subject(pki.ct_ca);
+    const elsewhere = subject(pki.mldsa_ca);
+    // The server's first (P-256, under the test root) must match; the second (under the CT root)
+    // need not.
+    const Case = struct { names: []const []const u8, index: u8 };
+    for ([_]Case{
+        .{ .names = &.{}, .index = 1 },
+        .{ .names = &.{test_root}, .index = 0 },
+        .{ .names = &.{elsewhere}, .index = 1 },
+        .{ .names = &.{ ct, test_root }, .index = 0 },
+    }) |case| {
+        const duo = try Duo.init(gpa, .{ .cert = .p256, .server_also = &.{.ct_plain}, .server_must_match = true, .client_authorities = case.names });
+        defer duo.deinit();
+        try duo.handshake();
+        try std.testing.expectEqual(@as(?u8, case.index), duo.server.info().?.credential);
+    }
+    // A server whose only credential must match and is not named has none to answer with.
+    const none = try Duo.init(gpa, .{ .cert = .p256, .server_must_match = true, .client_authorities = &.{elsewhere} });
+    defer none.deinit();
+    try std.testing.expectError(error.NoMatchingIssuer, none.handshake());
+    // A client's first must match the request's names: unnamed, it answers with the second.
+    for ([_]bool{ false, true }) |named| {
+        const dc = subject(pki.dc_ca);
+        const duo = try Duo.init(gpa, .{ .client_cert = true, .client_second = true, .client_must_match = true, .client_auth = .required, .server_authorities = if (named) &.{subject(pki.ca)} else &.{dc} });
+        defer duo.deinit();
+        try duo.handshake();
+        try std.testing.expectEqual(@as(?u8, if (named) 0 else 1), duo.client.info().?.credential);
+    }
+}
