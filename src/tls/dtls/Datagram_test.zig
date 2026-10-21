@@ -595,6 +595,20 @@ test "C8 records under keys not held yet are answered by an ACK of nothing, and 
     try carriesData(pair);
 }
 
+test "C8 a client key held elsewhere signs through SignRequest.signWith, DTLS 1.3 and 1.2" {
+    // A driver that signs away from the handshake (a worker thread, a key in another process):
+    // the client's credential has no key, and each sign request is answered with the key the
+    // driver holds. DTLS 1.2 asks for the transcript hash signed (`prehashed`).
+    for (both_versions) |list| {
+        const pair = try Pair.init(gpa, .{ .client_suites = list, .server_suites = list, .mutual = true, .client_key_elsewhere = true });
+        defer pair.deinit();
+        try pair.run();
+        try std.testing.expectEqual(Datagram.Phase.connected, pair.server.dtls.phase());
+        try std.testing.expect(pair.server.dtls.info().?.peer_authenticated);
+        try carriesData(pair);
+    }
+}
+
 test "C8 setTiming rescales the running retransmission timer" {
     // A caller tuning the timer to its path (RFC 9147 section 5.8.2 leaves the timer values to the
     // implementation): a running wait becomes the new first wait times the doublings so far,

@@ -145,6 +145,22 @@ test "credential identity reads its chain from PEM, the leaf first, and refuses 
     try std.testing.expectEqual(@as(usize, 2), auth.chain().len);
 }
 
+test "credential identity reads a chain whose key is held elsewhere from PEM" {
+    @setRuntimeSafety(true);
+    const gpa = std.testing.allocator;
+    const chain = @embedFile("testdata/p256.cert.pem") ++ @embedFile("testdata/rsa.cert.pem");
+    const identity = try Identity.initExternalPem(gpa, chain, .{});
+    defer identity.deinit();
+    try std.testing.expectEqual(@as(usize, 2), identity.chain().len);
+    try std.testing.expectEqual(@as(?usize, null), identity.noiseLength());
+    try rejectPem(error.NotCertificate, Identity.initExternalPem(gpa, chain ++ @embedFile("testdata/p256.pkcs8.pem"), .{}));
+    try rejectPem(error.EmptyChain, Identity.initExternalPem(gpa, " \n", .{}));
+    try rejectPem(error.IdentityLimit, Identity.initExternalPem(gpa, chain, .{ .certificates = 1 }));
+    const auth = try ClientAuth.initExternalPem(gpa, @embedFile("testdata/p256.cert.pem") ++ @embedFile("testdata/p256.pkcs8.pem"), .{ .other_blocks = .skip });
+    defer auth.deinit();
+    try std.testing.expectEqual(@as(usize, 1), auth.chain().len);
+}
+
 test "credential identity skips a key in its chain file when asked" {
     @setRuntimeSafety(true);
     const gpa = std.testing.allocator;

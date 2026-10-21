@@ -23,6 +23,11 @@ pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, op
     @setRuntimeSafety(true);
     return .{ .identity = try Identity.initExternal(gpa, certificates, options) };
 }
+/// `initExternal` over a chain in PEM; see `Identity.initExternalPem`.
+pub fn initExternalPem(gpa: std.mem.Allocator, chain_pem: []const u8, options: Options) InitPemError!ClientAuth {
+    @setRuntimeSafety(true);
+    return .{ .identity = try Identity.initExternalPem(gpa, chain_pem, options) };
+}
 /// A raw public key (RFC 7250) for a server that asks for one; see `Identity.initRawKey`.
 pub fn initRawKey(gpa: std.mem.Allocator, spki: []const u8, key: PrivateKey, options: Options) InitError!ClientAuth {
     @setRuntimeSafety(true);

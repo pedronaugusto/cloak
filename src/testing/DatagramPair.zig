@@ -29,6 +29,9 @@ pub const Options = struct {
     cache: ?*SessionCache = null,
     tickets: ?*TicketKeys = null,
     mutual: bool = false,
+    /// With `mutual`, the client's key is held elsewhere: its credential has no key, and the pair
+    /// answers each sign request with `SignRequest.signWith`.
+    client_key_elsewhere: bool = false,
     mtu: u16 = 1200,
     /// Per mille of datagrams lost, repeated, and held back to arrive after the next.
     loss: u16 = 0,
@@ -101,6 +104,8 @@ client_credentials: [1]@import("../tls/handshake/Client.zig").Credential = undef
 identity: certificates.Identity,
 credential: [1]Datagram.Credential = undefined,
 client_auth: ?certificates.ClientAuth = null,
+/// The client's key, under `client_key_elsewhere`.
+client_key: ?certificates.PrivateKey = null,
 client: Side,
 server: Side,
 server_pin: [1][32]u8 = undefined,
@@ -133,9 +138,11 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Pair {
     if (options.mutual) {
         const client_key = try certificates.PrivateKey.parse(gpa, pki.client_pem, .{});
         defer client_key.deinit();
-        self.client_auth = if (options.raw_keys) try certificates.ClientAuth.initRawKey(gpa, client_spki, client_key, .{}) else try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
+        self.client_auth = if (options.client_key_elsewhere) try certificates.ClientAuth.initExternal(gpa, &.{pki.client}, .{}) else if (options.raw_keys) try certificates.ClientAuth.initRawKey(gpa, client_spki, client_key, .{}) else try certificates.ClientAuth.init(gpa, &.{pki.client}, client_key, .{});
+        if (options.client_key_elsewhere) self.client_key = client_key.retain();
     }
     errdefer if (self.client_auth) |auth| auth.deinit();
+    errdefer if (self.client_key) |held| held.deinit();
     self.client = .{ .dtls = try Datagram.client(gpa, .{
         .identity = .{ .dns = "example.com" },
         .verify = if (options.psk_only) .none else if (options.raw_keys) .{ .raw_key = .{ .pins = &self.server_pin } } else .{ .full = .{ .trust_generation = self.snapshot.generation() } },
@@ -202,6 +209,7 @@ pub fn deinit(self: *Pair) void {
     }
     self.cookies.deinit();
     if (self.client_auth) |auth| auth.deinit();
+    if (self.client_key) |key| key.deinit();
     self.identity.deinit();
     self.snapshot.deinit();
     self.trust.deinit();
@@ -235,7 +243,13 @@ fn serve(self: *Pair, side: *Side) !void {
             defer receipt.deinit();
             try side.dtls.provide(request.token, .{ .verified = &receipt });
         },
-        .sign => return error.UnexpectedSign,
+        .sign => |sign| {
+            const key = self.client_key orelse return error.UnexpectedSign;
+            var noise: [128]u8 = undefined;
+            self.rng.random().bytes(&noise);
+            var out: [certificates.PrivateKey.max_signature]u8 = undefined;
+            try side.dtls.provide(request.token, .{ .signature = try sign.signWith(key, noise[0..key.noiseLength()], &out) });
+        },
     };
 }
 

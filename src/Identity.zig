@@ -36,6 +36,17 @@ pub fn init(gpa: std.mem.Allocator, certificates: []const []const u8, key: Priva
 /// skipped as `options.other_blocks` says; text between blocks is skipped.
 pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, options: Options) InitPemError!Identity {
     @setRuntimeSafety(true);
+    return buildPem(gpa, chain_pem, key, options);
+}
+
+/// `initExternal` over a chain in PEM, read as `initPem` reads it.
+pub fn initExternalPem(gpa: std.mem.Allocator, chain_pem: []const u8, options: Options) InitPemError!Identity {
+    @setRuntimeSafety(true);
+    return buildPem(gpa, chain_pem, null, options);
+}
+
+fn buildPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: ?PrivateKey, options: Options) InitPemError!Identity {
+    @setRuntimeSafety(true);
     var blocks: std.ArrayList(Pem.Block) = .empty;
     defer {
         for (blocks.items) |*block| block.deinit(gpa);
@@ -61,7 +72,7 @@ pub fn initPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: PrivateKey, o
         errdefer _ = blocks.pop();
         try ders.append(gpa, owned.der);
     }
-    return init(gpa, ders.items, key, options);
+    return build(gpa, ders.items, key, options);
 }
 
 /// A raw public key (RFC 7250, TLS 1.3 and 1.2): `spki`, a DER SubjectPublicKeyInfo, and the key that

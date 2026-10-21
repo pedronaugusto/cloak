@@ -11,6 +11,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `Datagram.setTiming`: the retransmission timer changed mid-association, as a caller learns its path's round trip (BoringSSL's `DTLSv1_set_initial_timeout_duration`). A running wait becomes the new first wait doubled once per retransmission so far, counted from when it started (one already past is due at once); a waiting ACK moves with it.
 - Imported provisioned keys (RFC 9258): `psk.External.imported` (with its `context`) makes a TLS 1.3 key an external key imported for TLS 1.3, DTLS 1.3 or QUIC and each suite hash, offered under an ImportedIdentity per hash of the offered suites with the key derived for it and an "imp binder" binder; a server's lookup sees the external identity and context (`psk.Query.imported`), and an imported key is never taken directly nor a direct one imported.
 - A client offers several provisioned keys, in its order (at most four, `psk.max_keys`); after a retry request it keeps the offers of the chosen suite's hash alone.
+- `Identity.initExternalPem` and `ClientAuth.initExternalPem`: a chain whose key is held elsewhere, from PEM, read as `initPem` reads it.
+- `SignRequest.signWith`: signs a request with a `PrivateKey`, as cloak signs with a key it holds, for a driver that signs away from the handshake (a worker thread, a process holding the key); the connection still checks the signature against the credential before sending it.
 
 ### Changed
 

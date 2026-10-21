@@ -68,6 +68,20 @@ pub const SignRequest = struct {
     prehashed: bool = false,
     /// The credential that signs: its index in the server's or the client's credentials.
     credential: u8 = 0,
+
+    /// Signs this request with `key`, as cloak signs with a key it holds: for a driver that signs
+    /// away from the handshake (a worker thread, a process holding the key). The scheme binds to
+    /// the key as a TLS 1.2 signature's does, the loosest binding cloak chooses schemes within;
+    /// `noise` is `key.noiseLength()` fresh bytes. The connection checks the signature against
+    /// the credential before it is sent.
+    pub fn signWith(request: SignRequest, key: certificates.PrivateKey, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) error{SigningFailed}![]const u8 {
+        @setRuntimeSafety(true);
+        var info: [certificates.PrivateKey.max_public_key_info]u8 = undefined;
+        const public_key = certificates.certificate.parsePublicKey(key.publicKeyInfo(&info)) catch return error.SigningFailed;
+        const algorithm = @import("Possession.zig").bind12(request.scheme, public_key) catch return error.SigningFailed;
+        if (request.prehashed) return key.signDigest(algorithm, request.content, noise, out) catch error.SigningFailed;
+        return key.sign(algorithm, request.content, noise, out) catch error.SigningFailed;
+    }
 };
 
 /// A certificate chain or raw public key a client can present, with its delegated credential.

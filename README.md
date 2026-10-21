@@ -89,7 +89,7 @@ pub fn fetch(
 ```
 <!-- END GENERATED zig build docs -- session -->
 
-The server side of the same session. Cloak signs the CertificateVerify with the key of the chosen credential for ECDSA on P-256 and P-384, Ed25519 and RSA (RSA-PSS). A credential made with `Identity.initExternal` holds no key: `signer` signs for it, and the connection checks the signature against the leaf before it sends it.
+The server side of the same session. Cloak signs the CertificateVerify with the key of the chosen credential for ECDSA on P-256 and P-384, Ed25519 and RSA (RSA-PSS). A credential made with `Identity.initExternal` (or `initExternalPem`, from a PEM chain) holds no key: `signer` signs for it (`SignRequest.signWith` signs with a `PrivateKey` held elsewhere, a worker thread or another process), and the connection checks the signature against the leaf before it sends it.
 
 <!-- BEGIN GENERATED zig build docs -- serve -->
 ```zig
