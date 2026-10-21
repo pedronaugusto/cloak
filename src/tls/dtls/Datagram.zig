@@ -198,6 +198,9 @@ pub const Error = Client.Error || Record.SealError || error{
     NoConnectionIds,
     /// The peer asked for connection IDs while its last request was still unanswered.
     TooManyConnectionIdsRequested,
+    /// This end sent message 0xffff, the last message_seq (RFC 9147 section 5.2): it has none
+    /// left for another handshake message (F161).
+    MessageSequenceExhausted,
 };
 pub const ProvideError = Error || error{ StaleToken, NoRequest };
 pub const SrtpError = error{ NotConnected, NoSrtp };
@@ -310,9 +313,10 @@ writers: [3]?Record.Epoch = @splat(null),
 readers: [3]?Record.Epoch = @splat(null),
 /// The epoch new handshake messages and application data go out under.
 write_current: u64 = 0,
-// Handshake messages.
-send_sequence: u16 = 0,
-receive_sequence: u16 = 0,
+// Handshake messages: the next message_seq each way. They never wrap (RFC 9147 section 5.2): past
+// 0xffff no message is new, and this end can send none (F161).
+send_sequence: u32 = 0,
+receive_sequence: u32 = 0,
 partials: std.ArrayList(Partial) = .empty,
 partial_bytes: usize = 0,
 /// The flights this side sent, kept for retransmission, and their bytes together.
@@ -321,7 +325,7 @@ flight_bytes: usize = 0,
 generations: u32 = 0,
 /// The peer's first message_seq of the flight answering ours (RFC 9147 section 5.8.1): a message
 /// below it is one our flight answered, one from it on answers ours.
-answer_from: u16 = 0,
+answer_from: u32 = 0,
 /// Part of the peer's answer to our flight arrived. The timer runs on until the whole answer has
 /// made the engine speak again (or the handshake ends); then our flight is done.
 answered: bool = false,
@@ -753,7 +757,7 @@ fn deliverNext(self: *Datagram) Error!bool {
     if (partial.epoch != 0 and partial.epoch < self.message_floor) return error.RecordAlignment;
     const taken = self.partials.orderedRemove(index);
     defer self.freePartial(taken);
-    self.receive_sequence +%= 1;
+    self.receive_sequence += 1;
     // The connection-ID messages are the carrier's: the engine never sees them.
     if (taken.kind == request_connection_id or taken.kind == new_connection_id) {
         try self.onCidMessage(taken.kind, taken.buf[4..], taken.epoch);
@@ -926,8 +930,9 @@ fn queueOwn(self: *Datagram, category: Category, epoch: u64, message: []const u8
         std.crypto.secureZero(u8, bytes);
         self.gpa.free(bytes);
     }
-    try self.queue(.{ .kind = .message, .epoch = epoch, .bytes = bytes, .sequence = self.send_sequence }, category);
-    self.send_sequence +%= 1;
+    const sequence = std.math.cast(u16, self.send_sequence) orelse return error.MessageSequenceExhausted;
+    try self.queue(.{ .kind = .message, .epoch = epoch, .bytes = bytes, .sequence = sequence }, category);
+    self.send_sequence += 1;
 }
 
 fn queue(self: *Datagram, entry: Sent, category: Category) Error!void {
@@ -1281,12 +1286,12 @@ fn onHandshake(self: *Datagram, body: []const u8, epoch: u64, record_sequence: ?
             if (record_sequence) |number| self.plain_sequence = number;
         }
         any_fragment = true;
-        const ahead = sequence -% self.receive_sequence;
-        if (ahead >= 0x8000) {
+        if (sequence < self.receive_sequence) {
             // An older message: the peer retransmitted, so our answer to it was lost.
             self.onRetransmission(sequence, offset, now);
             continue;
         }
+        const ahead = sequence - self.receive_sequence;
         // New plaintext messages end where keys begin: once the peer's keys are in, a plaintext
         // message can only be forged, and it is dropped rather than refused, which would end the
         // association (F82).
@@ -1386,8 +1391,8 @@ fn overlapAgrees(partial: *const Partial, offset: u24, fragment: []const u8) boo
 /// a half timer period. One of the flight answering ours means our ACK of it was lost (DTLS
 /// 1.3): its record joins the ACK list, and the ACK goes again on its timer.
 fn onRetransmission(self: *Datagram, sequence: u16, offset: u24, now: std.Io.Timestamp) void {
-    if (sequence -% self.answer_from < 0x8000) return;
-    if (sequence != self.answer_from -% 1 or offset != 0) return;
+    if (sequence >= self.answer_from) return;
+    if (@as(u32, sequence) + 1 != self.answer_from or offset != 0) return;
     const flight = self.flightOf(.handshake) orelse return;
     if (flight.transmitting) return;
     if (flight.deadline) |when| if (when.nanoseconds - now.nanoseconds > @divTrunc(flight.backoff.nanoseconds, 2)) {

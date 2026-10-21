@@ -789,9 +789,9 @@ test "F150 catalogue_dtls13_message_after_key_update (a handshake message after 
         try pair.run();
         const next = pair.server.dtls.send_sequence;
         var update: [13]u8 = .{ 24, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1 };
-        std.mem.writeInt(u16, update[4..6], next, .big);
+        std.mem.writeInt(u16, update[4..6], @intCast(next), .big);
         var extra = update;
-        std.mem.writeInt(u16, extra[4..6], next + 1, .big);
+        std.mem.writeInt(u16, extra[4..6], @intCast(next + 1), .big);
         var buffer: [256]u8 = undefined;
         const keys = writeEpoch(&pair.server.dtls, 3);
         const first = try keys.seal13(.handshake, if (extra_first) &extra else &update, "", &buffer);
@@ -799,6 +799,32 @@ test "F150 catalogue_dtls13_message_after_key_update (a handshake message after 
         try std.testing.expectError(error.RecordAlignment, pair.client.dtls.receive(buffer[0 .. first.len + second.len], pair.now));
         try std.testing.expectEqual(Datagram.Phase.failed, pair.client.dtls.phase());
     }
+}
+
+test "F161 catalogue_dtls13_message_seq_never_wraps (after message 0xffff nothing is new: none is taken, none is sent)" {
+    // BoGo's KeyUpdate-ReadMessageOverflow-DTLS and -WriteMessageOverflow-DTLS: RFC 9147 section
+    // 5.2, a message whose message_seq is below next_receive_seq MUST be discarded, and
+    // message_seq is 16 bits, so after 0xffff none is next; message 0 again is an old one.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only });
+    defer pair.deinit();
+    try pair.run();
+    // The server's last message number: a KeyUpdate under it is taken.
+    pair.server.dtls.send_sequence = 0xffff;
+    pair.client.dtls.receive_sequence = 0xffff;
+    try pair.server.dtls.keyUpdate(false);
+    pair.settle = true;
+    try pair.run();
+    try carriesData(pair);
+    // A message 0 under the peer's keys, of no valid body: an old number, discarded unread.
+    var garbage: [12 + 7]u8 = .{ 24, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 7 } ++ "INVALID".*;
+    std.mem.writeInt(u16, garbage[4..6], 0, .big);
+    var buffer: [256]u8 = undefined;
+    const record = try writeEpoch(&pair.server.dtls, 4).seal13(.handshake, &garbage, "", &buffer);
+    try pair.client.dtls.receive(record, pair.now);
+    try std.testing.expect(pair.client.dtls.failure() == null);
+    try carriesData(pair);
+    // The server has no message number left to send another with.
+    try std.testing.expectError(error.MessageSequenceExhausted, pair.server.dtls.keyUpdate(false));
 }
 
 test "C8 after the peer's key update its old epoch is still read for four minutes" {
@@ -834,9 +860,9 @@ test "F151 catalogue_dtls13_ack_skips_dropped_fragments (a record with a fragmen
     try pair.run();
     const next = pair.server.dtls.send_sequence;
     var near: [12]u8 = .{ 24, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-    std.mem.writeInt(u16, near[4..6], next, .big);
+    std.mem.writeInt(u16, near[4..6], @intCast(next), .big);
     var far = near;
-    std.mem.writeInt(u16, far[4..6], next +% 1000, .big);
+    std.mem.writeInt(u16, far[4..6], @as(u16, @intCast(next)) +% 1000, .big);
     const keys = writeEpoch(&pair.server.dtls, 3);
     var buffer: [256]u8 = undefined;
     const mixed_number = keys.sequence;
@@ -881,7 +907,7 @@ test "F160 catalogue_dtls_authenticated_fragment_refused (a malformed or oversiz
         var body: [32]u8 = undefined;
         @memcpy(body[0..case.body.len], case.body);
         // The message the client expects next, so no rule about order drops it first.
-        if (case.body.len >= 6) std.mem.writeInt(u16, body[4..6], pair.client.dtls.receive_sequence, .big);
+        if (case.body.len >= 6) std.mem.writeInt(u16, body[4..6], @intCast(pair.client.dtls.receive_sequence), .big);
         var out: [256]u8 = undefined;
         const record = if (tls13)
             try writeEpoch(&pair.server.dtls, 3).seal13(.handshake, body[0..case.body.len], "", &out)

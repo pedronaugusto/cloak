@@ -107,7 +107,7 @@ test "F78 catalogue_dtls_duplicate_replay_and_message_order" {
         var hostile: [512]u8 = undefined;
         // The next expected one, in plaintext, can only be forged once keys are in: dropped, not
         // refused (a refusal would end the association).
-        for ([_]u16{ 0, pair.server.dtls.receive_sequence, pair.server.dtls.receive_sequence +% 20, 0xffff }) |sequence| {
+        for ([_]u16{ 0, @intCast(pair.server.dtls.receive_sequence), @as(u16, @intCast(pair.server.dtls.receive_sequence)) +% 20, 0xffff }) |sequence| {
             try pair.server.dtls.receive(try fragment(&hostile, 1, 3, sequence, 0, "abc", 77), pair.now);
         }
         try std.testing.expect(pair.server.dtls.failure() == null);

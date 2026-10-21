@@ -1324,6 +1324,9 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   handshake fragment cut short, past its record or its message, or of a message past
   `limits.handshake.message` (F160: a plaintext one is dropped, and one under keys would never
   be taken however often it came).
+  The message_seq never wraps (RFC 9147 section 5.2, F161): after message 0xffff no message is new
+  (message 0 again is an old one, discarded) and this end sends none (`MessageSequenceExhausted`,
+  which ends a KeyUpdate or a ticket that would need one).
   A record over the size limit is dropped unopened, as RFC 8449 section 4 allows a DTLS end.
   A fatal alert of a DTLS 1.3 handshake goes under the handshake keys until this end's
   Finished went out, since the peer reads no newer epoch before (F149).
@@ -1755,3 +1758,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F153 | `catalogue_revocation_verdict_surfaces` | `verify/Verifier_test.zig`, `tls/Session_test.zig` | the verifier's record of a revocation refusal removed, and the Revoked and status mappings, each alone; before, a path refused by its revocation evidence reported NoTrustedPath, so a revoked certificate went out as unknown_ca (found by the OCSP stapling interop rows) |
 | F154 | `catalogue_ech_rejection_answers_a_certificate_request` | `tls/Ech_test.zig` | the rejected client's flight (empty Certificate, Finished) before its ech_required; before, the client ended at the server's Finished with no flight, so a server asking for a certificate never got the empty Certificate RFC 9849 6.1.7 requires (BoGo's ECH-Client-Reject-NoClientCertificate) |
 | F160 | `catalogue_dtls_authenticated_fragment_refused` | `tls/dtls/Datagram_test.zig` | the refusal of each unfit fragment under keys alone (cut short, past its record, past its message, past the limit), DTLS 1.3 and 1.2; before, each was dropped as a forged plaintext one is, and the handshake waited out its timer (BoGo's LargeMessage-Reject-DTLS) |
+| F161 | `catalogue_dtls13_message_seq_never_wraps` | `tls/dtls/Datagram_test.zig` | the receive and send counters' wrap, each alone; before, both wrapped at 2^16, so message 0 after 0xffff was taken as the next message and a 65,537th message went out as message 0 (BoGo's KeyUpdate-ReadMessageOverflow-DTLS and -WriteMessageOverflow-DTLS) |
