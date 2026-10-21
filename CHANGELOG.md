@@ -10,6 +10,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `max_fragment` (Connection and Session, both roles): the most plaintext one record this end sends carries, 64 to 2^14, handshake records included and a kernel's write direction too (BoringSSL's and OpenSSL's max_send_fragment); a lower record_size_limit from the peer holds over it. Datagrams have none: the MTU bounds their records.
 - `Credential.delegated_only`: a server credential that signs only through its delegated credential (RFC 9345's server that never holds the certificate's key). It needs no signer, is offered only to a TLS 1.3 client that takes its delegated credential, and is passed over for the next credential otherwise.
 
+### Fixed
+
+- An ECH client naming certificate_authorities (or offering raw keys, or a client certificate type) now completes the handshake: its inner hello wrote those extensions inside the run it leaves to the outer hello, so the inner hello the server rebuilt was not the client's and the handshake failed at Finished. Every extension of the inner hello's own now goes before or after that run. F157.
+
 ## [0.21.0] - 2026-10-21
 
 ### Added

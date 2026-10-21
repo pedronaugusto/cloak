@@ -462,8 +462,14 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     if (datagram and cookie.len != 0) try cookieExtension(&w, cookie);
     if (options.grease) |grease| try extension(&w, grease.first, "");
     if (sni.len != 0) try serverName(&w, sni);
-    // An encoded inner hello leaves a contiguous run of shared extensions to the outer one: none of its own inside.
+    // An encoded inner hello leaves a contiguous run of shared extensions to the outer one
+    // (`Ech.compressed`), from supported_groups to key_share: everything of the inner hello's
+    // own goes before it or after it, so that the hello the server rebuilds is the inner one.
     try leadingOffers(&w, options, tls13);
+    if (datagram) try datagramOffer(&w, options);
+    try certificateTypes(&w, options);
+    // The names say what the client trusts: an ECH outer hello carries none.
+    if (tls13 and form != .outer and options.certificate_authorities.len != 0) try authoritiesExtension(&w, options.certificate_authorities);
     const compress = form == .encoded;
     if (compress) try outerExtensions(&w, options, cookie);
     if (!compress) try supportedGroups(&w, options, tls13);
@@ -496,10 +502,6 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         std.mem.writeInt(u16, alpn[0..2], @intCast(a.pos - 2), .big);
         try extension(&w, 16, alpn[0..a.pos]);
     }
-    if (datagram) try datagramOffer(&w, options);
-    try certificateTypes(&w, options);
-    // The names say what the client trusts: an ECH outer hello carries none.
-    if (tls13 and form != .outer and options.certificate_authorities.len != 0) try authoritiesExtension(&w, options.certificate_authorities);
     if (cookie.len != 0 and !compress and !datagram) try cookieExtension(&w, cookie);
     if (tls13 and !compress) {
         const share_at = w.pos;

@@ -110,6 +110,19 @@ test "C6 ECH with certificate compression offered, used or not: the inner hello 
     };
 }
 
+test "F157 catalogue_ech_inner_hello_order" {
+    var keys: Keys = undefined;
+    try keys.init(5, 3, public_name);
+    defer keys.deinit();
+    const root = (try certificates.certificate.parse(pki.ca, .{})).subject;
+    for ([_][]const @import("crypto/Group.zig").Group{ &.{ .x25519_mlkem768, .x25519 }, &.{.p256} }) |server_groups| {
+        const duo = try connect(.{ .server_groups = server_groups, .client_authorities = &.{root}, .client_ech = .{ .config_list = keys.list }, .server_ech = &.{keys.key()} });
+        defer duo.deinit();
+        try std.testing.expect(duo.client.info().?.ech_accepted and duo.server.info().?.ech_accepted);
+        try roundTrip(duo);
+    }
+}
+
 test "C6 ECH required: a client offers only TLS 1.3, and a config list with nothing usable is refused" {
     var keys: Keys = undefined;
     try keys.init(4, 1, public_name);
