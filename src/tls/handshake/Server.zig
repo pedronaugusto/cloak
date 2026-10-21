@@ -69,7 +69,15 @@ pub const Credential = struct {
     /// The caller fetches and refreshes it; cloak checks only that it is an OCSPResponse. At most
     /// `max_ocsp` bytes.
     ocsp: []const u8 = "",
+    /// The signature schemes the identity's key signs under, in this server's order, borrowed: a
+    /// key held where only some may be used (a module, a policy), or an order other than cloak's.
+    /// Empty: every scheme the key can make, in cloak's order. A scheme the key or the version
+    /// cannot make is passed over, so one list serves TLS 1.3 and 1.2; it restricts and reorders
+    /// cloak's schemes and never adds one. A delegated credential signs under its own. At most
+    /// `max_schemes`.
+    schemes: []const Hello.SignatureScheme = &.{},
     pub const max_scts = Hello.max_scts;
+    pub const max_schemes = Possession.max_schemes;
     pub const max_ocsp = 16 * 1024;
 };
 
@@ -200,6 +208,8 @@ now: ?std.Io.Timestamp = null,
 authenticated: bool = false,
 /// The index of the pin the client's raw public key matched (RFC 7250).
 pin: ?u16 = null,
+/// The scheme the client signed its CertificateVerify under.
+peer_scheme: ?Hello.SignatureScheme = null,
 /// The chosen credential's delegated credential is sent and signs (RFC 9345).
 delegating: bool = false,
 /// The server proved a raw public key (RFC 7250) in this session's full handshake, this one's or
@@ -349,6 +359,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     }
     for (options.credentials) |credential| {
         for (credential.names) |name| if (name.len == 0 or name.len > 253) return error.InvalidOptions;
+        if (credential.schemes.len > Credential.max_schemes) return error.InvalidOptions;
         if (credential.delegated) |delegated| if (delegated.side() != .server or !delegated.belongsTo(credential.identity)) return error.InvalidOptions;
         if (credential.scts.len != 0) {
             if (credential.scts.len > Credential.max_scts or credential.identity.form() != .x509) return error.InvalidOptions;
@@ -810,7 +821,7 @@ fn fits13(self: *const Server, credential: Credential, hello: *const ClientHello
     if (credential.delegated) |delegated| if (hello.delegated) |list| {
         if (delegated.usable(types.seconds(self.now.?), list, hello)) return .{ .scheme = delegated.keyScheme(), .delegating = true };
     };
-    return .{ .scheme = Possession.choose(credential.identity.publicKey(), hello) orelse return error.NoSignatureScheme };
+    return .{ .scheme = Possession.choose(credential.identity.publicKey(), credential.schemes, hello) orelse return error.NoSignatureScheme };
 }
 
 /// Exact, ASCII case-insensitive, or `*.` plus a domain standing for exactly one leftmost label.
@@ -1617,6 +1628,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
         try Possession.verifyKey(parsed.scheme, &.{checked.scheme}, checked.key, content, parsed.signature);
         self.delegated_used = true;
     } else try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(.{ .require_pq_auth = self.options.require_pq_auth }), try Possession.peerKey(scratch.chain[0], scratch.peer_raw), content, parsed.signature);
+    self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;
@@ -1771,6 +1783,7 @@ pub fn info(self: *const Server) ?Info {
         .external_psk = self.external,
         .srtp = self.srtp,
         .pin = self.pin,
+        .peer_scheme = self.peer_scheme,
         .delegated_credential = self.delegated_used,
         .credential = self.credential,
     };

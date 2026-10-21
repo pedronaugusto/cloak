@@ -118,6 +118,10 @@ pub const Info = struct {
     /// The peer proved a pinned key, a raw public key (RFC 7250) or its leaf certificate's key
     /// under `Verify.leaf_key`: its index in the policy's pins. Null otherwise.
     pin: ?u16 = null,
+    /// The signature scheme the peer proved possession under in this handshake (its
+    /// CertificateVerify, or a TLS 1.2 server's ServerKeyExchange); null when it signed nothing,
+    /// a resumption among them.
+    peer_scheme: ?Hello.SignatureScheme = null,
     /// The peer proved possession with a delegated credential (RFC 9345) its verified certificate
     /// signed, not with the certificate's own key.
     delegated_credential: bool = false,
@@ -198,6 +202,8 @@ authenticated: bool = false,
 requested_certificate: bool = false,
 /// The index of the pin the server's key matched: a raw public key (RFC 7250) or a pinned leaf.
 pin: ?u16 = null,
+/// The scheme the server signed its CertificateVerify or ServerKeyExchange under.
+peer_scheme: ?Hello.SignatureScheme = null,
 /// The server proved possession with a delegated credential (RFC 9345).
 delegated_used: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
@@ -374,6 +380,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         hello.request_ocsp = false;
     }
     if (options.credentials.len > max_credentials) return error.InvalidOptions;
+    for (options.credentials) |credential| if (credential.schemes.len > Possession.max_schemes) return error.InvalidOptions;
     hello.client_types = clientTypes(options.credentials);
     Hello.validate(hello) catch return error.InvalidOptions;
     // ECH over datagrams (RFC 9849 with DTLS 1.3) is not built: refused rather than ignored.
@@ -1712,6 +1719,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
         try Possession.verifyKey(parsed.scheme, &.{checked.scheme}, checked.key, content, parsed.signature);
         self.delegated_used = true;
     } else try Possession.verifyKey(parsed.scheme, Hello.verifySchemes(self.options.hello), try Possession.peerKey(self.scratch.?.chain[0], self.scratch.?.peer_raw), content, parsed.signature);
+    self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
 }
@@ -1809,7 +1817,7 @@ fn chooseCredential(self: *const Client) ?Authorities.Pick(Possession.Fit).Choic
             if (credential.delegated) |delegated| if (scratch.cr_delegated_len) |listed| if (self.now) |now| {
                 if (delegated.usable(types.seconds(now), scratch.cr_delegated[0..listed], request)) break :fit .{ .scheme = delegated.keyScheme(), .delegating = true };
             };
-            break :fit .{ .scheme = Possession.choose(credential.auth.identity.publicKey(), request) orelse continue };
+            break :fit .{ .scheme = Possession.choose(credential.auth.identity.publicKey(), credential.schemes, request) orelse continue };
         };
         if (pick.offer(i, fit, Authorities.marked(scratch.cr_named, i))) break;
     }
@@ -1954,6 +1962,7 @@ pub fn info(self: *const Client) ?Info {
         .external_psk = self.external_used,
         .srtp = self.srtp,
         .pin = self.pin,
+        .peer_scheme = self.peer_scheme,
         .delegated_credential = self.delegated_used,
         .credential = self.credential,
     };

@@ -16,6 +16,7 @@ const Compression = @import("../tls/handshake/Compression.zig");
 const Psk = @import("../tls/handshake/Psk.zig");
 const Delegation = @import("../tls/handshake/Delegation.zig");
 const Client = @import("../tls/handshake/Client.zig");
+const Hello = @import("../tls/handshake/Hello.zig");
 pub const pki = @import("Peer.zig").pki;
 
 pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
@@ -123,6 +124,9 @@ pub const Options = struct {
     /// client that checks no revocation (so asks for none).
     server_ocsp: []const u8 = "",
     client_revocation_off: bool = false,
+    /// The signature schemes the server's first credential and the client's first sign under.
+    server_schemes: []const Hello.SignatureScheme = &.{},
+    client_schemes: []const Hello.SignatureScheme = &.{},
     /// Post-handshake authentication: the client offers it, the server asks with it, checking
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
@@ -320,7 +324,7 @@ pub fn deinit(self: *Duo) void {
 fn clientCredentials(self: *Duo) []const Client.Credential {
     var n: usize = 0;
     if (self.auth) |auth| {
-        self.client_credentials[n] = .{ .auth = auth, .delegated = self.client_dc };
+        self.client_credentials[n] = .{ .auth = auth, .delegated = self.client_dc, .schemes = self.options.client_schemes };
         n += 1;
     }
     if (self.second) |second| {
@@ -332,7 +336,7 @@ fn clientCredentials(self: *Duo) []const Client.Credential {
 
 /// The server's credentials: its identity (with its delegation and SCTs), then `server_also`'s.
 fn credentials(self: *Duo) []const Server.Credential {
-    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp };
+    self.credential_list[0] = .{ .identity = self.identity, .delegated = self.server_dc, .scts = self.options.server_scts, .ocsp = self.options.server_ocsp, .schemes = self.options.server_schemes };
     for (self.also[0..self.also_count], 1..) |identity, i| self.credential_list[i] = .{ .identity = identity };
     return self.credential_list[0 .. 1 + self.also_count];
 }

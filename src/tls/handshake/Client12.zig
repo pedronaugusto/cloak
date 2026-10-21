@@ -22,6 +22,7 @@ const Messages12 = @import("Messages12.zig");
 const Possession = @import("Possession.zig");
 const Authorities = @import("Authorities.zig");
 const Transcripts = @import("Transcripts.zig");
+const Terms = @import("Terms.zig");
 
 const Error = @import("Errors.zig").Error;
 const Epoch = Flight.Epoch;
@@ -219,6 +220,7 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     var content_buf: [Messages12.max_signed]u8 = undefined;
     const content = Messages12.signedParams(&content_buf, self.tls12.?.clientRandom(), self.tls12.?.serverRandom(), ske.params);
     try Possession.verifyMessage12(ske.scheme, &Hello.schemes12, key, content, ske.signature);
+    self.peer_scheme = @fromBackingInt(ske.scheme);
     try self.state.advance(.server_key_exchange, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.group = ske.group;
@@ -285,7 +287,7 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     const scratch = self.scratch.?;
     var pick: Authorities.Pick(Hello.SignatureScheme) = .{};
     for (self.kept.credentials, 0..) |credential, i| {
-        const scheme = fits12(scratch, credential.auth.identity) orelse continue;
+        const scheme = fits12(scratch, credential) orelse continue;
         if (pick.offer(i, scheme, Authorities.marked(scratch.cr_named, i))) break;
     }
     const chosen = pick.chosen() orelse return null;
@@ -293,9 +295,10 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
     return chosen.value;
 }
 
-/// The scheme `identity` signs this request with, if the request takes it.
-fn fits12(scratch: anytype, identity: certificates.Identity) ?Hello.SignatureScheme {
+/// The scheme `credential` signs this request with, if the request takes it.
+fn fits12(scratch: anytype, credential: Terms.ClientCredential) ?Hello.SignatureScheme {
     @setRuntimeSafety(true);
+    const identity = credential.auth.identity;
     // A raw public key (RFC 7250) goes only where the server selected that type, and a chain
     // only where it did not.
     if ((identity.form() == .raw_public_key) != scratch.client_raw) return null;
@@ -311,7 +314,7 @@ fn fits12(scratch: anytype, identity: certificates.Identity) ?Hello.SignatureSch
     };
     if (scratch.cr_types & wanted == 0) return null;
     const request: Messages12.CertificateRequest = .{ .types = "", .schemes = scratch.cr_schemes[0..scratch.cr_len] };
-    return Possession.chooseClient12(public_key, request);
+    return Possession.chooseClient12(public_key, credential.schemes, request);
 }
 
 fn sendFlight(self: anytype) Error!void {

@@ -79,10 +79,10 @@ test "C2 possession chooses the client scheme from the key and the server's list
         @memcpy(buf[4..][0..body.len], &body);
         break :blk buf[0 .. 4 + body.len];
     });
-    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.choose(try key(pki.p256), request).?);
-    try std.testing.expect(P.choose(try key(pki.p384), request) == null);
-    try std.testing.expectEqual(Hello.SignatureScheme.ed25519, P.choose(try key(pki.ed25519), request).?);
-    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha256, P.choose(try key(pki.rsa), request).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.choose(try key(pki.p256), &.{}, request).?);
+    try std.testing.expect(P.choose(try key(pki.p384), &.{}, request) == null);
+    try std.testing.expectEqual(Hello.SignatureScheme.ed25519, P.choose(try key(pki.ed25519), &.{}, request).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha256, P.choose(try key(pki.rsa), &.{}, request).?);
 }
 
 test "C4 a key restricted to PSS parameters signs only under the schemes they name" {
@@ -100,10 +100,10 @@ test "C4 a key restricted to PSS parameters signs only under the schemes they na
             return scheme == 0x0809 or scheme == 0x080a or scheme == 0x080b;
         }
     };
-    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.choose(sha384, Accepts{}).?);
-    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseServer12(sha384, Accepts{}).?);
-    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseClient12(sha384, Accepts{}).?);
-    try std.testing.expect(P.choose(long_salt, Accepts{}) == null);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.choose(sha384, &.{}, Accepts{}).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseServer12(sha384, &.{}, Accepts{}).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_pss_sha384, P.chooseClient12(sha384, &.{}, Accepts{}).?);
+    try std.testing.expect(P.choose(long_salt, &.{}, Accepts{}) == null);
 }
 
 test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (every TLS 1.2 scheme a chooser takes for a key, the key signs and the peer accepts)" {
@@ -112,13 +112,6 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (every TLS 1.2 sche
     // BoringSSL do. The server's chooser took such a scheme and the signer refused it; the
     // client's never offered one.
     const gpa = std.testing.allocator;
-    // A peer listing one scheme.
-    const Only = struct {
-        id: u16,
-        pub fn accepts(self: @This(), scheme: u16) bool {
-            return scheme == self.id;
-        }
-    };
     const Case = struct { cert: []const u8, pem: []const u8 };
     for ([_]Case{ .{ .cert = pki.p256, .pem = pki.p256_pem }, .{ .cert = pki.p384, .pem = pki.p384_pem }, .{ .cert = pki.ed25519, .pem = pki.ed25519_pem }, .{ .cert = pki.rsa, .pem = pki.rsa_pem } }) |case| {
         const private = try certificates.PrivateKey.parse(gpa, case.pem, .{});
@@ -131,12 +124,12 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (every TLS 1.2 sche
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
         for (Hello.schemes12) |scheme| {
             const only: Only = .{ .id = @backingInt(scheme) };
-            if (P.chooseServer12(public, only)) |chosen| {
+            if (P.chooseServer12(public, &.{}, only)) |chosen| {
                 try std.testing.expectEqual(scheme, chosen);
                 const signature = try P.sign12(identity, chosen, content, fresh, &out);
                 try P.verifyMessage12(@backingInt(chosen), &.{chosen}, public, content, signature);
             }
-            if (P.chooseClient12(public, only)) |chosen| {
+            if (P.chooseClient12(public, &.{}, only)) |chosen| {
                 try std.testing.expectEqual(scheme, chosen);
                 if (chosen == .ed25519) {
                     // Ed25519 signs the handshake messages themselves (RFC 8422 section 5.10).
@@ -155,10 +148,41 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (every TLS 1.2 sche
     // The pairs that were missing, by name: each curve under the other's hash, both roles.
     const p256 = try key(pki.p256);
     const p384 = try key(pki.p384);
-    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseClient12(p384, Only{ .id = 0x0403 }).?);
-    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p384_sha384, P.chooseClient12(p256, Only{ .id = 0x0503 }).?);
-    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseServer12(p384, Only{ .id = 0x0403 }).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseClient12(p384, &.{}, Only{ .id = 0x0403 }).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p384_sha384, P.chooseClient12(p256, &.{}, Only{ .id = 0x0503 }).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p256_sha256, P.chooseServer12(p384, &.{}, Only{ .id = 0x0403 }).?);
     // TLS 1.3 binds the curve (RFC 8446 section 4.2.3): no such pair.
-    try std.testing.expect(P.choose(p384, Only{ .id = 0x0403 }) == null);
-    try std.testing.expect(P.choose(p256, Only{ .id = 0x0503 }) == null);
+    try std.testing.expect(P.choose(p384, &.{}, Only{ .id = 0x0403 }) == null);
+    try std.testing.expect(P.choose(p256, &.{}, Only{ .id = 0x0503 }) == null);
 }
+
+test "C2 a credential's own schemes restrict and reorder cloak's, and never add one" {
+    const rsa = try key(pki.rsa);
+    const p256 = try key(pki.p256);
+    const All = struct {
+        pub fn accepts(_: @This(), _: u16) bool {
+            return true;
+        }
+    };
+    const own = [_]Hello.SignatureScheme{ .rsa_pkcs1_sha256, .ecdsa_p256_sha256, .rsa_pss_rsae_sha512, .rsa_pss_rsae_sha384 };
+    // TLS 1.3 never signs PKCS#1 v1.5, so the first of the list it can make; cloak's own order
+    // would take SHA-256.
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha512, P.choose(rsa, &own, All{}).?);
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha256, P.choose(rsa, &.{}, All{}).?);
+    // TLS 1.2 takes the list's first; a client's CertificateVerify hashes with SHA-256 or
+    // SHA-384 only, so it passes over SHA-512.
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pkcs1_sha256, P.chooseServer12(rsa, &own, All{}).?);
+    const pss = [_]Hello.SignatureScheme{ .rsa_pss_rsae_sha512, .rsa_pss_rsae_sha384 };
+    try std.testing.expectEqual(Hello.SignatureScheme.rsa_pss_rsae_sha384, P.chooseClient12(rsa, &pss, All{}).?);
+    // A list the key cannot make leaves it no scheme, as does one the peer does not take.
+    try std.testing.expect(P.choose(p256, &.{ .rsa_pss_rsae_sha256, .ecdsa_p384_sha384 }, All{}) == null);
+    try std.testing.expect(P.choose(rsa, &.{.rsa_pss_rsae_sha384}, Only{ .id = 0x0804 }) == null);
+}
+
+/// A peer listing one scheme.
+const Only = struct {
+    id: u16,
+    pub fn accepts(self: @This(), scheme: u16) bool {
+        return scheme == self.id;
+    }
+};

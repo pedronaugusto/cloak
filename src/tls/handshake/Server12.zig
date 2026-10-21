@@ -142,7 +142,7 @@ fn fits12(self: anytype, credential: anytype, hello: *const ClientHello) Error!P
         const candidate = suite.tls12() orelse continue;
         if (candidate.authentication() == kind and hello.offersSuite(@backingInt(candidate))) break;
     } else return error.NoSharedSuite;
-    return .{ .scheme = Possession.chooseServer12(key, hello) orelse return error.NoSignatureScheme };
+    return .{ .scheme = Possession.chooseServer12(key, credential.schemes, hello) orelse return error.NoSignatureScheme };
 }
 
 /// The bytes of the key an unknown identity is answered with: random, so its Finished fails as a
@@ -570,6 +570,7 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
         const digest = scratch.transcripts.digestOf(&digest_buf, length);
         try Possession.verifyDigest12(parsed.scheme, &Hello.schemes12_verify, key, digest, parsed.signature);
     }
+    self.peer_scheme = scheme;
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
     self.peer_certificate = true;

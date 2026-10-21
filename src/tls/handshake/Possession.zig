@@ -121,8 +121,12 @@ pub fn postQuantumPath(path: []const []const u8) bool {
 /// whether its delegated credential's key signs (RFC 9345, TLS 1.3) rather than the certificate's.
 pub const Fit = struct { scheme: Scheme, delegating: bool = false };
 
-/// The scheme a client uses for a leaf, in preference order, among those the server lists.
-pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
+/// The most schemes a credential names for itself (`Credential.schemes`).
+pub const max_schemes = 16;
+
+/// The scheme a leaf signs under, in preference order, among those the peer lists: cloak's order
+/// for the key, or the credential's own schemes (`own`) among those.
+pub fn choose(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
         .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
@@ -132,7 +136,17 @@ pub fn choose(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
             inline else => |level| &.{comptime mldsaScheme(level)},
         },
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind, scheme, key)) return scheme;
+    return first(bind, order, own, key, accepts);
+}
+
+/// The first scheme of `order` that the peer accepts and `key` can make; with `own` named, the
+/// first of `own` that `order` holds, so a credential's list restricts and reorders cloak's and
+/// never adds to it (one list serves both versions).
+fn first(comptime binding: fn (Scheme, Algorithm.PublicKey) Error!Algorithm.Signature, order: []const Scheme, own: []const Scheme, key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
+    for (if (own.len != 0) own else order) |scheme| {
+        if (own.len != 0 and std.mem.findScalar(Scheme, order, scheme) == null) continue;
+        if (accepts.accepts(@backingInt(scheme)) and usable(binding, scheme, key)) return scheme;
+    }
     return null;
 }
 
@@ -208,9 +222,9 @@ pub fn signDigest12(identity: certificates.Identity, scheme: Scheme, digest: []c
     return identity.signDigest(algorithm, digest, noise, out) catch error.SigningFailed;
 }
 
-/// The ServerKeyExchange scheme for a leaf among those the client lists, in cloak's order: the
-/// key's own curve hash first, then PSS, then PKCS#1 v1.5 for RSA.
-pub fn chooseServer12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
+/// The ServerKeyExchange scheme for a leaf among those the client lists, in cloak's order (the
+/// key's own curve hash first, then PSS, then PKCS#1 v1.5 for RSA) or the credential's (`own`).
+pub fn chooseServer12(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
         .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
@@ -219,14 +233,13 @@ pub fn chooseServer12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         // TLS 1.3's only.
         .mldsa => &.{},
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
-    return null;
+    return first(bind12, order, own, key, accepts);
 }
 
 /// The CertificateVerify scheme for a client leaf among those the server lists, in cloak's order
 /// as `chooseServer12`. It must hash with SHA-256 or SHA-384, the transcript hashes cloak keeps;
 /// an Ed25519 key has none.
-pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
+pub fn chooseClient12(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
         .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
@@ -234,8 +247,7 @@ pub fn chooseClient12(key: Algorithm.PublicKey, accepts: anytype) ?Scheme {
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
         .mldsa => &.{},
     };
-    for (order) |scheme| if (accepts.accepts(@backingInt(scheme)) and usable(bind12, scheme, key)) return scheme;
-    return null;
+    return first(bind12, order, own, key, accepts);
 }
 test {
     _ = @import("Possession_test.zig");

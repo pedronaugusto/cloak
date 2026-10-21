@@ -483,7 +483,14 @@ no candidate fitting, the refusal is the furthest one got: unsupported_certifica
 is of a form the client takes, handshake_failure otherwise. The chain's own signatures
 (signature_algorithms_cert) do not rank credentials: RFC 8446 lets a server send a chain the
 client may not verify, and the client's verifier decides. The signature scheme is the first
-the client accepts that the leaf's key type and curve can make. `Info.credential` names the
+the client accepts that the leaf's key type and curve can make, in cloak's order, or in the
+credential's own when it names its schemes (`Credential.schemes`, a client's
+`ClientCredential.schemes`, as Go's `SupportedSignatureAlgorithms` and BoringSSL's per-credential
+signing preferences): a key held where only some schemes may be used, or an order other than
+cloak's. The list restricts and reorders cloak's and never adds to it, a scheme the key or the
+version cannot make passed over, so one list serves both versions; a credential with none the
+peer takes is not chosen. `Info.peer_scheme` names the scheme the peer proved possession under
+in the handshake (null when it signed nothing, a resumption among them). `Info.credential` names the
 credential each end presented by its index (the server's answer, a client's to a
 CertificateRequest), null on a resumption, a provisioned key or an empty client Certificate;
 TLS 1.2 weighs a credential while choosing the suite and drops it when a ticket or a key then
@@ -1136,7 +1143,10 @@ directions: a P-384 key signs under ecdsa_secp256r1_sha256 when that is what the
 bits2int, as Go and BoringSSL do, and such signatures are accepted. PKCS#1 v1.5 RSA signatures
 are accepted and made only in TLS 1.2. A CertificateVerify signs the transcript hash of its
 scheme: both SHA-256 and SHA-384 transcripts run through a TLS 1.2 handshake, so the
-signature goes through `signDigest`/`verifyDigest`. Ed25519 signs the handshake messages
+signature goes through `signDigest`/`verifyDigest`, and a TLS 1.2 CertificateVerify is made and
+taken under those hashes' schemes alone (no SHA-512 transcript runs; a server lists none of its
+schemes in a CertificateRequest, and a client asked for SHA-512 alone answers with an empty
+Certificate). Ed25519 signs the handshake messages
 themselves rather than a digest (RFC 8422 section 5.10), so the transcript also keeps the messages whole when an Ed25519 signature may be needed: in
 a client whose certificate key is Ed25519, from its hello, and in a server that asks for a
 certificate, from the client's hello; the copy is bounded by the handshake limit, erased with the

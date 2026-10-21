@@ -77,6 +77,9 @@ pub const ClientCredential = struct {
     /// it when the server's CertificateRequest takes one; its key signs then. Needs full
     /// verification of the server, whose clock decides whether it is still valid.
     delegated: ?Delegation.Credential = null,
+    /// The signature schemes `auth`'s key signs under, in this client's order, borrowed; empty for
+    /// every scheme the key can make, in cloak's order. As a server credential's `schemes`.
+    schemes: []const Hello.SignatureScheme = &.{},
 
     /// The most a client holds, as a server.
     pub const max = 32;
