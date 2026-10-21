@@ -595,6 +595,61 @@ test "C8 records under keys not held yet are answered by an ACK of nothing, and 
     try carriesData(pair);
 }
 
+test "C8 setTiming rescales the running retransmission timer" {
+    // A caller tuning the timer to its path (RFC 9147 section 5.8.2 leaves the timer values to the
+    // implementation): a running wait becomes the new first wait times the doublings so far,
+    // counted from when it started; a wait already past makes the flight due at once.
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .admission = .validated });
+    defer pair.deinit();
+    const client = &pair.client.dtls;
+    const ms: i96 = std.time.ns_per_ms;
+    const at = struct {
+        fn at(from: std.Io.Timestamp, ns: i96) std.Io.Timestamp {
+            return .{ .nanoseconds = from.nanoseconds + ns };
+        }
+    }.at;
+    var out: [2048]u8 = undefined;
+    const t0 = pair.now;
+    try pair.serveClient();
+    while (try client.send(&out, t0)) |_| {}
+    try std.testing.expectEqual(at(t0, 1000 * ms), client.timeout().?);
+    try client.setTiming(.{ .initial = .fromMilliseconds(500) });
+    try std.testing.expectEqual(at(t0, 500 * ms), client.timeout().?);
+    // It fires there, and the next wait doubles from the new first one.
+    const t1 = at(t0, 500 * ms);
+    try std.testing.expect(try client.send(&out, t1) != null);
+    while (try client.send(&out, t1)) |_| {}
+    try std.testing.expectEqual(at(t1, 1000 * ms), client.timeout().?);
+    // Back to a second with one doubling done: two seconds from the retransmission.
+    try client.setTiming(.{});
+    try std.testing.expectEqual(at(t1, 2000 * ms), client.timeout().?);
+    // Shortened below what has passed: due at once.
+    const t2 = at(t1, 1000 * ms);
+    try client.setTiming(.{ .initial = .fromMilliseconds(250) });
+    try std.testing.expectEqual(at(t1, 500 * ms), client.timeout().?);
+    try std.testing.expect(try client.send(&out, t2) != null);
+    // Values the timer cannot run on are refused, and change nothing.
+    try std.testing.expectError(error.InvalidOptions, client.setTiming(.{ .initial = .fromNanoseconds(0) }));
+    try std.testing.expectError(error.InvalidOptions, client.setTiming(.{ .initial = .fromSeconds(2), .max = .fromSeconds(1) }));
+    try std.testing.expectEqual(std.Io.Duration.fromMilliseconds(250), client.timing.initial);
+}
+
+test "C8 setTiming rescales a waiting ACK" {
+    // An ACK waits a quarter of the retransmission wait: a new first wait moves it with the rest
+    // (BoGo's DTLS-Retransmit-PartialProgress-Server-SetTimeout).
+    var t = try ticketsAndKeys();
+    defer t.cache.deinit();
+    defer t.keys.deinit();
+    const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .cache = &t.cache, .tickets = &t.keys });
+    defer pair.deinit();
+    try pair.run();
+    // The client's only timer is the tickets' ACK, a quarter second after they came.
+    const due = pair.client.dtls.timeout().?;
+    try std.testing.expectEqual(@as(i96, std.time.ns_per_s / 4), due.nanoseconds - pair.now.nanoseconds);
+    try pair.client.dtls.setTiming(.{ .initial = .fromMilliseconds(200) });
+    try std.testing.expectEqual(@as(i96, 50 * std.time.ns_per_ms), pair.client.dtls.timeout().?.nanoseconds - pair.now.nanoseconds);
+}
+
 test "C8 an ACK in the clear makes a flight go again at most once a timer period" {
     // The server's flight never reaches the client.
     const pair = try Pair.init(gpa, .{ .client_suites = suites.Suite.tls13_only, .server_suites = suites.Suite.tls13_only, .drop_server = &.{ 1, 2 } });

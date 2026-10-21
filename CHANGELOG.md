@@ -8,6 +8,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 - A credential's own signature schemes: `Credential.schemes` and `ClientCredential.schemes` (at most 16) name the schemes its key signs under, in that end's order, as Go's `SupportedSignatureAlgorithms` and BoringSSL's per-credential signing preferences do: for a key held where only some schemes may be used, or an order other than cloak's. The list restricts and reorders cloak's schemes for the key and never adds one; a scheme the key or the version cannot make is passed over, and a credential with no scheme the peer takes is not chosen.
 - `Info.peer_scheme`: the signature scheme the peer proved possession under in the handshake (its CertificateVerify, or a TLS 1.2 server's ServerKeyExchange); null when it signed nothing.
+- `Datagram.setTiming`: the retransmission timer changed mid-association, as a caller learns its path's round trip (BoringSSL's `DTLSv1_set_initial_timeout_duration`). A running wait becomes the new first wait doubled once per retransmission so far, counted from when it started (one already past is due at once); a waiting ACK moves with it.
 
 ### Fixed
 

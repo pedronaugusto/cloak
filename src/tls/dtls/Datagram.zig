@@ -2033,6 +2033,26 @@ pub fn setMtu(self: *Datagram, mtu: u16) InitError!void {
     self.mtu = mtu;
 }
 
+/// Sets the retransmission timer from now on, as the caller learns its path's round trip (RFC
+/// 9147 section 5.8.2 leaves the values to the implementation). A flight's running wait becomes
+/// the new first wait doubled once per retransmission so far, capped at the new maximum, counted
+/// from when it started: a wait already past makes the flight due at once, and `timeout` says so.
+/// A waiting ACK moves with it, a quarter of the new wait after the record that started it.
+pub fn setTiming(self: *Datagram, timing: Timing) InitError!void {
+    try checkCommon(self.mtu, timing);
+    const ack_wait = self.ackWait();
+    self.timing = timing;
+    for (&self.flights) |*slot| if (slot.*) |*flight| {
+        const doublings = @min(flight.retransmissions, 63);
+        const grown = std.math.shlExact(i96, timing.initial.nanoseconds, doublings) catch timing.max.nanoseconds;
+        const backoff: std.Io.Duration = .{ .nanoseconds = @min(grown, timing.max.nanoseconds) };
+        if (flight.deadline) |when| flight.deadline = .{ .nanoseconds = when.nanoseconds - flight.backoff.nanoseconds + backoff.nanoseconds };
+        flight.backoff = backoff;
+    };
+    // A waiting ACK goes a quarter of the wait after the record that started it, the new wait's.
+    if (self.ack_at) |when| self.ack_at = .{ .nanoseconds = when.nanoseconds - @divTrunc(ack_wait.nanoseconds, 4) + @divTrunc(self.ackWait().nanoseconds, 4) };
+}
+
 /// Ends the association with close_notify, which the next `send` writes.
 pub fn close(self: *Datagram) void {
     const timing = aegis.secret.Timing.begin();

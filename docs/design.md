@@ -1313,7 +1313,9 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
   section 7.2), and a partial ACK makes the rest go at once, at most once a timer period (its
   SHOULD; BoringSSL waits for its timer). A repeated peer flight is answered once, at its last
   message (RFC 9147 section 5.8.1). The timer (1 s, doubling to 60 s, at most 7
-  retransmissions, then `HandshakeTimeout`) runs until the peer's answer stops it: in DTLS 1.3,
+  retransmissions, then `HandshakeTimeout`), which `setTiming` changes mid-association (a running wait
+  becomes the new first wait doubled once per retransmission so far, from when it started; a
+  waiting ACK moves with it) runs until the peer's answer stops it: in DTLS 1.3,
   once the version is settled (the client has the ServerHello or a retry request, the server
   answered or asked to retry), any message of the peer's next flight acknowledges ours whole
   and it goes no more (RFC 9147 section 7.1); in DTLS 1.2, and before the version is settled,
