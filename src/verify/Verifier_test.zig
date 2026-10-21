@@ -40,6 +40,21 @@ test "portable selected path identity pins limits and native floors" {
     req.limits.candidates = 0;
     try std.testing.expectError(error.VerificationLimit, V.verify(std.testing.allocator, req, &.{root}));
 }
+test "F153 catalogue_revocation_verdict_surfaces (a path refused by its revocation evidence reports why, not that no path was found)" {
+    // Found by the OCSP stapling interop rows: a revocation refusal was reported as NoTrustedPath,
+    // and a revoked certificate went out as unknown_ca.
+    var req = request();
+    req.evidence = .{ .ocsp = &.{@embedFile("fixtures/vectors/revoked.ocsp")} };
+    try std.testing.expectError(error.Revoked, V.verify(std.testing.allocator, req, &.{root}));
+    req.evidence = .{};
+    req.policy.revocation.mode = .required;
+    try std.testing.expectError(error.MissingRevocation, V.verify(std.testing.allocator, req, &.{root}));
+    req.evidence = .{ .ocsp = &.{@embedFile("fixtures/vectors/good.ocsp")} };
+    var receipt = try V.verify(std.testing.allocator, req, &.{root});
+    defer receipt.deinit();
+    try std.testing.expectEqual(.good, receipt.revocation);
+}
+
 test "portable verifier and receipt survive every allocation failure without resize" {
     var n = shakedown.alloc.NoResize.init(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(n.allocator(), allocations, .{});

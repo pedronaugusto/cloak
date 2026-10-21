@@ -25,10 +25,12 @@ pub const Request = struct { token: types.Token, service: Service };
 
 /// Why the caller's verifier refused a chain, and the alert that says it (RFC 8446 section 6.2):
 /// `untrusted` unknown_ca, `bad_certificate` bad_certificate (corrupt, or a signature that does
-/// not verify), `expired` certificate_expired, `revoked` certificate_revoked, `unsupported`
-/// unsupported_certificate, `unknown` certificate_unknown (any other reason the verifier gives:
-/// its own policy said no), `internal` internal_error.
-pub const VerifyFailure = enum { untrusted, bad_certificate, expired, revoked, unsupported, unknown, internal };
+/// not verify), `expired` certificate_expired, `revoked` certificate_revoked, `bad_status`
+/// bad_certificate_status_response (revocation evidence missing, stale or unacceptable: a staple
+/// above all, RFC 6066 section 8), `unsupported` unsupported_certificate, `unknown`
+/// certificate_unknown (any other reason the verifier gives: its own policy said no), `internal`
+/// internal_error.
+pub const VerifyFailure = enum { untrusted, bad_certificate, expired, revoked, bad_status, unsupported, unknown, internal };
 
 pub const Answer = union(enum) {
     entropy: []const u8,
@@ -107,6 +109,7 @@ pub fn alertFor(self: *const Services, err: anyerror) Alert {
             .bad_certificate => .bad_certificate,
             .expired => .certificate_expired,
             .revoked => .certificate_revoked,
+            .bad_status => .bad_certificate_status_response,
             .unsupported => .unsupported_certificate,
             .unknown => .certificate_unknown,
             .internal => .internal_error,

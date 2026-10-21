@@ -297,24 +297,35 @@ test "C2 session reports a rejected server chain as the alert it sent" {
     try std.testing.expectEqual(@as(?Session.VerifyError, error.NoTrustedPath), report.verification);
 }
 
-/// A caller's verifier with a policy of its own: it takes every chain, or none.
+/// A caller's verifier with a policy of its own: it takes every chain, or refuses each with
+/// `refusal`.
 const Custom = struct {
-    accept: bool,
+    refusal: ?Session.VerifyError = null,
     calls: usize = 0,
 
     fn verify(context: ?*anyopaque, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
         const self: *Custom = @ptrCast(@alignCast(context.?));
         self.calls += 1;
-        if (!self.accept) return error.Failed;
+        if (self.refusal) |err| return err;
         return certificates.types.Verification.init(gpa, request, request.chain, true, .{ .nanoseconds = request.time.nanoseconds + std.time.ns_per_s });
     }
 };
 
-test "C2 session takes a custom verifier's verdict, and reports its refusal as certificate_unknown" {
-    // RFC 8446 section 6.2: a verifier's own refusal names no defect of the certificate.
+test "C2 session takes a custom verifier's verdict, and reports a refusal by the alert of its reason" {
+    // RFC 8446 section 6.2: a verifier's own refusal names no defect of the certificate
+    // (certificate_unknown); a revoked one is certificate_revoked, and unacceptable revocation
+    // evidence bad_certificate_status_response (RFC 6066 section 8, F153).
     const gpa = std.testing.allocator;
-    for ([_]bool{ true, false }) |accept| {
-        var verifier: Custom = .{ .accept = accept };
+    const cases = [_]struct { refusal: ?Session.VerifyError, alert: ?Alert }{
+        .{ .refusal = null, .alert = null },
+        .{ .refusal = error.Failed, .alert = .certificate_unknown },
+        .{ .refusal = error.Revoked, .alert = .certificate_revoked },
+        .{ .refusal = error.StaleRevocation, .alert = .bad_certificate_status_response },
+        .{ .refusal = error.MissingRevocation, .alert = .bad_certificate_status_response },
+    };
+    for (cases) |case| {
+        const accept = case.refusal == null;
+        var verifier: Custom = .{ .refusal = case.refusal };
         var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
         defer peer.deinit();
         var transport: Loopback(@TypeOf(peer)) = undefined;
@@ -331,8 +342,8 @@ test "C2 session takes a custom verifier's verdict, and reports its refusal as c
             try std.testing.expect(session.info().?.peer_authenticated);
         } else {
             try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
-            try std.testing.expectEqual(@as(?Alert, .certificate_unknown), report.alert_sent);
-            try std.testing.expectEqual(@as(?Session.VerifyError, error.Failed), report.verification);
+            try std.testing.expectEqual(case.alert, report.alert_sent);
+            try std.testing.expectEqual(case.refusal, report.verification);
         }
         try std.testing.expectEqual(@as(usize, 1), verifier.calls);
     }

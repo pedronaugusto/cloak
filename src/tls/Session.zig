@@ -597,6 +597,8 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
         const why: Connection.VerifyFailure = switch (err) {
             error.NoTrustedPath => .untrusted,
             error.InvalidValidity => .expired,
+            error.Revoked => .revoked,
+            error.MissingRevocation, error.InvalidRevocation, error.StaleRevocation, error.UnknownRevocation, error.UnsupportedRevocation => .bad_status,
             // A custom verifier's own refusal names no defect of the certificate.
             error.Failed => .unknown,
             else => .bad_certificate,

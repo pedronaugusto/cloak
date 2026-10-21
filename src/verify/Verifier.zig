@@ -27,6 +27,9 @@ const Search = struct {
     /// Why the last path that met everything else failed Certificate Transparency: the verdict
     /// when no path is accepted.
     transparency_failure: ?transparency.Error = null,
+    /// The revocation check's refusal of a path that passed everything before it: what the
+    /// verification reports when no path is accepted (a revoked leaf is Revoked, not untrusted).
+    revocation_failure: ?revocation.Error = null,
     constraint_work: Work,
     policy_work: Work,
 
@@ -58,6 +61,14 @@ const Search = struct {
         try self.charge("parsed_bytes", der.len);
         return C.parse(der, .{ .bytes = self.request.limits.chain_bytes });
     }
+    /// Why no path was accepted: the last revocation refusal, else the last transparency one,
+    /// else no path to an anchor.
+    fn failure(self: *const Search) VerifyError {
+        if (self.revocation_failure) |err| return err;
+        if (self.transparency_failure) |err| return err;
+        return error.NoTrustedPath;
+    }
+
     fn search(self: *Search) VerifyError!bool {
         @setRuntimeSafety(true);
         const child = &self.path[self.count - 1];
@@ -198,6 +209,7 @@ const Search = struct {
         };
         const evidence = revocation.check(self.path[0..self.count], T.seconds(self.request.time), self.request.policy.revocation, self.request.evidence) catch |err| {
             if (err == error.VerificationLimit) return err;
+            self.revocation_failure = err;
             return false;
         };
         // Certificate Transparency: the leaf's SCTs over this path's issuer key. Each signature
@@ -268,7 +280,7 @@ fn run(gpa: std.mem.Allocator, request: T.Request, anchors: []const []const u8, 
     try identity.pins(&state.path[0], request.pins);
     if (request.mode == .none) return V.init(gpa, request, request.chain[0..1], false, T.instant(state.path[0].not_after));
     try leafFloors(&state.path[0], request);
-    if (!try state.search()) return state.transparency_failure orelse error.NoTrustedPath;
+    if (!try state.search()) return state.failure();
     return state.receipt.?;
 }
 fn leafFloors(cert: *const C.Certificate, request: T.Request) VerifyError!void {
@@ -324,6 +336,6 @@ pub fn nativePath(gpa: std.mem.Allocator, request: T.Request, selected_chain: []
     }
     try leafFloors(&state.path[0], request);
     try identity.pins(&state.path[0], request.pins);
-    if (!try state.accept(0)) return state.transparency_failure orelse error.NoTrustedPath;
+    if (!try state.accept(0)) return state.failure();
     return state.receipt.?;
 }
