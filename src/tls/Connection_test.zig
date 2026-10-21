@@ -684,10 +684,10 @@ test "F45 catalogue_finished_entropy_failure_is_never_success" {
         defer pair.deinit();
         const request = pair.conn.request().?;
         var stale = request.token;
-        stale.id = .fromRaw(stale.id.raw() + 1);
+        stale.id = try stale.id.successor();
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .entropy = &@as([96]u8, @splat(1)) }));
         stale = request.token;
-        stale.generation = .fromRaw(stale.generation.raw() + 1);
+        stale.generation = try stale.generation.successor();
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .entropy = &@as([96]u8, @splat(1)) }));
         try std.testing.expectEqual(@as(usize, 0), pair.conn.output().len);
         // The wrong answer kind ends the connection: the engine asked for something else.
@@ -889,10 +889,10 @@ test "F40 catalogue_partial_output_identity_swap_and_late_sign (the caller's ide
         // An answer under another request's token, or another generation's, is refused and
         // leaves the request open.
         var stale = sign.token;
-        stale.id = .fromRaw(stale.id.raw() + 1);
+        stale.id = try stale.id.successor();
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .signature = signature }));
         stale = sign.token;
-        stale.generation = .fromRaw(stale.generation.raw() + 1);
+        stale.generation = try stale.generation.successor();
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .signature = signature }));
         try std.testing.expect(pair.conn.request().?.service == .sign);
         // The caller releases its identity while the signature is owed: the connection holds its own.

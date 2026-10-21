@@ -43,7 +43,7 @@ fn snapshotLifetime(gpa: std.mem.Allocator) !void {
     defer next.deinit();
     try std.testing.expectEqual(Trust.System.macos, held.systemPolicy());
     try std.testing.expectEqual(Trust.System.windows, next.systemPolicy());
-    try std.testing.expectEqual(first.generation().raw() + 1, next.generation().raw());
+    try std.testing.expectEqual(try first.generation().successor(), next.generation());
 }
 
 test "trust byte identical dedup transactional PEM and immutable input ownership" {
@@ -166,7 +166,7 @@ test "F25 catalogue_trust_snapshot_extension_race_and_time (workers keep one imm
     try trust.addDer(@embedFile("verify/fixtures/vectors/p384.der"), .{});
     const next = try trust.freeze();
     defer next.deinit();
-    try std.testing.expectEqual(first.?.generation().raw() + 1, next.generation().raw());
+    try std.testing.expectEqual(try first.?.generation().successor(), next.generation());
     first.?.deinit();
     first = null;
     gate.set(io);

@@ -1,6 +1,5 @@
 //! A mutable trust builder and immutable, retained trust snapshots.
 const std = @import("std");
-const aegis = @import("aegis");
 const TrustGeneration = @import("types.zig").TrustGeneration;
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
@@ -268,7 +267,7 @@ fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits)
 pub fn freeze(t: *Trust) FreezeError!Snapshot {
     @setRuntimeSafety(true);
     if (t.roots.items.len == 0 and t.system == .portable) return error.NoTrustAnchors;
-    if (t.next_generation.raw() == std.math.maxInt(u64)) return error.GenerationExhausted;
+    const following = t.next_generation.successor() catch return error.GenerationExhausted;
     const state = try t.gpa.create(State);
     errdefer t.gpa.destroy(state);
     const roots = try t.gpa.dupe([]const u8, t.roots.items);
@@ -278,7 +277,7 @@ pub fn freeze(t: *Trust) FreezeError!Snapshot {
     state.* = .{ .gpa = t.gpa, .roots = roots, .index = index, .generation = t.next_generation, .system = t.system };
     t.roots.clearRetainingCapacity();
     t.bytes = 0;
-    t.next_generation = .fromRaw((aegis.int.Checked(u64).init(t.next_generation.raw()).add(1) catch unreachable).raw()); // unreachable: exhaustion checked before any ownership transfer
+    t.next_generation = following;
     return .{ .state = state };
 }
 

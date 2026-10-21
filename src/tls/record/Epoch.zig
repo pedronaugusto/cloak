@@ -78,7 +78,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         /// The kernel's count of records under these keys, read from it: the budget follows the
         /// records it sealed or opened. A count below the one known is stale and changes nothing.
         pub fn account(self: *Self, records: u64) void {
-            if (self.owner == .kernel and records > self.sequence.raw()) self.sequence = .fromRaw(records);
+            if (self.owner == .kernel and RecordCount.fromRaw(records).compare(self.sequence) == .gt) self.sequence = .fromRaw(records);
         }
         pub const UpdateError = error{ Closed, MissingTraffic };
         /// The connection calls this only after committing/accepting the complete
@@ -146,7 +146,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         }
         fn admit(self: *Self, len: usize) error{RecordLimit}!void {
             @setRuntimeSafety(true);
-            if (self.sequence.raw() >= self.limits.records.raw() or len > self.limits.bytes.raw() - self.bytes.raw()) {
+            // unreachable: every admitted record kept the bytes within the limit.
+            const room = self.limits.bytes.sub(self.bytes) catch unreachable;
+            if (self.sequence.compare(self.limits.records) != .lt or ByteCount.fromRaw(len).compare(room) == .gt) {
                 self.deinit();
                 return error.RecordLimit;
             }
@@ -172,8 +174,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             inner[input.len] = @backingInt(content);
             @memset(inner[input.len + 1 ..], 0);
             A.encrypt(inner, wire[5 + inner_len ..][0..16], inner, wire[0..5], self.nonce(), self.key.expose().*);
-            self.sequence = .fromRaw(self.sequence.raw() + 1);
-            self.bytes = .fromRaw(self.bytes.raw() + inner_len);
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(inner_len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return wire;
         }
         /// Tag verification precedes release. Any peer failure erases this epoch.
@@ -219,8 +221,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (end == 0) return self.unexpected(plain);
             const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected(plain);
             if (content != .application and end == 1) return self.unexpected(plain);
-            self.sequence = .fromRaw(self.sequence.raw() + 1);
-            self.bytes = .fromRaw(self.bytes.raw() + len);
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
         }
         fn bad(self: *Self) error{BadRecord} {

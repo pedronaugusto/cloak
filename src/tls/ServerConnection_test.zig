@@ -527,7 +527,7 @@ test "C3 service failures end the handshake" {
         _ = try pair.conn.receive(hello);
         const request = pair.conn.request().?;
         var stale = request.token;
-        stale.id = .fromRaw(stale.id.raw() + 1);
+        stale.id = try stale.id.successor();
         try std.testing.expectError(error.StaleToken, pair.conn.provide(stale, .{ .entropy = &@as([128]u8, @splat(1)) }));
         try std.testing.expectError(error.EntropyUnavailable, pair.conn.provide(request.token, .entropy_failed));
         try std.testing.expectEqual(Connection.Phase.failed, pair.conn.phase());

@@ -90,7 +90,7 @@ test "service admission covers owned state and input allocation with a zero rece
 // This is not a generic fault allocator; NoResize owns allocation scheduling.
 const Cleanup = struct {
     backing: std.mem.Allocator,
-    lock: ?*std.atomic.Value(bool) = null,
+    guard: ?*const @FieldType(@typeInfo(@FieldType(Job, "state")).pointer.child, "shared") = null,
     state_allocation: ?[*]u8 = null,
     frees: usize = 0,
     locked_frees: usize = 0,
@@ -132,11 +132,11 @@ const Cleanup = struct {
         // observing its guard at that boundary rather than reading dead state.
         if (self.state_allocation == bytes.ptr) {
             self.state_allocation = null;
-            self.lock = null;
+            self.guard = null;
         }
-        if (self.lock) |lock| {
+        if (self.guard) |guard| {
             self.frees += 1;
-            self.locked_frees += @intFromBool(lock.load(.acquire));
+            self.locked_frees += @intFromBool(guard.isHeld());
         }
         self.backing.rawFree(bytes, alignment, ret);
     }
@@ -156,7 +156,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
         guard.value().phase = .ready;
         guard.value().result = path;
         guard.deinit();
-        cleanup.lock = &job.state.shared.lock;
+        cleanup.guard = &job.state.shared;
         cleanup.state_allocation = std.mem.asBytes(job.state).ptr;
         if (abandon) job.abandon();
         job.deinit();
@@ -167,7 +167,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
             q.held = null;
             executor_job.deinit();
         }
-        cleanup.lock = null;
+        cleanup.guard = null;
         try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
     }
     try std.testing.expect(cleanup.frees >= 4);
@@ -186,7 +186,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (abandoned during ev
     var q: Queue = .{};
     const job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{root} });
     defer job.deinit();
-    cleanup.lock = &job.state.shared.lock;
+    cleanup.guard = &job.state.shared;
     cleanup.state_allocation = std.mem.asBytes(job.state).ptr;
     cleanup.abandon_on_alloc = job;
     q.drain();
@@ -226,7 +226,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
         executor_job.run();
         executor_job.deinit();
     };
-    cleanup.lock = &executor_job.state.shared.lock;
+    cleanup.guard = &executor_job.state.shared;
     cleanup.state_allocation = std.mem.asBytes(executor_job.state).ptr;
     cleanup.pause = &pause;
     var worker = try io.concurrent(execute, .{executor_job});

@@ -253,7 +253,7 @@ pub fn ClientPeer(comptime suite: Suite13) type {
             std.mem.writeInt(u64, &counter, tx.sequence.raw(), .big);
             for (nonce[4..], counter) |*byte, n| byte.* ^= n;
             A.encrypt(wire[5..][0..inner.len], wire[5 + inner.len ..][0..A.tag_length], inner, wire[0..5], nonce, tx.key.expose().*);
-            tx.sequence = .fromRaw(tx.sequence.raw() + 1);
+            tx.sequence = tx.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: a test forges far fewer than 2^64 records
             return wire;
         }
 

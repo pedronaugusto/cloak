@@ -77,7 +77,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
 
         /// The kernel's count of records under these keys; a stale count changes nothing.
         pub fn account(self: *Self, records: u64) void {
-            if (self.owner == .kernel and records > self.sequence.raw()) self.sequence = .fromRaw(records);
+            if (self.owner == .kernel and Epoch.RecordCount.fromRaw(records).compare(self.sequence) == .gt) self.sequence = .fromRaw(records);
         }
 
         fn nonce(self: *const Self) [12]u8 {
@@ -104,7 +104,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
 
         fn admit(self: *Self, len: usize) error{RecordLimit}!void {
             @setRuntimeSafety(true);
-            if (self.sequence.raw() >= self.limits.records.raw() or len > self.limits.bytes.raw() - self.bytes.raw()) {
+            // unreachable: every admitted record kept the bytes within the limit.
+            const room = self.limits.bytes.sub(self.bytes) catch unreachable;
+            if (self.sequence.compare(self.limits.records) != .lt or Epoch.ByteCount.fromRaw(len).compare(room) == .gt) {
                 self.deinit();
                 return error.RecordLimit;
             }
@@ -131,8 +133,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             if (explicit != 0) wire[5..][0..explicit].* = n[4..12].*;
             if (input.ptr != body.ptr) @memcpy(body, input);
             A.encrypt(body, wire[wire_len - A.tag_length ..][0..A.tag_length], body, &self.additional(content, input.len), n, self.key.expose().*);
-            self.sequence = .fromRaw(self.sequence.raw() + 1);
-            self.bytes = .fromRaw(self.bytes.raw() + input.len);
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(input.len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return wire;
         }
 
@@ -167,8 +169,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
                 std.crypto.secureZero(u8, plain);
                 return self.bad();
             };
-            self.sequence = .fromRaw(self.sequence.raw() + 1);
-            self.bytes = .fromRaw(self.bytes.raw() + len);
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain };
         }
 
