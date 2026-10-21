@@ -181,7 +181,7 @@ peer_parameters: []u8 = &.{},
 now: ?std.Io.Timestamp = null,
 authenticated: bool = false,
 /// The index of the pin the client's raw public key matched (RFC 7250).
-raw_pin: ?u16 = null,
+pin: ?u16 = null,
 /// The chosen credential's delegated credential is sent and signs (RFC 9345).
 delegating: bool = false,
 /// The chosen credential's SCTs go to a client that asked for them (RFC 6962).
@@ -320,7 +320,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
     if (options.credentials.len > 32 or (options.credentials.len == 0 and options.external_psk == null)) return error.InvalidOptions;
     if (options.require_pq_auth and (options.client_auth != .required or options.client_verify == .none)) return error.InvalidOptions;
     switch (options.client_verify) {
-        .raw_key => |raw| if (raw.pins.len == 0 or raw.pins.len > Verify.RawKey.max_pins or options.client_auth == .none) return error.InvalidOptions,
+        .raw_key, .leaf_key => |pinned| if (pinned.pins.len == 0 or pinned.pins.len > Verify.Pins.max_pins or options.client_auth == .none) return error.InvalidOptions,
         else => {},
     }
     for (options.credentials) |credential| {
@@ -1045,7 +1045,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
         self.scratch.?.psk_index = index;
         self.scratch.?.session_expires = state.expires;
         self.authenticated = state.client_authenticated;
-        self.raw_pin = state.client_raw_pin;
+        self.pin = state.client_pin;
         self.scratch.?.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
         return;
     }
@@ -1060,11 +1060,11 @@ pub fn policyDigest(self: *const Server) [32]u8 {
     h.update(&.{ @backingInt(self.options.client_auth), @backingInt(std.meta.activeTag(self.options.client_verify)), @intFromBool(self.options.accept_delegated) });
     switch (self.options.client_verify) {
         .none => {},
-        .raw_key => |raw| {
+        .raw_key, .leaf_key => |pinned| {
             var count: [8]u8 = undefined;
-            std.mem.writeInt(u64, &count, raw.pins.len, .big);
+            std.mem.writeInt(u64, &count, pinned.pins.len, .big);
             h.update(&count);
-            for (raw.pins) |*pin| h.update(pin);
+            for (pinned.pins) |*pin| h.update(pin);
         },
         .full => |full| {
             const request: types.Request = .{
@@ -1535,7 +1535,7 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     scratch.delegated = reparsed.leaf.delegated;
     if (scratch.peer_raw) {
         // The raw key this server selected for the client (RFC 7250), one its policy pins.
-        self.raw_pin = try Possession.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);
+        self.pin = try Possession.pinnedKey(scratch.chain[0..scratch.chain_len], self.options.client_verify.raw_key.pins);
         try scratch.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .handshake, .chain, true);
         self.authenticated = true;
@@ -1547,6 +1547,12 @@ fn onCertificate(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) C
     switch (self.options.client_verify) {
         .none => try self.state.advance(.verify_chain, .handshake, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        .leaf_key => |leaf| {
+            // The leaf's key is the trust: its pin, and nothing else of the chain.
+            self.pin = try Possession.pinnedLeaf(scratch.chain[0], leaf.pins);
+            try self.state.advance(.verify_chain, .handshake, .chain, true);
+            self.authenticated = true;
+        },
         // unreachable: a pinned-key policy took the raw key above or refused the chain.
         .raw_key => unreachable,
     }
@@ -1628,7 +1634,7 @@ fn issueTickets(self: *Server) Client.Error!void {
             .expires = expires,
             .age_add = std.mem.readInt(u32, drawn[Ticket.salt_length..][0..4], .big),
             .client_authenticated = self.authenticated,
-            .client_raw_pin = self.raw_pin,
+            .client_pin = self.pin,
             .auth_expires = if (self.authenticated) self.scratch.?.client_auth_expires else 0,
             .policy = self.policyDigest(),
         };
@@ -1717,7 +1723,7 @@ pub fn info(self: *const Server) ?Info {
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external,
         .srtp = self.srtp,
-        .raw_key_pin = self.raw_pin,
+        .pin = self.pin,
         .delegated_credential = self.delegated_used,
     };
 }

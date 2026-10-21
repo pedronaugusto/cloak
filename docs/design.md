@@ -783,7 +783,7 @@ does not answer it would send X.509, which the client refuses at EncryptedExtens
 at the ServerHello, which carries the answers there) with unsupported_certificate, before
 anything is verified. The Certificate must carry exactly one
 entry, a SubjectPublicKeyInfo that parses and whose SHA-256 one pin names (every pin compared;
-which one matched is released, as `Info.raw_key_pin`); the CertificateVerify is then checked
+which one matched is released, as `Info.pin`); the CertificateVerify is then checked
 against that key under the schemes offered, as for a leaf. No service is asked: there is no
 time, chain or trust store in it. A client whose own credential is a raw key
 (`ClientAuth.initRawKey`) sends client_certificate_type with the raw key alone and presents it
@@ -818,6 +818,25 @@ but that has none to present sends the empty form, the same three zero bytes as 
 list (the raw form itself is at least one byte), which the server takes as no certificate. A
 TLS 1.2 session ticket carries the client's proved pin as a TLS 1.3 one does, and the client's
 cache entry the server's.
+
+## Pinned leaf keys
+
+A pin with no authorities (cloak 0.19.0; curl's CURLOPT_PINNEDPUBLICKEY with peer verification
+off, which is git's `http.pinnedPubkey` under `http.sslVerify=false`): `Verify.leaf_key` (Session's
+`Trust.leaf_keys`, either role) takes certificates as `.none` does and trusts the leaf's key by its
+pin alone, the SHA-256 of the leaf's SubjectPublicKeyInfo, the same value `pins` adds to full
+verification. The leaf is parsed, its key's pin compared with every pin (which one matched is
+released, as `Info.pin`), and a mismatch is `PinMismatch` (bad_certificate) at the Certificate,
+before the CertificateVerify; nothing else of the chain is checked (issuer, path, name, validity,
+usage, revocation) and no service is asked. The CertificateVerify then proves the pinned key,
+so the peer is authenticated by it, unlike `.none`, which checks nothing and reports an
+unauthenticated peer. It is X.509 on the wire: no certificate type is negotiated, so a raw key is
+never taken where a leaf is pinned. The cache key and the server's ticket digest hold the mode
+and its pins, as for raw keys, so a session resumes only under the same pinned leaf keys. Refused
+at init with it: no pins, a Session's `pins` beside it (the trust's are the only ones), a
+transparency policy, delegated credentials (full verification's) and ECH with a config list
+(whose rejection authenticates the public name's certificate). TLS 1.3 and 1.2, every carrier,
+post-handshake answers too. F141.
 
 ## Delegated credentials
 
@@ -1585,3 +1604,4 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F138 | `catalogue_certificate_authorities_decoded` | `tls/handshake/ClientHello_test.zig`, `tls/handshake/Messages_test.zig` | the empty-list check removed from `Authorities.parse`; before, the extension went unread in both messages (found by BoGo's RejectEmptyCertificateAuthorities and ExtensionTrailingData-CertificateAuthorities rows; RFC 8446 4.2.4) |
 | F139 | `catalogue_server_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in `Server.chooseCredential`, and the issuer comparison in `Authorities.chains`; before, the client's names were not read (RFC 8446 4.2.4, main's call 2026-10-20) |
 | F140 | `catalogue_client_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in each client walk (TLS 1.3, TLS 1.2, post-handshake); before, a client held one credential and read no names (RFC 8446 4.2.4, RFC 5246 7.4.4) |
+| F141 | `catalogue_pin_without_authorities` | `tls/LeafKey_test.zig` | the pin check made to pass in each role's leaf-key branch (TLS 1.3 and 1.2 client and server), the cache key's mode label, and the empty-pins refusal; before, a pin was checked only beside full verification, so a caller verifying no chain could not hold a pinned key (main's call 2026-10-21, designs/cloak.md §5.2) |

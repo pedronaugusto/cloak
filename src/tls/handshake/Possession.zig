@@ -242,6 +242,19 @@ pub fn pinnedKey(entries: []const []const u8, pins: []const [32]u8) KeyError!u16
     return error.PinMismatch;
 }
 
+/// The index of the pin naming a leaf certificate's key (`Verify.leaf_key`): the SHA-256 of its
+/// SubjectPublicKeyInfo; shared by both roles and versions.
+pub fn pinnedLeaf(leaf: []const u8, pins: []const [32]u8) KeyError!u16 {
+    @setRuntimeSafety(true);
+    const cert = certificates.certificate.parse(leaf, .{}) catch return error.InvalidCertificate;
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(cert.spki, &hash, .{});
+    for (pins, 0..) |*pin, i| {
+        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
+    }
+    return error.PinMismatch;
+}
+
 /// The key a peer's first Certificate entry carries: a leaf's, or a raw key's (RFC 7250).
 pub fn peerKey(entry: []const u8, raw: bool) KeyError!certificates.certificate.PublicKey {
     @setRuntimeSafety(true);

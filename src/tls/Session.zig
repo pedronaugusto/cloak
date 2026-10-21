@@ -38,8 +38,13 @@ pub const Trust = union(enum) {
     /// The caller's verifier, for native or custom policy.
     custom: Custom,
     /// A raw public key (RFC 7250, TLS 1.3 and 1.2) trusted by its pin, the SHA-256 of its
-    /// SubjectPublicKeyInfo; no certificate is taken. `Info.raw_key_pin` names the one proved.
+    /// SubjectPublicKeyInfo; no certificate is taken. `Info.pin` names the one proved.
     raw_keys: []const [32]u8,
+    /// A certificate trusted by its leaf's key alone, the SHA-256 of the leaf's
+    /// SubjectPublicKeyInfo one of these pins; no path, name, validity, usage or revocation is
+    /// checked (curl's pinned public key with peer verification off). A mismatch is
+    /// `PinMismatch`; `Info.pin` names the pin proved. `pins` beside it is refused.
+    leaf_keys: []const [32]u8,
 };
 
 pub const Custom = struct {
@@ -220,7 +225,13 @@ pub fn open(
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
         .custom => |custom| .{ .full = .{ .trust_generation = custom.generation, .policy = options.policy, .pins = options.pins, .evidence = options.evidence } },
         .raw_keys => |pins| .{ .raw_key = .{ .pins = pins } },
+        .leaf_keys => |pins| .{ .leaf_key = .{ .pins = pins } },
     };
+    // The pinned leaf keys are the trust's own: no second list, and no policy to apply.
+    switch (options.trust) {
+        .leaf_keys => if (options.pins.len != 0 or options.policy.transparency != null) return error.InvalidOptions,
+        else => {},
+    }
     const conn = try Connection.client(gpa, .{
         .identity = options.identity,
         .verify = policy,
@@ -364,7 +375,9 @@ pub fn accept(
         .snapshot => |snapshot| .{ .full = .{ .trust_generation = snapshot.generation(), .policy = options.client_policy } },
         .custom => |custom| .{ .full = .{ .trust_generation = custom.generation, .policy = options.client_policy } },
         .raw_keys => |pins| .{ .raw_key = .{ .pins = pins } },
+        .leaf_keys => |pins| .{ .leaf_key = .{ .pins = pins } },
     };
+    if (options.client_trust == .leaf_keys and options.client_policy.transparency != null) return error.InvalidOptions;
     const conn = try Connection.server(gpa, .{
         .credentials = options.credentials,
         .unknown_name = options.unknown_name,
@@ -565,8 +578,8 @@ fn serve(session: *Session) OpenError!bool {
 fn verify(session: *Session, token: certificates.types.Token, request: certificates.types.Request) OpenError!void {
     @setRuntimeSafety(true);
     const result: VerifyError!certificates.types.Verification = switch (session.trust) {
-        // A pinned raw key is checked by the engine and never asks.
-        .none, .raw_keys => error.Failed,
+        // A pinned key is checked by the engine and never asks.
+        .none, .raw_keys, .leaf_keys => error.Failed,
         .snapshot => |snapshot| switch (snapshot.systemPolicy()) {
             .portable => certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
             .macos, .windows => session.verifyNative(request, snapshot),

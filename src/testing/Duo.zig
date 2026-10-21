@@ -95,6 +95,10 @@ pub const Options = struct {
     client_raw_pins: ?[]const [32]u8 = null,
     client_raw: bool = false,
     server_raw_pins: ?[]const [32]u8 = null,
+    /// Leaf keys trusted by their pins alone (`Verify.leaf_key`): the client's of the server's
+    /// certificate, the server's of the client's.
+    client_leaf_pins: ?[]const [32]u8 = null,
+    server_leaf_pins: ?[]const [32]u8 = null,
     /// Delegated credentials (RFC 9345): the server's credential carries one (the certificate is
     /// `dc_p256` unless another is named), the client's certificate is `dc_client` with one, each
     /// with a P-384 key expiring `delegated_lifetime` seconds after `delegated_issued`; and
@@ -228,7 +232,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     errdefer if (self.client_dc) |dc| dc.deinit();
     self.client = try Connection.client(options.client_gpa orelse gpa, .{
         .identity = .{ .dns = options.identity },
-        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency }, .pins = options.pins } },
+        .verify = if (options.client_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_verify_none) .none else .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.client_policy_generation), .policy = .{ .transparency = options.client_transparency }, .pins = options.pins } },
         .ech = options.client_ech,
         .certificate_compression = options.client_codecs,
         .external_psk = options.client_psk,
@@ -262,7 +266,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .alpn = options.server_alpn,
         .client_auth = options.client_auth,
         .certificate_authorities = options.server_authorities,
-        .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.client_auth != .none or options.server_post_auth) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
+        .client_verify = if (options.server_raw_pins) |pins| .{ .raw_key = .{ .pins = pins } } else if (options.server_leaf_pins) |pins| .{ .leaf_key = .{ .pins = pins } } else if (options.client_auth != .none or options.server_post_auth) .{ .full = .{ .trust_generation = self.snapshot.generation(), .policy_generation = .fromRaw(options.server_policy_generation) } } else .none,
         .tickets = options.tickets,
         .tls12_tickets = options.server_tls12_tickets,
         .ech_keys = options.server_ech,

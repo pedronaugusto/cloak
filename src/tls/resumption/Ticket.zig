@@ -51,7 +51,7 @@ pub const State = struct {
     /// The client was authenticated by a certificate under `policy`, until `auth_expires`.
     client_authenticated: bool = false,
     /// The client proved a raw public key (RFC 7250): its index in the policy's pins.
-    client_raw_pin: ?u16 = null,
+    client_pin: ?u16 = null,
     auth_expires: i64 = 0,
     policy: [32]u8,
 
@@ -168,9 +168,9 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
         at += 1 + name.len;
     }
     // 0: no client authentication; 1: a certificate; 2: a raw key, then its pin's index.
-    out[at] = if (!state.client_authenticated) 0 else if (state.client_raw_pin == null) 1 else 2;
+    out[at] = if (!state.client_authenticated) 0 else if (state.client_pin == null) 1 else 2;
     at += 1;
-    if (state.client_authenticated) if (state.client_raw_pin) |pin| {
+    if (state.client_authenticated) if (state.client_pin) |pin| {
         std.mem.writeInt(u16, out[at..][0..2], pin, .big);
         at += 2;
     };
@@ -214,7 +214,7 @@ fn decode(version: suites.Version, plain: []const u8, out: *State) error{Invalid
     const auth = (try take(plain, &at, 1))[0];
     if (auth > 2) return error.Invalid;
     out.client_authenticated = auth != 0;
-    if (auth == 2) out.client_raw_pin = std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big);
+    if (auth == 2) out.client_pin = std.mem.readInt(u16, (try take(plain, &at, 2))[0..2], .big);
     out.auth_expires = std.mem.readInt(i64, (try take(plain, &at, 8))[0..8], .big);
     out.policy = (try take(plain, &at, 32))[0..32].*;
     if (at != plain.len) return error.Invalid;

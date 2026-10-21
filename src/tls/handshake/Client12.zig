@@ -47,7 +47,7 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
         self.origin = entry.origin;
         self.auth_expires = entry.auth_expires;
         self.group = entry.group;
-        self.raw_pin = entry.raw_key_pin;
+        self.pin = entry.pin;
     } else if (hello.suite.authentication() == .psk) {
         // The provisioned key authenticates both ends: no certificate to type, verify or pin.
         if (hello.raw_server_key or hello.raw_client_key) return error.IllegalParameter;
@@ -124,7 +124,7 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
         if (spki.len == 0) return error.EmptyCertificate;
         scratch.chain[0] = spki;
         scratch.chain_len = 1;
-        self.raw_pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.verify.raw_key.pins);
+        self.pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.verify.raw_key.pins);
         try scratch.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .initial, .chain, true);
         self.authenticated = true;
@@ -138,6 +138,12 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        .leaf_key => |leaf| {
+            // The leaf's key is the trust: its pin, and nothing else of the chain.
+            self.pin = try Possession.pinnedLeaf(scratch.chain[0], leaf.pins);
+            try self.state.advance(.verify_chain, .initial, .chain, true);
+            self.authenticated = true;
+        },
         // unreachable: the ServerHello refused a server that did not select the raw key.
         .raw_key => unreachable,
     }
@@ -469,6 +475,6 @@ fn storeTicket(self: anytype) void {
         .origin = self.origin,
         .auth_expires = self.auth_expires,
         .authenticated = self.authenticated and self.options.verify != .none,
-        .raw_key_pin = self.raw_pin,
+        .pin = self.pin,
     }) catch return;
 }

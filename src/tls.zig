@@ -121,6 +121,7 @@ test {
     _ = @import("tls/RecordSizeLimit_test.zig");
     _ = @import("tls/CertificateAuthorities_test.zig");
     _ = @import("tls/RawKey_test.zig");
+    _ = @import("tls/LeafKey_test.zig");
     _ = @import("tls/Delegated_test.zig");
     _ = @import("tls/Transparency_test.zig");
     _ = @import("tls/PostAuth_test.zig");

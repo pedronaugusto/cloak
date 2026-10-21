@@ -211,7 +211,7 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     @memcpy(self.tls12.?.master.exposeMut(), state.secretBytes());
     scratch.session_expires = state.expires;
     self.authenticated = state.client_authenticated;
-    self.raw_pin = state.client_raw_pin;
+    self.pin = state.client_pin;
     scratch.client_auth_expires = if (state.client_authenticated) state.auth_expires else std.math.maxInt(i64);
 }
 
@@ -344,7 +344,7 @@ fn sendTicket(self: anytype) Error!void {
                 .expires = expires,
                 .age_add = 0,
                 .client_authenticated = self.authenticated,
-                .client_raw_pin = self.raw_pin,
+                .client_pin = self.pin,
                 .auth_expires = if (self.authenticated) scratch.client_auth_expires else 0,
                 .policy = self.policyDigest(),
             };
@@ -443,6 +443,12 @@ fn onCertificate(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) E
     switch (self.options.client_verify) {
         .none => try self.state.advance(.verify_chain, .initial, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        .leaf_key => |leaf| {
+            // The leaf's key is the trust: its pin, and nothing else of the chain.
+            self.pin = try Possession.pinnedLeaf(scratch.chain[0], leaf.pins);
+            try self.state.advance(.verify_chain, .initial, .chain, true);
+            self.authenticated = true;
+        },
         // A chain where a key is pinned: the client did not list the raw key type.
         .raw_key => return error.UnsupportedCertificate,
     }
@@ -466,7 +472,7 @@ fn onRawKey(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool) Error!
     self.held = try self.gpa.dupe(u8, spki);
     scratch.chain[0] = self.held;
     scratch.chain_len = 1;
-    self.raw_pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.client_verify.raw_key.pins);
+    self.pin = try Possession.pinnedKey(scratch.chain[0..1], self.options.client_verify.raw_key.pins);
     try scratch.transcripts.commit(msg);
     try self.state.advance(.verify_chain, .initial, .chain, true);
     self.authenticated = true;

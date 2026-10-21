@@ -61,10 +61,10 @@ test "C10 raw public keys over DTLS, both versions, and CoAP's raw-key profile: 
         try std.testing.expectEqual(case.version, client.version);
         try std.testing.expectEqual(case.suite, client.suite);
         try std.testing.expect(client.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 0), client.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 0), client.pin);
         const server = pair.server.dtls.info().?;
         try std.testing.expectEqual(mutual, server.peer_authenticated);
-        try std.testing.expectEqual(if (mutual) @as(?u16, 0) else null, server.raw_key_pin);
+        try std.testing.expectEqual(if (mutual) @as(?u16, 0) else null, server.pin);
         try exportersAgree(pair);
         try carriesData(pair);
     };

@@ -413,6 +413,10 @@ pub fn onCertificate(self: *PostAuth, msg: []const u8, policy: Policy) Error!voi
     switch (policy.verify) {
         .none => return self.chainVerified(false),
         .full => self.need = .time,
+        .leaf_key => |leaf| {
+            _ = try Possession.pinnedLeaf(ex.chain[0], leaf.pins);
+            return self.chainVerified(true);
+        },
         // A chain where only a pinned raw key is trusted: the client did not take that type.
         .raw_key => return error.UnsupportedCertificate,
     }

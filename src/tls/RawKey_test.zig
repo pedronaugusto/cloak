@@ -50,9 +50,9 @@ test "C10 raw public keys: a client trusts the server's pinned key, every key ty
         defer duo.deinit();
         const info = duo.client.info().?;
         try std.testing.expect(info.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 1), info.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 1), info.pin);
         try std.testing.expectEqual(.tls13, info.version);
-        try std.testing.expectEqual(@as(?u16, null), duo.server.info().?.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, null), duo.server.info().?.pin);
         try exportsMatch(duo);
         var out: [8]u8 = undefined;
         try std.testing.expectEqualSlices(u8, "raw", try duo.echo(&duo.client, &duo.server, "raw", &out));
@@ -64,14 +64,14 @@ test "C10 raw public keys: a server holding both forms presents what each client
     {
         const duo = try connect(.{ .server_raw = .both, .client_raw_pins = &pins });
         defer duo.deinit();
-        try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.pin);
     }
     {
         // A client that did not ask gets the certificate, verified as ever, TLS 1.2 included.
         const duo = try connect(.{ .server_raw = .both });
         defer duo.deinit();
         const info = duo.client.info().?;
-        try std.testing.expect(info.peer_authenticated and info.raw_key_pin == null);
+        try std.testing.expect(info.peer_authenticated and info.pin == null);
     }
     {
         const duo = try connect(.{ .server_raw = .both, .client_max = .tls12 });
@@ -87,15 +87,15 @@ test "C10 raw public keys: client authentication by a pinned key, required and o
         defer duo.deinit();
         const server = duo.server.info().?;
         try std.testing.expect(server.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 2), server.raw_key_pin);
-        try std.testing.expect(duo.client.info().?.raw_key_pin == null);
+        try std.testing.expectEqual(@as(?u16, 2), server.pin);
+        try std.testing.expect(duo.client.info().?.pin == null);
     }
     // Both ways at once.
     const server_pins = [_][32]u8{Duo.pinOf(pki.p256)};
     const duo = try connect(.{ .server_raw = .only, .client_raw_pins = &server_pins, .client_auth = .required, .client_cert = true, .client_raw = true, .server_raw_pins = &pins });
     defer duo.deinit();
-    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.raw_key_pin);
-    try std.testing.expectEqual(@as(?u16, 2), duo.server.info().?.raw_key_pin);
+    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.pin);
+    try std.testing.expectEqual(@as(?u16, 2), duo.server.info().?.pin);
 }
 
 test "C10 raw public keys: options a pinned key cannot keep are refused" {
@@ -147,10 +147,10 @@ test "C10 raw public keys: resumption keeps the key's pin and its own namespace"
         defer duo.deinit();
         const info = duo.client.info().?;
         try std.testing.expect(info.resumed and info.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 1), info.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 1), info.pin);
         const server = duo.server.info().?;
         try std.testing.expect(server.resumed and server.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 0), server.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 0), server.pin);
     }
 }
 
@@ -250,7 +250,7 @@ test "C10 raw public keys over TLS 1.2: a client trusts the server's pinned key,
         const info = duo.client.info().?;
         try std.testing.expectEqual(.tls12, info.version);
         try std.testing.expect(info.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 1), info.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 1), info.pin);
         try exportsMatch(duo);
         var out: [8]u8 = undefined;
         try std.testing.expectEqualSlices(u8, "raw", try duo.echo(&duo.client, &duo.server, "raw", &out));
@@ -260,7 +260,7 @@ test "C10 raw public keys over TLS 1.2: a client trusts the server's pinned key,
     const duo = try connect(.{ .server_raw = .both, .client_raw_pins = &pins, .server_max = .tls12 });
     defer duo.deinit();
     try std.testing.expectEqual(.tls12, duo.client.info().?.version);
-    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.raw_key_pin);
+    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.pin);
     // An ML-DSA key has no TLS 1.2 suite.
     const mldsa = [_][32]u8{Duo.pinOf(pki.mldsa65)};
     const refused = try Duo.init(gpa, .{ .cert = .mldsa65, .server_raw = .only, .client_raw_pins = &mldsa, .client_max = .tls12 });
@@ -276,13 +276,13 @@ test "C10 raw public keys over TLS 1.2: client authentication by a pinned key, a
         const server = duo.server.info().?;
         try std.testing.expectEqual(.tls12, server.version);
         try std.testing.expect(server.peer_authenticated);
-        try std.testing.expectEqual(@as(?u16, 2), server.raw_key_pin);
+        try std.testing.expectEqual(@as(?u16, 2), server.pin);
     }
     const server_pins = [_][32]u8{Duo.pinOf(pki.p256)};
     const duo = try connect(.{ .server_raw = .only, .client_raw_pins = &server_pins, .client_auth = .required, .client_cert = true, .client_raw = true, .server_raw_pins = &pins, .client_max = .tls12 });
     defer duo.deinit();
-    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.raw_key_pin);
-    try std.testing.expectEqual(@as(?u16, 2), duo.server.info().?.raw_key_pin);
+    try std.testing.expectEqual(@as(?u16, 0), duo.client.info().?.pin);
+    try std.testing.expectEqual(@as(?u16, 2), duo.server.info().?.pin);
     try exportsMatch(duo);
 }
 
@@ -305,10 +305,10 @@ test "C10 raw public keys over TLS 1.2: a session ticket keeps both pins" {
     const info = duo.client.info().?;
     try std.testing.expect(info.resumed and info.peer_authenticated);
     try std.testing.expectEqual(.tls12, info.version);
-    try std.testing.expectEqual(@as(?u16, 1), info.raw_key_pin);
+    try std.testing.expectEqual(@as(?u16, 1), info.pin);
     const server = duo.server.info().?;
     try std.testing.expect(server.resumed and server.peer_authenticated);
-    try std.testing.expectEqual(@as(?u16, 0), server.raw_key_pin);
+    try std.testing.expectEqual(@as(?u16, 0), server.pin);
 }
 
 /// The server's first TLS 1.2 flight without its server_certificate_type answer: the record,

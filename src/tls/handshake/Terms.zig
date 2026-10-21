@@ -24,10 +24,14 @@ pub const Limits = struct {
 pub const Verify = union(enum) {
     none,
     full: Full,
-    raw_key: RawKey,
-    pub const RawKey = struct {
+    /// A raw public key (RFC 7250) trusted by its pin; no certificate is taken.
+    raw_key: Pins,
+    /// A certificate taken for its leaf's key alone, trusted by its pin: no path, name, validity,
+    /// usage or revocation is checked (designs/cloak.md §5.2, a pin with no authorities).
+    leaf_key: Pins,
+    pub const Pins = struct {
         /// The SHA-256 of each SubjectPublicKeyInfo the peer may hold, at least one and at most
-        /// `max_pins`; `Info.raw_key_pin` names the one it proved.
+        /// `max_pins`; `Info.pin` names the one it proved.
         pins: []const [32]u8,
         pub const max_pins = 1024;
     };

@@ -114,9 +114,9 @@ pub const Info = struct {
     /// DTLS: the SRTP profile use_srtp agreed (RFC 5764), keyed by the "EXTRACTOR-dtls_srtp"
     /// exporter; null when none was offered or none agreed.
     srtp: ?Hello.Srtp = null,
-    /// The peer proved a raw public key (RFC 7250): its index in the policy's pins. Null when it
-    /// presented certificates or nothing.
-    raw_key_pin: ?u16 = null,
+    /// The peer proved a pinned key, a raw public key (RFC 7250) or its leaf certificate's key
+    /// under `Verify.leaf_key`: its index in the policy's pins. Null otherwise.
+    pin: ?u16 = null,
     /// The peer proved possession with a delegated credential (RFC 9345) its verified certificate
     /// signed, not with the certificate's own key.
     delegated_credential: bool = false,
@@ -190,8 +190,8 @@ now: ?std.Io.Timestamp = null,
 request_id: u64 = 0,
 authenticated: bool = false,
 requested_certificate: bool = false,
-/// The index of the pin the server's raw public key matched (RFC 7250).
-raw_pin: ?u16 = null,
+/// The index of the pin the server's key matched: a raw public key (RFC 7250) or a pinned leaf.
+pin: ?u16 = null,
 /// The server proved possession with a delegated credential (RFC 9345).
 delegated_used: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
@@ -332,7 +332,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         .full => if (options.identity == .none) return error.InvalidOptions,
         // Post-quantum authentication is of a verified path or a pinned ML-DSA key.
         .none => if (options.hello.require_pq_auth) return error.InvalidOptions,
-        .raw_key => |raw| if (raw.pins.len == 0 or raw.pins.len > Verify.RawKey.max_pins) return error.InvalidOptions,
+        .raw_key, .leaf_key => |pinned| if (pinned.pins.len == 0 or pinned.pins.len > Verify.Pins.max_pins) return error.InvalidOptions,
     }
     // Middlebox compatibility is a stream's: QUIC and DTLS have neither its session id nor its
     // ChangeCipherSpec.
@@ -362,8 +362,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
         .grease => if (!hello.allows13()) return error.InvalidOptions,
         .config_list => |list| {
             // A rejected attempt authenticates the public name's certificate, which a client
-            // trusting a raw key alone cannot (RFC 9849 section 6.1.7).
-            if (options.verify == .raw_key) return error.InvalidOptions;
+            // trusting a pinned key alone cannot (RFC 9849 section 6.1.7).
+            if (options.verify == .raw_key or options.verify == .leaf_key) return error.InvalidOptions;
             // A list with no config this client can use is a configuration error, never a
             // reason to send the true name in clear.
             _ = (Ech.choose(list) catch return error.InvalidOptions) orelse return error.InvalidOptions;
@@ -717,6 +717,10 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
         .raw_key => |raw| {
             part(&h, "verify raw keys");
             for (raw.pins) |*pin| part(&h, pin);
+        },
+        .leaf_key => |leaf| {
+            part(&h, "verify leaf keys");
+            for (leaf.pins) |*pin| part(&h, pin);
         },
         .full => |full| {
             const request: types.Request = .{
@@ -1277,7 +1281,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
                 self.authenticated = entry.authenticated;
                 self.origin = entry.origin;
                 self.auth_expires = entry.auth_expires;
-                self.raw_pin = entry.raw_key_pin;
+                self.pin = entry.pin;
             },
             // The holder of the provisioned key is the peer: authenticated by it, with no X.509
             // identity and nothing to expire but the key itself, which is the caller's.
@@ -1611,7 +1615,7 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     try self.keepScts(parsed.leaf.scts);
     if (self.scratch.?.peer_raw) {
         // One entry, a SubjectPublicKeyInfo the policy pins (RFC 7250 section 3).
-        self.raw_pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
+        self.pin = try Possession.pinnedKey(self.scratch.?.chain[0..parsed.count], self.options.verify.raw_key.pins);
         try self.scratch.?.transcripts.commit(msg);
         try self.state.advance(.verify_chain, .handshake, .chain, true);
         self.authenticated = true;
@@ -1621,6 +1625,12 @@ fn takeCertificate(self: *Client, wire: []const u8) Error!void {
     switch (self.options.verify) {
         .none => try self.state.advance(.verify_chain, .handshake, .chain, true),
         .full => self.need_now = if (self.now == null) .time else .verify,
+        .leaf_key => |leaf| {
+            // The leaf's key is the trust: its pin, and nothing else of the chain.
+            self.pin = try Possession.pinnedLeaf(self.scratch.?.chain[0], leaf.pins);
+            try self.state.advance(.verify_chain, .handshake, .chain, true);
+            self.authenticated = true;
+        },
         // unreachable: EncryptedExtensions refused a server that did not select the raw key.
         .raw_key => unreachable,
     }
@@ -1821,7 +1831,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .origin = self.origin,
                 .auth_expires = self.auth_expires,
                 .authenticated = self.authenticated,
-                .raw_key_pin = self.raw_pin,
+                .pin = self.pin,
             }) catch return;
         },
     }
@@ -1878,7 +1888,7 @@ pub fn info(self: *const Client) ?Info {
         .ech_accepted = self.ech_accepted,
         .external_psk = self.external_used,
         .srtp = self.srtp,
-        .raw_key_pin = self.raw_pin,
+        .pin = self.pin,
         .delegated_credential = self.delegated_used,
     };
 }
