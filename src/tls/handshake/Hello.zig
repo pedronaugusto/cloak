@@ -975,7 +975,7 @@ fn selectedAlpn(value: *Reader, options: Options) ParseError![]const u8 {
 }
 
 /// What a TLS 1.2 ServerHello delivers beside the certificate, each only to a client that asked:
-/// its SCTs (RFC 6962 section 3.3.1, not empty) and, answering status_request empty, the promise
+/// its SCTs (RFC 6962 section 3.3.1, a list that frames, `Messages.sctList`) and, answering status_request empty, the promise
 /// that a CertificateStatus may follow (RFC 6066 section 8).
 const Delivered = struct {
     scts: ?[]const u8 = null,
@@ -985,7 +985,7 @@ const Delivered = struct {
         switch (id) {
             Messages.signed_certificate_timestamp => {
                 if (!options.request_scts) return error.UnsolicitedExtension;
-                if (bytes.len == 0) return error.DecodeError;
+                if (!Messages.sctList(bytes)) return error.DecodeError;
                 self.scts = bytes;
             },
             else => {

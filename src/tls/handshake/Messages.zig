@@ -5,6 +5,7 @@ const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Authorities = @import("Authorities.zig");
 const Extensions = @import("../wire/Extensions.zig");
+const transparency = @import("../../verify/transparency.zig");
 
 pub const Type = enum(u8) {
     hello_request = 0,
@@ -107,12 +108,18 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
                 status_request => if (!accept.ocsp) return error.UnsolicitedExtension,
                 else => return error.UnsolicitedExtension,
             }
-            if (count != 0) return error.IllegalParameter;
+            // Past the leaf a solicited status or SCT list may answer for its own certificate (RFC
+            // 8446 sections 4.4.2 and 4.4.2.1) and is ignored, never taking the leaf's place; a
+            // delegated credential is the end-entity's alone (RFC 9345 section 4.1.1) (F156).
+            if (count != 0) {
+                if (item.id == delegated_credential) return error.IllegalParameter;
+                continue;
+            }
             switch (item.id) {
                 delegated_credential => leaf.delegated = item.bytes,
                 status_request => leaf.ocsp = try statusResponse(item.bytes),
                 else => {
-                    if (item.bytes.len == 0) return error.InvalidMessage;
+                    if (!sctList(item.bytes)) return error.DecodeError;
                     leaf.scts = item.bytes;
                 },
             }
@@ -130,6 +137,14 @@ pub fn certificate(message: []const u8, max_count: usize, max_bytes: usize, out:
 pub const delegated_credential = 34;
 /// The signed_certificate_timestamp extension's number (RFC 6962 section 3.3.1).
 pub const signed_certificate_timestamp = 18;
+
+/// Whether `bytes` frames as a SignedCertificateTimestampList (RFC 6962 section 3.3):
+/// sct_list<1..2^16-1> of SerializedSCT<1..2^16-1>, exactly. What a server delivers is checked
+/// on receipt, as its own list is when configured (F155).
+pub fn sctList(bytes: []const u8) bool {
+    _ = transparency.List.init(bytes) catch return false;
+    return true;
+}
 /// The status_request extension's number (RFC 6066 section 8).
 pub const status_request = 5;
 /// CertificateStatusType ocsp (RFC 6066 section 8), the one a client asks for.

@@ -88,12 +88,9 @@ test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (the handshake
     try std.testing.expectError(error.UnsolicitedExtension, Messages.certificate(leaf_only, 16, 65536, &out, .{}));
     try std.testing.expectError(error.UnsolicitedExtension, Messages.certificate(leaf_only, 16, 65536, &out, .{ .delegated = true }));
     try std.testing.expectEqualSlices(u8, list, (try Messages.certificate(leaf_only, 16, 65536, &out, .{ .scts = true })).leaf.scts.?);
-    // Two entries, "a" bare and "b" carrying an SCT extension.
-    const second = [_]u8{ 11, 0, 0, 22, 0, 0, 0, 18, 0, 0, 1, 'a', 0, 0, 0, 0, 1, 'b', 0, 6, 0, 18, 0, 2, 0xaa, 0xbb };
-    try std.testing.expectError(error.IllegalParameter, Messages.certificate(&second, 16, 65536, &out, .{ .scts = true }));
     // One entry whose SCT extension is empty.
     const empty = [_]u8{ 11, 0, 0, 14, 0, 0, 0, 10, 0, 0, 1, 'a', 0, 4, 0, 18, 0, 0 };
-    try std.testing.expectError(error.InvalidMessage, Messages.certificate(&empty, 16, 65536, &out, .{ .scts = true }));
+    try std.testing.expectError(error.DecodeError, Messages.certificate(&empty, 16, 65536, &out, .{ .scts = true }));
 }
 
 test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (resumption: no ticket outlives the log list or crosses policies)" {
@@ -156,4 +153,59 @@ test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (resumption: n
         defer strict.deinit();
         try std.testing.expectError(error.VerificationRejected, strict.handshake());
     }
+}
+
+/// A TLS 1.2 ServerHello choosing ECDHE-RSA with AES-128-GCM, its extended master secret and
+/// renegotiation indication, and signed_certificate_timestamp carrying `scts`.
+fn serverHello12(out: []u8, scts: []const u8) []u8 {
+    const head = [_]u8{ 3, 3 } ++ @as([32]u8, @splat(7)) ++ [_]u8{ 0, 0xc0, 0x2f, 0 };
+    const fixed = [_]u8{ 0x00, 0x17, 0, 0, 0xff, 0x01, 0, 1, 0 };
+    const ext_len = fixed.len + 4 + scts.len;
+    const body_len = head.len + 2 + ext_len;
+    out[0] = 2;
+    std.mem.writeInt(u24, out[1..4], @intCast(body_len), .big);
+    @memcpy(out[4..][0..head.len], &head);
+    var at = 4 + head.len;
+    std.mem.writeInt(u16, out[at..][0..2], @intCast(ext_len), .big);
+    at += 2;
+    @memcpy(out[at..][0..fixed.len], &fixed);
+    at += fixed.len;
+    std.mem.writeInt(u16, out[at..][0..2], Messages.signed_certificate_timestamp, .big);
+    std.mem.writeInt(u16, out[at + 2 ..][0..2], @intCast(scts.len), .big);
+    @memcpy(out[at + 4 ..][0..scts.len], scts);
+    return out[0 .. 4 + body_len];
+}
+
+test "F155 catalogue_ct_sct_list_framing_checked_on_receipt" {
+    // RFC 6962 section 3.3: SignedCertificateTimestampList is sct_list<1..2^16-1> of
+    // SerializedSCT<1..2^16-1>. An empty list, an empty SCT, or a list that does not frame went
+    // through to the verifier as SCTs; now each ends the handshake as malformed, in either version.
+    const bad = [_][]const u8{ "\x00\x00", "\x00\x02\x00\x00", "\x00\x05\x00\x01\x00" };
+    var out: [Messages.max_certificates][]const u8 = undefined;
+    var message: [1024]u8 = undefined;
+    for (bad) |list| {
+        const certificate = try Messages.buildCertificate(&message, "", &.{"leaf"}, .{ .scts = list });
+        try std.testing.expectError(error.DecodeError, Messages.certificate(certificate, 16, 65536, &out, .{ .scts = true }));
+        const hello = serverHello12(&message, list);
+        try std.testing.expectError(error.DecodeError, Hello.server(hello, "", &.{}, .{ .max_version = .tls12, .request_scts = true }, .{}));
+    }
+    // A well-formed list is taken as it is.
+    const good = serverHello12(&message, pki.ct_plain_scts);
+    try std.testing.expectEqualSlices(u8, pki.ct_plain_scts, (try Hello.server(good, "", &.{}, .{ .max_version = .tls12, .request_scts = true }, .{})).tls12.scts.?);
+}
+
+test "F156 catalogue_extensions_on_intermediates_ignored" {
+    // RFC 8446 sections 4.4.2 and 4.4.2.1: a server's solicited extensions may sit on any
+    // CertificateEntry ("the CertificateEntry containing the associated certificate"); cloak
+    // refused an SCT or a status on an intermediate with illegal_parameter. They are ignored now,
+    // and never take the leaf's place. A delegated credential stays the leaf's (RFC 9345 4.1.1).
+    var out: [Messages.max_certificates][]const u8 = undefined;
+    // "a" bare, "b" carrying an SCT extension.
+    const second = [_]u8{ 11, 0, 0, 22, 0, 0, 0, 18, 0, 0, 1, 'a', 0, 0, 0, 0, 1, 'b', 0, 6, 0, 18, 0, 2, 0xaa, 0xbb };
+    const parsed = try Messages.certificate(&second, 16, 65536, &out, .{ .scts = true });
+    try std.testing.expectEqual(2, parsed.count);
+    try std.testing.expectEqual(null, parsed.leaf.scts);
+    // A delegated credential on "b" is still refused.
+    const delegated = [_]u8{ 11, 0, 0, 22, 0, 0, 0, 18, 0, 0, 1, 'a', 0, 0, 0, 0, 1, 'b', 0, 6, 0, 34, 0, 2, 0xaa, 0xbb };
+    try std.testing.expectError(error.IllegalParameter, Messages.certificate(&delegated, 16, 65536, &out, .{ .delegated = true }));
 }
