@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-10-22
+
 ### Fixed
 
 - Linux: the kTLS probe made, accepted and closed its loopback sockets with the kernel's own calls, past the C library where one is linked. ThreadSanitizer forgets a descriptor only at a close it sees, so the next file another thread opened under one of those numbers read as a data race "in close". They go through the C library wherever one is linked, as std's do.
