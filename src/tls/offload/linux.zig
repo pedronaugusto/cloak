@@ -13,6 +13,11 @@ const aegis = @import("aegis");
 const Keys = @import("Keys.zig");
 
 const linux = std.os.linux;
+/// The probe's sockets are made, accepted and closed through the C library where one is
+/// linked, as std's are, so that what keeps a record of each descriptor there sees them:
+/// ThreadSanitizer forgets a descriptor only at a close it sees, and one closed past it
+/// and reused by another thread reads as a race. Without one they are the kernel's calls.
+const descriptors = if (builtin.link_libc) std.c else linux;
 
 /// SOL_TLS and its options (include/uapi/linux/tls.h).
 pub const sol_tls = linux.SOL.TLS;
@@ -250,7 +255,7 @@ const Listener = struct {
 
     fn open() !Listener {
         const fd = try openSocket();
-        errdefer _ = linux.close(fd);
+        errdefer _ = descriptors.close(fd);
         var address: linux.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
         const any: *linux.sockaddr = @ptrCast(&address); // safe: sockaddr.in begins with the family, as every sockaddr does
         try check(linux.bind(fd, any, @sizeOf(linux.sockaddr.in)));
@@ -261,7 +266,7 @@ const Listener = struct {
     }
 
     fn close(self: Listener) void {
-        _ = linux.close(self.fd);
+        _ = descriptors.close(self.fd);
     }
 
     const Pair = struct {
@@ -269,25 +274,32 @@ const Listener = struct {
         server: linux.fd_t,
 
         fn close(self: Pair) void {
-            _ = linux.close(self.client);
-            _ = linux.close(self.server);
+            _ = descriptors.close(self.client);
+            _ = descriptors.close(self.server);
         }
     };
 
     fn pair(self: *const Listener) !Pair {
         const client = try openSocket();
-        errdefer _ = linux.close(client);
+        errdefer _ = descriptors.close(client);
         try check(linux.connect(client, &self.address, @sizeOf(linux.sockaddr.in)));
-        const rc = linux.accept4(self.fd, null, null, linux.SOCK.CLOEXEC);
-        try check(rc);
-        return .{ .client = client, .server = @intCast(rc) }; // safe: a successful accept returns a descriptor
+        const server = try descriptor(descriptors.accept4(self.fd, null, null, linux.SOCK.CLOEXEC));
+        return .{ .client = client, .server = server };
     }
 };
 
 fn openSocket() error{ProbeFailed}!linux.fd_t {
-    const rc = linux.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
-    try check(rc);
-    return @intCast(rc); // safe: a successful socket returns a descriptor
+    return descriptor(descriptors.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0));
+}
+
+/// The descriptor a `descriptors` call made: the kernel's return or the C library's.
+fn descriptor(rc: anytype) error{ProbeFailed}!linux.fd_t {
+    if (@TypeOf(rc) == usize) {
+        try check(rc);
+        return @intCast(rc); // safe: a successful call returns a descriptor
+    }
+    if (rc < 0) return error.ProbeFailed;
+    return rc;
 }
 
 fn check(rc: usize) error{ProbeFailed}!void {
