@@ -4,12 +4,15 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-22
+
 ### Added
 
 - Encrypted Client Hello over DTLS 1.3 (RFC 9849 with RFC 9147): `Datagram`'s `ech` (client) and `ech_keys` (server), and `Datagram.echRetryConfigs` after `EchRejected`. The stateless cookie check opens a first hello's ECH as the association would and answers the inner hello, its retry request confirming acceptance; the cookie keeps what the second hello opens under. A rejected client sends its last flight, then ech_required.
 - `Credential.must_match_issuer` and `ClientCredential.must_match_issuer` (BoringSSL's must-match-issuer): a credential taken only when the peer's certificate_authorities names an issuer in its chain, never as a fallback; a server left with none ends with handshake_failure (`NoMatchingIssuer`).
 - `max_fragment` (Connection and Session, both roles): the most plaintext one record this end sends carries, 64 to 2^14, handshake records included and a kernel's write direction too (BoringSSL's and OpenSSL's max_send_fragment); a lower record_size_limit from the peer holds over it. Datagrams have none: the MTU bounds their records.
 - `Credential.delegated_only`: a server credential that signs only through its delegated credential (RFC 9345's server that never holds the certificate's key). It needs no signer, is offered only to a TLS 1.3 client that takes its delegated credential, and is passed over for the next credential otherwise.
+- `permute_extensions` (Connection, Session, the datagram and QUIC clients; off by default): the hello's extensions in a random order per connection (BoringSSL's permute_extensions), kept across a retry. GREASE's ends, a datagram's leading cookie and pre_shared_key stay put. Under ECH the compressed run moves as one unit, listed in the order the outer hello carries it.
 
 ### Changed
 
@@ -32,7 +35,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `Identity.initExternalPem` and `ClientAuth.initExternalPem`: a chain whose key is held elsewhere, from PEM, read as `initPem` reads it.
 - `SignRequest.signWith`: signs a request with a `PrivateKey`, as cloak signs with a key it holds, for a driver that signs away from the handshake (a worker thread, a process holding the key); the connection still checks the signature against the credential before sending it.
 - GREASE (RFC 8701) in a client's hello: `grease` (Connection, Session, the datagram and QUIC clients; off by default) puts a reserved value first in the suites, groups (with a one-byte share), versions and signature schemes, and two reserved extensions around the rest, drawn per connection and kept across a retry; a server choosing any of them is refused.
-- `permute_extensions` (Connection, Session, the datagram and QUIC clients; off by default): the hello's extensions in a random order per connection (BoringSSL's permute_extensions), kept across a retry. GREASE's ends, a datagram's leading cookie and pre_shared_key stay put. Under ECH the compressed run moves as one unit, listed in the order the outer hello carries it.
 
 ### Changed
 
