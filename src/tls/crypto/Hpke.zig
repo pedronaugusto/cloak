@@ -5,6 +5,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("Suite.zig");
+const Kernels = @import("Kernels.zig");
 
 const X25519 = std.crypto.dh.X25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -111,25 +112,17 @@ pub const Context = struct {
         self.seq = std.math.maxInt(u64);
     }
 
-    fn nonce(self: *const Context) [nonce_length]u8 {
-        var out = self.base_nonce.expose().*;
-        var counter: [8]u8 = undefined;
-        std.mem.writeInt(u64, &counter, self.seq, .big);
-        for (out[nonce_length - 8 ..], counter) |*b, c| b.* ^= c;
-        return out;
-    }
-
     /// Seals `plaintext` into `out` (ciphertext then tag, `plaintext.len + tag_length` bytes).
     pub fn seal(self: *Context, out: []u8, aad: []const u8, plaintext: []const u8) SealError!void {
         @setRuntimeSafety(true);
         aegis.assert.invariant(out.len == plaintext.len + tag_length, "the sealed output is the plaintext and its tag");
         if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
-        var n = self.nonce();
-        defer std.crypto.secureZero(u8, &n);
+        // The record kernels' AEAD: in a scrubbed frame, the nonce made there from the base nonce
+        // and the sequence number (RFC 9180 section 5.2), as a record's from its IV and counter.
         switch (self.aead) {
             inline .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 => |a| {
                 const A = suites.AeadOf(comptime a.cipher());
-                A.encrypt(out[0..plaintext.len], out[plaintext.len..][0..tag_length], plaintext, aad, n, self.key.expose()[0..A.key_length].*);
+                Kernels.seal(A, out[0..plaintext.len], out[plaintext.len..][0..tag_length], plaintext, aad, self.base_nonce.expose(), self.seq, self.key.expose()[0..A.key_length]);
             },
             // unreachable: contexts are made only for supported AEADs
             _ => unreachable,
@@ -144,14 +137,12 @@ pub const Context = struct {
         if (ciphertext.len < tag_length) return error.AuthenticationFailed;
         aegis.assert.invariant(out.len == ciphertext.len - tag_length, "the opened output is the ciphertext without its tag");
         if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
-        var n = self.nonce();
-        defer std.crypto.secureZero(u8, &n);
         const body = ciphertext[0 .. ciphertext.len - tag_length];
-        const tag = ciphertext[body.len..][0..tag_length].*;
+        const tag = ciphertext[body.len..][0..tag_length];
         switch (self.aead) {
             inline .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 => |a| {
                 const A = suites.AeadOf(comptime a.cipher());
-                A.decrypt(out, body, tag, aad, n, self.key.expose()[0..A.key_length].*) catch {
+                Kernels.open(A, out, body, tag, aad, self.base_nonce.expose(), self.seq, self.key.expose()[0..A.key_length]) catch {
                     std.crypto.secureZero(u8, out);
                     return error.AuthenticationFailed;
                 };

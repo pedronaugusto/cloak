@@ -8,6 +8,7 @@ const Connection = @import("Connection.zig");
 const Session = @import("Session.zig");
 const Datagram = @import("dtls/Datagram.zig");
 const QuicHandshake = @import("quic/Handshake.zig");
+const Hpke = @import("crypto/Hpke.zig");
 const Labels = @import("crypto/Labels.zig");
 const Prf = @import("crypto/Prf.zig");
 const Duo = @import("../testing/Duo.zig");
@@ -408,5 +409,38 @@ test "F93 catalogue_secret_diagnostics_and_release_campaign (QUIC: both handshak
             return err;
         };
         try grave.expectUntouched();
+    }
+}
+
+test "F93 catalogue_secret_diagnostics_and_release_campaign (HPKE: an ECH context's sealing and opening leave neither its key nor its nonce on the stack, every AEAD)" {
+    inline for (.{ Hpke.Aead.aes_128_gcm, Hpke.Aead.aes_256_gcm, Hpke.Aead.chacha20_poly1305 }) |aead| {
+        var stack: Stack = try .init();
+        defer stack.deinit();
+        const suite: Hpke.Suite = .{ .kdf = .hkdf_sha256, .aead = aead };
+        var recipient_pair = Hpke.deriveKeyPair("the recipient's key pair, F93");
+        defer recipient_pair.deinit();
+        var enc: [Hpke.enc_length]u8 = undefined;
+        var sender = try Hpke.setupSender(suite, &recipient_pair.public, "info", "the sender's ephemeral key, F93", &enc);
+        defer sender.deinit();
+        var recipient = try Hpke.setupRecipient(suite, &enc, recipient_pair.secret.expose(), "info");
+        defer recipient.deinit();
+        var sealed: [64 + Hpke.tag_length]u8 = undefined;
+        var opened: [64]u8 = undefined;
+        for (0..3) |_| {
+            try sender.seal(&sealed, "aad", &@as([64]u8, @splat(3)));
+            try recipient.open(&opened, "aad", &sealed);
+        }
+        stack.capture();
+        var needles: Needles = .{};
+        defer needles.deinit();
+        const key_len = if (aead == .aes_128_gcm) 16 else 32;
+        for ([_]*const Hpke.Context{ &sender, &recipient }) |context| {
+            try needles.add(context.key.expose()[0..key_len]);
+            try needles.add(context.base_nonce.expose());
+        }
+        needles.expectAbsent(stack.bytes, "the stack") catch |err| {
+            std.debug.print("\nHPKE {t}\n", .{aead});
+            return err;
+        };
     }
 }

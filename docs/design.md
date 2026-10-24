@@ -84,7 +84,12 @@ primitive is a scrubbed kernel (`tls/crypto/Kernels.zig`): HMAC over a secret
 (HKDF-Expand-Label and Extract, the TLS 1.2 PRF, the DTLS cookie and ticket-key
 MACs, a ticket key's derivation) to 8 KiB, and record sealing, opening and DTLS
 1.3's record-number mask to 4 KiB of their own, since every record pays for it.
-The AEAD nonce is made inside the kernel from the IV and the public counter. And
+Where std runs AES in software (x86_64 without AES-NI and AVX, AArch64 without
+its AES instructions) its rounds keep the key schedule and tables in std's frames,
+about 19 KiB optimized, so the AES kernels erase 32 KiB there (128 KiB in Debug);
+ChaCha20's keep 4 KiB. ECH's HPKE context seals and opens through the same
+kernels. The AEAD nonce is made inside the kernel from the IV and the public
+counter (HPKE's from its base nonce and sequence number). And
 every owner of them is made where it is kept and moved, never passed or returned
 by value: the key schedule, the handshake's outputs (claimed in their queue slot,
 `Flight.claim`), stream and DTLS epochs and record protection. Live registers,
@@ -1752,7 +1757,7 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F90 | `catalogue_post_handshake_auth_context_and_action_gate` | `tls/PostAuth_test.zig` |  |
 | F91 | `catalogue_pq_group_specific_layout_and_auth_policy` | `tls/Pq_test.zig`, `tls/crypto/Exchange_test.zig`, `tls/MlDsa_test.zig` |  |
 | F92 | `catalogue_quic_transport_admission_boundary` | `tls/quic/Admission_test.zig` | the header limit, the straddle check, or either end's transport-parameter gate removed |
-| F93 | `catalogue_secret_diagnostics_and_release_campaign` | `tls/Secrets_test.zig`, `tls/crypto/Kernels.zig`, `tls/crypto/Labels.zig`, `tls/crypto/Prf.zig`, `tls/resumption/Ticket.zig`, `tls/dtls/Cookies.zig` | each in ReleaseFast: a DTLS epoch built on the stack and copied into its slot, a handshake secret passed by value, stream protection built on the stack, record sealing or HKDF unscrubbed (found by the campaign: DTLS 1.3 epochs and the handshake's outputs were passed by value, and a verifier's copy of a parsed certificate carried that stack into the heap) |
+| F93 | `catalogue_secret_diagnostics_and_release_campaign` | `tls/Secrets_test.zig`, `tls/crypto/Kernels.zig`, `tls/crypto/Labels.zig`, `tls/crypto/Prf.zig`, `tls/crypto/Hpke.zig`, `tls/resumption/Ticket.zig`, `tls/dtls/Cookies.zig` | each in ReleaseFast: a DTLS epoch built on the stack and copied into its slot, a handshake secret passed by value, stream protection built on the stack, record sealing or HKDF unscrubbed, an AES kernel erasing the hardware path's depth where AES runs in software, HPKE's AEAD outside the kernels (found by the campaign: DTLS 1.3 epochs and the handshake's outputs were passed by value, a verifier's copy of a parsed certificate carried that stack into the heap, software AES on x86_64 without AES-NI reached 19 KiB past the records' 4 KiB, and ECH's HPKE sealed with std's AEAD in no scrubbed frame) |
 | F94 | `catalogue_roca_fingerprinted_rsa_key_refused` | `Roca_test.zig` |  |
 | F95 | `catalogue_psk12_identity_probe_and_offline_guess` | `tls/Psk12_test.zig` |  |
 | F96 | `catalogue_legacy_record_version_ignored` | `tls/ServerConnection_test.zig` | plaintext records held to 03,01-03,03 (found by tlsfuzzer: its hellos come as 03,00) |

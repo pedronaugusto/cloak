@@ -4,6 +4,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- Where std runs AES in software (x86_64 without AES-NI and AVX, AArch64 without its AES instructions), the record and ticket kernels left AES key schedules and round state on the stack: std's software rounds reach about 19 KiB optimized (88 KiB in Debug), and the kernels erased the 4 KiB the hardware path needs. An AES kernel now erases 32 KiB there (128 KiB in Debug); ChaCha20-Poly1305 and hardware AES keep 4 KiB. The kernels' depth test measures each kernel against its own depth. Found by the F93 campaign under x86_64 without AES-NI.
+- ECH's HPKE context sealed and opened with std's AEAD directly, in no scrubbed frame and with its key and nonce passed by value, which left them on the stack on every target. It now seals and opens through the record kernels, which make the nonce inside from the base nonce and the sequence number. A new F93 test searches the stack after a context's sealing and opening, every AEAD.
+
 ## [0.22.1] - 2026-10-22
 
 ### Fixed
