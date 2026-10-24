@@ -161,7 +161,11 @@ pub fn QuicLoop(comptime suite: Suite13) type {
             gpa.destroy(self);
         }
 
-        fn sign(self: *Self, side: *const Side, content: []const u8, out: *[128]u8) !usize {
+        /// The signer of a key held elsewhere: the harness's own copy of the key. In a frame of its
+        /// own, entered only when a request asks: inlined in `service`, its choice of key was taken
+        /// before the loop on every call, leaving the server's key in `service`'s frame for F93's
+        /// stack search to find (x86_64 ReleaseFast with AVX2, the 2026-10-22 and 23 nightlies).
+        noinline fn sign(self: *Self, side: *const Side, content: []const u8, out: *[128]u8) !usize {
             const secret = if (side == &self.client) pki.client_secret else pki.p256_secret;
             const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
             const kp = try Ecdsa.KeyPair.fromSecretKey(try Ecdsa.SecretKey.fromBytes(secret[0..32].*));
