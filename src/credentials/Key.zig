@@ -8,6 +8,7 @@ const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
+const x25519 = @import("../crypto/x25519.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
 const Pbe = @import("Pbe.zig");
@@ -324,8 +325,8 @@ pub fn x25519Key(secret: []const u8, public: ?[]const u8, out: *Material) ParseE
     if (secret.len != 32) return error.InvalidKey;
     var owned = secret[0..32].*;
     defer std.crypto.secureZero(u8, &owned);
-    // The Montgomery ladder of std's X25519, constant time in the key.
-    const derived = std.crypto.dh.X25519.recoverPublicKey(owned);
+    // cloak's X25519 (crypto/x25519.zig), constant time in the key.
+    const derived = x25519.Dh.recoverPublicKey(owned);
     if (public) |p| if (!std.mem.eql(u8, p, &derived)) return error.InvalidKey;
     out.* = .{ .x25519 = .{ .secret = owned, .public = derived } };
 }

@@ -1,13 +1,13 @@
 //! HPKE base mode (RFC 9180) for Encrypted Client Hello: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256,
 //! and AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305. std has no HPKE; this is its smallest form,
-//! built on std's X25519, HMAC and AEADs. Single-shot sender and recipient contexts with the
+//! built on cloak's X25519 (crypto/x25519.zig) and std's HMAC and AEADs. Single-shot sender and recipient contexts with the
 //! sequence counter RFC 9180 section 5.2 defines; no PSK or authenticated modes, no exporter.
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("Suite.zig");
 const Kernels = @import("Kernels.zig");
 
-const X25519 = std.crypto.dh.X25519;
+const X25519 = @import("../../crypto/x25519.zig").Dh;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Hmac = std.crypto.auth.hmac.Hmac(Sha256);
 

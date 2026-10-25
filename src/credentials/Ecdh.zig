@@ -1,11 +1,13 @@
 //! ECDH on P-256, P-384 and P-521 with a private scalar, and X25519. Generation and agreement on the
 //! curves run cloak's constant-time multiplications: neither a carry nor a table index depends
 //! on the scalar. The shared secret is the affine x coordinate.
-//! X25519 is std's Montgomery ladder, its shared secret the 32 bytes RFC 7748 names.
+//! X25519 is `crypto/x25519.zig`'s (s2n-bignum's verified ladder, or the RFC's over fiat-crypto's
+//! field), its shared secret the 32 bytes RFC 7748 names.
 const std = @import("std");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
+const x25519 = @import("../crypto/x25519.zig");
 const aegis = @import("aegis");
 
 /// Stack a derivation or an agreement reaches below its entry, erased when it returns; a test
@@ -77,7 +79,7 @@ pub const X25519 = struct {
     fn ladder(scalar: *const [length]u8, peer: []const u8, out: *[length]u8) Error!void {
         @setRuntimeSafety(true);
         if (peer.len != length) return error.InvalidPublicKey;
-        out.* = std.crypto.dh.X25519.scalarmult(scalar.*, peer[0..length].*) catch return error.IdentityElement;
+        out.* = x25519.Dh.scalarmult(scalar.*, peer[0..length].*) catch return error.IdentityElement;
     }
 };
 

@@ -10,13 +10,6 @@ const Scalar = Montgomery.Field(n);
 const n521 = 0x01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409;
 const Scalar521 = Montgomery.Field(n521);
 
-fn toU256(l: [4]u64) u256 {
-    return toInt(u256, l);
-}
-fn fromU256(v: u256) [4]u64 {
-    return fromInt(4, v);
-}
-
 fn toInt(comptime T: type, l: anytype) T {
     var v: T = 0;
     for (l, 0..) |limb, i| v |= @as(T, limb) << @intCast(64 * i);

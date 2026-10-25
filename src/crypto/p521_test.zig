@@ -158,7 +158,7 @@ test "P-521 SEC1 encodings: uncompressed and compressed round-trip, off-curve an
         @memcpy(compressed[1..], encoded[1..67]);
         const decompressed = try p521.Affine.fromSec1(&compressed);
         try std.testing.expect(decompressed.y.eql(&point.y));
-        var off = encoded;
+        var off: [p521.public_length]u8 = encoded;
         off[132] ^= 1;
         try std.testing.expectError(error.InvalidEncoding, p521.Affine.fromSec1(&off));
     }

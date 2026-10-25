@@ -5,7 +5,7 @@ const aegis = @import("aegis");
 const ecdh = @import("../../credentials/Ecdh.zig");
 const Group = @import("Group.zig").Group;
 
-const X25519 = std.crypto.dh.X25519;
+const X25519 = @import("../../crypto/x25519.zig").Dh;
 const MlKem = std.crypto.kem.ml_kem.MLKem768;
 const MlKem1024 = std.crypto.kem.ml_kem.MLKem1024;
 

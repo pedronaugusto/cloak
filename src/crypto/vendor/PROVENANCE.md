@@ -26,6 +26,10 @@ Files (path here = path upstream, under `s2n-bignum/`):
 |---|---|
 | `s2n-bignum/LICENSE` | `41c6380384dc6065456d01405ef0b43e5fe39ba1bccc4ec67801cc66142728e5` |
 | `s2n-bignum/NOTICE` | `d4290ed64c2edd0fce1d84e3f9dfb2881240fe534def76b8cd29ed6af683e287` |
+| `s2n-bignum/arm/curve25519/curve25519_x25519.S` | `ad7bff4496bf394c3612757d22dc839cde861265a702c9c246fc8ea870b55cba` |
+| `s2n-bignum/arm/curve25519/curve25519_x25519_alt.S` | `e667d0667db1592f4503b29d09c763fe23e4948478f11cbf2c0e8ac290047c80` |
+| `s2n-bignum/arm/curve25519/curve25519_x25519base.S` | `d6195d8a6360559bd1925d3e581f2b59320d378876df94a46bd655318c7c7e99` |
+| `s2n-bignum/arm/curve25519/curve25519_x25519base_alt.S` | `a4d4108d17fec73602c31bea8fc91f95492c017d16638c82acd4ae6eede98da5` |
 | `s2n-bignum/arm/p256/bignum_montinv_p256.S` | `339a8276bb1aa3721c2dc9f76abbd28b3d597983446427a68c39393a589ec650` |
 | `s2n-bignum/arm/p256/bignum_montmul_p256.S` | `eb892a473af5ea1933912732b5036cff6b54a5c75af774223b71d57d0d884fc1` |
 | `s2n-bignum/arm/p256/bignum_montmul_p256_alt.S` | `74f06eedcfbd25328a7a09bbe55d3c90c7f7ef58bb9532ef981bb809d0e63406` |
@@ -46,6 +50,10 @@ Files (path here = path upstream, under `s2n-bignum/`):
 | `s2n-bignum/arm/p521/bignum_sub_p521.S` | `1ec5441d692fcaad41b37854b824cffebb143da0c71d9aabcfd35918726487de` |
 | `s2n-bignum/include/_internal_s2n_bignum_arm.h` | `1cb6d1fedc55ae2ab2f8fad1efd349be2fc2284ea7b5558a787a23448047475b` |
 | `s2n-bignum/include/_internal_s2n_bignum_x86.h` | `32e93f25e504f9aef6d16250e4eaf0e6214ca00c6312d44d909d6be13a0c249d` |
+| `s2n-bignum/x86/curve25519/curve25519_x25519.S` | `c0b55b787efa4e75b20c7d0e61d630996ba33b276478fdbfc98aad6dd716879b` |
+| `s2n-bignum/x86/curve25519/curve25519_x25519_alt.S` | `6019f718d94aa334d50c8b1caaee53aa4dabc1bfda76f785364d0c727e5e1b29` |
+| `s2n-bignum/x86/curve25519/curve25519_x25519base.S` | `12a43626622921f5ab490b10e77203fe13e28b77212926c71069c34710b567cf` |
+| `s2n-bignum/x86/curve25519/curve25519_x25519base_alt.S` | `aa82a1fd40e3af98d4b3c7a2b464f8868895f372644dd5b8aba3a8fcf14a8b39` |
 | `s2n-bignum/x86/p256/bignum_montinv_p256.S` | `91c61153ac18116a2a1fd6bdb9f1be4fffed53deca44923732632a8837fd4339` |
 | `s2n-bignum/x86/p256/bignum_montmul_p256.S` | `67054aa23bc758c6c63126d4b72653a9a8bce9edf3fb5920daacb12a965f5920` |
 | `s2n-bignum/x86/p256/bignum_montmul_p256_alt.S` | `57abd32623288e7fd69c7d14a9322450bc7f96877f97079e67655984aa1f8885` |
@@ -79,6 +87,7 @@ Files (path here = path upstream, under `s2n-bignum/`):
 
 | File | Upstream path | SHA-256 |
 |---|---|---|
+| `fiat/curve25519_64.zig` | `fiat-zig/src/curve25519_64.zig` | `516dcf3b161ecf3de43ebdf599625824b469c7e5c1c5e0c444217715c58c4c61` |
 | `fiat/p256_64.zig` | `fiat-zig/src/p256_64.zig` | `302d5b040a93fb608bc85521ee63079eaf4c2e68ae457c360f1f9c0f2d3abffb` |
 | `fiat/p256_scalar_64.zig` | `fiat-zig/src/p256_scalar_64.zig` | `d2873c59a1e566bd23e00fa140facaa54d9f0924861a730bdc4050fc2d86785f` |
 | `fiat/p384_64.zig` | `fiat-zig/src/p384_64.zig` | `90705a96ff05b0b6a0e5dcb82ba3721cf8a6fe22ad72cab9cb523af2ba96fdc3` |

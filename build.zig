@@ -169,13 +169,14 @@ fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedT
 /// ELF or Mach-O. `src/crypto/field/p521.zig`'s `assembly` names the same targets; every other
 /// target computes with fiat-crypto's Zig. The shim header on the include path first names each
 /// routine `cloak_<routine>`, private to the image.
-/// The s2n-bignum routines cloak computes with, by curve directory: both forms of each field's
-/// multiplication and squaring, its inversion, and P-521's addition, subtraction and negation
-/// (P-256's and P-384's are fiat-crypto's, inlined).
+/// The s2n-bignum routines cloak computes with, by curve directory: both forms of each NIST
+/// field's multiplication and squaring, its inversion, P-521's addition, subtraction and negation
+/// (P-256's and P-384's are fiat-crypto's, inlined), and X25519's two ladders.
 const s2n_routines = [_]struct { []const u8, []const []const u8 }{
-    .{ "p256", &.{ "montmul_p256", "montmul_p256_alt", "montsqr_p256", "montsqr_p256_alt", "montinv_p256" } },
-    .{ "p384", &.{ "montmul_p384", "montmul_p384_alt", "montsqr_p384", "montsqr_p384_alt", "montinv_p384" } },
-    .{ "p521", &.{ "add_p521", "sub_p521", "neg_p521", "mul_p521", "mul_p521_alt", "sqr_p521", "sqr_p521_alt", "inv_p521" } },
+    .{ "p256", &.{ "bignum_montmul_p256", "bignum_montmul_p256_alt", "bignum_montsqr_p256", "bignum_montsqr_p256_alt", "bignum_montinv_p256" } },
+    .{ "p384", &.{ "bignum_montmul_p384", "bignum_montmul_p384_alt", "bignum_montsqr_p384", "bignum_montsqr_p384_alt", "bignum_montinv_p384" } },
+    .{ "p521", &.{ "bignum_add_p521", "bignum_sub_p521", "bignum_neg_p521", "bignum_mul_p521", "bignum_mul_p521_alt", "bignum_sqr_p521", "bignum_sqr_p521_alt", "bignum_inv_p521" } },
+    .{ "curve25519", &.{ "curve25519_x25519", "curve25519_x25519_alt", "curve25519_x25519base", "curve25519_x25519base_alt" } },
 };
 
 fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
@@ -192,7 +193,7 @@ fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTa
     for (s2n_routines) |group| {
         const curve, const routines = group;
         for (routines) |routine| {
-            const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/{s}/bignum_{s}.S", .{ directory, curve, routine });
+            const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/{s}/{s}.S", .{ directory, curve, routine });
             m.addCSourceFile(.{ .file = p.path(name), .flags = &.{windows}, .language = .assembly_with_preprocessor });
         }
     }
