@@ -59,10 +59,25 @@ const asked = struct {
             .aarch64 => if (wideMultiplier()) .alt else .plain,
             else => unreachable, // unreachable: `assembly` holds only on x86_64 and AArch64
         };
-        state.store(@backingInt(variant) + 1, .monotonic);
+        remember(variant);
         return variant;
     }
+
+    /// Widened before the one is added: the variant's own backing integer is a u1.
+    fn remember(variant: Variant) void {
+        state.store(@as(u8, @backingInt(variant)) + 1, .monotonic);
+    }
 };
+
+test "s2n-bignum's cached choice holds either variant" {
+    if (!assembly) return error.SkipZigTest;
+    const saved = asked.state.load(.monotonic);
+    defer asked.state.store(saved, .monotonic);
+    for ([_]Variant{ .plain, .alt }) |variant| {
+        asked.remember(variant);
+        try std.testing.expectEqual(variant, asked.get());
+    }
+}
 
 /// x86_64: BMI2 (leaf 7, EBX bit 8) and ADX (EBX bit 19).
 fn x86HasMulx() bool {
