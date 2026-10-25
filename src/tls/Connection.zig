@@ -137,6 +137,10 @@ pub const ClientOptions = struct {
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
     key_log: ?KeyLog = null,
+    /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
+    /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
+    /// connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -298,6 +302,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .limits = options.limits.handshake,
         .compat = options.compat,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
         .generation = options.generation,
     });
     return .{ .gpa = gpa, .hs = .{ .state = .{ .client = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
@@ -361,6 +366,10 @@ pub const ServerOptions = struct {
     max_fragment: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
+    /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
+    /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
+    /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -395,6 +404,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .record_size_limit = options.record_size_limit,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
         .generation = options.generation,
     });
     return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
@@ -450,6 +460,21 @@ fn recordFailure(self: *Connection, err: Error) void {
 /// one), whether or not the handshake completed.
 pub fn certificateRequested(self: *const Connection) bool {
     return self.hs.certificateRequested();
+}
+
+/// The peer's leaf certificate (DER), once the handshake proved it: the chain passed the
+/// verification policy (under `.none` nothing checked it) and the leaf's key signed the
+/// handshake (CertificateVerify, or a TLS 1.2 server's ServerKeyExchange). A server's later
+/// post-handshake answer that proves a certificate replaces it as that answer settles. Null
+/// before the handshake completes, after a failure, when the peer proved no certificate (none
+/// asked for, an empty Certificate, a raw public key), and on resumption: tickets do not carry
+/// the leaf, and do not grow to. Only the leaf is kept (what RFC 8705 binds a token to). Valid
+/// until `deinit`; at a server, until the answer to its next `requestCertificate` settles.
+pub fn peerLeaf(self: *const Connection) ?[]const u8 {
+    if (self.info() == null) return null;
+    if (self.hs.postAuth()) |post| if (post.latestLeaf()) |leaf| return leaf;
+    const leaf = self.hs.peerLeaf();
+    return if (leaf.len == 0) null else leaf;
 }
 
 /// Negotiated parameters; null before the handshake completes and after a failure.

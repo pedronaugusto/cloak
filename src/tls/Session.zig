@@ -183,6 +183,10 @@ pub const Options = struct {
     limits: Connection.Limits = .{},
     compat: bool = true,
     key_log: ?Connection.KeyLog = null,
+    /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
+    /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
+    /// connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     eof: Eof = .strict,
     clock: Clock = .real,
     /// Filled when the handshake fails, since the session is gone by then.
@@ -275,6 +279,7 @@ pub fn open(
         .limits = options.limits,
         .compat = options.compat,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     session.* = .{
         .gpa = gpa,
@@ -376,6 +381,10 @@ pub const ServerOptions = struct {
     max_fragment: ?u16 = null,
     limits: Connection.Limits = .{},
     key_log: ?Connection.KeyLog = null,
+    /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
+    /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
+    /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     eof: Eof = .strict,
     clock: Clock = .real,
     /// Filled when the handshake fails, since the session is gone by then.
@@ -431,6 +440,7 @@ pub fn accept(
         .max_fragment = options.max_fragment,
         .limits = options.limits,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     session.* = .{
         .gpa = gpa,
@@ -460,6 +470,12 @@ pub fn deinit(session: *Session) void {
 /// Negotiated parameters; null once the session failed, which erases what the handshake held.
 pub fn info(session: *const Session) ?Connection.Info {
     return session.conn.info();
+}
+
+/// The peer's leaf certificate (DER) as the handshake, or a server's latest post-handshake
+/// answer, proved it; see `Connection.peerLeaf`.
+pub fn peerLeaf(session: *const Session) ?[]const u8 {
+    return session.conn.peerLeaf();
 }
 
 /// Why the connection ended and the alerts that crossed it, after a failure or a close.

@@ -585,6 +585,7 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     self.peer_scheme = scheme;
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
+    if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, scratch.chain[0], scratch.peer_raw);
     self.peer_certificate = true;
 }
 

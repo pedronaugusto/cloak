@@ -225,6 +225,7 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     self.peer_scheme = @fromBackingInt(ske.scheme);
     try self.state.advance(.server_key_exchange, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
+    if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, scratch.chain[0], scratch.peer_raw);
     self.group = ske.group;
     @memcpy(scratch.server_public[0..ske.public.len], ske.public);
     // safe: a classical public value is at most 133 bytes (P-521's), checked by the parser.

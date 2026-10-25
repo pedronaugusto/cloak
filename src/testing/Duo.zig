@@ -140,6 +140,8 @@ pub const Options = struct {
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
     server_post_auth: bool = false,
+    /// Both ends keep the peer's leaf (`peerLeaf`).
+    keep_peer_leaf: bool = false,
     /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
     client_record_size_limit: ?u16 = null,
     server_record_size_limit: ?u16 = null,
@@ -294,6 +296,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .accept_delegated = options.client_accept_delegated,
         .post_handshake_auth = options.client_post_auth,
         .key_log = options.client_key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
@@ -323,6 +326,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .accept_delegated = options.server_accept_delegated,
         .post_handshake_auth = options.server_post_auth,
         .key_log = options.server_key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     return self;
 }
