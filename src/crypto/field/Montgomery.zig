@@ -5,6 +5,7 @@
 //! instructions for every value: carries move through add/subtract-with-carry chains and the
 //! one conditional subtraction selects through a mask the compiler cannot see through.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const builtin = @import("builtin");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {
@@ -287,7 +288,9 @@ pub fn Field(comptime modulus: comptime_int) type {
         /// the walk over it is the same for every `a`.
         pub fn powModulusMinusTwo(a: Self) Self {
             const exponent = comptime split(modulus - 2);
-            var table: [16]Self = undefined;
+            var owner: Secret([16]Self) = .init(undefined);
+            defer owner.deinit();
+            const table = owner.exposeMut();
             table[0] = one;
             table[1] = a;
             for (2..16) |i| table[i] = table[i - 1].mul(a);
@@ -305,7 +308,6 @@ pub fn Field(comptime modulus: comptime_int) type {
                     if (digit != 0) first = false;
                 }
             }
-            std.crypto.secureZero(u8, std.mem.asBytes(&table));
             return r;
         }
     };

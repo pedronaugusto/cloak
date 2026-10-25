@@ -21,6 +21,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
 const ct = @import("field/Montgomery.zig");
+const Secret = aegis.secret.Secret;
 
 const addc = ct.addc;
 const subb = ct.subb;
@@ -83,27 +84,27 @@ const Modulus = struct {
     fn reduceOnce(self: *const Modulus, out: []u64, t: []const u64, high: u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var d: Limbs = undefined;
-        // Only the low `len` limbs are written: the wipe covers them, not the whole array.
-        defer wipeLimbs(d[0..len]);
+        // The borrow of t - m alone first, then t - (m & take): no difference is held between.
         var borrow: u1 = 0;
+        for (0..len) |i| borrow = subb(t[i], self.m[i], borrow)[1];
+        // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
+        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // aegis: no-danger: high is a carry, zero or one
+        borrow = 0;
         for (0..len) |i| {
-            const step = subb(t[i], self.m[i], borrow);
-            d[i] = step[0];
+            const step = subb(t[i], self.m[i] & take, borrow);
+            out[i] = step[0];
             borrow = step[1];
         }
-        // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
-        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // safe: high is a carry, zero or one
-        for (0..len) |i| out[i] = (t[i] & ~take) | (d[i] & take);
     }
 
     /// Montgomery product `out = a * b / R mod m` for `a, b` below m; `out` may alias either.
     fn mul(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var t: [max_limbs + 2]u64 = undefined;
+        var owner: Secret([max_limbs + 2]u64) = .init(undefined);
+        defer owner.deinit();
+        const t = owner.exposeMut();
         @memset(t[0 .. len + 2], 0);
-        defer wipeLimbs(t[0 .. len + 2]);
         for (0..len) |i| {
             var carry: u64 = 0;
             for (0..len) |j| {
@@ -133,8 +134,9 @@ const Modulus = struct {
         @setRuntimeSafety(true);
         const len = self.len;
         aegis.assert.invariant(input.len <= 2 * len, "a reduction takes at most twice the modulus");
-        var t: [2 * max_limbs + 1]u64 = @splat(0);
-        defer wipe(&t);
+        var owner: Secret([2 * max_limbs + 1]u64) = .init(@splat(0));
+        defer owner.deinit();
+        const t = owner.exposeMut();
         @memcpy(t[0..input.len], input);
         for (0..len) |i| {
             const u = t[i] *% self.inv;
@@ -174,8 +176,9 @@ const Modulus = struct {
     fn powPublic(self: *const Modulus, out: []u64, base: []const u64, e: u64) void {
         @setRuntimeSafety(true);
         aegis.assert.invariant(e != 0, "a public exponent is nonzero");
-        var acc: Limbs = undefined;
-        defer wipe(&acc);
+        var owner: Secret(Limbs) = .init(undefined);
+        defer owner.deinit();
+        const acc = owner.exposeMut();
         const len = self.len;
         @memcpy(acc[0..len], base);
         var bit: u6 = @intCast(63 - @as(u32, @clz(e))); // safe: e is nonzero, so its top bit index is below 64
@@ -193,14 +196,13 @@ const Modulus = struct {
     fn powSecret(self: *const Modulus, out: []u64, base: []const u64, exponent: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var table: [16][max_half]u64 = undefined;
-        defer wipe(&table);
-        var acc: [max_half]u64 = undefined;
-        defer wipe(&acc);
-        var chosen: [max_half]u64 = undefined;
-        defer wipe(&chosen);
-        var window: u64 = 0;
-        defer wipe(&window);
+        var owner: Secret(struct { table: [16][max_half]u64, acc: [max_half]u64, chosen: [max_half]u64, window: u64 }) = .init(undefined);
+        defer owner.deinit();
+        const work = owner.exposeMut();
+        const table = &work.table;
+        const acc = &work.acc;
+        const chosen = &work.chosen;
+        const window = &work.window;
         aegis.assert.invariant(len <= max_half, "a CRT half fits its buffers");
         // table[i] = base^i: table[0] is R mod m, the form of one.
         var one: Limbs = @splat(0);
@@ -213,8 +215,8 @@ const Modulus = struct {
         while (bit > 0) {
             bit -= 4;
             for (0..4) |_| self.mul(acc[0..len], acc[0..len], acc[0..len]);
-            window = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // safe: a public bit offset below 64
-            select(chosen[0..len], &table, window);
+            window.* = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // aegis: no-danger: a public bit offset below 64
+            select(chosen[0..len], table, window.*);
             self.mul(acc[0..len], acc[0..len], chosen[0..len]);
         }
         @memcpy(out, acc[0..len]);
@@ -258,10 +260,6 @@ fn limbsOf(bytes: []const u8) usize {
     return (bytes.len + 7) / 8;
 }
 
-fn wipe(value: anytype) void {
-    std.crypto.secureZero(u8, std.mem.asBytes(value));
-}
-
 /// The bit length of a public value: the position of its top set bit, plus one.
 fn bitLength(limbs: []const u64) usize {
     var i = limbs.len;
@@ -270,10 +268,6 @@ fn bitLength(limbs: []const u64) usize {
         if (limbs[i] != 0) return 64 * i + 64 - @clz(limbs[i]);
     }
     return 0;
-}
-
-fn wipeLimbs(limbs: []u64) void {
-    std.crypto.secureZero(u64, limbs);
 }
 
 /// A two-prime RSA private key, ready for the CRT operation. Holds secrets: the owner erases it.
@@ -321,8 +315,9 @@ pub const PrivateKey = struct {
         for (0..half) |i| out.p2[i], borrow = subb(out.p.m[i], two[i], borrow);
         borrow = 0;
         for (0..half) |i| out.q2[i], borrow = subb(out.q.m[i], two[i], borrow);
-        var xof = std.crypto.hash.sha3.Shake256.init(.{});
-        defer wipe(&xof);
+        var xof_owner: Secret(std.crypto.hash.sha3.Shake256) = .init(.init(.{}));
+        defer xof_owner.deinit();
+        const xof = xof_owner.exposeMut();
         xof.update("cloak rsa blinding hedge");
         xof.update(p);
         xof.update(q);
@@ -346,12 +341,13 @@ pub const PrivateKey = struct {
         const n = &key.n;
         const l = n.len;
         const h = key.p.len;
-        var s: Scratch = undefined;
-        defer wipe(&s);
-        try key.blind(m_bytes, seed, &s);
+        var owner: Secret(Scratch) = .init(undefined);
+        defer owner.deinit();
+        const s = owner.exposeMut();
+        try key.blind(m_bytes, seed, s);
 
-        key.crtHalf(&key.p, &key.dp, &key.p2, &s, s.sp[0..h]);
-        key.crtHalf(&key.q, &key.dq, &key.q2, &s, s.sq[0..h]);
+        key.crtHalf(&key.p, &key.dp, &key.p2, s, s.sp[0..h]);
+        key.crtHalf(&key.q, &key.dq, &key.q2, s, s.sq[0..h]);
         switch (fault) {
             .none => {},
             .p_half => s.sp[0] ^= 1,
@@ -417,14 +413,16 @@ pub const PrivateKey = struct {
 
         // r_mont is the Montgomery form of a uniform r (bias below 2^-64): the reduction of a
         // uniform (l + 1)-limb draw, read as Montgomery form, is uniform mod n.
-        var xof = std.crypto.hash.sha3.Shake256.init(.{});
-        defer wipe(&xof);
+        var xof_owner: Secret(std.crypto.hash.sha3.Shake256) = .init(.init(.{}));
+        defer xof_owner.deinit();
+        const xof = xof_owner.exposeMut();
         xof.update("cloak rsa blinding");
         xof.update(&key.hedge);
         xof.update(seed);
         xof.update(m_bytes);
-        var draw: [(max_limbs + 1) * 8]u8 = undefined;
-        defer wipe(&draw);
+        var draw_owner: Secret([(max_limbs + 1) * 8]u8) = .init(undefined);
+        defer draw_owner.deinit();
+        const draw = draw_owner.exposeMut();
         xof.squeeze(draw[0 .. (l + 1) * 8]);
         for (0..l + 1) |i| s.wide[i] = std.mem.readInt(u64, draw[i * 8 ..][0..8], .little);
         n.reduce(s.r[0..l], s.wide[0 .. l + 1]);
@@ -477,9 +475,10 @@ pub fn privateWithFault(key: *const PrivateKey, m: []const u8, seed: *const [see
 /// with `seed` would exponentiate, as little-endian limbs.
 pub fn blindingForTest(key: *const PrivateKey, m: []const u8, seed: *const [seed_length]u8, r: []u64, mb: []u64) Error!void {
     if (!builtin.is_test) @compileError("the blinding values are a test seam");
-    var s: Scratch = undefined;
-    defer wipe(&s);
-    try key.blind(m, seed, &s);
+    var owner: Secret(Scratch) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    try key.blind(m, seed, s);
     @memcpy(r, s.r[0..key.n.len]);
     @memcpy(mb, s.mb[0..key.n.len]);
 }

@@ -13,6 +13,7 @@
 //! temporaries to the stack: secret computations run it inside `aegis.secret.scrubbed`, which
 //! scrubs that stack and sets the processor's data-independent timing mode around them.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const s2n = @import("s2n.zig");
 const Montgomery = @import("Montgomery.zig");
 
@@ -78,17 +79,19 @@ pub fn FieldWith(comptime curve: Curve, comptime backend: Backend, comptime vari
 
         /// A big-endian value below p; the check is constant time and only its verdict leaves.
         pub fn fromBytes(bytes: *const [encoded_length]u8) error{NonCanonical}!Self {
-            var value: Limbs = undefined;
+            var owner: Secret(Limbs) = .init(undefined);
+            defer owner.deinit();
+            const value = owner.exposeMut();
             inline for (0..n) |i| value[i] = std.mem.readInt(u64, bytes[8 * (n - 1 - i) ..][0..8], .big);
-            defer std.crypto.secureZero(u64, &value);
-            if (!lessThanModulus(&value)) return error.NonCanonical;
-            return fromInt(&value);
+            if (!lessThanModulus(value)) return error.NonCanonical;
+            return fromInt(value);
         }
 
         /// The canonical big-endian encoding.
         pub fn toBytes(a: *const Self) [encoded_length]u8 {
-            var value = a.toInt();
-            defer std.crypto.secureZero(u64, &value);
+            var owner: Secret(Limbs) = .init(a.toInt());
+            defer owner.deinit();
+            const value = owner.expose();
             var out: [encoded_length]u8 = undefined;
             inline for (0..n) |i| std.mem.writeInt(u64, out[8 * (n - 1 - i) ..][0..8], value[i], .big);
             return out;
@@ -178,8 +181,9 @@ pub fn FieldWith(comptime curve: Curve, comptime backend: Backend, comptime vari
                 },
                 .fiat => {
                     const exponent = comptime split(modulus - 2);
-                    var table: [16]Self = undefined;
-                    defer std.crypto.secureZero(u8, std.mem.asBytes(&table));
+                    var owner: Secret([16]Self) = .init(undefined);
+                    defer owner.deinit();
+                    const table = owner.exposeMut();
                     table[0] = one;
                     for (1..16) |i| table[i] = table[i - 1].mul(a);
                     var r = one;
