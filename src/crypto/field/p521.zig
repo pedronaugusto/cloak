@@ -53,6 +53,18 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
         pub const zero: Self = .{ .limbs = @splat(0) };
         pub const one: Self = .{ .limbs = .{ 1, 0, 0, 0, 0, 0, 0, 0, 0 } };
 
+        /// A public constant below p, in this backend's limbs.
+        pub fn constant(comptime value: u521) Self {
+            comptime {
+                std.debug.assert(value < std.math.maxInt(u521));
+                var r: Self = undefined;
+                // fiat: eight 58-bit limbs and a 57-bit one; s2n-bignum: nine 64-bit words.
+                const width = if (backend == .fiat) 58 else 64;
+                for (&r.limbs, 0..) |*limb, i| limb.* = @truncate((value >> (width * i)) & ((1 << width) - 1));
+                return r;
+            }
+        }
+
         /// A big-endian value below p.
         pub fn fromBytes(bytes: *const [encoded_length]u8) error{NonCanonical}!Self {
             if (!canonical(bytes)) return error.NonCanonical;
