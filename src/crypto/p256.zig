@@ -11,7 +11,7 @@
 //! their long-lived secret state (accumulator, selected point, digits) in one scratch owner that
 //! is wiped before they return.
 const std = @import("std");
-const Montgomery = @import("p256/Montgomery.zig");
+const Montgomery = @import("field/Montgomery.zig");
 const table = @import("p256/table.zig");
 
 pub const Fe = Montgomery.Field(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff);

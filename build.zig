@@ -45,7 +45,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         b.step("concurrent", "Run the tests whose tasks share a session, a snapshot or a job").dependOn(&b.addRunArtifact(concurrent_tests).step);
         const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
-        addAegis(p, check_module, target, optimize);
+        addAegisOnly(p, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
     }
@@ -66,7 +66,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
     // Timing evidence on the build that ships: a statistical test, run by hand, never a gate.
     const timing_module = b.createModule(.{ .root_source_file = p.path("bench/timing.zig"), .target = host, .optimize = .fast, .imports = benchImports(b, host, .fast) });
-    timing_module.addImport("aegis", p.dependency("aegis", .{ .target = host, .optimize = .fast }).module("aegis"));
+    addAegis(p, timing_module, host, .fast);
     timing_module.addImport("shakedown", b.dependency("shakedown", .{ .target = host, .optimize = .fast }).module("shakedown"));
     const timing = b.addRunArtifact(b.addExecutable(.{ .name = "cloak-timing", .root_module = timing_module }));
     timing.addPassthruArgs();
@@ -150,9 +150,49 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     }) catch @panic("out of memory configuring benchmark");
 }
 
+/// What every module rooted in `src` takes: aegis, and s2n-bignum's assembly for the target.
 fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
+    addAegisOnly(p, m, target, optimize);
+    addAssembly(p, m, target);
+}
+
+/// aegis without the assembly: for a module compiled to one object and never linked (`check`),
+/// which COFF cannot hold together with the assembly's objects.
+fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    @setRuntimeSafety(true);
     m.addImport("aegis", p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+}
+
+/// s2n-bignum's routines (src/crypto/vendor, PROVENANCE.md), assembled from its files unchanged:
+/// x86_64 everywhere (the Microsoft x64 prologues on Windows), AArch64 where the object format is
+/// ELF or Mach-O. `src/crypto/field/p521.zig`'s `assembly` names the same targets; every other
+/// target computes with fiat-crypto's Zig. The shim header on the include path first names each
+/// routine `cloak_<routine>`, private to the image.
+const s2n_routines = [_][]const u8{ "add", "sub", "neg", "mul", "mul_alt", "sqr", "sqr_alt", "inv" };
+
+fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    @setRuntimeSafety(true);
+    const t = target.result;
+    const directory = switch (t.cpu.arch) {
+        .x86_64 => "x86",
+        .aarch64 => if (t.os.tag == .windows) return else "arm",
+        else => return,
+    };
+    m.addIncludePath(p.path("src/crypto/vendor/shim"));
+    m.addIncludePath(p.path("src/crypto/vendor"));
+    const windows = if (t.os.tag == .windows) "-DWINDOWS_ABI=1" else "-DWINDOWS_ABI=0";
+    for (s2n_routines) |routine| {
+        const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/p521/bignum_{s}.S", .{ directory, routineFile(p, routine) });
+        m.addCSourceFile(.{ .file = p.path(name), .flags = &.{windows}, .language = .assembly_with_preprocessor });
+    }
+}
+
+/// `mul_alt` is the file `mul_p521_alt.S`.
+fn routineFile(p: *std.Build, routine: []const u8) []const u8 {
+    @setRuntimeSafety(true);
+    if (std.mem.endsWith(u8, routine, "_alt")) return p.fmt("{s}_p521_alt", .{routine[0 .. routine.len - 4]});
+    return p.fmt("{s}_p521", .{routine});
 }
 
 /// The portable probes: certificates and the record and handshake kernels under one module, since a

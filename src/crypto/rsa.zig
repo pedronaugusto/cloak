@@ -20,7 +20,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
-const ct = @import("p256/Montgomery.zig");
+const ct = @import("field/Montgomery.zig");
 
 const addc = ct.addc;
 const subb = ct.subb;

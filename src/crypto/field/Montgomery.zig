@@ -1,13 +1,13 @@
-//! Four-limb Montgomery arithmetic modulo a 256-bit odd modulus, R = 2^256. Every operation
-//! on secret operands runs the same instructions for every value: carries move through
-//! add/subtract-with-carry chains and the one conditional subtraction selects through a mask
-//! the compiler cannot see through. The P-256 field prime gets a reduction without
-//! multiplications (its lowest limb is 2^64 - 1, so each Montgomery factor is the limb itself).
+//! Montgomery arithmetic modulo an odd modulus of n 64-bit limbs, R = 2^(64n): cloak's one
+//! generic constant-time field, for the P-256 field and scalars and every scalar field n a
+//! verified field does not cover (P-521's). Every operation on secret operands runs the same
+//! instructions for every value: carries move through add/subtract-with-carry chains and the
+//! one conditional subtraction selects through a mask the compiler cannot see through. The
+//! P-256 field prime gets a reduction without multiplications (its lowest limb is 2^64 - 1, so
+//! each Montgomery factor is the limb itself) and AArch64 assembly.
 const std = @import("std");
 const builtin = @import("builtin");
-const arm64 = @import("arm64.zig");
-
-pub const Limbs = [4]u64;
+const arm64 = @import("p256_arm64.zig");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {
     const s1 = @addWithOverflow(a, b);
@@ -26,20 +26,18 @@ inline fn wide(a: u64, b: u64) struct { u64, u64 } {
     return .{ @truncate(w), @truncate(w >> 64) }; // safe: low and high product words
 }
 
-/// `a * b` as five limbs, in one carry chain.
-inline fn row(a: u64, b: Limbs) [5]u64 {
-    const l0, const h0 = wide(a, b[0]);
-    const l1, const h1 = wide(a, b[1]);
-    const l2, const h2 = wide(a, b[2]);
-    const l3, const h3 = wide(a, b[3]);
-    var r: [5]u64 = undefined;
+/// `a * b` as n + 1 limbs, in one carry chain.
+inline fn row(comptime n: usize, a: u64, b: [n]u64) [n + 1]u64 {
+    var r: [n + 1]u64 = undefined;
+    var high: u64 = 0;
     var c: u1 = 0;
-    r[0] = l0;
-    r[1], c = addc(l1, h0, 0);
-    r[2], c = addc(l2, h1, c);
-    r[3], c = addc(l3, h2, c);
+    inline for (0..n) |i| {
+        const low, const next = wide(a, b[i]);
+        r[i], c = addc(low, high, c);
+        high = next;
+    }
     // The high word of a 64x64 product is at most 2^64 - 2, so the carry fits.
-    r[4] = h3 + c;
+    r[n] = high + c;
     return r;
 }
 
@@ -70,11 +68,16 @@ pub inline fn zeroMask(x: u64) u64 {
     return maskOf(nonzero ^ 1);
 }
 
-pub fn Field(comptime modulus: u256) type {
+pub fn Field(comptime modulus: comptime_int) type {
     return struct {
         const Self = @This();
         limbs: Limbs,
 
+        /// The modulus's width: n limbs, and its big-endian encoding's length.
+        pub const bits = width(modulus);
+        pub const n = (bits + 63) / 64;
+        pub const encoded_length = (bits + 7) / 8;
+        pub const Limbs = [n]u64;
         pub const m: Limbs = split(modulus);
         /// -m^-1 mod 2^64.
         const inverse: u64 = blk: {
@@ -84,41 +87,45 @@ pub fn Field(comptime modulus: u256) type {
         };
         /// The P-256 prime: m0 = 2^64 - 1, m1 = 2^32 - 1, m2 = 0.
         const special = modulus == 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff;
-        const r2: Self = .{ .limbs = split(@intCast((@as(u513, 1) << 512) % modulus)) };
+        const r2: Self = .{ .limbs = split((1 << (128 * n)) % modulus) };
 
-        pub const zero: Self = .{ .limbs = .{ 0, 0, 0, 0 } };
-        pub const one: Self = .{ .limbs = split(@intCast((@as(u257, 1) << 256) % modulus)) };
+        pub const zero: Self = .{ .limbs = @splat(0) };
+        pub const one: Self = .{ .limbs = split((1 << (64 * n)) % modulus) };
 
         comptime {
             std.debug.assert(modulus & 1 == 1);
-            std.debug.assert(modulus >> 255 == 1);
             std.debug.assert(m[0] *% inverse == std.math.maxInt(u64));
             if (special) std.debug.assert(inverse == 1);
         }
 
-        fn split(value: u256) Limbs {
-            return .{ @truncate(value), @truncate(value >> 64), @truncate(value >> 128), @truncate(value >> 192) }; // safe: each limb keeps its own 64 bits
-        }
-
-        /// The Montgomery form of a public constant.
-        pub fn constant(comptime value: u256) Self {
+        fn split(comptime value: comptime_int) Limbs {
             comptime {
                 @setEvalBranchQuota(100_000);
-                std.debug.assert(value < modulus);
-                return .{ .limbs = split(@intCast((@as(u512, value) << 256) % modulus)) };
+                var limbs: Limbs = undefined;
+                for (&limbs, 0..) |*limb, i| limb.* = (value >> (64 * i)) & std.math.maxInt(u64);
+                return limbs;
             }
         }
 
-        /// Subtracts the modulus when `t` (five limbs, below 2m) is not already below it.
-        inline fn final(t: [5]u64) Self {
+        /// The Montgomery form of a public constant.
+        pub fn constant(comptime value: comptime_int) Self {
+            comptime {
+                @setEvalBranchQuota(100_000);
+                std.debug.assert(value < modulus);
+                return .{ .limbs = split((value << (64 * n)) % modulus) };
+            }
+        }
+
+        /// Subtracts the modulus when `t` (n + 1 limbs, below 2m) is not already below it.
+        inline fn final(t: [n + 1]u64) Self {
             var d: Limbs = undefined;
             var b: u1 = 0;
-            inline for (0..4) |i| d[i], b = subb(t[i], m[i], b);
-            _, b = subb(t[4], 0, b);
+            inline for (0..n) |i| d[i], b = subb(t[i], m[i], b);
+            _, b = subb(t[n], 0, b);
             // A borrow means t < m: keep t.
             const keep = maskOf(b);
             var r: Self = undefined;
-            inline for (0..4) |i| r.limbs[i] = (t[i] & keep) | (d[i] & ~keep);
+            inline for (0..n) |i| r.limbs[i] = (t[i] & keep) | (d[i] & ~keep);
             return r;
         }
 
@@ -131,23 +138,19 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn mulPortable(a: Self, b: Self) Self {
-            var t: [6]u64 = .{ 0, 0, 0, 0, 0, 0 };
-            inline for (0..4) |i| {
-                const r = row(a.limbs[i], b.limbs);
+            var t: [n + 2]u64 = @splat(0);
+            inline for (0..n) |i| {
+                const r = row(n, a.limbs[i], b.limbs);
                 var c: u1 = 0;
-                t[0], c = addc(t[0], r[0], 0);
-                t[1], c = addc(t[1], r[1], c);
-                t[2], c = addc(t[2], r[2], c);
-                t[3], c = addc(t[3], r[3], c);
-                t[4], c = addc(t[4], r[4], c);
-                t[5] = c;
+                inline for (0..n + 1) |j| t[j], c = addc(t[j], r[j], c);
+                t[n + 1] = c;
                 reduceStep(&t);
             }
-            return final(t[0..5].*);
+            return final(t[0 .. n + 1].*);
         }
 
         /// One limb of reduction: adds q*m so the lowest limb cancels, then shifts it out.
-        inline fn reduceStep(t: *[6]u64) void {
+        inline fn reduceStep(t: *[n + 2]u64) void {
             var c: u1 = 0;
             if (special) {
                 // q = t0. t0 + q*m0 = q*2^64; t1 + q*m1 + q = t1 + q*2^32; m2 = 0.
@@ -162,14 +165,11 @@ pub fn Field(comptime modulus: u256) type {
                 t[3], c = addc(t[4], qh, c);
             } else {
                 const q = t[0] *% inverse;
-                const s = row(q, m);
+                const s = row(n, q, m);
                 _, c = addc(t[0], s[0], 0);
-                t[0], c = addc(t[1], s[1], c);
-                t[1], c = addc(t[2], s[2], c);
-                t[2], c = addc(t[3], s[3], c);
-                t[3], c = addc(t[4], s[4], c);
+                inline for (1..n + 1) |j| t[j - 1], c = addc(t[j], s[j], c);
             }
-            t[4] = t[5] + c;
+            t[n] = t[n + 1] + c;
         }
 
         pub fn sqr(a: Self) Self {
@@ -219,7 +219,7 @@ pub fn Field(comptime modulus: u256) type {
             w[6], c = addc(w[6], s3l, c);
             w[7] = w[7] + s3h + c;
             // Reduce the low half by four limbs, then add the high half.
-            var t: [6]u64 = .{ w[0], w[1], w[2], w[3], 0, 0 };
+            var t: [n + 2]u64 = .{ w[0], w[1], w[2], w[3], 0, 0 };
             inline for (0..4) |_| {
                 t[5] = 0;
                 reduceStep(&t);
@@ -233,9 +233,9 @@ pub fn Field(comptime modulus: u256) type {
             return final(r);
         }
 
-        pub fn sqrn(a: Self, comptime n: usize) Self {
+        pub fn sqrn(a: Self, comptime count: usize) Self {
             var r = a;
-            for (0..n) |_| r = r.sqr();
+            for (0..count) |_| r = r.sqr();
             return r;
         }
 
@@ -245,10 +245,10 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn addPortable(a: Self, b: Self) Self {
-            var t: [5]u64 = undefined;
+            var t: [n + 1]u64 = undefined;
             var c: u1 = 0;
-            inline for (0..4) |i| t[i], c = addc(a.limbs[i], b.limbs[i], c);
-            t[4] = c;
+            inline for (0..n) |i| t[i], c = addc(a.limbs[i], b.limbs[i], c);
+            t[n] = c;
             return final(t);
         }
 
@@ -264,12 +264,12 @@ pub fn Field(comptime modulus: u256) type {
         pub fn subPortable(a: Self, b: Self) Self {
             var d: Limbs = undefined;
             var borrow: u1 = 0;
-            inline for (0..4) |i| d[i], borrow = subb(a.limbs[i], b.limbs[i], borrow);
+            inline for (0..n) |i| d[i], borrow = subb(a.limbs[i], b.limbs[i], borrow);
             // On a borrow, add the modulus back.
             const fix = maskOf(borrow);
             var r: Self = undefined;
             var c: u1 = 0;
-            inline for (0..4) |i| r.limbs[i], c = addc(d[i], m[i] & fix, c);
+            inline for (0..n) |i| r.limbs[i], c = addc(d[i], m[i] & fix, c);
             return r;
         }
 
@@ -280,25 +280,29 @@ pub fn Field(comptime modulus: u256) type {
         /// `b` where `mask` is all ones, `a` where it is zero.
         pub fn select(mask: u64, a: Self, b: Self) Self {
             var r: Self = undefined;
-            inline for (0..4) |i| r.limbs[i] = (b.limbs[i] & mask) | (a.limbs[i] & ~mask);
+            inline for (0..n) |i| r.limbs[i] = (b.limbs[i] & mask) | (a.limbs[i] & ~mask);
             return r;
         }
 
         /// All ones when the value is zero.
         pub fn isZeroMask(a: Self) u64 {
-            return zeroMask(a.limbs[0] | a.limbs[1] | a.limbs[2] | a.limbs[3]);
+            var x: u64 = 0;
+            inline for (0..n) |i| x |= a.limbs[i];
+            return zeroMask(x);
         }
 
         /// All ones when equal.
         pub fn eqlMask(a: Self, b: Self) u64 {
             var x: u64 = 0;
-            inline for (0..4) |i| x |= a.limbs[i] ^ b.limbs[i];
+            inline for (0..n) |i| x |= a.limbs[i] ^ b.limbs[i];
             return zeroMask(x);
         }
 
         /// Public comparisons only.
         pub fn isZero(a: Self) bool {
-            return a.limbs[0] | a.limbs[1] | a.limbs[2] | a.limbs[3] == 0;
+            var x: u64 = 0;
+            inline for (0..n) |i| x |= a.limbs[i];
+            return x == 0;
         }
 
         pub fn eql(a: Self, b: Self) bool {
@@ -310,44 +314,47 @@ pub fn Field(comptime modulus: u256) type {
         }
 
         pub fn toInt(a: Self) Limbs {
-            return mul(a, .{ .limbs = .{ 1, 0, 0, 0 } }).limbs;
+            var unit: Limbs = @splat(0);
+            unit[0] = 1;
+            return mul(a, .{ .limbs = unit }).limbs;
         }
 
         /// A big-endian value below the modulus; the check is constant time and only its verdict
         /// is released.
-        pub fn fromBytes(bytes: *const [32]u8) error{NonCanonical}!Self {
+        pub fn fromBytes(bytes: *const [encoded_length]u8) error{NonCanonical}!Self {
             const value = limbsFromBytes(bytes);
             if (!lessThanModulus(value)) return error.NonCanonical;
             return fromInt(value);
         }
 
-        pub fn toBytes(a: Self) [32]u8 {
+        pub fn toBytes(a: Self) [encoded_length]u8 {
             const value = toInt(a);
-            var out: [32]u8 = undefined;
-            inline for (0..4) |i| std.mem.writeInt(u64, out[24 - 8 * i ..][0..8], value[i], .big);
-            return out;
+            var out: [8 * n]u8 = undefined;
+            inline for (0..n) |i| std.mem.writeInt(u64, out[8 * (n - 1 - i) ..][0..8], value[i], .big);
+            // The bytes above the modulus's width are zero for a value below it.
+            return out[8 * n - encoded_length ..].*;
         }
 
-        pub fn limbsFromBytes(bytes: *const [32]u8) Limbs {
+        /// A big-endian encoding's limbs, whatever their value.
+        pub fn limbsFromBytes(bytes: *const [encoded_length]u8) Limbs {
+            var padded: [8 * n]u8 = @splat(0);
+            padded[8 * n - encoded_length ..].* = bytes.*;
             var value: Limbs = undefined;
-            inline for (0..4) |i| value[i] = std.mem.readInt(u64, bytes[24 - 8 * i ..][0..8], .big);
+            inline for (0..n) |i| value[i] = std.mem.readInt(u64, padded[8 * (n - 1 - i) ..][0..8], .big);
             return value;
         }
 
         /// Whether a raw value is below the modulus, computed without branches.
         pub fn lessThanModulus(value: Limbs) bool {
             var b: u1 = 0;
-            inline for (0..4) |i| _, b = subb(value[i], m[i], b);
+            inline for (0..n) |i| _, b = subb(value[i], m[i], b);
             return b == 1;
         }
 
-        /// Reduces any 256-bit value (below 2m, as every 256-bit value is for these moduli).
+        /// Reduces any n-limb value: below R, its product with R^2 reduces below 2m, which the
+        /// final subtraction brings below m.
         pub fn reduce(value: Limbs) Self {
-            return final(.{ value[0], value[1], value[2], value[3], 0 }).toMontgomery();
-        }
-
-        fn toMontgomery(raw: Self) Self {
-            return mul(raw, r2);
+            return mul(.{ .limbs = value }, r2);
         }
 
         /// a^(m-2) by a fixed public exponent, four bits at a time; the exponent is public, so
@@ -360,7 +367,7 @@ pub fn Field(comptime modulus: u256) type {
             for (2..16) |i| table[i] = table[i - 1].mul(a);
             var r = one;
             var first = true;
-            var limb: usize = 4;
+            var limb: usize = n;
             while (limb > 0) {
                 limb -= 1;
                 var shift: u7 = 64;
@@ -376,6 +383,16 @@ pub fn Field(comptime modulus: u256) type {
             return r;
         }
     };
+}
+
+/// The bit width of a positive comptime integer.
+fn width(comptime value: comptime_int) comptime_int {
+    comptime {
+        var count = 0;
+        var v = value;
+        while (v != 0) : (v >>= 1) count += 1;
+        return count;
+    }
 }
 
 test {
