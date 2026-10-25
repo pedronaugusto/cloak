@@ -265,8 +265,8 @@ inline fn zeroMask(x: u64) u64 {
 /// s2n-bignum's P-521 routines, as `build.zig` assembles them: each named `cloak_<routine>`.
 /// Multiplication and squaring come in two forms. On x86_64 the plain ones use BMI2 and ADX
 /// (mulx, adcx, adox) and the `_alt` ones only the base instruction set. On AArch64 both run
-/// everywhere and the `_alt` ones are faster on cores with a wide multiplier (measured on the
-/// M3: the walk 195 us against 260 us; AWS-LC takes them on Apple M and Neoverse V1/V2 too).
+/// everywhere and the `_alt` ones suit cores with a wide multiplier, which AWS-LC takes them on
+/// (Apple M, Neoverse V1/V2).
 /// The choice is made once per process: at compile time where the target decides it (x86_64
 /// with BMI2 and ADX; an Apple OS), else by one question to the processor, cached.
 pub const s2n = struct {
