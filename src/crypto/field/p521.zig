@@ -46,6 +46,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
         limbs: Limbs,
 
         pub const encoded_length = length;
+        pub const modulus = std.math.maxInt(u521);
         pub const zero: Self = .{ .limbs = @splat(0) };
         pub const one: Self = .{ .limbs = .{ 1, 0, 0, 0, 0, 0, 0, 0, 0 } };
 
