@@ -16,7 +16,10 @@ const Ed25519 = std.crypto.sign.Ed25519;
 const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 const mldsa = @import("../crypto/mldsa.zig");
-pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair, mldsa: MlDsa };
+pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair, mldsa: MlDsa, x25519: X25519Key };
+/// An X25519 key (RFC 7748), for key agreement alone: the 32-byte private key as given (clamped
+/// where it is used) and the public key it makes.
+pub const X25519Key = struct { secret: [32]u8, public: [32]u8 };
 /// An ML-DSA key: the expanded private key (FIPS 204 skEncode), checked against itself, and
 /// the public key it belongs to. The first `secretLength`/`publicLength` bytes are the key's.
 pub const MlDsa = struct {
@@ -35,6 +38,7 @@ pub const ParseError = Der.Error || Pem.Error || Rsa.Error || Cbc.Error || error
 const oid_rsa = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
 const oid_ed = "\x2b\x65\x70";
+const oid_x25519 = "\x2b\x65\x6e";
 const oid_p256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const oid_p384 = "\x2b\x81\x04\x00\x22";
 /// id-ml-dsa-44, -65 and -87 (RFC 9881), the last byte apart.
@@ -161,6 +165,10 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
         if (parameter != null) return error.InvalidKey;
         return ed25519Key((try Der.single(key, 4)).value, null, out);
     }
+    if (std.mem.eql(u8, id, oid_x25519)) {
+        if (parameter != null) return error.InvalidKey;
+        return x25519Key((try Der.single(key, 4)).value, null, out);
+    }
     return error.UnsupportedKey;
 }
 /// An ML-DSA private key (RFC 9881 section 6): the seed ([0], 32 bytes), the expanded key, or
@@ -283,6 +291,20 @@ pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseEr
     defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
     if (public) |p| if (!std.mem.eql(u8, p, &pair.public_key.toBytes())) return error.InvalidKey;
     out.* = .{ .ed25519 = pair };
+}
+
+/// An X25519 key from its 32-byte private key (RFC 8410's CurvePrivateKey, RFC 8037's d), into
+/// `out`, its public key compared with `public` when one is given. The one path every X25519 key
+/// takes.
+pub fn x25519Key(secret: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    if (secret.len != 32) return error.InvalidKey;
+    var owned = secret[0..32].*;
+    defer std.crypto.secureZero(u8, &owned);
+    // The Montgomery ladder of std's X25519, constant time in the key.
+    const derived = std.crypto.dh.X25519.recoverPublicKey(owned);
+    if (public) |p| if (!std.mem.eql(u8, p, &derived)) return error.InvalidKey;
+    out.* = .{ .x25519 = .{ .secret = owned, .public = derived } };
 }
 
 /// An RSA key from its numbers (`Rsa.fromIntegers`), into `out`.

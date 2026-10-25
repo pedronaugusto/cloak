@@ -1,6 +1,7 @@
-//! Ephemeral ECDH on P-256 and P-384 with a private scalar. Generation and agreement
-//! run the same masked fixed-window walk as credential construction: neither a carry
+//! ECDH on P-256 and P-384 with a private scalar, and X25519. Generation and agreement on the
+//! curves run the same masked fixed-window walk as credential construction: neither a carry
 //! nor a table index depends on the scalar. The shared secret is the affine x coordinate.
+//! X25519 is std's Montgomery ladder, its shared secret the 32 bytes RFC 7748 names.
 const std = @import("std");
 const Curve = @import("Curve.zig");
 const p256 = @import("../crypto/p256.zig");
@@ -55,6 +56,22 @@ pub const P256 = struct {
     }
 };
 pub const P384 = Group(std.crypto.ecc.P384, std.crypto.sign.ecdsa.EcdsaP384Sha384);
+
+pub const X25519 = struct {
+    pub const length = 32;
+
+    /// Writes X25519(scalar, peer) (RFC 7748 5). A peer of small order, whose result is all
+    /// zeros, is refused (6.1): it would fix the secret whatever the scalar.
+    pub fn agree(scalar: *const [length]u8, peer: []const u8, out: *[length]u8) Error!void {
+        return aegis.secret.scrubbed(secret_stack, ladder, .{ scalar, peer, out });
+    }
+
+    fn ladder(scalar: *const [length]u8, peer: []const u8, out: *[length]u8) Error!void {
+        @setRuntimeSafety(true);
+        if (peer.len != length) return error.InvalidPublicKey;
+        out.* = std.crypto.dh.X25519.scalarmult(scalar.*, peer[0..length].*) catch return error.IdentityElement;
+    }
+};
 
 pub const Error = error{ InvalidScalar, InvalidPublicKey, IdentityElement };
 
@@ -118,5 +135,9 @@ test "a derivation or an agreement reaches less stack than the depth that erases
         var shared: [Kind.scalar_length]u8 = undefined;
         deepest = @max(deepest, aegis.secret.stackReach(4 * secret_stack, Kind.multiply, .{ &scalar, &public, &shared }));
     }
+    const scalar: [X25519.length]u8 = @splat(0x35);
+    const peer: [X25519.length]u8 = @splat(0x09);
+    var shared: [X25519.length]u8 = undefined;
+    deepest = @max(deepest, aegis.secret.stackReach(4 * secret_stack, X25519.ladder, .{ &scalar, &peer, &shared }));
     try std.testing.expect(deepest < secret_stack);
 }

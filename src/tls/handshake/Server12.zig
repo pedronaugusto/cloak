@@ -127,8 +127,8 @@ fn authenticationOf(key: certificates.certificate.Algorithm.PublicKey, hello: *c
         // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
         .ec => |ec| if (hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) .ecdsa else error.NoSharedSuite,
         .ed25519 => .ecdsa,
-        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
-        .mldsa => error.NoSharedSuite,
+        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa); an agreement key, nothing.
+        .mldsa, .x25519 => error.NoSharedSuite,
     };
 }
 

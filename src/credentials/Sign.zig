@@ -13,6 +13,7 @@ const std = @import("std");
 const Curve = @import("Curve.zig");
 const p256 = @import("../crypto/p256.zig");
 const kernel = @import("../crypto/rsa.zig");
+const rfc8017 = @import("../crypto/pkcs1.zig");
 
 pub const Error = error{SigningFailed};
 
@@ -274,7 +275,7 @@ pub const rsa = struct {
         @memset(db, 0);
         db[db_len - h_len - 1] = 1;
         @memcpy(db[db_len - h_len ..], salt);
-        mgf1(Hash, h_out, db);
+        rfc8017.mgf1(comptime .of(Hash), h_out, db);
         db[0] &= @as(u8, 0xff) >> @intCast(8 * em_len - em_bits); // safe: emLen is ceil(emBits / 8), so the shift is below eight
         em[em_len - 1] = 0xbc;
         return private(key, input[0..key.size], noise[0..seed_length], out);
@@ -317,24 +318,6 @@ pub const rsa = struct {
             sha2.Sha512 => "\x30\x51\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x03\x05\x00\x04\x40",
             else => @compileError("PKCS#1 v1.5 signs with SHA-256, SHA-384 or SHA-512"),
         };
-    }
-
-    /// XORs MGF1(seed) on `Hash` into `out`.
-    fn mgf1(comptime Hash: type, seed: []const u8, out: []u8) void {
-        @setRuntimeSafety(true);
-        var counter: u32 = 0;
-        var at: usize = 0;
-        while (at < out.len) : (counter += 1) {
-            var h = Hash.init(.{});
-            h.update(seed);
-            var count: [4]u8 = undefined;
-            std.mem.writeInt(u32, &count, counter, .big);
-            h.update(&count);
-            const block = h.finalResult();
-            const take = @min(block.len, out.len - at);
-            for (out[at..][0..take], block[0..take]) |*o, b| o.* ^= b;
-            at += take;
-        }
     }
 
     /// The private operation on the encoded message; the kernel writes `out` only after the

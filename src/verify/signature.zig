@@ -4,6 +4,7 @@ const Der = @import("../wire/Der.zig");
 const A = @import("../certificate/Algorithm.zig");
 const p256 = @import("../crypto/p256.zig");
 const mldsa = @import("../crypto/mldsa.zig");
+const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = error{ InvalidSignature, UnsupportedAlgorithm, InvalidPublicKey };
 /// The longest digest an algorithm here uses.
 pub const max_digest = 64;
@@ -178,19 +179,8 @@ fn rsaPss(comptime H: type, comptime M: type, key: rsa_key, salt_length: usize, 
     const mask: u8 = @as(u8, 255) >> unused;
     if (em[0] & ~mask != 0) return error.InvalidSignature;
     var db: [512]u8 = undefined;
-    var offset: usize = 0;
-    var counter: u32 = 0;
-    while (offset < db_len) : (counter += 1) {
-        var mgf = M.init(.{});
-        mgf.update(h);
-        var count: [4]u8 = undefined;
-        std.mem.writeInt(u32, &count, counter, .big);
-        mgf.update(&count);
-        const block = mgf.finalResult();
-        const len = @min(block.len, db_len - offset);
-        for (0..len) |i| db[offset + i] = em[offset + i] ^ block[i];
-        offset += len;
-    }
+    @memcpy(db[0..db_len], em[0..db_len]);
+    pkcs1.mgf1(comptime .of(M), h, db[0..db_len]);
     db[0] &= mask;
     const pad_len = db_len - salt_length - 1;
     for (db[0..pad_len]) |b| if (b != 0) return error.InvalidSignature;

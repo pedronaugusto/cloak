@@ -8,6 +8,8 @@ pub const verify = @import("verify.zig");
 pub const certificate = @import("certificate.zig");
 /// Public-key signature verification over parsed certificate keys; no private operations.
 pub const signature = @import("verify/signature.zig");
+/// Public-key encryption to parsed keys (RSAES-OAEP); decryption is `PrivateKey.decrypt`'s.
+pub const encryption = @import("verify/encryption.zig");
 pub const types = @import("types.zig");
 pub const NativeVerification = @import("NativeVerification.zig");
 pub const services = @import("services.zig");

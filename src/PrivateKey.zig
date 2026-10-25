@@ -6,6 +6,8 @@ const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
 const Sign = @import("credentials/Sign.zig");
 const mldsa = @import("crypto/mldsa.zig");
+const pkcs1 = @import("crypto/pkcs1.zig");
+const Ecdh = @import("credentials/Ecdh.zig");
 const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
@@ -49,6 +51,9 @@ pub const Components = union(enum) {
     /// A two-prime key's numbers, unsigned big-endian in their fewest bytes. All eight are
     /// needed: the private operation is CRT's.
     rsa: struct { n: []const u8, e: []const u8, d: []const u8, p: []const u8, q: []const u8, dp: []const u8, dq: []const u8, qi: []const u8 },
+    /// An X25519 key (RFC 7748, a JWK's OKP `d` and `x`, RFC 8037): the 32-byte private key and
+    /// optionally the 32-byte public key. It agrees (`agree`) and signs nothing.
+    x25519: struct { d: []const u8, public: ?[]const u8 = null },
 };
 
 pub const ComponentsError = std.mem.Allocator.Error || error{ InvalidKey, UnsupportedKey };
@@ -70,6 +75,7 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
         .ec => |ec| parser.ecKey(ec.curve, ec.d, ec.public, out),
         .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
         .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
+        .x25519 => |x| parser.x25519Key(x.d, x.public, out),
     }) catch |err| return switch (err) {
         error.UnsupportedKey => error.UnsupportedKey,
         else => error.InvalidKey,
@@ -112,6 +118,10 @@ pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
             .mldsa => |p| p.level == k.level and std.mem.eql(u8, p.bytes, k.publicKey()),
             else => false,
         },
+        .x25519 => |*k| switch (public_key) {
+            .x25519 => |p| std.mem.eql(u8, p, &k.public),
+            else => false,
+        },
     };
 }
 /// The longest SubjectPublicKeyInfo `publicKeyInfo` writes: ML-DSA-87's.
@@ -137,6 +147,7 @@ pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 
             break :blk .{ .ed25519 = point[0..32] };
         },
         .mldsa => |*k| .{ .mldsa = .{ .level = k.level, .bytes = k.publicKey() } },
+        .x25519 => |*k| .{ .x25519 = &k.public },
     };
     // unreachable: a private key is never restricted to RSASSA-PSS.
     return certificate.Algorithm.encodePublicKey(public, out) catch unreachable;
@@ -157,7 +168,7 @@ pub fn noiseLength(key: PrivateKey) usize {
         .rsa => Sign.rsa.noise_length,
         .p256 => Sign.P256.noise_length,
         .p384 => Sign.P384.noise_length,
-        .ed25519 => 0,
+        .ed25519, .x25519 => 0,
         .mldsa => 32,
     };
 }
@@ -191,6 +202,7 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
             Sign.ed25519.sign(&pair.secret_key.bytes, message, out[0..Sign.ed25519.signature_length]) catch return error.SigningFailed;
             return out[0..Sign.ed25519.signature_length];
         },
+        .x25519 => return error.UnsupportedAlgorithm,
         .mldsa => |*k| {
             if (algorithm != .mldsa or algorithm.mldsa != k.level) return error.UnsupportedAlgorithm;
             switch (k.level) {
@@ -225,7 +237,82 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
         .p384 => |*pair| {
             return ecdsaSign(SignDigestError, Sign.P384, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P384.noise_length], out);
         },
-        .ed25519, .mldsa => error.UnsupportedAlgorithm,
+        .ed25519, .mldsa, .x25519 => error.UnsupportedAlgorithm,
+    };
+}
+
+/// The longest shared secret `agree` writes: P-384's x coordinate.
+pub const max_shared = Ecdh.P384.scalar_length;
+
+pub const AgreeError = error{
+    /// An RSA, Ed25519 or ML-DSA key: they agree on nothing.
+    UnsupportedAlgorithm,
+    /// Not a public key of this key's curve: for P-256 and P-384 an uncompressed SEC 1 point on
+    /// the curve, for X25519 32 bytes.
+    InvalidPublicKey,
+    /// The shared point is the identity, or X25519's result all zeros (a peer of small order).
+    IdentityElement,
+};
+
+/// The shared secret of this key and `peer`'s public key: ECDH's x coordinate (SEC 1 3.3.1) on
+/// P-256 and P-384, X25519's 32 bytes (RFC 7748 6.1), in `out`, a secret the caller erases. The
+/// peer is checked first (on the curve, not the identity; for X25519 a result of all zeros is
+/// refused), and the scalar walk is the constant-time one of the key's construction.
+pub fn agree(key: PrivateKey, peer: []const u8, out: *[max_shared]u8) AgreeError![]const u8 {
+    @setRuntimeSafety(true);
+    // Each agreement erases its own frame (`Ecdh`), reading the scalar where the key holds it.
+    const made = switch (key.state.material.expose().*) {
+        .p256 => |*pair| Ecdh.P256.agree(&pair.secret_key.bytes, peer, out[0..Ecdh.P256.scalar_length]),
+        .p384 => |*pair| Ecdh.P384.agree(&pair.secret_key.bytes, peer, out[0..Ecdh.P384.scalar_length]),
+        .x25519 => |*k| Ecdh.X25519.agree(&k.secret, peer, out[0..Ecdh.X25519.length]),
+        .rsa, .ed25519, .mldsa => return error.UnsupportedAlgorithm,
+    };
+    made catch |err| return switch (err) {
+        error.InvalidPublicKey => error.InvalidPublicKey,
+        error.IdentityElement => error.IdentityElement,
+        // unreachable: a held key's scalar was checked in range when the key was made.
+        error.InvalidScalar => unreachable,
+    };
+    return out[0..switch (key.state.material.expose().*) {
+        .p384 => Ecdh.P384.scalar_length,
+        else => Ecdh.P256.scalar_length,
+    }];
+}
+
+/// The longest message `decrypt` writes: a 4096-bit key's, under OAEP's shortest hash.
+pub const max_plaintext = pkcs1.max_em;
+
+pub const DecryptError = error{
+    /// Not an RSA key: only RSA decrypts.
+    UnsupportedAlgorithm,
+    InvalidNoise,
+    /// The one answer to every ciphertext that does not decrypt: of the wrong length, at or
+    /// above the modulus, or whose encoding does not hold. Which, nothing says.
+    DecryptionFailed,
+};
+
+/// Decrypts an RSAES-OAEP `ciphertext` (RFC 8017 7.1.2) made to this key under `scheme`: the
+/// blinded private operation, checked against the public key, then the encoding decoded in
+/// constant time. `noise` is exactly `noiseLength` fresh bytes (the blinding seed draws on
+/// the first 32). Returns the message in `out`, a secret the caller erases.
+pub fn decrypt(key: PrivateKey, scheme: certificate.Algorithm.Encryption, ciphertext: []const u8, noise: []const u8, out: *[max_plaintext]u8) DecryptError![]const u8 {
+    return aegis.secret.scrubbed(sign_stack, decryptMessage, .{ key, scheme, ciphertext, noise, out });
+}
+
+fn decryptMessage(key: PrivateKey, scheme: certificate.Algorithm.Encryption, ciphertext: []const u8, noise: []const u8, out: *[max_plaintext]u8) DecryptError![]const u8 {
+    @setRuntimeSafety(true);
+    if (noise.len != key.noiseLength()) return error.InvalidNoise;
+    const rsa = switch (key.state.material.expose().*) {
+        .rsa => |*k| &k.crt,
+        else => return error.UnsupportedAlgorithm,
+    };
+    // The length and the range are public: the ciphertext is.
+    if (ciphertext.len != rsa.size) return error.DecryptionFailed;
+    var em: [pkcs1.max_em]u8 = undefined;
+    defer std.crypto.secureZero(u8, &em);
+    rsa.private(ciphertext, noise[0..Sign.rsa.seed_length], em[0..rsa.size]) catch return error.DecryptionFailed;
+    return switch (scheme) {
+        .oaep => |oaep| pkcs1.decode(oaep, em[0..rsa.size], out),
     };
 }
 
@@ -303,6 +390,7 @@ pub fn deinit(key: PrivateKey) void {
 test {
     @setRuntimeSafety(true);
     _ = @import("credentials/Key_test.zig");
+    _ = @import("credentials/Agree_test.zig");
 }
 
 fn parseReleased(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!void {
@@ -310,7 +398,7 @@ fn parseReleased(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOption
     key.deinit();
 }
 
-test "a parse and a signature reach less stack than the depths that erase it" {
+test "a parse, a signature and a decryption reach less stack than the depths that erase it" {
     const gpa = std.testing.allocator;
     const keys = [_][]const u8{
         @embedFile("crypto/testdata/rsa4096.der"),
@@ -326,6 +414,7 @@ test "a parse and a signature reach less stack than the depths that erase it" {
     };
     var parsing: usize = 0;
     var signing: usize = 0;
+    var decrypting: usize = 0;
     for (keys) |bytes| {
         const options: ParseOptions = .{ .passphrase = if (isEncrypted(bytes)) "correct-horse" else null };
         parsing = @max(parsing, aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ gpa, bytes, options }));
@@ -339,7 +428,17 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             .p384 => &.{ .{ .ecdsa = .sha384 }, .{ .ecdsa_p1363 = .sha384 } },
             .ed25519 => &.{.ed25519},
             .mldsa => |*k| &.{.{ .mldsa = k.level }},
+            .x25519 => &.{},
         };
+        if (key.state.material.expose().* == .rsa) {
+            // Below the modulus, an encoding that fails: the whole private operation and the
+            // whole decoding run all the same.
+            var ciphertext: [512]u8 = @splat(1);
+            var plain: [max_plaintext]u8 = undefined;
+            const size = key.state.material.expose().rsa.crt.size;
+            const scheme: certificate.Algorithm.Encryption = .{ .oaep = .{ .hash = .sha1, .mgf_hash = .sha1 } };
+            decrypting = @max(decrypting, aegis.secret.stackReach(4 * sign_stack, decryptMessage, .{ key, scheme, ciphertext[0..size], noise[0..key.noiseLength()], &plain }));
+        }
         for (algorithms) |algorithm| {
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signMessage, .{ key, algorithm, "message", noise[0..key.noiseLength()], &out }));
             if (algorithm == .ed25519 or algorithm == .mldsa) continue;
@@ -353,8 +452,8 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signPrehashed, .{ key, algorithm, digest[0..length], noise[0..key.noiseLength()], &out }));
         }
     }
-    if (parsing >= parse_stack or signing >= sign_stack) {
-        std.debug.print("stack reached: parsing {d} of {d}, signing {d} of {d}\n", .{ parsing, parse_stack, signing, sign_stack });
+    if (parsing >= parse_stack or signing >= sign_stack or decrypting >= sign_stack or decrypting == 0) {
+        std.debug.print("stack reached: parsing {d} of {d}, signing {d} and decrypting {d} of {d}\n", .{ parsing, parse_stack, signing, decrypting, sign_stack });
         return error.TestUnexpectedResult;
     }
 }
