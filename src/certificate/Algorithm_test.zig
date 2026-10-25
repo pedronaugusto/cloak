@@ -1,6 +1,7 @@
 const std = @import("std");
 const A = @import("Algorithm.zig");
 const Certificate = @import("Certificate.zig");
+const p521 = @import("../crypto/p521.zig");
 
 test "F24 catalogue_algorithm_identifier_and_empty_point (keys and signature identifiers take exactly their legal parameters; empty and unknown keys are refused)" {
     const p256 = "\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
@@ -38,4 +39,23 @@ test "F24 catalogue_algorithm_identifier_and_empty_point (keys and signature ide
     try std.testing.expect(outer != std.mem.find(u8, &altered, ecdsa_sha256).?);
     altered[outer + ecdsa_sha256.len - 1] = 3; // ecdsa-with-SHA384
     try std.testing.expectError(error.InvalidCertificate, Certificate.parse(&altered, .{}));
+}
+
+test "checkEc: each curve's generator passes; another length, a compressed or off-curve point fails" {
+    const p256 = std.crypto.ecc.P256.basePoint.toUncompressedSec1();
+    const p384 = std.crypto.ecc.P384.basePoint.toUncompressedSec1();
+    const p521_g = p521.generator.toSec1();
+    try A.checkEc(.p256, &p256);
+    try A.checkEc(.p384, &p384);
+    try A.checkEc(.p521, &p521_g);
+    try std.testing.expectError(error.InvalidPublicKey, A.checkEc(.p384, &p256));
+    try std.testing.expectError(error.InvalidPublicKey, A.checkEc(.p521, p521_g[0 .. p521_g.len - 1]));
+    inline for (.{ .{ A.Curve.p256, p256 }, .{ A.Curve.p384, p384 }, .{ A.Curve.p521, p521_g } }) |case| {
+        var off = case[1];
+        off[off.len - 1] ^= 1;
+        try std.testing.expectError(error.InvalidPublicKey, A.checkEc(case[0], &off));
+        var compressed = case[1];
+        compressed[0] = 2;
+        try std.testing.expectError(error.InvalidPublicKey, A.checkEc(case[0], &compressed));
+    }
 }
