@@ -144,6 +144,30 @@ pub fn pssParameters(e: Der.Element) Error!Pss {
     if (salt > 512) return error.DerLimit;
     return .{ .hash = hash, .mgf_hash = mgf_hash, .salt_length = salt };
 }
+/// The checks every EC public key gets, from a certificate, a raw key or built by a caller (a
+/// JWK's x and y): an uncompressed SEC 1 point of the curve's length, on the curve, not the
+/// identity.
+pub fn checkEc(curve: Curve, point: []const u8) error{InvalidPublicKey}!void {
+    @setRuntimeSafety(true);
+    const point_length: usize = switch (curve) {
+        .p256 => 65,
+        .p384 => 97,
+        .p521 => p521.public_length,
+    };
+    if (point.len != point_length or point[0] != 4) return error.InvalidPublicKey;
+    switch (curve) {
+        .p256 => {
+            _ = std.crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(point) catch return error.InvalidPublicKey;
+        },
+        .p384 => {
+            _ = std.crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(point) catch return error.InvalidPublicKey;
+        },
+        .p521 => {
+            _ = p521.Affine.fromSec1(point) catch return error.InvalidPublicKey;
+        },
+    }
+}
+
 /// The checks every RSA public key gets, from a certificate, a raw key or built by a caller (a
 /// JWK's n and e), before it verifies anything: 2048 to 4096 bits, odd, minimal encodings, an odd
 /// exponent of 3 to 2^32-1, and no ROCA fingerprint (CVE-2017-15361: a modulus anyone can factor
@@ -187,23 +211,7 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
         const p = param orelse return error.InvalidDer;
         if (p.tag != 6) return error.InvalidDer;
         const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else if (eql(p.value, p521_oid)) .p521 else return error.UnsupportedAlgorithm;
-        const point_length: usize = switch (curve) {
-            .p256 => 65,
-            .p384 => 97,
-            .p521 => p521.public_length,
-        };
-        if (bytes.len != point_length or bytes[0] != 4) return error.InvalidPublicKey;
-        switch (curve) {
-            .p256 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-            .p384 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-            .p521 => {
-                _ = p521.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-        }
+        try checkEc(curve, bytes);
         return .{ .ec = .{ .curve = curve, .bytes = bytes } };
     }
     if (mldsaOf(id)) |level| {
