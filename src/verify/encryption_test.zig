@@ -26,15 +26,22 @@ fn hashOf(name: []const u8) ?@FieldType(C.Algorithm.Oaep, "hash") {
     return null;
 }
 
-/// Runs one file; returns how many cases ran.
-fn campaign(comptime name: []const u8) !usize {
+/// Runs one file's groups of key size `only` (every group when null), so a
+/// heavy file splits across tests; every case of the file is counted, run
+/// here, left to another test, or not offered. Returns how many ran.
+fn campaign(comptime name: []const u8, only: ?u32) !usize {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const file = try std.json.parseFromSliceLeaky(File, arena, @embedFile("fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
     var ran: usize = 0;
     var not_offered: usize = 0;
+    var elsewhere: usize = 0;
     for (file.testGroups) |g| {
+        if (only) |size| if (g.keySize != size) {
+            elsewhere += g.tests.len;
+            continue;
+        };
         const hash = hashOf(g.sha);
         const mgf_hash = hashOf(g.mgfSha);
         const der = try hex(arena, g.privateKeyPkcs8);
@@ -74,25 +81,52 @@ fn campaign(comptime name: []const u8) !usize {
             try std.testing.expectEqualSlices(u8, msg, try key.decrypt(scheme, again, noise[0..key.noiseLength()], &out));
         }
     }
-    try std.testing.expectEqual(@as(usize, file.numberOfTests), ran + not_offered);
+    try std.testing.expectEqual(@as(usize, file.numberOfTests), ran + not_offered + elsewhere);
     return ran;
 }
 
-test "Wycheproof rsa_oaep: valid ciphertexts decrypt, invalid ones fail as one error, messages encrypt back" {
-    var ran: usize = 0;
-    inline for (.{
-        "rsa_oaep_2048_sha1_mgf1sha1_test.json",
-        "rsa_oaep_2048_sha256_mgf1sha1_test.json",
-        "rsa_oaep_2048_sha256_mgf1sha256_test.json",
-        "rsa_oaep_2048_sha384_mgf1sha384_test.json",
-        "rsa_oaep_2048_sha512_mgf1sha512_test.json",
-        "rsa_oaep_3072_sha256_mgf1sha256_test.json",
-        "rsa_oaep_3072_sha512_mgf1sha512_test.json",
-        "rsa_oaep_4096_sha256_mgf1sha256_test.json",
-        "rsa_oaep_4096_sha512_mgf1sha512_test.json",
-        "rsa_oaep_misc_test.json",
-    }) |name| ran += try campaign(name);
-    try std.testing.expect(ran > 400);
+// One test per file (and the misc file per key size), each well inside the runner's watchdog
+// in Debug, where a 4096-bit private operation is slow.
+test "Wycheproof rsa_oaep_2048_sha1_mgf1sha1" {
+    try std.testing.expect(try campaign("rsa_oaep_2048_sha1_mgf1sha1_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_2048_sha256_mgf1sha1" {
+    try std.testing.expect(try campaign("rsa_oaep_2048_sha256_mgf1sha1_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_2048_sha256_mgf1sha256" {
+    try std.testing.expect(try campaign("rsa_oaep_2048_sha256_mgf1sha256_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_2048_sha384_mgf1sha384" {
+    try std.testing.expect(try campaign("rsa_oaep_2048_sha384_mgf1sha384_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_2048_sha512_mgf1sha512" {
+    try std.testing.expect(try campaign("rsa_oaep_2048_sha512_mgf1sha512_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_3072_sha256_mgf1sha256" {
+    try std.testing.expect(try campaign("rsa_oaep_3072_sha256_mgf1sha256_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_3072_sha512_mgf1sha512" {
+    try std.testing.expect(try campaign("rsa_oaep_3072_sha512_mgf1sha512_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_4096_sha256_mgf1sha256" {
+    try std.testing.expect(try campaign("rsa_oaep_4096_sha256_mgf1sha256_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_4096_sha512_mgf1sha512" {
+    try std.testing.expect(try campaign("rsa_oaep_4096_sha512_mgf1sha512_test.json", null) > 20);
+}
+test "Wycheproof rsa_oaep_misc, 2048-bit keys" {
+    try std.testing.expect(try campaign("rsa_oaep_misc_test.json", 2048) > 0);
+}
+test "Wycheproof rsa_oaep_misc, 3072-bit keys" {
+    try std.testing.expect(try campaign("rsa_oaep_misc_test.json", 3072) > 0);
+}
+test "Wycheproof rsa_oaep_misc, 4096-bit keys" {
+    try std.testing.expect(try campaign("rsa_oaep_misc_test.json", 4096) > 0);
+}
+test "Wycheproof rsa_oaep_misc, the other sizes" {
+    // 1024, 1536 and 8192 bits (refused where read), and 2688, 3104 and 4032 (the small-integer
+    // encodings).
+    inline for (.{ 1024, 1536, 8192, 2688, 3104, 4032 }) |size| _ = try campaign("rsa_oaep_misc_test.json", size);
 }
 
 test "encryption refuses what is not an RSA encryption key, and messages longer than the key carries" {
