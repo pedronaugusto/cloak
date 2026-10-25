@@ -327,8 +327,13 @@ pub const s2n = struct {
                 .aarch64 => if (wideMultiplier()) .alt else .plain,
                 else => unreachable, // unreachable: `assembly` holds only on x86_64 and AArch64
             };
-            state.store(@backingInt(variant) + 1, .monotonic);
+            remember(variant);
             return variant;
+        }
+
+        /// Widened before the one is added: the variant's own backing integer is a u1.
+        fn remember(variant: Variant) void {
+            state.store(@as(u8, @backingInt(variant)) + 1, .monotonic);
         }
     };
 
@@ -365,6 +370,17 @@ pub const s2n = struct {
         return implementer == 0x61 or (implementer == 0x41 and (part == 0xd40 or part == 0xd4f));
     }
 };
+
+test "s2n-bignum's cached choice holds either variant" {
+    if (!assembly) return error.SkipZigTest;
+    const asked = s2n.asked;
+    const saved = asked.state.load(.monotonic);
+    defer asked.state.store(saved, .monotonic);
+    for ([_]Variant{ .plain, .alt }) |variant| {
+        asked.remember(variant);
+        try std.testing.expectEqual(variant, asked.get());
+    }
+}
 
 test {
     _ = @import("p521_test.zig");
