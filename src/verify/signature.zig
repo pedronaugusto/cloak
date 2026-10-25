@@ -5,6 +5,7 @@ const A = @import("../certificate/Algorithm.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
+const edwards25519 = @import("../crypto/edwards25519.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = error{ InvalidSignature, UnsupportedAlgorithm, InvalidPublicKey };
@@ -17,8 +18,7 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
         .ed25519 => switch (key) {
             .ed25519 => |k| {
                 if (signature.len != 64 or k.len != 32) return error.InvalidSignature;
-                const pk = std.crypto.sign.Ed25519.PublicKey.fromBytes(k[0..32].*) catch return error.InvalidPublicKey;
-                std.crypto.sign.Ed25519.Signature.fromBytes(signature[0..64].*).verifyStrict(message, pk) catch return error.InvalidSignature;
+                return ed25519(k[0..32], message, signature[0..64]);
             },
             else => return error.InvalidPublicKey,
         },
@@ -44,6 +44,28 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
         },
     }
 }
+/// RFC 8032 5.1.7, cofactorless (std's `verifyStrict`, RFC 8032's "[S]B = R + [k]A"): S below L,
+/// A and R decoded and neither of x = 0, and R's bytes the encoding of [S]B - [k]A. A key whose
+/// y is not below p is a bad key; every other failure is a bad signature.
+fn ed25519(key: *const [32]u8, message: []const u8, signature: *const [64]u8) Error!void {
+    if (!edwards25519.isCanonicalY(key)) return error.InvalidPublicKey;
+    const s = signature[32..64];
+    if (!edwards25519.isCanonical(s)) return error.InvalidSignature;
+    const a = edwards25519.decode(key) orelse return error.InvalidSignature;
+    const r = edwards25519.decode(signature[0..32]) orelse return error.InvalidSignature;
+    if (a.xIsZero() or r.xIsZero()) return error.InvalidSignature;
+    var wide: [64]u8 = undefined;
+    var hash = std.crypto.hash.sha2.Sha512.init(.{});
+    hash.update(signature[0..32]);
+    hash.update(key);
+    hash.update(message);
+    hash.final(&wide);
+    const k = edwards25519.reduce64(&wide);
+    var check: [32]u8 = undefined;
+    edwards25519.mulDoubleBasePublic(&check, &k, &a.neg(), s);
+    if (!std.mem.eql(u8, &check, signature[0..32])) return error.InvalidSignature;
+}
+
 /// The message hash a hashing algorithm signs; Ed25519 has none.
 pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u8) []const u8 {
     @setRuntimeSafety(true);

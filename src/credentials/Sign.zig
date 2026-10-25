@@ -10,7 +10,7 @@
 //! constant-time CRT operation of `crypto/rsa.zig`, which checks every result against the
 //! public key before it is written.
 const std = @import("std");
-const Curve = @import("Curve.zig");
+const edwards25519 = @import("../crypto/edwards25519.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
@@ -169,9 +169,7 @@ pub const P384 = Ecdsa(p384, std.crypto.hash.sha2.Sha384);
 pub const P521 = Ecdsa(p521, std.crypto.hash.sha2.Sha512);
 
 pub const ed25519 = struct {
-    const Edwards = std.crypto.ecc.Edwards25519;
     const Sha512 = std.crypto.hash.sha2.Sha512;
-    const scalars = Edwards.scalar;
 
     /// The secret key as stored: the 32-byte seed, then the public key.
     pub const key_length = 64;
@@ -188,29 +186,28 @@ pub const ed25519 = struct {
         hash.final(&expanded);
         var scalar: [32]u8 = expanded[0..32].*;
         defer std.crypto.secureZero(u8, &scalar);
-        scalars.clamp(&scalar);
+        scalar[0] &= 248;
+        scalar[31] = (scalar[31] & 127) | 64;
         var wide: [64]u8 = undefined;
         defer std.crypto.secureZero(u8, &wide);
         hash = Sha512.init(.{});
         hash.update(expanded[32..64]);
         hash.update(message);
         hash.final(&wide);
-        var nonce = scalars.reduce64(wide);
+        var nonce = edwards25519.reduce64(&wide);
         defer std.crypto.secureZero(u8, &nonce);
-        var point = Curve.base(Edwards, .little, &nonce) catch return error.SigningFailed;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        const commitment = point.toBytes();
+        // A nonce of zero gives the identity as R: a valid signature that verifiers refuse.
+        var commitment: [32]u8 = undefined;
+        edwards25519.base(&commitment, &nonce);
+        if (std.mem.eql(u8, &commitment, &edwards25519.Affine.identity_encoding)) return error.SigningFailed;
         hash = Sha512.init(.{});
         hash.update(&commitment);
         hash.update(key[32..64]);
         hash.update(message);
         hash.final(&wide);
-        var challenge = scalars.reduce64(wide);
-        defer std.crypto.secureZero(u8, &challenge);
-        var s = scalars.mulAdd(challenge, scalar, nonce);
-        defer std.crypto.secureZero(u8, &s);
+        const challenge = edwards25519.reduce64(&wide);
         out[0..32].* = commitment;
-        out[32..64].* = s;
+        out[32..64].* = edwards25519.mulAdd(&challenge, &scalar, &nonce);
     }
 };
 

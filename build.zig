@@ -171,12 +171,13 @@ fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedT
 /// routine `cloak_<routine>`, private to the image.
 /// The s2n-bignum routines cloak computes with, by curve directory: both forms of each NIST
 /// field's multiplication and squaring, its inversion, P-521's addition, subtraction and negation
-/// (P-256's and P-384's are fiat-crypto's, inlined), and X25519's two ladders.
+/// (P-256's and P-384's are fiat-crypto's, inlined), X25519's two ladders, and Ed25519's base and
+/// double-base multiplications and decoding.
 const s2n_routines = [_]struct { []const u8, []const []const u8 }{
     .{ "p256", &.{ "bignum_montmul_p256", "bignum_montmul_p256_alt", "bignum_montsqr_p256", "bignum_montsqr_p256_alt", "bignum_montinv_p256" } },
     .{ "p384", &.{ "bignum_montmul_p384", "bignum_montmul_p384_alt", "bignum_montsqr_p384", "bignum_montsqr_p384_alt", "bignum_montinv_p384" } },
     .{ "p521", &.{ "bignum_add_p521", "bignum_sub_p521", "bignum_neg_p521", "bignum_mul_p521", "bignum_mul_p521_alt", "bignum_sqr_p521", "bignum_sqr_p521_alt", "bignum_inv_p521" } },
-    .{ "curve25519", &.{ "curve25519_x25519", "curve25519_x25519_alt", "curve25519_x25519base", "curve25519_x25519base_alt" } },
+    .{ "curve25519", &.{ "curve25519_x25519", "curve25519_x25519_alt", "curve25519_x25519base", "curve25519_x25519base_alt", "edwards25519_scalarmulbase", "edwards25519_scalarmulbase_alt", "edwards25519_scalarmuldouble", "edwards25519_scalarmuldouble_alt", "edwards25519_decode", "edwards25519_decode_alt" } },
 };
 
 fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {

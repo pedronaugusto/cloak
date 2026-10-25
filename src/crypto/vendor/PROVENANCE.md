@@ -30,6 +30,12 @@ Files (path here = path upstream, under `s2n-bignum/`):
 | `s2n-bignum/arm/curve25519/curve25519_x25519_alt.S` | `e667d0667db1592f4503b29d09c763fe23e4948478f11cbf2c0e8ac290047c80` |
 | `s2n-bignum/arm/curve25519/curve25519_x25519base.S` | `d6195d8a6360559bd1925d3e581f2b59320d378876df94a46bd655318c7c7e99` |
 | `s2n-bignum/arm/curve25519/curve25519_x25519base_alt.S` | `a4d4108d17fec73602c31bea8fc91f95492c017d16638c82acd4ae6eede98da5` |
+| `s2n-bignum/arm/curve25519/edwards25519_decode.S` | `ef17d9b7490bca9c85efcd760c4f83b3bdb39aa86cfd42fc9f7fce14171b1d7f` |
+| `s2n-bignum/arm/curve25519/edwards25519_decode_alt.S` | `a890081773f5a48194f6891b4a7555c7c6289d528c90b5057d225b783051c35f` |
+| `s2n-bignum/arm/curve25519/edwards25519_scalarmulbase.S` | `2f274bb1cf7e233c4734ec336e11d0592e2c3acdf556bf13182ddf56e0492b68` |
+| `s2n-bignum/arm/curve25519/edwards25519_scalarmulbase_alt.S` | `b55827ca7f0e9a2d977512db8d4ecbcb0499f7294e068a1f4b1131bc96e50e2a` |
+| `s2n-bignum/arm/curve25519/edwards25519_scalarmuldouble.S` | `7c67541ef72653ce392f521f3fd4f905c303009a525c0694c687e7414ab16534` |
+| `s2n-bignum/arm/curve25519/edwards25519_scalarmuldouble_alt.S` | `d18ce8e5171301bb8693637ca829a143653450092f70509d12d7b7240f789db5` |
 | `s2n-bignum/arm/p256/bignum_montinv_p256.S` | `339a8276bb1aa3721c2dc9f76abbd28b3d597983446427a68c39393a589ec650` |
 | `s2n-bignum/arm/p256/bignum_montmul_p256.S` | `eb892a473af5ea1933912732b5036cff6b54a5c75af774223b71d57d0d884fc1` |
 | `s2n-bignum/arm/p256/bignum_montmul_p256_alt.S` | `74f06eedcfbd25328a7a09bbe55d3c90c7f7ef58bb9532ef981bb809d0e63406` |
@@ -54,6 +60,12 @@ Files (path here = path upstream, under `s2n-bignum/`):
 | `s2n-bignum/x86/curve25519/curve25519_x25519_alt.S` | `6019f718d94aa334d50c8b1caaee53aa4dabc1bfda76f785364d0c727e5e1b29` |
 | `s2n-bignum/x86/curve25519/curve25519_x25519base.S` | `12a43626622921f5ab490b10e77203fe13e28b77212926c71069c34710b567cf` |
 | `s2n-bignum/x86/curve25519/curve25519_x25519base_alt.S` | `aa82a1fd40e3af98d4b3c7a2b464f8868895f372644dd5b8aba3a8fcf14a8b39` |
+| `s2n-bignum/x86/curve25519/edwards25519_decode.S` | `5d7ff253e157cd9d91b4398eb1b2567d0841da22d2641263874bfbc14409c199` |
+| `s2n-bignum/x86/curve25519/edwards25519_decode_alt.S` | `4ca0480a6008dc7569c67243c14e75d2ab8422e07d7929ebf93c49bb42556d63` |
+| `s2n-bignum/x86/curve25519/edwards25519_scalarmulbase.S` | `9f08d3a5acdf38942711fef1c357226cfc6e124c190e55dfd1949fa044c87857` |
+| `s2n-bignum/x86/curve25519/edwards25519_scalarmulbase_alt.S` | `68382457ebc4cd224b2ce51b6c25b1e6a09c92bca226353de9e8d56bb6926ee1` |
+| `s2n-bignum/x86/curve25519/edwards25519_scalarmuldouble.S` | `f89a4e172fcf1df8ff94a97735e82b96489030057f55df9919b6e068e9339b7e` |
+| `s2n-bignum/x86/curve25519/edwards25519_scalarmuldouble_alt.S` | `b1548fd1b8e3962e5fc69778812cc3fc75a7f8ebacc20937451ab460d60be65c` |
 | `s2n-bignum/x86/p256/bignum_montinv_p256.S` | `91c61153ac18116a2a1fd6bdb9f1be4fffed53deca44923732632a8837fd4339` |
 | `s2n-bignum/x86/p256/bignum_montmul_p256.S` | `67054aa23bc758c6c63126d4b72653a9a8bce9edf3fb5920daacb12a965f5920` |
 | `s2n-bignum/x86/p256/bignum_montmul_p256_alt.S` | `57abd32623288e7fd69c7d14a9322450bc7f96877f97079e67655984aa1f8885` |

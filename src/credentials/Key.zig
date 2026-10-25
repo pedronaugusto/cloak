@@ -15,7 +15,6 @@ const Pbe = @import("Pbe.zig");
 const P256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
 const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
 const Ed25519 = std.crypto.sign.Ed25519;
-const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, p521: P521, ed25519: Ed25519.KeyPair, mldsa: MlDsa, x25519: X25519Key };
@@ -427,6 +426,5 @@ test {
     _ = @import("Rsa.zig");
     _ = @import("Kdf.zig");
     _ = @import("EdKey.zig");
-    _ = Curve;
     _ = Des3;
 }
