@@ -294,6 +294,16 @@ pub fn pinnedLeaf(leaf: []const u8, pins: []const [32]u8) KeyError!u16 {
     return error.PinMismatch;
 }
 
+/// Keeps a copy of the peer's leaf certificate (`Connection.peerLeaf`) in `kept`, which owns
+/// it: called once the chain passed the policy and the leaf's key signed. A raw public key (RFC
+/// 7250) is no certificate, and keeps none. `leaf` is bounded by the chain's byte limit.
+pub fn keepLeaf(gpa: std.mem.Allocator, kept: *[]u8, leaf: []const u8, raw: bool) std.mem.Allocator.Error!void {
+    if (raw) return;
+    const copy = try gpa.dupe(u8, leaf);
+    if (kept.len != 0) gpa.free(kept.*);
+    kept.* = copy;
+}
+
 /// The key a peer's first Certificate entry carries: a leaf's, or a raw key's (RFC 7250).
 pub fn peerKey(entry: []const u8, raw: bool) KeyError!certificates.certificate.PublicKey {
     @setRuntimeSafety(true);

@@ -94,6 +94,10 @@ pub const Options = struct {
     /// A random legacy session id and one change_cipher_spec, for middleboxes (stream only).
     compat: bool = true,
     key_log: ?KeyLog = null,
+    /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
+    /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
+    /// connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -213,6 +217,9 @@ requested_certificate: bool = false,
 pin: ?u16 = null,
 /// The scheme the server signed its CertificateVerify or ServerKeyExchange under.
 peer_scheme: ?Hello.SignatureScheme = null,
+/// The server's leaf certificate, kept once its chain passed and its key signed; owned, freed
+/// at deinit. Empty for a raw key and on resumption.
+peer_leaf: []u8 = &.{},
 /// The server proved possession with a delegated credential (RFC 9345).
 delegated_used: bool = false,
 sign_scheme: Hello.SignatureScheme = .ed25519,
@@ -568,6 +575,7 @@ pub fn deinit(self: *Client) void {
     gpa.free(self.kept.credentials);
     if (self.post_auth) |post| post.deinit();
     if (self.ech_retry) |list| gpa.free(list);
+    if (self.peer_leaf.len != 0) gpa.free(self.peer_leaf);
     self.* = undefined;
     gpa.destroy(self);
 }
@@ -1877,6 +1885,7 @@ fn onCertificateVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: b
     self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try self.scratch.?.transcripts.commit(msg);
+    if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, self.scratch.?.chain[0], self.scratch.?.peer_raw);
 }
 
 fn onFinished(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!void {

@@ -102,6 +102,11 @@ authorities: []const []const u8,
 requests: u64 = 0,
 /// `Outcome` packed: generation shifted left by one, authenticated in the low bit.
 outcome: std.atomic.Value(u64) = .init(0),
+/// Server: the leaf certificate of the last answer that proved one, set as its exchange settles
+/// and before its outcome is published; owned, replaced by the next such answer. Kept only with
+/// `keep_leaf` (the server's `keep_peer_leaf`).
+leaf: []u8 = &.{},
+keep_leaf: bool = false,
 
 const Exchange = struct {
     transcript: Transcripts.Selected,
@@ -125,6 +130,8 @@ const Exchange = struct {
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
     now: ?std.Io.Timestamp = null,
+    /// Server: the leaf's copy once its key signed, kept by `settled`.
+    leaf: []u8 = &.{},
     /// The client presented a certificate (client); the server's policy authenticated it.
     presented: bool = false,
     authenticated: bool = false,
@@ -153,6 +160,7 @@ pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *con
 pub fn deinit(self: *PostAuth) void {
     const gpa = self.gpa;
     self.endExchange();
+    if (self.leaf.len != 0) gpa.free(self.leaf);
     std.crypto.secureZero(u8, std.mem.asBytes(self));
     gpa.destroy(self);
 }
@@ -161,6 +169,12 @@ pub fn deinit(self: *PostAuth) void {
 pub fn result(self: *const PostAuth) Outcome {
     const packed_outcome = self.outcome.load(.acquire);
     return .{ .generation = packed_outcome >> 1, .authenticated = packed_outcome & 1 != 0 };
+}
+
+/// The leaf of the last settled answer that proved one, after its outcome; null when none has.
+pub fn latestLeaf(self: *const PostAuth) ?[]const u8 {
+    if (self.outcome.load(.acquire) == 0) return null;
+    return if (self.leaf.len == 0) null else self.leaf;
 }
 
 fn record(self: *PostAuth, authenticated: bool) void {
@@ -183,6 +197,7 @@ fn endExchange(self: *PostAuth) void {
         self.gpa.free(ex.flight);
     }
     if (ex.held.len != 0) self.gpa.free(ex.held);
+    if (ex.leaf.len != 0) self.gpa.free(ex.leaf);
     std.crypto.secureZero(u8, std.mem.asBytes(ex));
     self.gpa.destroy(ex);
     self.exchange = null;
@@ -488,6 +503,7 @@ pub fn onCertificateVerify(self: *PostAuth, msg: []const u8) Error!void {
     try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.peer, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), &taken), try Possession.peerKey(ex.chain[0], self.raw_client), content, parsed.signature);
     _ = self.machine.server.step(.certificate_verify) catch unreachable; // unreachable: possession
     try ex.transcript.commit(msg);
+    if (self.keep_leaf) try Possession.keepLeaf(self.gpa, &ex.leaf, ex.chain[0], self.raw_client);
 }
 
 /// The client's Finished: the record layer checks it under the keys it came under
@@ -518,7 +534,13 @@ pub fn finishedCheck(self: *const PostAuth) FinishedCheck {
 /// write half's to make.
 pub fn settled(self: *PostAuth) void {
     aegis.assert.pre(self.machine.server.current() == .checking, "a checked Finished settles its exchange");
-    const authenticated = self.exchange.?.authenticated;
+    const ex = self.exchange.?;
+    const authenticated = ex.authenticated;
+    if (ex.leaf.len != 0) {
+        if (self.leaf.len != 0) self.gpa.free(self.leaf);
+        self.leaf = ex.leaf;
+        ex.leaf = &.{};
+    }
     self.endExchange();
     _ = self.machine.server.step(.settle) catch unreachable; // unreachable: checking
     self.record(authenticated);

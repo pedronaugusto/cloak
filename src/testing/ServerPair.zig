@@ -45,6 +45,8 @@ pub const Options = struct {
     distrust: bool = false,
     /// Ask for client certificates after the handshake, checked by the test root.
     post_auth: bool = false,
+    /// The server keeps the client's leaf (`peerLeaf`).
+    keep_peer_leaf: bool = false,
     /// The server's record_size_limit (RFC 8449).
     record_size_limit: ?u16 = null,
 };
@@ -120,6 +122,7 @@ pub fn ServerPair(comptime suite: Suite13) type {
                 .key_log = options.key_log,
                 .generation = .fromRaw(11),
                 .post_handshake_auth = options.post_auth,
+                .keep_peer_leaf = options.keep_peer_leaf,
             });
             return self;
         }

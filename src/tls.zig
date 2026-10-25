@@ -115,6 +115,7 @@ test {
     _ = @import("tls/Ccm_test.zig");
     _ = @import("tls/catalogue12_test.zig");
     _ = @import("tls/Resumption_test.zig");
+    _ = @import("tls/PeerLeaf_test.zig");
     _ = @import("tls/Ech_test.zig");
     _ = @import("tls/Grease_test.zig");
     _ = @import("tls/Permute_test.zig");

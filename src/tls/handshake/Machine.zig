@@ -185,6 +185,14 @@ pub fn provideParameters(self: Machine, accept: bool) Error!void {
     };
 }
 
+/// The peer's leaf certificate as the handshake proved it (`Connection.peerLeaf`); empty when
+/// none was.
+pub fn peerLeaf(self: Machine) []const u8 {
+    return switch (self.state) {
+        inline else => |m| m.peer_leaf,
+    };
+}
+
 /// Post-handshake authentication, when the handshake kept it: the client offered it (and a server
 /// allows it). Set before the connection splits, and fixed from then.
 pub fn postAuth(self: Machine) ?*PostAuth {

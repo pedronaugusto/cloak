@@ -173,6 +173,10 @@ pub const Options = struct {
     record_size_limit: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
+    /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
+    /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
+    /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -235,6 +239,9 @@ post_auth: ?*PostAuth = null,
 /// The client proved possession with its delegated credential.
 delegated_used: bool = false,
 peer_certificate: bool = false,
+/// The client's leaf certificate, kept once its chain passed and its key signed; owned, freed
+/// at deinit. Empty when none was proved, for a raw key, and on resumption.
+peer_leaf: []u8 = &.{},
 established: bool = false,
 retried: bool = false,
 /// The ClientHello is final (not answered by a retry request): the client may send nothing more
@@ -442,6 +449,7 @@ pub fn deinit(self: *Server) void {
     }
     gpa.free(self.options.credentials);
     if (self.post_auth) |post| post.deinit();
+    if (self.peer_leaf.len != 0) gpa.free(self.peer_leaf);
     self.* = undefined;
     gpa.destroy(self);
 }
@@ -1698,6 +1706,7 @@ fn onCertificateVerify(self: *Server, msg: []const u8, epoch: Epoch, boundary: b
     self.peer_scheme = @fromBackingInt(parsed.scheme);
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
+    if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, scratch.chain[0], scratch.peer_raw);
     self.peer_certificate = true;
 }
 
@@ -1718,7 +1727,10 @@ fn onFinished(self: *Server, msg: []const u8, epoch: Epoch, boundary: bool) Clie
             try k.schedule.complete(scratch.transcripts.digest(&finished_buf)[0..Hash.digest_length]);
             k.handshake.deinit();
             // Every later exchange starts from the transcript through this Finished.
-            if (self.options.post_handshake_auth and scratch.post_auth_offered) self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.peer_schemes, self.options.certificate_authorities);
+            if (self.options.post_handshake_auth and scratch.post_auth_offered) {
+                self.post_auth = try PostAuth.init(self.gpa, .server, tag, &scratch.transcripts, scratch.client_type == .raw_public_key, self.options.require_pq_auth, self.options.peer_schemes, self.options.certificate_authorities);
+                self.post_auth.?.keep_leaf = self.options.keep_peer_leaf;
+            }
         },
     }
     const emit = try self.claim();
