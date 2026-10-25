@@ -14,6 +14,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - RSA private keys load about 50 times faster (10.4 ms to 0.21 ms for RSA-2048 on an M3): the agreement checks reduce over the integers' encoded widths instead of the fixed 8192-bit capacity, skip the bits below the modulus's width, check e * dp and e * dq (half as long) beside d's agreement with dp and dq, and the Montgomery constants start at the modulus's top bit. Every check is the one before; the widths walked are the DER lengths, public.
 - AES-CBC key-file decryption runs on the AES instructions where the target has them (AES-128 and AES-256), the fixed-arithmetic AES elsewhere and for AES-192.
 - PBKDF2 keeps HMAC's keyed inner and outer states across rounds, two compressions per round instead of four, and SHA-1 runs on the ARMv8 SHA-1 instructions where the target has them (std's SHA-1 has no accelerated path).
+## [0.22.2] - 2026-10-25
+
+### Changed
+
+- Pins aegis 0.1.17.
 
 ### Fixed
 
