@@ -1,13 +1,11 @@
 //! Montgomery arithmetic modulo an odd modulus of n 64-bit limbs, R = 2^(64n): cloak's one
-//! generic constant-time field, for the P-256 field and scalars and every scalar field n a
-//! verified field does not cover (P-521's). Every operation on secret operands runs the same
+//! generic constant-time field, for the curves' scalars (their group orders) and RSA, as Go's
+//! nistec pairs fiat-crypto's base fields with generic constant-time scalars. The base fields
+//! are the verified ones in this directory. Every operation on secret operands runs the same
 //! instructions for every value: carries move through add/subtract-with-carry chains and the
-//! one conditional subtraction selects through a mask the compiler cannot see through. The
-//! P-256 field prime gets a reduction without multiplications (its lowest limb is 2^64 - 1, so
-//! each Montgomery factor is the limb itself) and AArch64 assembly.
+//! one conditional subtraction selects through a mask the compiler cannot see through.
 const std = @import("std");
 const builtin = @import("builtin");
-const arm64 = @import("p256_arm64.zig");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {
     const s1 = @addWithOverflow(a, b);
@@ -85,8 +83,6 @@ pub fn Field(comptime modulus: comptime_int) type {
             for (0..7) |_| v *%= 2 -% m[0] *% v;
             break :blk 0 -% v;
         };
-        /// The P-256 prime: m0 = 2^64 - 1, m1 = 2^32 - 1, m2 = 0.
-        const special = modulus == 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff;
         const r2: Self = .{ .limbs = split((1 << (128 * n)) % modulus) };
 
         pub const zero: Self = .{ .limbs = @splat(0) };
@@ -95,7 +91,6 @@ pub fn Field(comptime modulus: comptime_int) type {
         comptime {
             std.debug.assert(modulus & 1 == 1);
             std.debug.assert(m[0] *% inverse == std.math.maxInt(u64));
-            if (special) std.debug.assert(inverse == 1);
         }
 
         fn split(comptime value: comptime_int) Limbs {
@@ -129,15 +124,7 @@ pub fn Field(comptime modulus: comptime_int) type {
             return r;
         }
 
-        /// Whether this field runs the AArch64 assembly (P-256 only).
-        const assembly = special and builtin.cpu.arch == .aarch64;
-
         pub fn mul(a: Self, b: Self) Self {
-            if (assembly and !@inComptime()) return .{ .limbs = arm64.mul(a.limbs, b.limbs) };
-            return mulPortable(a, b);
-        }
-
-        pub fn mulPortable(a: Self, b: Self) Self {
             var t: [n + 2]u64 = @splat(0);
             inline for (0..n) |i| {
                 const r = row(n, a.limbs[i], b.limbs);
@@ -151,86 +138,16 @@ pub fn Field(comptime modulus: comptime_int) type {
 
         /// One limb of reduction: adds q*m so the lowest limb cancels, then shifts it out.
         inline fn reduceStep(t: *[n + 2]u64) void {
+            const q = t[0] *% inverse;
+            const s = row(n, q, m);
             var c: u1 = 0;
-            if (special) {
-                // q = t0. t0 + q*m0 = q*2^64; t1 + q*m1 + q = t1 + q*2^32; m2 = 0.
-                const q = t[0];
-                // q * m3 = q * 2^64 - q * 2^32 + q, by shifts and one borrow.
-                const low = @subWithOverflow(q, q << 32);
-                const ql = low[0];
-                const qh = q - (q >> 32) - low[1];
-                t[0], c = addc(t[1], q << 32, 0);
-                t[1], c = addc(t[2], q >> 32, c);
-                t[2], c = addc(t[3], ql, c);
-                t[3], c = addc(t[4], qh, c);
-            } else {
-                const q = t[0] *% inverse;
-                const s = row(n, q, m);
-                _, c = addc(t[0], s[0], 0);
-                inline for (1..n + 1) |j| t[j - 1], c = addc(t[j], s[j], c);
-            }
+            _, c = addc(t[0], s[0], 0);
+            inline for (1..n + 1) |j| t[j - 1], c = addc(t[j], s[j], c);
             t[n] = t[n + 1] + c;
         }
 
         pub fn sqr(a: Self) Self {
-            if (assembly and !@inComptime()) return .{ .limbs = arm64.sqr(a.limbs) };
-            return sqrPortable(a);
-        }
-
-        pub fn sqrPortable(a: Self) Self {
-            if (!special) return mulPortable(a, a);
-            const x = a.limbs;
-            const l01, const h01 = wide(x[0], x[1]);
-            const l02, const h02 = wide(x[0], x[2]);
-            const l03, const h03 = wide(x[0], x[3]);
-            const l12, const h12 = wide(x[1], x[2]);
-            const l13, const h13 = wide(x[1], x[3]);
-            const l23, const h23 = wide(x[2], x[3]);
-            var w: [8]u64 = undefined;
-            var c: u1 = 0;
-            w[1] = l01;
-            w[2], c = addc(l02, h01, 0);
-            w[3], c = addc(l03, h02, c);
-            w[4] = h03 + c;
-            const r4, c = addc(l13, h12, 0);
-            const r5 = h13 + c;
-            w[3], c = addc(w[3], l12, 0);
-            w[4], c = addc(w[4], r4, c);
-            w[5] = r5 + c;
-            w[5], c = addc(w[5], l23, 0);
-            w[6] = h23 + c;
-            w[7] = w[6] >> 63;
-            w[6] = (w[6] << 1) | (w[5] >> 63);
-            w[5] = (w[5] << 1) | (w[4] >> 63);
-            w[4] = (w[4] << 1) | (w[3] >> 63);
-            w[3] = (w[3] << 1) | (w[2] >> 63);
-            w[2] = (w[2] << 1) | (w[1] >> 63);
-            w[1] = w[1] << 1;
-            const s0l, const s0h = wide(x[0], x[0]);
-            const s1l, const s1h = wide(x[1], x[1]);
-            const s2l, const s2h = wide(x[2], x[2]);
-            const s3l, const s3h = wide(x[3], x[3]);
-            w[0] = s0l;
-            w[1], c = addc(w[1], s0h, 0);
-            w[2], c = addc(w[2], s1l, c);
-            w[3], c = addc(w[3], s1h, c);
-            w[4], c = addc(w[4], s2l, c);
-            w[5], c = addc(w[5], s2h, c);
-            w[6], c = addc(w[6], s3l, c);
-            w[7] = w[7] + s3h + c;
-            // Reduce the low half by four limbs, then add the high half.
-            var t: [n + 2]u64 = .{ w[0], w[1], w[2], w[3], 0, 0 };
-            inline for (0..4) |_| {
-                t[5] = 0;
-                reduceStep(&t);
-            }
-            var r: [5]u64 = undefined;
-            r[0], c = addc(t[0], w[4], 0);
-            r[1], c = addc(t[1], w[5], c);
-            r[2], c = addc(t[2], w[6], c);
-            r[3], c = addc(t[3], w[7], c);
-            r[4] = t[4] + c;
-            return final(r);
+            return mul(a, a);
         }
 
         pub fn sqrn(a: Self, comptime count: usize) Self {
@@ -240,11 +157,6 @@ pub fn Field(comptime modulus: comptime_int) type {
         }
 
         pub fn add(a: Self, b: Self) Self {
-            if (assembly and !@inComptime()) return .{ .limbs = arm64.add(a.limbs, b.limbs) };
-            return addPortable(a, b);
-        }
-
-        pub fn addPortable(a: Self, b: Self) Self {
             var t: [n + 1]u64 = undefined;
             var c: u1 = 0;
             inline for (0..n) |i| t[i], c = addc(a.limbs[i], b.limbs[i], c);
@@ -257,11 +169,6 @@ pub fn Field(comptime modulus: comptime_int) type {
         }
 
         pub fn sub(a: Self, b: Self) Self {
-            if (assembly and !@inComptime()) return .{ .limbs = arm64.sub(a.limbs, b.limbs) };
-            return subPortable(a, b);
-        }
-
-        pub fn subPortable(a: Self, b: Self) Self {
             var d: Limbs = undefined;
             var borrow: u1 = 0;
             inline for (0..n) |i| d[i], borrow = subb(a.limbs[i], b.limbs[i], borrow);

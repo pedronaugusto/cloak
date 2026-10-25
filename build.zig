@@ -169,7 +169,14 @@ fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedT
 /// ELF or Mach-O. `src/crypto/field/p521.zig`'s `assembly` names the same targets; every other
 /// target computes with fiat-crypto's Zig. The shim header on the include path first names each
 /// routine `cloak_<routine>`, private to the image.
-const s2n_routines = [_][]const u8{ "add", "sub", "neg", "mul", "mul_alt", "sqr", "sqr_alt", "inv" };
+/// The s2n-bignum routines cloak computes with, by curve directory: both forms of each field's
+/// multiplication and squaring, its inversion, and P-521's addition, subtraction and negation
+/// (P-256's and P-384's are fiat-crypto's, inlined).
+const s2n_routines = [_]struct { []const u8, []const []const u8 }{
+    .{ "p256", &.{ "montmul_p256", "montmul_p256_alt", "montsqr_p256", "montsqr_p256_alt", "montinv_p256" } },
+    .{ "p384", &.{ "montmul_p384", "montmul_p384_alt", "montsqr_p384", "montsqr_p384_alt", "montinv_p384" } },
+    .{ "p521", &.{ "add_p521", "sub_p521", "neg_p521", "mul_p521", "mul_p521_alt", "sqr_p521", "sqr_p521_alt", "inv_p521" } },
+};
 
 fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
     @setRuntimeSafety(true);
@@ -182,17 +189,13 @@ fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTa
     m.addIncludePath(p.path("src/crypto/vendor/shim"));
     m.addIncludePath(p.path("src/crypto/vendor"));
     const windows = if (t.os.tag == .windows) "-DWINDOWS_ABI=1" else "-DWINDOWS_ABI=0";
-    for (s2n_routines) |routine| {
-        const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/p521/bignum_{s}.S", .{ directory, routineFile(p, routine) });
-        m.addCSourceFile(.{ .file = p.path(name), .flags = &.{windows}, .language = .assembly_with_preprocessor });
+    for (s2n_routines) |group| {
+        const curve, const routines = group;
+        for (routines) |routine| {
+            const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/{s}/bignum_{s}.S", .{ directory, curve, routine });
+            m.addCSourceFile(.{ .file = p.path(name), .flags = &.{windows}, .language = .assembly_with_preprocessor });
+        }
     }
-}
-
-/// `mul_alt` is the file `mul_p521_alt.S`.
-fn routineFile(p: *std.Build, routine: []const u8) []const u8 {
-    @setRuntimeSafety(true);
-    if (std.mem.endsWith(u8, routine, "_alt")) return p.fmt("{s}_p521_alt", .{routine[0 .. routine.len - 4]});
-    return p.fmt("{s}_p521", .{routine});
 }
 
 /// The portable probes: certificates and the record and handshake kernels under one module, since a

@@ -7,14 +7,15 @@
 //! scans every entry and handles the identity and the doubling case by selection, never by a
 //! branch. Signature verification sees only public values and may branch on them.
 //!
-//! Field and scalar values are Montgomery residues held in registers; the multiplications keep
-//! their long-lived secret state (accumulator, selected point, digits) in one scratch owner that
-//! is wiped before they return.
+//! The field is `field/nist.zig`'s (s2n-bignum's verified assembly, or fiat-crypto's verified
+//! Zig), its operands passed by pointer; the scalars are the generic Montgomery field's. The
+//! multiplications keep their long-lived secret state (accumulator, selected point, digits) in
+//! one scratch owner that is wiped before they return.
 const std = @import("std");
 const Montgomery = @import("field/Montgomery.zig");
 const table = @import("p256/table.zig");
 
-pub const Fe = Montgomery.Field(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff);
+pub const Fe = @import("field/nist.zig").Fe(.p256);
 pub const Scalar = Montgomery.Field(0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551);
 pub const order: u256 = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551;
 
@@ -27,30 +28,18 @@ pub const public_length = 65;
 pub const comb_bits = table.bits;
 pub const comb_windows = table.windows;
 
-/// x^(p-2) by the usual P-256 addition chain: 255 squarings and 12 multiplications.
-pub fn invert(x: Fe) Fe {
-    const x2 = x.sqr().mul(x);
-    const x3 = x2.sqr().mul(x);
-    const x6 = x3.sqrn(3).mul(x3);
-    const x12 = x6.sqrn(6).mul(x6);
-    const x15 = x12.sqrn(3).mul(x3);
-    const x30 = x15.sqrn(15).mul(x15);
-    const x32 = x30.sqrn(2).mul(x2);
-    var t = x32.sqrn(32).mul(x);
-    t = t.sqrn(128).mul(x32);
-    t = t.sqrn(32).mul(x32);
-    t = t.sqrn(30).mul(x30);
-    return t.sqrn(2).mul(x);
-}
-
 pub const Affine = struct {
     x: Fe,
     y: Fe,
 
+    /// x^3 - 3x + b.
+    fn rhs(x: *const Fe) Fe {
+        return x.sqr().mul(x).sub(&x.dbl().add(x)).add(&b);
+    }
+
     /// The curve equation y^2 = x^3 - 3x + b, checked on public coordinates.
-    pub fn onCurve(p: Affine) bool {
-        const rhs = p.x.sqr().mul(p.x).sub(p.x.dbl().add(p.x)).add(b);
-        return p.y.sqr().eql(rhs);
+    pub fn onCurve(p: *const Affine) bool {
+        return p.y.sqr().eql(&rhs(&p.x));
     }
 
     /// An uncompressed (0x04) or compressed (0x02/0x03) SEC1 encoding of a point on the
@@ -66,10 +55,10 @@ pub const Affine = struct {
         }
         if (bytes.len == 33 and (bytes[0] == 2 or bytes[0] == 3)) {
             const x = Fe.fromBytes(bytes[1..33]) catch return error.InvalidEncoding;
-            const rhs = x.sqr().mul(x).sub(x.dbl().add(x)).add(b);
+            const square = rhs(&x);
             // p = 3 mod 4: a square root is rhs^((p+1)/4).
-            var y = sqrtCandidate(rhs);
-            if (!y.sqr().eql(rhs)) return error.InvalidEncoding;
+            var y = sqrtCandidate(&square);
+            if (!y.sqr().eql(&square)) return error.InvalidEncoding;
             const odd = y.toInt()[0] & 1;
             if (odd != bytes[0] & 1) y = y.neg();
             return .{ .x = x, .y = y };
@@ -77,7 +66,7 @@ pub const Affine = struct {
         return error.InvalidEncoding;
     }
 
-    pub fn toSec1(p: Affine) [public_length]u8 {
+    pub fn toSec1(p: *const Affine) [public_length]u8 {
         var out: [public_length]u8 = undefined;
         out[0] = 4;
         out[1..33].* = p.x.toBytes();
@@ -86,19 +75,17 @@ pub const Affine = struct {
     }
 };
 
-fn sqrtCandidate(a: Fe) Fe {
-    // (p+1)/4 = 2^254 - 2^222 + 2^190 + 2^94
-    var r = a;
-    const exponent: u256 = (0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff + 1) / 4;
+/// a^((p+1)/4), (p+1)/4 = 2^254 - 2^222 + 2^190 + 2^94; the exponent is public.
+fn sqrtCandidate(a: *const Fe) Fe {
+    const exponent: u256 = (Fe.modulus + 1) / 4;
     var acc = Fe.one;
     var i: usize = 256;
     while (i > 0) {
         i -= 1;
         acc = acc.sqr();
-        if ((exponent >> @intCast(i)) & 1 == 1) acc = acc.mul(r);
+        if ((exponent >> @intCast(i)) & 1 == 1) acc = acc.mul(a);
     }
-    r = acc;
-    return r;
+    return acc;
 }
 
 // ---------------------------------------------------------------- complete projective points
@@ -113,54 +100,54 @@ pub const Projective = struct {
 
     /// Complete addition of an affine point (Renes, Costello and Batina 2015, algorithm 5,
     /// a = -3): correct for every `p`, including the identity and `p == q`.
-    pub fn addAffine(p: Projective, q: Affine) Projective {
-        var t0 = p.x.mul(q.x);
-        var t1 = p.y.mul(q.y);
-        var t3 = q.x.add(q.y);
-        var t4 = p.x.add(p.y);
-        t3 = t3.mul(t4);
-        t4 = t0.add(t1);
-        t3 = t3.sub(t4);
-        t4 = q.y.mul(p.z);
-        t4 = t4.add(p.y);
-        var y3 = q.x.mul(p.z);
-        y3 = y3.add(p.x);
-        var z3 = b.mul(p.z);
-        var x3 = y3.sub(z3);
+    pub fn addAffine(p: *const Projective, q: *const Affine) Projective {
+        var t0 = p.x.mul(&q.x);
+        var t1 = p.y.mul(&q.y);
+        var t3 = q.x.add(&q.y);
+        var t4 = p.x.add(&p.y);
+        t3 = t3.mul(&t4);
+        t4 = t0.add(&t1);
+        t3 = t3.sub(&t4);
+        t4 = q.y.mul(&p.z);
+        t4 = t4.add(&p.y);
+        var y3 = q.x.mul(&p.z);
+        y3 = y3.add(&p.x);
+        var z3 = b.mul(&p.z);
+        var x3 = y3.sub(&z3);
         z3 = x3.dbl();
-        x3 = x3.add(z3);
-        z3 = t1.sub(x3);
-        x3 = t1.add(x3);
-        y3 = b.mul(y3);
+        x3 = x3.add(&z3);
+        z3 = t1.sub(&x3);
+        x3 = t1.add(&x3);
+        y3 = b.mul(&y3);
         t1 = p.z.dbl();
-        var t2 = t1.add(p.z);
-        y3 = y3.sub(t2);
-        y3 = y3.sub(t0);
+        var t2 = t1.add(&p.z);
+        y3 = y3.sub(&t2);
+        y3 = y3.sub(&t0);
         t1 = y3.dbl();
-        y3 = t1.add(y3);
+        y3 = t1.add(&y3);
         t1 = t0.dbl();
-        t0 = t1.add(t0);
-        t0 = t0.sub(t2);
-        t1 = t4.mul(y3);
-        t2 = t0.mul(y3);
-        y3 = x3.mul(z3);
-        y3 = y3.add(t2);
-        x3 = t3.mul(x3);
-        x3 = x3.sub(t1);
-        z3 = t4.mul(z3);
-        t1 = t3.mul(t0);
-        z3 = z3.add(t1);
+        t0 = t1.add(&t0);
+        t0 = t0.sub(&t2);
+        t1 = t4.mul(&y3);
+        t2 = t0.mul(&y3);
+        y3 = x3.mul(&z3);
+        y3 = y3.add(&t2);
+        x3 = t3.mul(&x3);
+        x3 = x3.sub(&t1);
+        z3 = t4.mul(&z3);
+        t1 = t3.mul(&t0);
+        z3 = z3.add(&t1);
         return .{ .x = x3, .y = y3, .z = z3 };
     }
 
-    pub fn select(mask: u64, a: Projective, c: Projective) Projective {
-        return .{ .x = Fe.select(mask, a.x, c.x), .y = Fe.select(mask, a.y, c.y), .z = Fe.select(mask, a.z, c.z) };
+    pub fn select(mask: u64, a: *const Projective, c: *const Projective) Projective {
+        return .{ .x = Fe.select(mask, &a.x, &c.x), .y = Fe.select(mask, &a.y, &c.y), .z = Fe.select(mask, &a.z, &c.z) };
     }
 
     /// The affine point; the identity maps to (0, 0), which callers reject.
-    pub fn affine(p: Projective) Affine {
-        const inverse = invert(p.z);
-        return .{ .x = p.x.mul(inverse), .y = p.y.mul(inverse) };
+    pub fn affine(p: *const Projective) Affine {
+        const inverse = p.z.invert();
+        return .{ .x = p.x.mul(&inverse), .y = p.y.mul(&inverse) };
     }
 };
 
@@ -174,97 +161,97 @@ pub const Jacobian = struct {
 
     pub const identity: Jacobian = .{ .x = Fe.one, .y = Fe.one, .z = Fe.zero };
 
-    pub fn fromAffine(p: Affine) Jacobian {
+    pub fn fromAffine(p: *const Affine) Jacobian {
         return .{ .x = p.x, .y = p.y, .z = Fe.one };
     }
 
     /// dbl-2001-b for a = -3: 3M + 5S. The identity doubles to the identity.
-    pub fn dbl(p: Jacobian) Jacobian {
+    pub fn dbl(p: *const Jacobian) Jacobian {
         const delta = p.z.sqr();
         const gamma = p.y.sqr();
-        const beta = p.x.mul(gamma);
-        const t = p.x.sub(delta).mul(p.x.add(delta));
-        const alpha = t.dbl().add(t);
+        const beta = p.x.mul(&gamma);
+        const t = p.x.sub(&delta).mul(&p.x.add(&delta));
+        const alpha = t.dbl().add(&t);
         const beta4 = beta.dbl().dbl();
-        const x3 = alpha.sqr().sub(beta4.dbl());
-        const z3 = p.y.add(p.z).sqr().sub(gamma).sub(delta);
+        const x3 = alpha.sqr().sub(&beta4.dbl());
+        const z3 = p.y.add(&p.z).sqr().sub(&gamma).sub(&delta);
         const gamma2 = gamma.sqr();
-        const y3 = alpha.mul(beta4.sub(x3)).sub(gamma2.dbl().dbl().dbl());
+        const y3 = alpha.mul(&beta4.sub(&x3)).sub(&gamma2.dbl().dbl().dbl());
         return .{ .x = x3, .y = y3, .z = z3 };
     }
 
     /// add-2007-bl without its exceptional cases resolved: the caller handles an identity
     /// input and p == q. Returns the sum and the two values that detect p == +-q.
-    fn addRaw(p: Jacobian, q: Jacobian) struct { sum: Jacobian, h: Fe, r: Fe } {
+    fn addRaw(p: *const Jacobian, q: *const Jacobian) struct { sum: Jacobian, h: Fe, r: Fe } {
         const z1z1 = p.z.sqr();
         const z2z2 = q.z.sqr();
-        const x1z = p.x.mul(z2z2);
-        const x2z = q.x.mul(z1z1);
-        const s1 = p.y.mul(q.z).mul(z2z2);
-        const s2 = q.y.mul(p.z).mul(z1z1);
-        const h = x2z.sub(x1z);
+        const x1z = p.x.mul(&z2z2);
+        const x2z = q.x.mul(&z1z1);
+        const s1 = p.y.mul(&q.z).mul(&z2z2);
+        const s2 = q.y.mul(&p.z).mul(&z1z1);
+        const h = x2z.sub(&x1z);
         const i = h.dbl().sqr();
-        const j = h.mul(i);
-        const r = s2.sub(s1).dbl();
-        const v = x1z.mul(i);
-        const x3 = r.sqr().sub(j).sub(v.dbl());
-        const y3 = r.mul(v.sub(x3)).sub(s1.mul(j).dbl());
-        const z3 = p.z.add(q.z).sqr().sub(z1z1).sub(z2z2).mul(h);
+        const j = h.mul(&i);
+        const r = s2.sub(&s1).dbl();
+        const v = x1z.mul(&i);
+        const x3 = r.sqr().sub(&j).sub(&v.dbl());
+        const y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).dbl());
+        const z3 = p.z.add(&q.z).sqr().sub(&z1z1).sub(&z2z2).mul(&h);
         return .{ .sum = .{ .x = x3, .y = y3, .z = z3 }, .h = h, .r = r };
     }
 
     /// Constant-time sum for every input pair: the identity cases and p == q are selected,
     /// the doubling always computed.
-    pub fn addConstantTime(p: Jacobian, q: Jacobian) Jacobian {
+    pub fn addConstantTime(p: *const Jacobian, q: *const Jacobian) Jacobian {
         const raw = addRaw(p, q);
         const doubled = p.dbl();
         const same = raw.h.isZeroMask() & raw.r.isZeroMask();
-        var out = select(same, raw.sum, doubled);
-        out = select(p.z.isZeroMask(), out, q);
-        out = select(q.z.isZeroMask(), out, p);
+        var out = select(same, &raw.sum, &doubled);
+        out = select(p.z.isZeroMask(), &out, q);
+        out = select(q.z.isZeroMask(), &out, p);
         return out;
     }
 
     /// Public sum: branches on the exceptional cases.
-    pub fn addPublic(p: Jacobian, q: Jacobian) Jacobian {
-        if (p.z.isZero()) return q;
-        if (q.z.isZero()) return p;
+    pub fn addPublic(p: *const Jacobian, q: *const Jacobian) Jacobian {
+        if (p.z.isZero()) return q.*;
+        if (q.z.isZero()) return p.*;
         const raw = addRaw(p, q);
         if (raw.h.isZero()) return if (raw.r.isZero()) p.dbl() else identity;
         return raw.sum;
     }
 
     /// madd-2007-bl, public inputs: p plus an affine point. 7M + 4S.
-    pub fn addAffinePublic(p: Jacobian, q: Affine) Jacobian {
+    pub fn addAffinePublic(p: *const Jacobian, q: *const Affine) Jacobian {
         if (p.z.isZero()) return fromAffine(q);
         const z1z1 = p.z.sqr();
-        const x2z = q.x.mul(z1z1);
-        const s2 = q.y.mul(p.z).mul(z1z1);
-        const h = x2z.sub(p.x);
-        const r = s2.sub(p.y).dbl();
+        const x2z = q.x.mul(&z1z1);
+        const s2 = q.y.mul(&p.z).mul(&z1z1);
+        const h = x2z.sub(&p.x);
+        const r = s2.sub(&p.y).dbl();
         if (h.isZero()) return if (r.isZero()) p.dbl() else identity;
         const hh = h.sqr();
         const i = hh.dbl().dbl();
-        const j = h.mul(i);
-        const v = p.x.mul(i);
-        const x3 = r.sqr().sub(j).sub(v.dbl());
-        const y3 = r.mul(v.sub(x3)).sub(p.y.mul(j).dbl());
-        const z3 = p.z.add(h).sqr().sub(z1z1).sub(hh);
+        const j = h.mul(&i);
+        const v = p.x.mul(&i);
+        const x3 = r.sqr().sub(&j).sub(&v.dbl());
+        const y3 = r.mul(&v.sub(&x3)).sub(&p.y.mul(&j).dbl());
+        const z3 = p.z.add(&h).sqr().sub(&z1z1).sub(&hh);
         return .{ .x = x3, .y = y3, .z = z3 };
     }
 
-    pub fn neg(p: Jacobian) Jacobian {
+    pub fn neg(p: *const Jacobian) Jacobian {
         return .{ .x = p.x, .y = p.y.neg(), .z = p.z };
     }
 
-    pub fn select(mask: u64, a: Jacobian, c: Jacobian) Jacobian {
-        return .{ .x = Fe.select(mask, a.x, c.x), .y = Fe.select(mask, a.y, c.y), .z = Fe.select(mask, a.z, c.z) };
+    pub fn select(mask: u64, a: *const Jacobian, c: *const Jacobian) Jacobian {
+        return .{ .x = Fe.select(mask, &a.x, &c.x), .y = Fe.select(mask, &a.y, &c.y), .z = Fe.select(mask, &a.z, &c.z) };
     }
 
-    pub fn affine(p: Jacobian) Affine {
-        const zi = invert(p.z);
+    pub fn affine(p: *const Jacobian) Affine {
+        const zi = p.z.invert();
         const zi2 = zi.sqr();
-        return .{ .x = p.x.mul(zi2), .y = p.y.mul(zi2.mul(zi)) };
+        return .{ .x = p.x.mul(&zi2), .y = p.y.mul(&zi2.mul(&zi)) };
     }
 };
 
@@ -331,10 +318,10 @@ pub fn baseMul(scalar: *const [32]u8) Projective {
     s.acc = Projective.identity;
     for (0..comb_windows) |i| {
         selectBase(&s.selected, i, s.digits[i]);
-        const sum = s.acc.addAffine(s.selected);
+        const sum = s.acc.addAffine(&s.selected);
         // A zero digit adds nothing.
         const skip = Montgomery.zeroMask(s.digits[i].magnitude);
-        s.acc = Projective.select(skip, sum, s.acc);
+        s.acc = Projective.select(skip, &sum, &s.acc);
     }
     return s.acc;
 }
@@ -351,7 +338,7 @@ fn selectBase(out: *Affine, i: usize, digit: Digit) void {
     }
     out.x = .{ .limbs = x };
     const y_fe: Fe = .{ .limbs = y };
-    out.y = Fe.select(Montgomery.maskOf(digit.negative), y_fe, y_fe.neg());
+    out.y = Fe.select(Montgomery.maskOf(digit.negative), &y_fe, &y_fe.neg());
 }
 
 /// Public scalar * G for verification: the same comb, indexed directly.
@@ -364,7 +351,7 @@ fn baseMulPublic(scalar: *const [4]u64) Jacobian {
         const entry = &table.base[i][digit.magnitude - 1];
         var q: Affine = .{ .x = .{ .limbs = entry[0..4].* }, .y = .{ .limbs = entry[4..8].* } };
         if (digit.negative == 1) q.y = q.y.neg();
-        acc = acc.addAffinePublic(q);
+        acc = acc.addAffinePublic(&q);
     }
     return acc;
 }
@@ -382,12 +369,12 @@ const PointScratch = struct {
 };
 
 /// scalar * p for a secret big-endian scalar in [1, n) and a public point on the curve.
-pub fn mul(p: Affine, scalar: *const [32]u8) Jacobian {
+pub fn mul(p: *const Affine, scalar: *const [32]u8) Jacobian {
     // Public table: 1p .. 16p.
     var multiples: [16]Jacobian = undefined;
     multiples[0] = Jacobian.fromAffine(p);
     multiples[1] = multiples[0].dbl();
-    for (2..16) |i| multiples[i] = if (i % 2 == 1) multiples[i / 2].dbl() else multiples[i - 1].addPublic(multiples[0]);
+    for (2..16) |i| multiples[i] = if (i % 2 == 1) multiples[i / 2].dbl() else multiples[i - 1].addPublic(&multiples[0]);
     var s: PointScratch = undefined;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&s));
     s.limbs = scalarLimbs(scalar);
@@ -400,7 +387,7 @@ pub fn mul(p: Affine, scalar: *const [32]u8) Jacobian {
             inline for (0..point_bits) |_| s.acc = s.acc.dbl();
         }
         selectPoint(&s.selected, &multiples, s.digits[i]);
-        s.acc = s.acc.addConstantTime(s.selected);
+        s.acc = s.acc.addConstantTime(&s.selected);
     }
     return s.acc;
 }
@@ -410,18 +397,18 @@ fn selectPoint(out: *Jacobian, multiples: *const [16]Jacobian, digit: Digit) voi
     out.* = Jacobian.identity;
     for (multiples, 1..) |*entry, j| {
         const hit = Montgomery.zeroMask(@as(u64, digit.magnitude) ^ j);
-        out.* = Jacobian.select(hit, out.*, entry.*);
+        out.* = Jacobian.select(hit, out, entry);
     }
-    out.y = Fe.select(Montgomery.maskOf(digit.negative), out.y, out.y.neg());
+    out.y = Fe.select(Montgomery.maskOf(digit.negative), &out.y, &out.y.neg());
 }
 
 /// Public u1 * G + u2 * q for verification.
-pub fn mulDoubleBasePublic(g_scalar: *const [4]u64, q: Affine, q_scalar: *const [4]u64) Jacobian {
+pub fn mulDoubleBasePublic(g_scalar: *const [4]u64, q: *const Affine, q_scalar: *const [4]u64) Jacobian {
     // Odd multiples q, 3q, .., 15q for a width-5 NAF.
     var odd: [8]Jacobian = undefined;
     odd[0] = Jacobian.fromAffine(q);
     const twice = odd[0].dbl();
-    for (1..8) |i| odd[i] = odd[i - 1].addPublic(twice);
+    for (1..8) |i| odd[i] = odd[i - 1].addPublic(&twice);
     var naf: [257]i8 = undefined;
     const top = wnaf(q_scalar, &naf);
     var acc = Jacobian.identity;
@@ -430,10 +417,10 @@ pub fn mulDoubleBasePublic(g_scalar: *const [4]u64, q: Affine, q_scalar: *const 
         i -= 1;
         acc = acc.dbl();
         const d = naf[i];
-        if (d > 0) acc = acc.addPublic(odd[@intCast(@divTrunc(d - 1, 2))]);
-        if (d < 0) acc = acc.addPublic(odd[@intCast(@divTrunc(-d - 1, 2))].neg());
+        if (d > 0) acc = acc.addPublic(&odd[@intCast(@divTrunc(d - 1, 2))]);
+        if (d < 0) acc = acc.addPublic(&odd[@intCast(@divTrunc(-d - 1, 2))].neg());
     }
-    return acc.addPublic(baseMulPublic(g_scalar));
+    return acc.addPublic(&baseMulPublic(g_scalar));
 }
 
 /// Width-5 non-adjacent form of a public scalar; returns the number of digits used.
@@ -465,7 +452,7 @@ pub fn signR(k: *const [32]u8) ?Scalar {
 
 /// Checks an ECDSA signature (r, s) over a reduced digest scalar `e`, in Montgomery form as
 /// `Scalar.reduce` returns it.
-pub fn verify(q: Affine, e: Scalar, r_bytes: *const [32]u8, s_bytes: *const [32]u8) bool {
+pub fn verify(q: *const Affine, e: Scalar, r_bytes: *const [32]u8, s_bytes: *const [32]u8) bool {
     const r = Scalar.fromBytes(r_bytes) catch return false;
     const s = Scalar.fromBytes(s_bytes) catch return false;
     if (r.isZero() or s.isZero()) return false;
@@ -477,17 +464,16 @@ pub fn verify(q: Affine, e: Scalar, r_bytes: *const [32]u8, s_bytes: *const [32]
     // x(point) = X / Z^2; compare X with r * Z^2, and with (r + n) * Z^2 when r + n < p.
     const z2 = point.z.sqr();
     const r_int = r.toInt();
-    const r_fe = Fe.fromInt(r_int);
-    if (r_fe.mul(z2).eql(point.x)) return true;
+    const r_fe = Fe.fromInt(&r_int);
+    if (r_fe.mul(&z2).eql(&point.x)) return true;
     const r_wide: u257 = @as(u257, r_int[0]) | @as(u257, r_int[1]) << 64 | @as(u257, r_int[2]) << 128 | @as(u257, r_int[3]) << 192;
     const shifted = r_wide + order;
     const p_value: u257 = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff;
     if (shifted >= p_value) return false;
     const limbs: [4]u64 = .{ @truncate(shifted), @truncate(shifted >> 64), @truncate(shifted >> 128), @truncate(shifted >> 192) };
-    return Fe.fromInt(limbs).mul(z2).eql(point.x);
+    return Fe.fromInt(&limbs).mul(&z2).eql(&point.x);
 }
 
 test {
-    _ = Montgomery;
     _ = @import("p256_test.zig");
 }

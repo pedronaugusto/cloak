@@ -8,26 +8,22 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fiat = @import("../vendor/fiat/p521_64.zig");
+const shared = @import("s2n.zig");
 
-pub const encoded_length = 66;
+/// The big-endian encoding's length.
+const length = 66;
 pub const Limbs = [9]u64;
 
 pub const Backend = enum { fiat, s2n };
 
-/// Whether s2n-bignum's assembly is in this build: x86_64, and AArch64 where the object format
-/// is ELF or Mach-O (its AArch64 files carry no COFF directives).
-pub const assembly = switch (builtin.cpu.arch) {
-    .x86_64 => true,
-    .aarch64 => builtin.os.tag != .windows,
-    else => false,
-};
+pub const assembly = shared.assembly;
 
 /// The field elements this build computes with.
 pub const Fe = Field(if (assembly) .s2n else .fiat);
 
 /// The canonical encoding check both backends share: big-endian, below 2^521 (the top byte at
 /// most 1) and not p itself (0x01 then 65 bytes of 0xff). Constant time; only the verdict leaves.
-fn canonical(bytes: *const [encoded_length]u8) bool {
+fn canonical(bytes: *const [length]u8) bool {
     var all_ones: u8 = 0xff;
     for (bytes[1..]) |b| all_ones &= b;
     const is_p = @intFromBool(bytes[0] == 1) & @intFromBool(all_ones == 0xff);
@@ -38,8 +34,7 @@ pub fn Field(comptime backend: Backend) type {
     return FieldWith(backend, null);
 }
 
-/// The plain s2n-bignum multiplication and squaring, or the `_alt` ones.
-pub const Variant = enum { plain, alt };
+pub const Variant = shared.Variant;
 
 /// `Field` with s2n-bignum's variant fixed, for measuring both; null is the build's choice.
 pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
@@ -50,6 +45,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
         /// value below p.
         limbs: Limbs,
 
+        pub const encoded_length = length;
         pub const zero: Self = .{ .limbs = @splat(0) };
         pub const one: Self = .{ .limbs = .{ 1, 0, 0, 0, 0, 0, 0, 0, 0 } };
 
@@ -138,7 +134,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
                     fiat.add(&loose, a.limbs, b.limbs);
                     fiat.carry(&r.limbs, loose);
                 },
-                .s2n => s2n.call("add", .{ &r.limbs, &a.limbs, &b.limbs }),
+                .s2n => s2n.call("add", false, .{ &r.limbs, &a.limbs, &b.limbs }),
             }
             return r;
         }
@@ -155,7 +151,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
                     fiat.sub(&loose, a.limbs, b.limbs);
                     fiat.carry(&r.limbs, loose);
                 },
-                .s2n => s2n.call("sub", .{ &r.limbs, &a.limbs, &b.limbs }),
+                .s2n => s2n.call("sub", false, .{ &r.limbs, &a.limbs, &b.limbs }),
             }
             return r;
         }
@@ -168,7 +164,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
                     fiat.opp(&loose, a.limbs);
                     fiat.carry(&r.limbs, loose);
                 },
-                .s2n => s2n.call("neg", .{ &r.limbs, &a.limbs }),
+                .s2n => s2n.call("neg", false, .{ &r.limbs, &a.limbs }),
             }
             return r;
         }
@@ -179,7 +175,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
             switch (backend) {
                 .s2n => {
                     var r: Self = undefined;
-                    s2n.call("inv", .{ &r.limbs, &a.limbs });
+                    s2n.call("inv", false, .{ &r.limbs, &a.limbs });
                     // Zero has no inverse; the routine's answer for it is not specified.
                     return select(a.isZeroMask(), &r, &zero);
                 },
@@ -262,107 +258,27 @@ inline fn zeroMask(x: u64) u64 {
     return barrier(0 -% @as(u64, nonzero ^ 1));
 }
 
-/// s2n-bignum's P-521 routines, as `build.zig` assembles them: each named `cloak_<routine>`.
-/// Multiplication and squaring come in two forms. On x86_64 the plain ones use BMI2 and ADX
-/// (mulx, adcx, adox) and the `_alt` ones only the base instruction set. On AArch64 both run
-/// everywhere and the `_alt` ones are faster on cores with a wide multiplier (measured on the
-/// M3: the walk 195 us against 260 us; AWS-LC takes them on Apple M and Neoverse V1/V2 too).
-/// The choice is made once per process: at compile time where the target decides it (x86_64
-/// with BMI2 and ADX; an Apple OS), else by one question to the processor, cached.
+/// s2n-bignum's P-521 routines; `field/s2n.zig` makes the one choice between the plain and `_alt`
+/// multiplication and squaring.
 pub const s2n = struct {
     const Out = *Limbs;
     const In = *const Limbs;
 
-    pub extern fn cloak_bignum_mul_p521(z: Out, x: In, y: In) callconv(.c) void;
-    pub extern fn cloak_bignum_mul_p521_alt(z: Out, x: In, y: In) callconv(.c) void;
-    pub extern fn cloak_bignum_sqr_p521(z: Out, x: In) callconv(.c) void;
-    pub extern fn cloak_bignum_sqr_p521_alt(z: Out, x: In) callconv(.c) void;
-    pub extern fn cloak_bignum_add_p521(z: Out, x: In, y: In) callconv(.c) void;
-    pub extern fn cloak_bignum_sub_p521(z: Out, x: In, y: In) callconv(.c) void;
-    pub extern fn cloak_bignum_neg_p521(z: Out, x: In) callconv(.c) void;
-    pub extern fn cloak_bignum_inv_p521(z: Out, x: In) callconv(.c) void;
+    pub const chosen = shared.chosen;
+    pub const plainRuns = shared.plainRuns;
 
-    pub inline fn call(comptime name: []const u8, args: anytype) void {
-        @call(.auto, @field(@This(), "cloak_bignum_" ++ name ++ "_p521"), args);
+    /// `bignum_<name>_p521`, or its `_alt` form.
+    pub inline fn call(comptime name: []const u8, comptime alt: bool, args: anytype) void {
+        const F = if (args.len == 3) fn (Out, In, In) callconv(.c) void else fn (Out, In) callconv(.c) void;
+        @call(.auto, shared.routine(F, "bignum_" ++ name ++ "_p521" ++ (if (alt) "_alt" else "")), args);
     }
 
     pub inline fn mul(comptime variant: ?Variant, z: Out, x: In, y: In) void {
-        if ((variant orelse chosen()) == .plain) cloak_bignum_mul_p521(z, x, y) else cloak_bignum_mul_p521_alt(z, x, y);
+        if ((variant orelse chosen()) == .plain) call("mul", false, .{ z, x, y }) else call("mul", true, .{ z, x, y });
     }
 
     pub inline fn sqr(comptime variant: ?Variant, z: Out, x: In) void {
-        if ((variant orelse chosen()) == .plain) cloak_bignum_sqr_p521(z, x) else cloak_bignum_sqr_p521_alt(z, x);
-    }
-
-    /// The variant this process runs.
-    pub inline fn chosen() Variant {
-        if (comptime fixed) |variant| return variant;
-        return asked.get();
-    }
-
-    /// Whether this processor runs the plain routines at all: on x86_64 they need BMI2 and ADX.
-    pub fn plainRuns() bool {
-        if (builtin.cpu.arch != .x86_64) return true;
-        if (comptime fixed == .plain) return true;
-        return x86HasMulx();
-    }
-
-    /// The variant the target alone decides, if it does.
-    const fixed: ?Variant = switch (builtin.cpu.arch) {
-        .x86_64 => if (std.Target.x86.featureSetHasAll(builtin.cpu.features, .{ .bmi2, .adx })) .plain else null,
-        .aarch64 => if (builtin.os.tag.isDarwin()) .alt else if (builtin.os.tag == .linux) null else .plain,
-        else => null,
-    };
-
-    /// The processor's answer, asked once: 0 unasked, else the variant's value plus one. Racing
-    /// first calls reach the same answer.
-    const asked = struct {
-        var state: std.atomic.Value(u8) = .init(0);
-
-        fn get() Variant {
-            const known = state.load(.monotonic);
-            if (known != 0) return @fromBackingInt(@intCast(known - 1));
-            const variant: Variant = switch (builtin.cpu.arch) {
-                .x86_64 => if (x86HasMulx()) .plain else .alt,
-                .aarch64 => if (wideMultiplier()) .alt else .plain,
-                else => unreachable, // unreachable: `assembly` holds only on x86_64 and AArch64
-            };
-            state.store(@backingInt(variant) + 1, .monotonic);
-            return variant;
-        }
-    };
-
-    /// x86_64: BMI2 (leaf 7, EBX bit 8) and ADX (EBX bit 19).
-    fn x86HasMulx() bool {
-        if (cpuid(0, 0).eax < 7) return false;
-        const ebx = cpuid(7, 0).ebx;
-        return ebx & (1 << 8) != 0 and ebx & (1 << 19) != 0;
-    }
-
-    fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
-        var eax: u32 = undefined;
-        var ebx: u32 = undefined;
-        asm volatile ("cpuid"
-            : [eax] "={eax}" (eax),
-              [ebx] "={ebx}" (ebx),
-            : [leaf] "{eax}" (leaf),
-              [subleaf] "{ecx}" (subleaf),
-            : .{ .ecx = true, .edx = true });
-        return .{ .eax = eax, .ebx = ebx };
-    }
-
-    /// AArch64 Linux: a core with a wide multiplier by its MIDR_EL1, which the kernel emulates
-    /// for user space when it says so (HWCAP_CPUID, bit 11): Apple's (implementer 0x61) and
-    /// Arm's Neoverse V1 (0xd40) and V2 (0xd4f).
-    fn wideMultiplier() bool {
-        if (builtin.os.tag != .linux) return false;
-        if (std.os.linux.getauxval(std.elf.AT.HWCAP) & (1 << 11) == 0) return false;
-        const midr = asm volatile ("mrs %[midr], midr_el1"
-            : [midr] "=r" (-> u64),
-        );
-        const implementer = (midr >> 24) & 0xff;
-        const part = (midr >> 4) & 0xfff;
-        return implementer == 0x61 or (implementer == 0x41 and (part == 0xd40 or part == 0xd4f));
+        if ((variant orelse chosen()) == .plain) call("sqr", false, .{ z, x }) else call("sqr", true, .{ z, x });
     }
 };
 

@@ -47,7 +47,7 @@ pub const P256 = struct {
         try check(scalar);
         if (peer.len != public_length or peer[0] != 4) return error.InvalidPublicKey;
         const point = p256.Affine.fromSec1(peer) catch return error.InvalidPublicKey;
-        var product = p256.mul(point, scalar);
+        var product = p256.mul(&point, scalar);
         defer std.crypto.secureZero(u8, std.mem.asBytes(&product));
         if (product.z.isZero()) return error.IdentityElement;
         // The shared point is secret, both coordinates.

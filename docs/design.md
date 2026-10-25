@@ -1733,7 +1733,7 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F02 | `catalogue_private_operation_blinding_and_fault` | `crypto/rsa_test.zig` | the fault check skipped; the seed left out of the blinding draw |
 | F03 | `catalogue_compiler_preserves_secret_operations` | `tls/Timing_test.zig` | `receive` run outside data-independent timing |
 | F04 | `catalogue_scalar_nonce_length_and_tail_dispatch` | `crypto/p256_test.zig`, `credentials/Sign_test.zig` | a zero window selecting the base multiple instead of the identity |
-| F05 | `catalogue_kernel_carries_lengths_and_dispatch` | `crypto/p256/Montgomery_test.zig`, `credentials/Uint_test.zig`, `credentials/curve/Montgomery_test.zig`, `tls/crypto/Ccm_test.zig` | the portable field addition dropping its carry |
+| F05 | `catalogue_kernel_carries_lengths_and_dispatch` | `crypto/field/nist_test.zig`, `crypto/field/p521_test.zig`, `credentials/Uint_test.zig`, `credentials/curve/Montgomery_test.zig`, `tls/crypto/Ccm_test.zig` | the portable field addition dropping its carry |
 | F06 | `catalogue_key_import_failure_and_kdf_budget` | `credentials/Key_test.zig`, `credentials/Parser_test.zig`, `credentials/Pem_test.zig`, `credentials/Base64_test.zig` | the KDF iteration bound removed |
 | F07 | `catalogue_der_lengths_children_and_depth` | `wire/Der_test.zig` | a nonminimal long-form length accepted; the hard depth ceiling removed |
 | F08 | `catalogue_signature_workspace_and_rsa_size` | `crypto/rsa_test.zig`, `verify/signature_test.zig`, `verify/wycheproof_test.zig` | the RSA signature length check removed |

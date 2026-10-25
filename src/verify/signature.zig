@@ -207,7 +207,7 @@ fn ecdsaP1363(comptime Curve: type, comptime H: type, bytes: []const u8, digest:
     if (Curve == std.crypto.ecc.P256) {
         const key = p256.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
         const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest[0..32]));
-        if (!p256.verify(key, e, signature[0..32], signature[32..64])) return error.InvalidSignature;
+        if (!p256.verify(&key, e, signature[0..32], signature[32..64])) return error.InvalidSignature;
         return;
     }
     const E = std.crypto.sign.ecdsa.Ecdsa(Curve, H);
@@ -222,7 +222,7 @@ fn ecdsaP256(bytes: []const u8, digest: []const u8, signature: []const u8) Error
     const sig = std.crypto.sign.ecdsa.EcdsaP256Sha256.Signature.fromDer(signature) catch return error.InvalidSignature;
     // The leftmost 256 bits of the digest, reduced modulo the order.
     const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest[0..32]));
-    if (!p256.verify(key, e, &sig.r, &sig.s)) return error.InvalidSignature;
+    if (!p256.verify(&key, e, &sig.r, &sig.s)) return error.InvalidSignature;
 }
 /// P-521 through cloak's curve, public inputs only: the signature as DER (r and s minimal
 /// positive INTEGERs, nothing after them) or as r || s at 66 bytes each.

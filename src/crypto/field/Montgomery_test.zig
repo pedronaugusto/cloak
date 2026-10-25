@@ -68,7 +68,7 @@ fn check(comptime F: type, comptime modulus: comptime_int, random: std.Random) !
     try std.testing.expectEqual(@as(T, std.math.maxInt(T) % modulus), toInt(T, F.reduce(fromInt(F.n, @as(T, std.math.maxInt(T)))).toInt()));
 }
 
-test "P-256 field and scalar Montgomery arithmetic match big-integer arithmetic" {
+test "the generic Montgomery field on P-256's prime and order matches big-integer arithmetic" {
     var prng = std.Random.DefaultPrng.init(0x256);
     try check(Fe, p, prng.random());
     try check(Scalar, n, prng.random());
@@ -77,58 +77,4 @@ test "P-256 field and scalar Montgomery arithmetic match big-integer arithmetic"
 test "P-521 scalar Montgomery arithmetic on nine limbs matches big-integer arithmetic" {
     var prng = std.Random.DefaultPrng.init(0x521);
     try check(Scalar521, n521, prng.random());
-}
-
-test "P-256 field arithmetic matches std's field" {
-    var prng = std.Random.DefaultPrng.init(7);
-    const Std = std.crypto.ecc.P256.Fe;
-    for (0..500) |_| {
-        var bytes: [32]u8 = undefined;
-        std.mem.writeInt(u256, &bytes, prng.random().int(u256) % p, .big);
-        const ours = try Fe.fromBytes(&bytes);
-        const theirs = try Std.fromBytes(bytes, .big);
-        // Both keep Montgomery limbs with R = 2^256.
-        try std.testing.expectEqualSlices(u64, &theirs.limbs, &ours.limbs);
-        try std.testing.expectEqualSlices(u64, &theirs.sq().mul(theirs).limbs, &ours.sqr().mul(ours).limbs);
-    }
-}
-
-test "F05 catalogue_kernel_carries_lengths_and_dispatch (P-256 field: the platform kernel equals the portable arithmetic)" {
-    var prng = std.Random.DefaultPrng.init(17);
-    const edges = [_]u256{ 0, 1, 2, p - 1, p - 2, (1 << 255), (1 << 224), p >> 1 };
-    for (0..20000 + edges.len * edges.len) |i| {
-        const pair = i < edges.len * edges.len;
-        const a: u256 = if (pair) edges[i / edges.len] else prng.random().int(u256) % p;
-        const b: u256 = if (pair) edges[i % edges.len] else prng.random().int(u256) % p;
-        const x: Fe = .{ .limbs = fromU256(a) };
-        const y: Fe = .{ .limbs = fromU256(b) };
-        try std.testing.expectEqualSlices(u64, &x.mulPortable(y).limbs, &x.mul(y).limbs);
-        try std.testing.expectEqualSlices(u64, &x.sqrPortable().limbs, &x.sqr().limbs);
-        try std.testing.expectEqualSlices(u64, &x.addPortable(y).limbs, &x.add(y).limbs);
-        try std.testing.expectEqualSlices(u64, &x.subPortable(y).limbs, &x.sub(y).limbs);
-    }
-}
-
-test "F05 catalogue_kernel_carries_lengths_and_dispatch (P-256 field: the platform kernel equals the portable arithmetic on limbs at or above p)" {
-    // Two operands near 2^256 overflowed a five-limb accumulator in the assembly's rows.
-    const near_a: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff90fc3d64;
-    const near_b: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffff69c01f72;
-    // 2^-256 mod p.
-    const r_inverse: u512 = 0xfffffffe00000003fffffffd0000000200000001fffffffe0000000300000000;
-    var prng = std.Random.DefaultPrng.init(23);
-    for (0..20000) |i| {
-        const high = std.math.maxInt(u256) - p;
-        const a: u256 = if (i == 0) near_a else p + prng.random().int(u256) % high;
-        const b: u256 = if (i == 0) near_b else if (i % 2 == 0) p + prng.random().int(u256) % high else prng.random().int(u256);
-        const x: Fe = .{ .limbs = fromU256(a) };
-        const y: Fe = .{ .limbs = fromU256(b) };
-        const product = x.mul(y);
-        try std.testing.expectEqualSlices(u64, &x.mulPortable(y).limbs, &product.limbs);
-        // Congruent to a * b / 2^256 whatever the operands' form.
-        const want: u256 = @intCast(@as(u512, a) * b % p * r_inverse % p);
-        try std.testing.expectEqual(want, toU256(product.limbs) % p);
-        try std.testing.expectEqualSlices(u64, &x.sqrPortable().limbs, &x.sqr().limbs);
-        try std.testing.expectEqualSlices(u64, &x.addPortable(y).limbs, &x.add(y).limbs);
-        try std.testing.expectEqualSlices(u64, &x.subPortable(y).limbs, &x.sub(y).limbs);
-    }
 }
