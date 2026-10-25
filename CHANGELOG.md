@@ -4,6 +4,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it.
+- `certificate.Algorithm.Curve` gains `p521`, and TLS's `Group` and `SignatureScheme` name secp521r1 and ecdsa_secp521r1_sha512; an exhaustive switch over `Curve` needs the case.
+
 ### Added
 
 - `Pkcs12`: PKCS#12 (PFX, `.p12`, RFC 7292) files read into their private key and certificates, the key's certificate first and then its issuers in chain order (`chain()`, what `Identity.init` takes); a key-less trust store gives its certificates alone. The MAC is checked first, before anything is decrypted: HMAC under RFC 7292's KDF (SHA-1, SHA-224, SHA-256, SHA-384, SHA-512) or PBMAC1 (RFC 9579), compared in constant time; a file without one is `Unauthenticated` unless the caller sets `require_mac = false`. Contents under PBES2 (PBKDF2 with AES-CBC or DES-EDE3-CBC) or PKCS#12's PBE (3DES, two-key 3DES, RC2-128 and RC2-40, as Windows and OpenSSL 1.x exports encrypt certificates); RC4 and public-key privacy are `UnsupportedEncryption`. BER (NSS's and Windows' writers) is normalised to DER first. Passwords are UTF-8; the BMPString form RFC 7292 asks for is made for its KDF, and an empty password is tried in both encodings writers use. One key per file (`MultipleKeys`); a key no certificate matches is `KeyMismatch`. Read against OpenSSL 4.0.3 (default, legacy, PBMAC1, no MAC, no encryption, empty and non-ASCII passwords), NSS 3.128, go-pkcs12 0.7.4, Python cryptography 46.0.5 and macOS's `security export`.
@@ -25,8 +30,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - RSA private keys load in a fraction of the time, an RSA-2048 key's checks no longer walking 8192 bits: the agreement checks reduce over the integers' encoded widths instead of the fixed 8192-bit capacity, skip the bits below the modulus's width, check e * dp and e * dq (half as long) beside d's agreement with dp and dq, and the Montgomery constants start at the modulus's top bit. Every check is the one before; the widths walked are the DER lengths, public.
 - AES-CBC key-file decryption runs on the AES instructions where the target has them (AES-128 and AES-256), the fixed-arithmetic AES elsewhere and for AES-192.
 - PBKDF2 keeps HMAC's keyed inner and outer states across rounds, two compressions per round instead of four, and SHA-1 runs on the ARMv8 SHA-1 instructions where the target has them (std's SHA-1 has no accelerated path).
-- `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it. Breaking.
-- `certificate.Algorithm.Curve` gains `p521`, and TLS's `Group` and `SignatureScheme` name secp521r1 and ecdsa_secp521r1_sha512; an exhaustive switch over `Curve` needs the case. Breaking.
 
 ## [0.22.2] - 2026-10-25
 
