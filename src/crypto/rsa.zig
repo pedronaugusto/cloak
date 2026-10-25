@@ -45,8 +45,9 @@ pub const Error = error{SigningFailed};
 
 const Limbs = [max_limbs]u64;
 
-/// An odd modulus with its Montgomery constants, R = 2^(64 * len).
-const Modulus = struct {
+/// An odd modulus with its Montgomery constants, R = 2^(64 * len). Key generation
+/// (`rsa_keygen.zig`) tests its candidates and inverts with it.
+pub const Modulus = struct {
     m: Limbs = @splat(0),
     /// R^2 and R^3 mod m.
     rr: Limbs = @splat(0),
@@ -55,7 +56,7 @@ const Modulus = struct {
     inv: u64 = 0,
     len: usize = 0,
 
-    fn init(out: *Modulus, bytes: []const u8, len: usize) InitError!void {
+    pub fn init(out: *Modulus, bytes: []const u8, len: usize) InitError!void {
         @setRuntimeSafety(true);
         out.* = .{ .len = len };
         try decode(out.m[0..len], bytes);
@@ -163,7 +164,7 @@ const Modulus = struct {
     }
 
     /// Montgomery reduction `out = t / R mod m` of a `t` below m * R of at most 2 * len limbs.
-    fn reduce(self: *const Modulus, out: []u64, input: []const u64) void {
+    pub fn reduce(self: *const Modulus, out: []u64, input: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
         aegis.assert.invariant(input.len <= 2 * len, "a reduction takes at most twice the modulus");
@@ -187,7 +188,7 @@ const Modulus = struct {
     }
 
     /// The Montgomery form of `x`, a value below m * R of at most 2 * len limbs: x * R mod m.
-    fn toMontgomery(self: *const Modulus, out: []u64, x: []const u64) void {
+    pub fn toMontgomery(self: *const Modulus, out: []u64, x: []const u64) void {
         @setRuntimeSafety(true);
         // reduce gives x / R; multiplying by R^3 gives x * R.
         self.reduce(out, x);
@@ -195,7 +196,7 @@ const Modulus = struct {
     }
 
     /// `out = a - b mod m` for `a, b` below m.
-    fn sub(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
+    pub fn sub(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
         @setRuntimeSafety(true);
         var borrow: u1 = 0;
         for (0..self.len) |i| out[i], borrow = subb(a[i], b[i], borrow);
@@ -224,7 +225,7 @@ const Modulus = struct {
     /// `out = base^exponent` in Montgomery form for a secret `exponent` of `len` limbs: fixed
     /// four-bit windows from the top over all 64 * len bits, each window's multiple chosen by a
     /// scan of the whole table.
-    fn powSecret(self: *const Modulus, out: []u64, base: []const u64, exponent: []const u64) void {
+    pub fn powSecret(self: *const Modulus, out: []u64, base: []const u64, exponent: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
         var table: [16][max_half]u64 = undefined;
