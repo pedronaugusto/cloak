@@ -119,3 +119,27 @@ test "C2 the schemes taken from the peer must leave some to list" {
     defer tls12.deinit();
     try std.testing.expectError(error.NoSignatureScheme, tls12.handshake());
 }
+
+test "P-521: a server certificate on P-521 signs ecdsa_secp521r1_sha512 in TLS 1.3, ECDSA in 1.2, and secp521r1 agrees when both list it" {
+    const Group = @import("crypto/Group.zig").Group;
+    const groups: []const Group = &.{.p521};
+    const Case = struct { tls12: bool, signed: Hello.SignatureScheme };
+    for ([_]Case{
+        .{ .tls12 = false, .signed = .ecdsa_p521_sha512 },
+        // TLS 1.2's ServerKeyExchange: the curve's own hash first.
+        .{ .tls12 = true, .signed = .ecdsa_p521_sha512 },
+    }) |case| {
+        const duo = try Duo.init(gpa, versions(case.tls12, .{ .cert = .p521, .client_groups = groups, .server_groups = groups }));
+        defer duo.deinit();
+        try duo.handshake();
+        const info = duo.client.info().?;
+        try std.testing.expectEqual(case.signed, info.peer_scheme.?);
+        try std.testing.expectEqual(Group.p521, info.group.?);
+    }
+    // The default groups do not list secp521r1: the certificate still signs under its scheme.
+    const duo = try Duo.init(gpa, .{ .cert = .p521 });
+    defer duo.deinit();
+    try duo.handshake();
+    try std.testing.expectEqual(Hello.SignatureScheme.ecdsa_p521_sha512, duo.client.info().?.peer_scheme.?);
+    try std.testing.expect(duo.client.info().?.group.? != Group.p521);
+}

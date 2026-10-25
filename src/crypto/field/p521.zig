@@ -321,13 +321,13 @@ pub const s2n = struct {
 
         fn get() Variant {
             const known = state.load(.monotonic);
-            if (known != 0) return @enumFromInt(known - 1);
+            if (known != 0) return @fromBackingInt(@intCast(known - 1));
             const variant: Variant = switch (builtin.cpu.arch) {
                 .x86_64 => if (x86HasMulx()) .plain else .alt,
                 .aarch64 => if (wideMultiplier()) .alt else .plain,
                 else => unreachable, // unreachable: `assembly` holds only on x86_64 and AArch64
             };
-            state.store(@intFromEnum(variant) + 1, .monotonic);
+            state.store(@backingInt(variant) + 1, .monotonic);
             return variant;
         }
     };

@@ -150,6 +150,36 @@ on the ARMv8 SHA-1 instructions (`crypto/sha1.zig`; std's SHA-1 has no accelerat
 on the AES instructions where the target has them, the fixed-arithmetic AES elsewhere. x86_64's
 SHA extensions are not used yet: there SHA-1 is std's.
 
+## Verified field arithmetic and P-521
+
+P-521's field runs formally verified code behind one interface, `crypto/field/p521.zig`:
+s2n-bignum's assembly (HOL Light proofs of correctness and constant time) where `build.zig`
+assembles it, x86_64 on every OS and AArch64 on ELF and Mach-O, and fiat-crypto's generated Zig
+(Rocq proofs) everywhere else. Both are vendored unchanged under `src/crypto/vendor` with their
+commit, licences and SHA-256 (`PROVENANCE.md`); no generator runs in the build. A cloak shim
+header ahead of upstream's on the include path names each routine `cloak_<routine>`, hidden, and
+gives COFF's function directive on Windows. Curve code sees `Fe` alone: operands by pointer (the
+assembly takes addresses, and a by-value operand cost a stack copy per call), canonical bytes
+across the seam, no allocation. The backend is fixed at compile time by target. s2n-bignum's two
+forms of multiplication and squaring (BMI2/ADX and base on x86_64; the `_alt` form for cores
+with a wide multiplier on AArch64) are chosen once per process, at compile time where the
+target decides, else by one cached CPUID or MIDR_EL1 read. The assembly runs inside the
+`aegis.secret.scrubbed` frame of each secret computation (key derivation, signing,
+agreement), which sets data-independent timing and erases the stack it wrote. Differential
+tests hold s2n-bignum (every variant the processor runs) to fiat-crypto, and fiat-crypto to
+wide-integer arithmetic, on random and edge operands.
+
+The scalars mod n run on `crypto/field/Montgomery.zig`, P-256's Montgomery field generalised to n
+limbs: one generic constant-time field, as Go's nistec pairs fiat's base fields with its generic
+scalars. `crypto/p521.zig` is P-256's shape over that field: SEC 1 points (compressed ones by
+the square root a^(2^519)), complete constant-time multiplication by signed five-bit windows
+over a scanned table (the base point takes the same walk), a public width-5 NAF double-base
+walk for verification, and ECDSA's pieces. ECDSA nonces are hedged as P-256's and P-384's are,
+RFC 6979's bits2int taking the leftmost 521 bits of a 66-byte draw. In TLS the signature scheme
+ecdsa_secp521r1_sha512 is offered by default and the group secp521r1 only when listed;
+TLS 1.2's CertificateVerify keeps to SHA-256 and SHA-384 transcripts, so a P-521 client key
+signs under those there.
+
 ## Build and verification decisions
 
 The shipped module uses published aegis, std and native platform trust APIs.

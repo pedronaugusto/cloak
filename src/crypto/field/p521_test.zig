@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const p521 = @import("p521.zig");
 const Fiat = p521.Field(.fiat);
 

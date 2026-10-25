@@ -125,7 +125,10 @@ pub fn buildServerKeyExchange(out: []u8, params: []const u8, scheme: u16, signat
 }
 
 /// What a ServerKeyExchange signature covers: client random, server random, params.
-pub const max_signed = 32 + 32 + 4 + 97;
+/// The longest ECDHE public value: P-521's uncompressed point.
+pub const max_public = 133;
+/// The signed parameters: both randoms, then curve type, group and the public value's vector.
+pub const max_signed = 32 + 32 + 4 + max_public;
 pub fn signedParams(out: *[max_signed]u8, client_random: *const [32]u8, server_random: *const [32]u8, params: []const u8) []const u8 {
     @setRuntimeSafety(true);
     aegis.assert.invariant(params.len <= max_signed - 64, "the signed parameters fit their buffer");

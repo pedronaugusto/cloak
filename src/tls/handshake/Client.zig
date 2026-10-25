@@ -328,7 +328,8 @@ const Scratch = struct {
     /// Fresh noise for the hedged client signature, drawn with the first entropy.
     sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
     // TLS 1.2: the server's ECDHE public value and the client's share for it.
-    server_public: [97]u8 = undefined,
+    /// The longest classical public value: P-521's uncompressed point.
+    server_public: [133]u8 = undefined,
     server_public_len: u8 = 0,
     share12: ?Exchange.Share = null,
     ech: EchScratch = .{},

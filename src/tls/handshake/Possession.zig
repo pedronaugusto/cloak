@@ -54,6 +54,7 @@ pub fn bind(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signature 
         .rsa_pkcs1_sha512 => if (key == .rsa and !key.rsa.pss_only) .{ .rsa = .sha512 } else error.SchemeKeyMismatch,
         .ecdsa_p256_sha256 => if (key == .ec and key.ec.curve == .p256) .{ .ecdsa = .sha256 } else error.SchemeKeyMismatch,
         .ecdsa_p384_sha384 => if (key == .ec and key.ec.curve == .p384) .{ .ecdsa = .sha384 } else error.SchemeKeyMismatch,
+        .ecdsa_p521_sha512 => if (key == .ec and key.ec.curve == .p521) .{ .ecdsa = .sha512 } else error.SchemeKeyMismatch,
         .ed25519 => if (key == .ed25519) .ed25519 else error.SchemeKeyMismatch,
         .mldsa44 => mldsa(key, .mldsa44),
         .mldsa65 => mldsa(key, .mldsa65),
@@ -129,7 +130,11 @@ pub const max_schemes = 16;
 pub fn choose(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
-        .ec => |ec| if (ec.curve == .p256) &.{.ecdsa_p256_sha256} else &.{.ecdsa_p384_sha384},
+        .ec => |ec| switch (ec.curve) {
+            .p256 => &.{.ecdsa_p256_sha256},
+            .p384 => &.{.ecdsa_p384_sha384},
+            .p521 => &.{.ecdsa_p521_sha512},
+        },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512 },
         .mldsa => |m| switch (m.level) {
@@ -168,6 +173,7 @@ pub fn bind12(scheme: Scheme, key: Algorithm.PublicKey) Error!Algorithm.Signatur
     return switch (scheme) {
         .ecdsa_p256_sha256 => if (key == .ec) .{ .ecdsa = .sha256 } else error.SchemeKeyMismatch,
         .ecdsa_p384_sha384 => if (key == .ec) .{ .ecdsa = .sha384 } else error.SchemeKeyMismatch,
+        .ecdsa_p521_sha512 => if (key == .ec) .{ .ecdsa = .sha512 } else error.SchemeKeyMismatch,
         else => bind(scheme, key),
     };
 }
@@ -229,7 +235,12 @@ pub fn signDigest12(identity: certificates.Identity, scheme: Scheme, digest: []c
 pub fn chooseServer12(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
-        .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
+        // TLS 1.2 binds the hash, not the curve: the curve's own hash first.
+        .ec => |ec| switch (ec.curve) {
+            .p256 => &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .ecdsa_p521_sha512 },
+            .p384 => &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256, .ecdsa_p521_sha512 },
+            .p521 => &.{ .ecdsa_p521_sha512, .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
+        },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 },
         // TLS 1.3's only.
@@ -245,6 +256,7 @@ pub fn chooseServer12(key: Algorithm.PublicKey, own: []const Scheme, accepts: an
 pub fn chooseClient12(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?Scheme {
     @setRuntimeSafety(true);
     const order: []const Scheme = switch (key) {
+        // The transcript hashes cloak keeps: SHA-256 and SHA-384, whatever the curve.
         .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },

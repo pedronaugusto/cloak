@@ -47,3 +47,10 @@ the tests give one operator), `ct_leaf_long` (a and b), `ct_leaf_long_three` (a,
 `ct_leaf_wrong_entry` (b, and an SCT from a over another precertificate); `ct_plain`, without
 SCTs, and `ct_plain.scts`, a SignedCertificateTimestampList from logs a and b over it as it is.
 The generator is not kept: the files are the fixture.
+
+The P-521 set, made with OpenSSL 4.0.3 (2026-10-25): `p521_ca.der`, a P-521 root (path length 0,
+ecdsa-with-SHA512), and `p521.der`, a server certificate it signs on the `p521.key.pem` key for
+`example.com`, `*.example.org` and `192.0.2.7` with the leaves' extensions above (subject and
+authority key identifiers named). Validity from 2026-10-10 for a hundred years. Commands:
+`openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-521`, `openssl req -new -x509 -sha512`,
+`openssl x509 -req -CA -sha512`.

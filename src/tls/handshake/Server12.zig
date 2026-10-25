@@ -125,7 +125,11 @@ fn authenticationOf(key: certificates.certificate.Algorithm.PublicKey, hello: *c
     return switch (key) {
         .rsa => .rsa,
         // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
-        .ec => |ec| if (hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) .ecdsa else error.NoSharedSuite,
+        .ec => |ec| if (hello.offersGroup(switch (ec.curve) {
+            .p256 => .p256,
+            .p384 => .p384,
+            .p521 => .p521,
+        })) .ecdsa else error.NoSharedSuite,
         .ed25519 => .ecdsa,
         // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa); an agreement key, nothing.
         .mldsa, .x25519 => error.NoSharedSuite,
@@ -278,10 +282,10 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
         try self.queueMessage(.initial, status);
     }
     const share = &scratch.share12.?;
-    var params_buffer: [4 + 97]u8 = undefined;
+    var params_buffer: [4 + Messages12.max_public]u8 = undefined;
     const params = try Messages12.buildParams(&params_buffer, group, share.wire());
     const content = Messages12.signedParams(&scratch.params12, &scratch.client_random, &random, params);
-    // safe: the signed content is at most 32 + 32 + 4 + 97 bytes.
+    // safe: the signed content is at most `Messages12.max_signed`, 201 bytes.
     scratch.params12_len = @intCast(content.len);
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (identity.noiseLength()) |noise_length| {

@@ -227,7 +227,7 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     try scratch.transcripts.commit(msg);
     self.group = ske.group;
     @memcpy(scratch.server_public[0..ske.public.len], ske.public);
-    // safe: a classical public value is at most 97 bytes, checked by the parser.
+    // safe: a classical public value is at most 133 bytes (P-521's), checked by the parser.
     scratch.server_public_len = @intCast(ske.public.len);
 }
 

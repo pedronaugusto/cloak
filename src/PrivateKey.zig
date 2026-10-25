@@ -271,7 +271,6 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
             return ecdsaSign(SignDigestError, Sign.P521, &k.secret, algorithm, digest, true, noise[0..Sign.P521.noise_length], out);
         },
         .ed25519, .mldsa, .x25519 => error.UnsupportedAlgorithm,
-        
     };
 }
 

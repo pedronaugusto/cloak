@@ -70,7 +70,7 @@ fn depth(comptime group: Group) usize {
     const debug = @import("builtin").mode == .debug;
     return switch (group) {
         .x25519 => if (debug) 64 * 1024 else 32 * 1024,
-        .p256, .p384 => if (debug) 128 * 1024 else 64 * 1024,
+        .p256, .p384, .p521 => if (debug) 128 * 1024 else 64 * 1024,
         .x25519_mlkem768, .secp256r1_mlkem768, .mlkem768 => if (debug) 384 * 1024 else 144 * 1024,
         .secp384r1_mlkem1024, .mlkem1024 => if (debug) 480 * 1024 else 192 * 1024,
         _ => unsupported(),
@@ -84,6 +84,7 @@ pub fn entropyLength(group: Group) usize {
         .x25519 => X25519.seed_length,
         .p256 => ecdh.P256.scalar_length,
         .p384 => ecdh.P384.scalar_length,
+        .p521 => ecdh.P521.scalar_length,
         .x25519_mlkem768 => MlKem.seed_length + X25519.seed_length,
         .secp256r1_mlkem768 => P256MlKem768.entropy,
         .secp384r1_mlkem1024 => P384MlKem1024.entropy,
@@ -122,6 +123,7 @@ const Private = union(enum) {
     x25519: aegis.Secret([X25519.secret_length]u8),
     p256: aegis.Secret([ecdh.P256.scalar_length]u8),
     p384: aegis.Secret([ecdh.P384.scalar_length]u8),
+    p521: aegis.Secret([ecdh.P521.scalar_length]u8),
     x25519_mlkem768: struct {
         kem: aegis.Secret(MlKem.SecretKey),
         x25519: aegis.Secret([X25519.secret_length]u8),
@@ -143,7 +145,7 @@ pub const Share = struct {
     /// the driver supplies a new draw. The caller's entropy is not modified.
     pub fn init(group: Group, entropy: []const u8) InitError!Share {
         return switch (group) {
-            inline .x25519, .p256, .p384, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), initShare, .{ g, entropy }),
+            inline .x25519, .p256, .p384, .p521, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), initShare, .{ g, entropy }),
             _ => unsupported(),
         };
     }
@@ -161,6 +163,7 @@ pub const Share = struct {
             },
             .p256 => try initCurve(ecdh.P256, &self, entropy),
             .p384 => try initCurve(ecdh.P384, &self, entropy),
+            .p521 => try initCurve(ecdh.P521, &self, entropy),
             .x25519_mlkem768 => {
                 var pair = MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy;
                 defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
@@ -205,9 +208,10 @@ pub const Share = struct {
 
     fn initCurve(comptime G: type, self: *Share, entropy: []const u8) InitError!void {
         @setRuntimeSafety(true);
-        const scalar = entropy[0..G.scalar_length];
-        G.publicKey(scalar, self.public[0..G.public_length]) catch return error.InvalidEntropy;
-        self.private = if (G == ecdh.P256) .{ .p256 = .init(scalar.*) } else .{ .p384 = .init(scalar.*) };
+        var scalar = curveScalar(G, entropy);
+        defer std.crypto.secureZero(u8, &scalar);
+        G.publicKey(&scalar, self.public[0..G.public_length]) catch return error.InvalidEntropy;
+        self.private = if (G == ecdh.P256) .{ .p256 = .init(scalar) } else if (G == ecdh.P384) .{ .p384 = .init(scalar) } else .{ .p521 = .init(scalar) };
     }
 
     /// The `key_exchange` bytes of the client's key_share entry.
@@ -239,6 +243,10 @@ pub const Share = struct {
             .p384 => {
                 ecdh.P384.agree(key.expose(), peer, into[0..ecdh.P384.scalar_length]) catch |err| return mapCurve(err);
                 out.len = ecdh.P384.scalar_length;
+            },
+            .p521 => {
+                ecdh.P521.agree(key.expose(), peer, into[0..ecdh.P521.scalar_length]) catch |err| return mapCurve(err);
+                out.len = ecdh.P521.scalar_length;
             },
             .x25519_mlkem768 => {
                 // ML-KEM decapsulation never signals an invalid ciphertext: FIPS 203 implicit
@@ -309,6 +317,7 @@ pub const Share = struct {
             .x25519 => |*key| key.deinit(),
             .p256 => |*key| key.deinit(),
             .p384 => |*key| key.deinit(),
+            .p521 => |*key| key.deinit(),
             .x25519_mlkem768 => |*key| {
                 key.kem.deinit();
                 key.x25519.deinit();
@@ -330,6 +339,7 @@ pub fn respondEntropyLength(group: Group) usize {
         .x25519 => X25519.seed_length,
         .p256 => ecdh.P256.scalar_length,
         .p384 => ecdh.P384.scalar_length,
+        .p521 => ecdh.P521.scalar_length,
         .x25519_mlkem768 => MlKem.encaps_seed_length + X25519.seed_length,
         .secp256r1_mlkem768 => P256MlKem768.respond_entropy,
         .secp384r1_mlkem1024 => P384MlKem1024.respond_entropy,
@@ -360,7 +370,7 @@ pub const Response = struct {
 /// or `WeakKey`, never an agreed secret.
 pub fn respond(group: Group, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!Response {
     return switch (group) {
-        inline .x25519, .p256, .p384, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), respondShare, .{ g, client_share, entropy }),
+        inline .x25519, .p256, .p384, .p521, .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024, .mlkem768, .mlkem1024 => |g| aegis.secret.scrubbed(depth(g), respondShare, .{ g, client_share, entropy }),
         _ => unsupported(),
     };
 }
@@ -398,6 +408,7 @@ fn respondShare(comptime group: Group, client_share: []const u8, entropy: []cons
         },
         .p256 => try respondCurve(ecdh.P256, &out, client_share, entropy),
         .p384 => try respondCurve(ecdh.P384, &out, client_share, entropy),
+        .p521 => try respondCurve(ecdh.P521, &out, client_share, entropy),
         .secp256r1_mlkem768 => try respondNist(P256MlKem768, &out, client_share, entropy),
         .secp384r1_mlkem1024 => try respondNist(P384MlKem1024, &out, client_share, entropy),
         .mlkem768 => try respondPure(MlKem, &out, client_share, entropy),
@@ -440,7 +451,7 @@ fn respondNist(comptime H: type, out: *Response, client_share: []const u8, entro
 
 fn respondCurve(comptime G: type, out: *Response, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!void {
     @setRuntimeSafety(true);
-    var scalar: [G.scalar_length]u8 = entropy[0..G.scalar_length].*;
+    var scalar = curveScalar(G, entropy);
     defer std.crypto.secureZero(u8, &scalar);
     G.publicKey(&scalar, out.public[0..G.public_length]) catch return error.InvalidEntropy;
     G.agree(&scalar, client_share, out.agreed.secret.exposeMut()[0..G.scalar_length]) catch |err| return switch (err) {
@@ -448,6 +459,15 @@ fn respondCurve(comptime G: type, out: *Response, client_share: []const u8, entr
         error.InvalidScalar, error.IdentityElement => error.WeakKey,
     };
     out.agreed.len = G.scalar_length;
+}
+
+/// A curve's secret scalar from fresh entropy, its width in bytes. P-521's order is 521 bits, so
+/// its first byte keeps one bit: then a draw is at or above n with probability below 2^-260,
+/// where 66 raw bytes would fall below n once in 128.
+fn curveScalar(comptime G: type, entropy: []const u8) [G.scalar_length]u8 {
+    var scalar: [G.scalar_length]u8 = entropy[0..G.scalar_length].*;
+    if (G == ecdh.P521) scalar[0] &= 1;
+    return scalar;
 }
 
 test {

@@ -19,7 +19,7 @@ const Client = @import("../tls/handshake/Client.zig");
 const Hello = @import("../tls/handshake/Hello.zig");
 pub const pki = @import("Peer.zig").pki;
 
-pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
+pub const Cert = enum { p256, p384, p521, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -223,6 +223,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     try self.trust.addDer(pki.mixed_ca, .{});
     try self.trust.addDer(pki.dc_ca, .{});
     try self.trust.addDer(pki.ct_ca, .{});
+    try self.trust.addDer(pki.p521_ca, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
@@ -367,6 +368,7 @@ fn keyOf(gpa: std.mem.Allocator, cert: Cert) !certificates.PrivateKey {
     return certificates.PrivateKey.parse(gpa, switch (cert) {
         .p256, .dc_p256, .dc_no_signature, .ct_leaf, .ct_plain => pki.p256_pem,
         .p384 => pki.p384_pem,
+        .p521 => pki.p521_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
         .mldsa44 => pki.mldsa44_pem,
@@ -385,6 +387,7 @@ fn leafOf(cert: Cert) []const u8 {
         .ct_plain => pki.ct_plain,
         .p256 => pki.p256,
         .p384 => pki.p384,
+        .p521 => pki.p521,
         .ed25519 => pki.ed25519,
         .rsa => pki.rsa,
         .mldsa44 => pki.mldsa44,
@@ -401,6 +404,7 @@ fn rootOf(cert: Cert) []const u8 {
         .ct_leaf, .ct_plain => pki.ct_ca,
         .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
         .mldsa44_classical => pki.mixed_ca,
+        .p521 => pki.p521_ca,
         else => pki.ca,
     };
 }

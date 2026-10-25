@@ -258,7 +258,7 @@ pub const P521 = struct {
                 const body = at - 3;
                 if (body < 0x80) {
                     // Short form: move the body up one byte.
-                    std.mem.copyForwards(u8, out[2 .. 2 + body], out[3 .. 3 + body]);
+                    @memmove(out[2 .. 2 + body], out[3 .. 3 + body]);
                     out[0] = 0x30;
                     out[1] = @intCast(body); // safe: below 0x80
                     return out[0 .. 2 + body];

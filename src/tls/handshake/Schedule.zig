@@ -37,7 +37,9 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
         /// kept and never copied.
         pub fn init(self: *Self, prefix: Labels.Prefix, psk: ?*const [length]u8, shared: []const u8, hello_hash: *const [length]u8, traffic: *Traffic) InitError!void {
             @setRuntimeSafety(true);
-            if (shared.len != 32 and shared.len != 48 and shared.len != 64 and shared.len != 80) return error.InvalidSharedSecret;
+            // The groups' secret lengths: 32 (X25519, P-256, ML-KEM), 48 (P-384), 66 (P-521), 64 and 80
+            // (the hybrids).
+            if (shared.len != 32 and shared.len != 48 and shared.len != 66 and shared.len != 64 and shared.len != 80) return error.InvalidSharedSecret;
             var early = Secret.init(undefined);
             defer early.deinit();
             var derived = Secret.init(undefined);
