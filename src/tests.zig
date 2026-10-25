@@ -14,6 +14,9 @@ test {
     _ = @import("Roca_test.zig");
     _ = @import("Identity.zig");
     _ = @import("Pkcs12.zig");
+    _ = @import("Issue.zig");
+    _ = @import("certificate/Template.zig");
+    _ = @import("certificate/Request.zig");
     _ = @import("credentials/Pbe.zig");
     _ = @import("ClientAuth.zig");
     _ = @import("credentials/Key.zig");

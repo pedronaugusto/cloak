@@ -99,3 +99,18 @@ test {
     _ = Base64;
     _ = @import("Pem_test.zig");
 }
+
+/// Writes `der` as one PEM block under `label` (RFC 7468): base64 in lines of 64.
+pub fn write(writer: *std.Io.Writer, label: []const u8, der: []const u8) std.Io.Writer.Error!void {
+    @setRuntimeSafety(true);
+    try writer.print("-----BEGIN {s}-----\n", .{label});
+    var at: usize = 0;
+    while (at < der.len) : (at += 48) {
+        const chunk = der[at..@min(at + 48, der.len)];
+        var line: [64]u8 = undefined;
+        try writer.writeAll(std.base64.standard.Encoder.encode(&line, chunk));
+        try writer.writeByte('\n');
+        std.crypto.secureZero(u8, &line);
+    }
+    try writer.print("-----END {s}-----\n", .{label});
+}

@@ -5,6 +5,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**" } },
     .{ .name = "certificate", .patterns = &.{ "src/certificate.zig", "src/certificate/**" } },
     .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Pkcs12.zig", "src/Trust.zig", "src/services.zig", "src/services/**" } },
+    .{ .name = "issuance", .patterns = &.{"src/Issue.zig"} },
     .{ .name = "native verification driver", .patterns = &.{"src/NativeVerification.zig"} },
     .{ .name = "certificates module", .patterns = &.{"src/certificates.zig"} },
     .{ .name = "TLS wire and crypto", .patterns = &.{ "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },

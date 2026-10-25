@@ -95,6 +95,133 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
     return .{ .state = state };
 }
 
+/// The kinds of key `generate` makes. RSA is not one: see docs/design.md "Issuing certificates".
+pub const Kind = enum { p256, p384, ed25519, mldsa44, mldsa65, mldsa87 };
+pub const GenerateError = std.mem.Allocator.Error || error{EntropyUnavailable};
+
+/// A new key of `kind` from `io.randomSecure`, built by the constructor a parsed key of its kind
+/// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed.
+pub fn generate(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
+    return aegis.secret.scrubbed(parse_stack, generateKey, .{ gpa, io, kind });
+}
+
+fn generateKey(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
+    @setRuntimeSafety(true);
+    const state = try gpa.create(State);
+    errdefer gpa.destroy(state);
+    state.gpa = gpa;
+    state.refs = .init(1);
+    state.material = .init(undefined);
+    errdefer state.material.deinit();
+    const out = state.material.exposeMut();
+    var draw_owner = aegis.Secret([48]u8).init(undefined);
+    defer draw_owner.deinit();
+    const draw = draw_owner.exposeMut();
+    switch (kind) {
+        .p256, .p384 => {
+            const width: usize = if (kind == .p256) 32 else 48;
+            // Out of range one draw in 2^32 (P-256) or 2^190 (P-384): a retry, never a bias.
+            var attempts: usize = 0;
+            while (true) : (attempts += 1) {
+                if (attempts == 64) return error.EntropyUnavailable;
+                io.randomSecure(draw[0..width]) catch return error.EntropyUnavailable;
+                if (parser.ecKey(if (kind == .p256) .p256 else .p384, draw[0..width], null, out)) break else |_| {}
+            }
+        },
+        .ed25519 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            // unreachable: every 32-byte seed is a key.
+            parser.ed25519Key(draw[0..32], null, out) catch unreachable;
+        },
+        .mldsa44, .mldsa65, .mldsa87 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            const level: mldsa.Level = switch (kind) {
+                .mldsa44 => .mldsa44,
+                .mldsa65 => .mldsa65,
+                else => .mldsa87,
+            };
+            // unreachable: every 32-byte seed is a key.
+            parser.mldsaFromSeed(level, draw[0..32], out) catch unreachable;
+        },
+    }
+    return .{ .state = state };
+}
+
+pub const Pkcs8Error = std.mem.Allocator.Error || error{UnsupportedKey};
+
+/// The key as a DER PrivateKeyInfo (RFC 5958), what `parse` reads back, in a secret owner the
+/// caller releases: an EC key with its public point (RFC 5915), Ed25519's seed (RFC 8410),
+/// ML-DSA's expanded key (RFC 9881). RSA keys, which cloak never makes, are UnsupportedKey.
+pub fn pkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBytes {
+    return aegis.secret.scrubbed(sign_stack, writePkcs8, .{ key, gpa });
+}
+
+fn writePkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBytes {
+    @setRuntimeSafety(true);
+    const Builder = @import("wire/Builder.zig");
+    var b = Builder.init(gpa);
+    // Room for the largest key up front, so no reallocation leaves a copy behind; erased after.
+    try b.bytes.ensureTotalCapacity(gpa, 8192);
+    defer {
+        std.crypto.secureZero(u8, b.bytes.allocatedSlice());
+        b.deinit();
+    }
+    const outer = try b.open(0x30);
+    try b.small(0);
+    switch (key.state.material.expose().*) {
+        .rsa => return error.UnsupportedKey,
+        .p256, .p384 => |_, tag| {
+            const algorithm = try b.open(0x30);
+            try b.element(0x06, "\x2a\x86\x48\xce\x3d\x02\x01");
+            try b.element(0x06, if (tag == .p256) "\x2a\x86\x48\xce\x3d\x03\x01\x07" else "\x2b\x81\x04\x00\x22");
+            try b.close(algorithm);
+            const wrapped = try b.open(0x04);
+            const ec = try b.open(0x30);
+            try b.small(1);
+            switch (key.state.material.expose().*) {
+                .p256 => |*pair| try b.element(0x04, &pair.secret_key.bytes),
+                .p384 => |*pair| try b.element(0x04, &pair.secret_key.bytes),
+                else => unreachable,
+            }
+            var info: [max_public_key_info]u8 = undefined;
+            const public = certificate.parsePublicKey(key.publicKeyInfo(&info)) catch unreachable; // unreachable: cloak encoded it
+            const point = try b.open(0xa1);
+            try b.bits(public.ec.bytes);
+            try b.close(point);
+            try b.close(ec);
+            try b.close(wrapped);
+        },
+        .ed25519 => |*pair| {
+            try b.raw("\x30\x05\x06\x03\x2b\x65\x70");
+            const wrapped = try b.open(0x04);
+            var seed = pair.secret_key.seed();
+            defer std.crypto.secureZero(u8, &seed);
+            try b.element(0x04, &seed);
+            try b.close(wrapped);
+        },
+        .mldsa => |*k| {
+            const algorithm = try b.open(0x30);
+            try b.element(0x06, "\x60\x86\x48\x01\x65\x03\x04\x03" ++ switch (k.level) {
+                .mldsa44 => "\x11",
+                .mldsa65 => "\x12",
+                .mldsa87 => "\x13",
+            });
+            try b.close(algorithm);
+            const wrapped = try b.open(0x04);
+            switch (k.level) {
+                inline else => |level| try b.element(0x04, k.secret[0..mldsa.Scheme(level).secret_key_length]),
+            }
+            try b.close(wrapped);
+        },
+    }
+    try b.close(outer);
+    var out = try aegis.SecretBytes.init(gpa, b.bytes.items.len);
+    errdefer out.deinit();
+    out.resizeWithinCapacity(b.bytes.items.len) catch unreachable; // unreachable: sized above
+    @memcpy(out.exposeMut(), b.bytes.items);
+    return out;
+}
+
 pub fn isEncrypted(bytes: []const u8) bool {
     @setRuntimeSafety(true);
     if (std.mem.find(u8, bytes, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null or std.mem.find(u8, bytes, "Proc-Type: 4,ENCRYPTED") != null) return true;

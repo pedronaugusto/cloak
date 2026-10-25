@@ -198,6 +198,19 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
     }
 }
 
+/// An ML-DSA key from its 32-byte seed (FIPS 204 ML-DSA.KeyGen_internal), into `out`.
+pub fn mldsaFromSeed(level: mldsa.Level, seed: *const [32]u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    var encoded: [34]u8 = undefined;
+    defer std.crypto.secureZero(u8, &encoded);
+    encoded[0] = 0x80;
+    encoded[1] = 32;
+    encoded[2..].* = seed.*;
+    return switch (level) {
+        inline else => |tag| mldsaKey(tag, &encoded, out),
+    };
+}
+
 fn attributes(bytes: []const u8) ParseError!void {
     @setRuntimeSafety(true);
     var set: Der.Reader = .{ .bytes = bytes };
