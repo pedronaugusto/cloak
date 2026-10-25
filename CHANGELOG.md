@@ -24,6 +24,12 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it. Breaking.
 - `certificate.Algorithm.Curve` gains `p521`, and TLS's `Group` and `SignatureScheme` name secp521r1 and ecdsa_secp521r1_sha512; an exhaustive switch over `Curve` needs the case. Breaking.
 
+## [0.22.2] - 2026-10-25
+
+### Changed
+
+- Pins aegis 0.1.17.
+
 ### Fixed
 
 - Where std runs AES in software (x86_64 without AES-NI and AVX, AArch64 without its AES instructions), the record and ticket kernels left AES key schedules and round state on the stack: std's software rounds reach about 19 KiB optimized (88 KiB in Debug), and the kernels erased the 4 KiB the hardware path needs. An AES kernel now erases 32 KiB there (128 KiB in Debug); ChaCha20-Poly1305 and hardware AES keep 4 KiB. The kernels' depth test measures each kernel against its own depth. Found by the F93 campaign under x86_64 without AES-NI.
