@@ -4,6 +4,7 @@
 //! with SHA-1, under 3DES or RC2). Every derived key is a secret owner; the plaintext is a
 //! `SecretBytes` the caller releases.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
@@ -242,13 +243,14 @@ pub fn pkcs12Kdf(comptime Hash: type, gpa: std.mem.Allocator, id: u8, bmp: []con
     const b = b_owner.exposeMut();
     var offset: usize = 0;
     while (true) {
-        var h = Hash.init(.{});
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: Secret(Hash) = .init(Hash.init(.{}));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         h.update(&diversifier);
         h.update(big_i);
         h.final(a);
         for (1..rounds) |_| {
-            h = Hash.init(.{});
+            h.* = Hash.init(.{});
             h.update(a);
             h.final(a);
         }

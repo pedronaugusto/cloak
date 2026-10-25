@@ -122,20 +122,12 @@ pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
             .rsa => |p| std.mem.eql(u8, k.n[0..k.size], p.modulus) and std.mem.eql(u8, k.e[0..k.exponent_size], p.exponent),
             else => false,
         },
-        .p256 => |*k| switch (public_key) {
-            .ec => |p| p.curve == .p256 and std.mem.eql(u8, p.bytes, &k.public_key.toUncompressedSec1()),
-            else => false,
-        },
-        .p384 => |*k| switch (public_key) {
-            .ec => |p| p.curve == .p384 and std.mem.eql(u8, p.bytes, &k.public_key.toUncompressedSec1()),
-            else => false,
-        },
-        .p521 => |*k| switch (public_key) {
-            .ec => |p| p.curve == .p521 and std.mem.eql(u8, p.bytes, &k.public),
+        inline .p256, .p384, .p521 => |*k, tag| switch (public_key) {
+            .ec => |p| p.curve == @field(certificate.Algorithm.Curve, @tagName(tag)) and std.mem.eql(u8, p.bytes, &k.public),
             else => false,
         },
         .ed25519 => |*k| switch (public_key) {
-            .ed25519 => |p| std.mem.eql(u8, p, &k.public_key.toBytes()),
+            .ed25519 => |p| std.mem.eql(u8, p, k.public()),
             else => false,
         },
         .mldsa => |*k| switch (public_key) {
@@ -155,23 +147,11 @@ pub const max_public_key_info = certificate.Algorithm.max_public_key_info;
 /// what a raw public key (RFC 7250, `Identity.initRawKey`) or a pin is made of.
 pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 {
     @setRuntimeSafety(true);
-    var point: [97]u8 = undefined;
     const material = key.state.material.expose();
     const public: certificate.PublicKey = switch (material.*) {
         .rsa => |*k| .{ .rsa = .{ .modulus = k.n[0..k.size], .exponent = k.e[0..k.exponent_size] } },
-        .p256 => |*k| blk: {
-            point[0..65].* = k.public_key.toUncompressedSec1();
-            break :blk .{ .ec = .{ .curve = .p256, .bytes = point[0..65] } };
-        },
-        .p384 => |*k| blk: {
-            point = k.public_key.toUncompressedSec1();
-            break :blk .{ .ec = .{ .curve = .p384, .bytes = &point } };
-        },
-        .p521 => |*k| .{ .ec = .{ .curve = .p521, .bytes = &k.public } },
-        .ed25519 => |*k| blk: {
-            point[0..32].* = k.public_key.toBytes();
-            break :blk .{ .ed25519 = point[0..32] };
-        },
+        inline .p256, .p384, .p521 => |*k, tag| .{ .ec = .{ .curve = @field(certificate.Algorithm.Curve, @tagName(tag)), .bytes = &k.public } },
+        .ed25519 => |*k| .{ .ed25519 = k.public() },
         .mldsa => |*k| .{ .mldsa = .{ .level = k.level, .bytes = k.publicKey() } },
         .x25519 => |*k| .{ .x25519 = &k.public },
     };
@@ -218,18 +198,18 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
     switch (key.state.material.expose().*) {
         .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
-        .p256 => |*pair| {
-            return ecdsaSign(SignError, Sign.P256, &pair.secret_key.bytes, algorithm, message, false, noise[0..Sign.P256.noise_length], out);
+        .p256 => |*k| {
+            return ecdsaSign(SignError, Sign.P256, &k.secret, algorithm, message, false, noise[0..Sign.P256.noise_length], out);
         },
-        .p384 => |*pair| {
-            return ecdsaSign(SignError, Sign.P384, &pair.secret_key.bytes, algorithm, message, false, noise[0..Sign.P384.noise_length], out);
+        .p384 => |*k| {
+            return ecdsaSign(SignError, Sign.P384, &k.secret, algorithm, message, false, noise[0..Sign.P384.noise_length], out);
         },
         .p521 => |*k| {
             return ecdsaSign(SignError, Sign.P521, &k.secret, algorithm, message, false, noise[0..Sign.P521.noise_length], out);
         },
-        .ed25519 => |*pair| {
+        .ed25519 => |*k| {
             if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
-            Sign.ed25519.sign(&pair.secret_key.bytes, message, out[0..Sign.ed25519.signature_length]) catch return error.SigningFailed;
+            Sign.ed25519.sign(&k.secret, message, out[0..Sign.ed25519.signature_length]) catch return error.SigningFailed;
             return out[0..Sign.ed25519.signature_length];
         },
         .x25519 => return error.UnsupportedAlgorithm,
@@ -261,11 +241,11 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
     return switch (key.state.material.expose().*) {
         .rsa => |*rsa| rsaSign(SignDigestError, &rsa.crt, algorithm, digest, true, noise[0..Sign.rsa.noise_length], out),
-        .p256 => |*pair| {
-            return ecdsaSign(SignDigestError, Sign.P256, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P256.noise_length], out);
+        .p256 => |*k| {
+            return ecdsaSign(SignDigestError, Sign.P256, &k.secret, algorithm, digest, true, noise[0..Sign.P256.noise_length], out);
         },
-        .p384 => |*pair| {
-            return ecdsaSign(SignDigestError, Sign.P384, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P384.noise_length], out);
+        .p384 => |*k| {
+            return ecdsaSign(SignDigestError, Sign.P384, &k.secret, algorithm, digest, true, noise[0..Sign.P384.noise_length], out);
         },
         .p521 => |*k| {
             return ecdsaSign(SignDigestError, Sign.P521, &k.secret, algorithm, digest, true, noise[0..Sign.P521.noise_length], out);
@@ -296,8 +276,8 @@ pub fn agree(key: PrivateKey, peer: []const u8, out: *[max_shared]u8) AgreeError
     @setRuntimeSafety(true);
     // Each agreement erases its own frame (`Ecdh`), reading the scalar where the key holds it.
     const length: usize, const made = switch (key.state.material.expose().*) {
-        .p256 => |*pair| .{ Ecdh.P256.scalar_length, Ecdh.P256.agree(&pair.secret_key.bytes, peer, out[0..Ecdh.P256.scalar_length]) },
-        .p384 => |*pair| .{ Ecdh.P384.scalar_length, Ecdh.P384.agree(&pair.secret_key.bytes, peer, out[0..Ecdh.P384.scalar_length]) },
+        .p256 => |*k| .{ Ecdh.P256.scalar_length, Ecdh.P256.agree(&k.secret, peer, out[0..Ecdh.P256.scalar_length]) },
+        .p384 => |*k| .{ Ecdh.P384.scalar_length, Ecdh.P384.agree(&k.secret, peer, out[0..Ecdh.P384.scalar_length]) },
         .p521 => |*k| .{ Ecdh.P521.scalar_length, Ecdh.P521.agree(&k.secret, peer, out[0..Ecdh.P521.scalar_length]) },
         .x25519 => |*k| .{ Ecdh.X25519.length, Ecdh.X25519.agree(&k.secret, peer, out[0..Ecdh.X25519.length]) },
         .rsa, .ed25519, .mldsa => return error.UnsupportedAlgorithm,
@@ -340,8 +320,9 @@ fn decryptMessage(key: PrivateKey, scheme: certificate.Algorithm.Encryption, cip
     };
     // The length and the range are public: the ciphertext is.
     if (ciphertext.len != rsa.size) return error.DecryptionFailed;
-    var em: [pkcs1.max_em]u8 = undefined;
-    defer std.crypto.secureZero(u8, &em);
+    var em_owner: Secret([pkcs1.max_em]u8) = .init(undefined);
+    defer em_owner.deinit();
+    const em = em_owner.exposeMut();
     rsa.private(ciphertext, noise[0..Sign.rsa.seed_length], em[0..rsa.size]) catch return error.DecryptionFailed;
     return switch (scheme) {
         .oaep => |oaep| pkcs1.decode(oaep, em[0..rsa.size], out),

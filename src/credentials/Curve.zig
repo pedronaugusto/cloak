@@ -2,6 +2,7 @@
 //! curves are crypto/weierstrass.zig's). Adapted from Zig 0.17 pcMul16/pcSelect; see
 //! docs/design.md.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 pub const MultiplyError = error{IdentityElement};
 
 pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8) MultiplyError!Point {
@@ -10,8 +11,9 @@ pub fn base(comptime Point: type, comptime endian: std.builtin.Endian, scalar: *
         if (std.options.side_channels_mitigations == .none) @compileError("cloak private-key construction requires std side-channel mitigations");
     }
     const private = PrivatePoint(Point);
-    var scratch: Scratch(private) = undefined;
-    return baseOwned(Point, endian, scalar, &scratch);
+    var scratch: Secret(Scratch(private)) = .init(undefined);
+    defer scratch.deinit();
+    return baseOwned(Point, endian, scalar, scratch.exposeMut());
 }
 fn PrivatePoint(comptime Point: type) type {
     if (Point != std.crypto.ecc.Edwards25519) @compileError("the NIST curves are crypto/weierstrass.zig's");
@@ -29,9 +31,9 @@ fn baseOwned(comptime Point: type, comptime endian: std.builtin.Endian, scalar: 
 fn ladder(comptime Point: type, comptime endian: std.builtin.Endian, table: *const [16]PrivatePoint(Point), scalar: *const [@sizeOf(Point.scalar.CompressedScalar)]u8, scratch: *Scratch(PrivatePoint(Point))) MultiplyError!Point {
     @setRuntimeSafety(true);
     const private = PrivatePoint(Point);
-    // One owner for the accumulator, selected point, digit and selection mask.
+    // One owner for the accumulator, selected point, digit and selection mask: the caller's
+    // aegis `Secret`, which erases it.
     scratch.* = .{ .q = private.identityElement, .selected = private.identityElement, .digit = 0, .choice = 0 };
-    defer std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     var remaining: usize = scalar.len * 2;
     while (remaining != 0) {
         remaining -= 1;
@@ -67,21 +69,4 @@ fn precompute(comptime Point: type) [16]Point {
 test {
     @setRuntimeSafety(true);
     _ = @import("Curve_test.zig");
-}
-
-test "credential curve live scratch wipes full capacity on success and rejection" {
-    @setRuntimeSafety(true);
-    inline for (.{std.crypto.ecc.Edwards25519}) |Point| {
-        var scalar: [@sizeOf(Point.scalar.CompressedScalar)]u8 = @splat(0);
-        defer std.crypto.secureZero(u8, &scalar);
-        var owner: Scratch(PrivatePoint(Point)) = undefined;
-        scalar[0] = 1;
-        var point = try baseOwned(Point, .little, &scalar, &owner);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        // The owner is still live and fully initialized; inspect bytes, including padding.
-        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&owner), 0));
-        scalar[0] = 0;
-        try std.testing.expectError(error.IdentityElement, baseOwned(Point, .little, &scalar, &owner));
-        try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&owner), 0));
-    }
 }

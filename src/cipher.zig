@@ -10,6 +10,7 @@
 //! are optional (RFC 7518 sections 4.1 and 5.1) and absent from WebCrypto.
 const std = @import("std");
 const aegis = @import("aegis");
+const Secret = aegis.secret.Secret;
 const aes = @import("crypto/aes.zig");
 
 const Aes128 = std.crypto.core.aes.Aes128;
@@ -39,7 +40,8 @@ pub fn AesGcm(comptime bits: u16) type {
             aegis.secret.scrubbed(aes.depth(), sealKernel, .{ c, tag, m, ad, nonce, key });
         }
 
-        /// Checks the tag, then decrypts `c` into `m` (as long as `c`); on a refusal `m` is zeroed.
+        /// Checks the tag, then decrypts `c` into `m` (as long as `c`); on a refusal no plaintext is
+        /// written to `m`, the tag being checked before any block is decrypted.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) Error!void {
             aegis.assert.pre(m.len == c.len, "an AES-GCM message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, nonce, key });
@@ -50,10 +52,7 @@ pub fn AesGcm(comptime bits: u16) type {
         }
 
         fn openKernel(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) Error!void {
-            A.decrypt(m, c, tag.*, ad, nonce.*, key.*) catch {
-                std.crypto.secureZero(u8, m);
-                return error.AuthenticationFailed;
-            };
+            A.decrypt(m, c, tag.*, ad, nonce.*, key.*) catch return error.AuthenticationFailed;
         }
     };
 }
@@ -79,11 +78,14 @@ pub const keyWrap = struct {
         }
     }
 
-    /// Unwraps `wrapped` under `kek` into `out`, 8 bytes shorter. The rounds run in `out`; the
-    /// integrity check is compared in constant time, and on a refusal `out` is zeroed before the
-    /// error returns, so it holds the key only when the check held.
+    /// The longest key `unwrap` takes: a JOSE content key is at most 64 bytes.
+    pub const max_unwrapped = 512;
+
+    /// Unwraps `wrapped` under `kek` into `out`, 8 bytes shorter (at most `max_unwrapped`). The
+    /// rounds run in an owned buffer and the integrity check is compared in constant time; `out`
+    /// is written only when the check held, so a refusal leaves it as it was.
     pub fn unwrap(kek: []const u8, wrapped: []const u8, out: []u8) (LengthError || Error)!void {
-        if ((kek.len != 16 and kek.len != 32) or wrapped.len < 24 or wrapped.len % 8 != 0 or out.len + 8 != wrapped.len) return error.InvalidLength;
+        if ((kek.len != 16 and kek.len != 32) or wrapped.len < 24 or wrapped.len % 8 != 0 or out.len + 8 != wrapped.len or out.len > max_unwrapped) return error.InvalidLength;
         return switch (kek.len) {
             16 => aegis.secret.scrubbed(aes.depth(), unwrapKernel, .{ Aes128, kek[0..16], wrapped, out }),
             else => aegis.secret.scrubbed(aes.depth(), unwrapKernel, .{ Aes256, kek[0..32], wrapped, out }),
@@ -95,12 +97,13 @@ pub const keyWrap = struct {
         const n = key.len / 8;
         var a = iv;
         @memcpy(out[8..], key);
-        var block: [16]u8 = undefined;
-        defer std.crypto.secureZero(u8, &block);
+        var owner: Secret([16]u8) = .init(undefined);
+        defer owner.deinit();
+        const block = owner.exposeMut();
         for (0..6) |j| for (1..n + 1) |i| {
             @memcpy(block[0..8], &a);
             @memcpy(block[8..], out[8 * i ..][0..8]);
-            ctx.encrypt(&block, &block);
+            ctx.encrypt(block, block);
             const t: u64 = @intCast(n * j + i);
             a = block[0..8].*;
             var tb: [8]u8 = undefined;
@@ -114,10 +117,13 @@ pub const keyWrap = struct {
     fn unwrapKernel(comptime Aes: type, kek: *const [Aes.key_bits / 8]u8, wrapped: []const u8, out: []u8) Error!void {
         const ctx = Aes.initDec(kek.*);
         const n = wrapped.len / 8 - 1;
+        var owner: Secret(struct { r: [max_unwrapped]u8, block: [16]u8 }) = .init(undefined);
+        defer owner.deinit();
+        const s = owner.exposeMut();
+        const r = s.r[0..out.len];
+        const block = &s.block;
         var a = wrapped[0..8].*;
-        @memcpy(out, wrapped[8..]);
-        var block: [16]u8 = undefined;
-        defer std.crypto.secureZero(u8, &block);
+        @memcpy(r, wrapped[8..]);
         var j: usize = 6;
         while (j > 0) {
             j -= 1;
@@ -128,17 +134,15 @@ pub const keyWrap = struct {
                 std.mem.writeInt(u64, &tb, t, .big);
                 for (&a, tb) |*x, y| x.* ^= y;
                 @memcpy(block[0..8], &a);
-                @memcpy(block[8..], out[8 * (i - 1) ..][0..8]);
-                ctx.decrypt(&block, &block);
+                @memcpy(block[8..], r[8 * (i - 1) ..][0..8]);
+                ctx.decrypt(block, block);
                 a = block[0..8].*;
-                @memcpy(out[8 * (i - 1) ..][0..8], block[8..]);
+                @memcpy(r[8 * (i - 1) ..][0..8], block[8..]);
             }
         }
         const same = aegis.secret.equalBytes(&a, &iv) catch unreachable; // unreachable: both are 8 bytes
-        if (!same.declassify("a failed unwrap releases nothing but the refusal")) {
-            std.crypto.secureZero(u8, out);
-            return error.AuthenticationFailed;
-        }
+        if (!same.declassify("a failed unwrap releases nothing but the refusal")) return error.AuthenticationFailed;
+        @memcpy(out, r);
     }
 };
 
@@ -171,7 +175,7 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
         }
 
         /// Checks the tag, then decrypts `c` into `m` (as long as `c`) and returns the message
-        /// without its padding. Any refusal is `AuthenticationFailed`, and `m` is zeroed.
+        /// without its padding. Any refusal is `AuthenticationFailed`, and leaves `m` as it was.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) Error![]u8 {
             aegis.assert.pre(m.len == c.len, "a CBC-HMAC message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, iv, key });
@@ -185,10 +189,11 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
             var al: [8]u8 = undefined;
             std.mem.writeInt(u64, &al, @as(u64, ad.len) * 8, .big);
             h.update(&al);
-            var full: [Hmac.mac_length]u8 = undefined;
-            defer std.crypto.secureZero(u8, &full);
-            h.final(&full);
-            out.* = full[0..tag_length].*;
+            var full: Secret([Hmac.mac_length]u8) = .init(undefined);
+            defer full.deinit();
+            h.final(full.exposeMut());
+            const tag = full.expose();
+            out.* = tag[0..tag_length].*;
         }
 
         fn sealKernel(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) void {
@@ -196,49 +201,51 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
             var previous = iv.*;
             const blocks = c.len / 16;
             const pad: u8 = @intCast(c.len - m.len); // safe: 1..16, the PKCS#7 count
-            var block: [16]u8 = undefined;
-            defer std.crypto.secureZero(u8, &block);
+            var owner: Secret([16]u8) = .init(undefined);
+            defer owner.deinit();
+            const block = owner.exposeMut();
             for (0..blocks) |b| {
-                for (&block, 0..) |*x, k| {
+                for (block, 0..) |*x, k| {
                     const at = b * 16 + k;
                     x.* = (if (at < m.len) m[at] else pad) ^ previous[k];
                 }
-                ctx.encrypt(&block, &block);
-                @memcpy(c[b * 16 ..][0..16], &block);
-                previous = block;
+                ctx.encrypt(block, block);
+                @memcpy(c[b * 16 ..][0..16], block);
+                previous = block.*;
             }
             mac(tag, c, ad, iv, key[0..half]);
         }
 
         fn openKernel(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) Error![]u8 {
             if (c.len == 0 or c.len % 16 != 0) return error.AuthenticationFailed;
-            var expected: [tag_length]u8 = undefined;
-            defer std.crypto.secureZero(u8, &expected);
-            mac(&expected, c, ad, iv, key[0..half]);
-            const same = aegis.secret.equalBytes(&expected, tag) catch unreachable; // unreachable: both are tag_length bytes
+            var owner: Secret(struct { expected: [tag_length]u8, block: [16]u8 }) = .init(undefined);
+            defer owner.deinit();
+            const s = owner.exposeMut();
+            mac(&s.expected, c, ad, iv, key[0..half]);
+            const same = aegis.secret.equalBytes(&s.expected, tag) catch unreachable; // unreachable: both are tag_length bytes
             if (!same.declassify("a refused tag ends the decryption before any block")) return error.AuthenticationFailed;
             const ctx = Aes.initDec(key[half..].*);
-            var previous = iv.*;
-            var block: [16]u8 = undefined;
-            defer std.crypto.secureZero(u8, &block);
-            for (0..c.len / 16) |b| {
-                const cipher_block = c[b * 16 ..][0..16].*;
-                ctx.decrypt(&block, &cipher_block);
-                for (&block, previous) |*x, p| x.* ^= p;
-                @memcpy(m[b * 16 ..][0..16], &block);
-                previous = cipher_block;
-            }
-            // The padding, read under masks: the tag held, so a bad one is the sender's fault.
-            const pad: usize = m[m.len - 1];
+            const blocks = c.len / 16;
+            // The last block first: its padding is read under masks before any plaintext is
+            // written, so a refusal leaves `m` as it was. The tag held: a bad one is the sender's.
+            const before: *const [16]u8 = if (blocks == 1) iv else c[(blocks - 2) * 16 ..][0..16];
+            ctx.decrypt(&s.block, c[(blocks - 1) * 16 ..][0..16]);
+            for (&s.block, before) |*x, p| x.* ^= p;
+            const pad: usize = s.block[15];
             var bad: u8 = @intFromBool(pad == 0) | @intFromBool(pad > 16);
             for (0..16) |i| {
                 const inside: u8 = 0 -% @as(u8, @intFromBool(i < pad));
-                bad |= inside & (m[m.len - 1 - i] ^ @as(u8, @truncate(pad)));
+                bad |= inside & (s.block[15 - i] ^ @as(u8, @truncate(pad)));
             }
-            // safe: the verdict is the only thing released, after the tag held
-            if (bad != 0) {
-                std.crypto.secureZero(u8, m);
-                return error.AuthenticationFailed;
+            // aegis: no-danger: the verdict is the only thing released, after the tag held
+            if (bad != 0) return error.AuthenticationFailed;
+            var previous = iv.*;
+            for (0..blocks) |b| {
+                const cipher_block = c[b * 16 ..][0..16].*;
+                ctx.decrypt(&s.block, &cipher_block);
+                for (&s.block, previous) |*x, p| x.* ^= p;
+                @memcpy(m[b * 16 ..][0..16], &s.block);
+                previous = cipher_block;
             }
             return m[0 .. m.len - pad];
         }

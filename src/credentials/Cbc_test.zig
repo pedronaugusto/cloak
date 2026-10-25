@@ -1,4 +1,5 @@
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Cbc = @import("Cbc.zig");
 test "credential AES CBC NIST SP800-38A and PKCS7 rejection" {
     @setRuntimeSafety(true);
@@ -9,11 +10,13 @@ test "credential AES CBC NIST SP800-38A and PKCS7 rejection" {
     _ = try key(&iv, "000102030405060708090a0b0c0d0e0f");
     var ciphertext: [16]u8 = undefined;
     _ = try key(&ciphertext, "7649abac8119b246cee98e9b12e9197d");
-    var plain: [16]u8 = undefined;
-    try std.testing.expectError(error.BadPassword, Cbc.decrypt(&k, iv, &ciphertext, &plain));
+    // A refused decryption leaves its output to the caller's owner, which erases it.
+    var plain: Secret([16]u8) = .init(undefined);
+    try std.testing.expectError(error.BadPassword, Cbc.decrypt(&k, iv, &ciphertext, plain.exposeMut()));
+    plain.deinit();
+    try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(0)), std.mem.asBytes(&plain));
     var wanted: [16]u8 = undefined;
     _ = try key(&wanted, "6bc1bee22e409f96e93d7e117393172a");
-    try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(0)), &plain);
     var padded: [32]u8 = undefined;
     @memcpy(padded[0..16], &ciphertext);
     var padding: [16]u8 = @splat(16);
