@@ -3,6 +3,8 @@ pub const Trust = @import("Trust.zig");
 pub const PrivateKey = @import("PrivateKey.zig");
 pub const Identity = @import("Identity.zig");
 pub const ClientAuth = @import("ClientAuth.zig");
+/// PKCS#12 (PFX) files read into a key and its certificates.
+pub const Pkcs12 = @import("Pkcs12.zig");
 pub const verify = @import("verify.zig");
 /// Strict DER certificate parsing with borrowed public-key metadata.
 pub const certificate = @import("certificate.zig");

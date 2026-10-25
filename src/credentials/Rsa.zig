@@ -75,15 +75,24 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     var qm = q.*;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&qm));
     _ = qm.subWithOverflow(&one);
-    var ed = Uint.zero;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&ed));
-    if (multiply(&ed, &values[1], &values[2]) != 0) return error.InvalidKey;
+    // e * d = 1 mod p - 1 holds exactly when e * dp does, given d = dp mod p - 1 (checked
+    // below), and e * dp is half as long: the same check for half the reduction.
+    var edp = Uint.zero;
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&edp));
+    if (multiply(&edp, &values[1], &values[5]) != 0) return error.InvalidKey;
+    var edq = Uint.zero;
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&edq));
+    if (multiply(&edq, &values[1], &values[6]) != 0) return error.InvalidKey;
     // Fixed-width reduction supports the even moduli p-1 and q-1 without
     // bigint division, public-exponent private operations, or signing entropy.
-    if (!congruent(&ed, &pm, &one) or !congruent(&ed, &qm, &one)) return error.InvalidKey;
-    if (!congruent(&values[2], &pm, &values[5]) or !congruent(&values[2], &qm, &values[6])) return error.InvalidKey;
+    // The widths walked are the encodings' lengths, public: a product has at most the sum of
+    // its factors' bytes.
+    const p_bytes = integers[3].len;
+    const q_bytes = integers[4].len;
+    if (!congruent(&edp, e.len + integers[5].len, &pm, p_bytes, &one) or !congruent(&edq, e.len + integers[6].len, &qm, q_bytes, &one)) return error.InvalidKey;
+    if (!congruent(&values[2], d.len, &pm, p_bytes, &values[5]) or !congruent(&values[2], d.len, &qm, q_bytes, &values[6])) return error.InvalidKey;
     product = Uint.zero;
-    if (multiply(&product, q, &values[7]) != 0 or !congruent(&product, p, &one)) return error.InvalidKey;
+    if (multiply(&product, q, &values[7]) != 0 or !congruent(&product, q_bytes + integers[7].len, p, p_bytes, &one)) return error.InvalidKey;
     out.* = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
     errdefer std.crypto.secureZero(u8, std.mem.asBytes(out));
     @memcpy(out.n[0..n.len], n);
@@ -91,25 +100,46 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     // Validated above; the kernel refuses only shapes it cannot hold, such as unbalanced factors.
     out.crt.init(n, e, integers[3], integers[4], integers[5], integers[6], integers[7]) catch return error.UnsupportedKey;
 }
-fn remainder(x: *const Uint, modulus: *const Uint) Uint {
+/// `x mod modulus`, walking only the bits `x` can have (`x_bytes`) and the limbs a value below
+/// twice the modulus fills (`modulus_bytes`): both public, the lengths of the DER integers.
+fn remainder(x: *const Uint, x_bytes: usize, modulus: *const Uint, modulus_bytes: usize) Uint {
     @setRuntimeSafety(true);
     var result = Uint.zero;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&result));
-    var bit = Uint.capacity_bits;
+    const limbs = @min(result.limbs_buffer.len, (8 * modulus_bytes + 1) / limb_bits + 1);
+    var subtracted: [Uint.zero.limbs_buffer.len]usize = undefined;
+    defer std.crypto.secureZero(usize, subtracted[0..limbs]);
+    var bit: usize = @min(Uint.capacity_bits, 8 * x_bytes);
+    // x's top bits below the modulus's width are already reduced: load them whole and walk the
+    // rest. The modulus's width is public, as its encoding's length is.
+    const width = bitLength(modulus);
+    if (width > 1 and bit > width - 1) {
+        const start = bit - (width - 1);
+        for (0..width - 1) |i| {
+            const from = start + i;
+            const value: usize = (x.limbs_buffer[from / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(from % limb_bits))) & 1; // safe: public bit offsets modulo the radix
+            result.limbs_buffer[i / limb_bits] |= value << @as(std.math.Log2Int(usize), @intCast(i % limb_bits)); // safe: as above
+        }
+        bit = start;
+    }
     while (bit > 0) {
         bit -= 1;
         const input: usize = (x.limbs_buffer[bit / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(bit % limb_bits))) & 1; // safe: public bit offset modulo machine radix fits Log2Int(usize)
         var carry = input;
-        for (&result.limbs_buffer) |*limb| {
+        for (result.limbs_buffer[0..limbs]) |*limb| {
             const next = limb.* >> (limb_bits - 1);
             limb.* = ((limb.* << 1) | carry) & (std.math.maxInt(usize) >> 1);
             carry = next;
         }
-        var subtracted = result;
-        const borrow = subtracted.subWithOverflow(modulus);
-        const mask: usize = 0 -% @as(usize, 1 - borrow);
-        for (&result.limbs_buffer, subtracted.limbs_buffer) |*a, b| a.* = (a.* & ~mask) | (b & mask);
-        std.crypto.secureZero(u8, std.mem.asBytes(&subtracted));
+        // result - modulus over the live limbs, kept when it does not borrow.
+        var borrow: usize = 0;
+        for (result.limbs_buffer[0..limbs], modulus.limbs_buffer[0..limbs], subtracted[0..limbs]) |a, b, *d| {
+            const difference = a -% b -% borrow;
+            d.* = difference & (std.math.maxInt(usize) >> 1);
+            borrow = difference >> limb_bits;
+        }
+        const mask: usize = 0 -% (1 - borrow);
+        for (result.limbs_buffer[0..limbs], subtracted[0..limbs]) |*a, b| a.* = (a.* & ~mask) | (b & mask);
     }
     return result;
 }
@@ -119,9 +149,18 @@ test {
     _ = @import("Uint.zig");
 }
 
-fn congruent(x: *const Uint, modulus: *const Uint, expected: *const Uint) bool {
+/// The bit length of a public value.
+fn bitLength(value: *const Uint) usize {
+    var i = value.limbs_buffer.len;
+    while (i > 0) {
+        i -= 1;
+        if (value.limbs_buffer[i] != 0) return limb_bits * i + @bitSizeOf(usize) - @clz(value.limbs_buffer[i]);
+    }
+    return 0;
+}
+fn congruent(x: *const Uint, x_bytes: usize, modulus: *const Uint, modulus_bytes: usize, expected: *const Uint) bool {
     @setRuntimeSafety(true);
-    var reduced = remainder(x, modulus);
+    var reduced = remainder(x, x_bytes, modulus, modulus_bytes);
     defer std.crypto.secureZero(u8, std.mem.asBytes(&reduced));
     return reduced.eql(expected);
 }

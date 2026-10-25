@@ -6,6 +6,18 @@ pub fn decrypt(key: []const u8, iv: [16]u8, encrypted: []const u8, out: []u8) Er
     @setRuntimeSafety(true);
     if ((key.len != 16 and key.len != 24 and key.len != 32) or encrypted.len == 0 or encrypted.len % 16 != 0 or out.len != encrypted.len) return error.InvalidCiphertext;
     errdefer std.crypto.secureZero(u8, out);
+    // The AES instructions take no secret index whatever std's options say: where the target has
+    // them, std's AES-128 and AES-256 run on them (AES-192 has no std context).
+    if (comptime aes.has_hardware_support) switch (key.len) {
+        16 => return unpad(hardware(aes.Aes128, key[0..16], iv, encrypted, out)),
+        32 => return unpad(hardware(aes.Aes256, key[0..32], iv, encrypted, out)),
+        else => {},
+    };
+    return software(key, iv, encrypted, out);
+}
+/// The fixed-arithmetic AES, for targets without the instructions and for AES-192.
+fn software(key: []const u8, iv: [16]u8, encrypted: []const u8, out: []u8) Error![]u8 {
+    @setRuntimeSafety(true);
     var schedule: [240]u8 = undefined;
     defer std.crypto.secureZero(u8, &schedule);
     const rounds = expand(key, &schedule);
@@ -20,6 +32,28 @@ pub fn decrypt(key: []const u8, iv: [16]u8, encrypted: []const u8, out: []u8) Er
 
         previous = cipher;
     }
+    return unpad(out);
+}
+const aes = std.crypto.core.aes;
+/// CBC decryption on the AES instructions, eight blocks at a time; the round keys are erased.
+fn hardware(comptime Aes: type, key: *const [Aes.key_bits / 8]u8, iv: [16]u8, encrypted: []const u8, out: []u8) []u8 {
+    @setRuntimeSafety(true);
+    var ctx = Aes.initDec(key.*);
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&ctx));
+    const wide = 8;
+    var at: usize = 0;
+    while (at + 16 * wide <= encrypted.len) : (at += 16 * wide) {
+        ctx.decryptWide(wide, out[at..][0 .. 16 * wide], encrypted[at..][0 .. 16 * wide]);
+    }
+    while (at < encrypted.len) : (at += 16) ctx.decrypt(out[at..][0..16], encrypted[at..][0..16]);
+    for (out[0..16], iv) |*b, v| b.* ^= v;
+    for (out[16..], encrypted[0 .. encrypted.len - 16]) |*b, c| b.* ^= c;
+    return out;
+}
+/// The PKCS#7 padding, checked in constant time; the plaintext without it.
+fn unpad(out: []u8) Error![]u8 {
+    @setRuntimeSafety(true);
+    errdefer std.crypto.secureZero(u8, out);
     const padding: usize = out[out.len - 1];
     var bad: u8 = @intFromBool(padding == 0) | @intFromBool(padding > 16);
     for (0..16) |i| {
@@ -121,4 +155,32 @@ fn inverse(block: *[16]u8, schedule: []const u8, rounds: usize) void {
 test {
     @setRuntimeSafety(true);
     _ = @import("Cbc_test.zig");
+}
+
+test "credential AES-CBC on the instructions and in fixed arithmetic agree" {
+    var iv: [16]u8 = undefined;
+    for (&iv, 0..) |*b, i| b.* = @truncate(i * 13 + 5);
+    var message: [16 * 19 - 5]u8 = undefined;
+    for (&message, 0..) |*b, i| b.* = @truncate(i * 31 + 3);
+    var padded: [16 * 19]u8 = undefined;
+    @memcpy(padded[0..message.len], &message);
+    @memset(padded[message.len..], 5);
+    inline for (.{ aes.Aes128, aes.Aes256 }) |Aes| {
+        var key: [Aes.key_bits / 8]u8 = undefined;
+        for (&key, 0..) |*b, i| b.* = @truncate(i * 7 + 1);
+        // CBC encryption through std, so neither decryptor checks itself.
+        const ctx = Aes.initEnc(key);
+        var cipher: [padded.len]u8 = undefined;
+        var previous = iv;
+        for (0..padded.len / 16) |i| {
+            var block: [16]u8 = undefined;
+            for (&block, padded[i * 16 ..][0..16], previous) |*o, p, v| o.* = p ^ v;
+            ctx.encrypt(cipher[i * 16 ..][0..16], &block);
+            previous = cipher[i * 16 ..][0..16].*;
+        }
+        var a: [padded.len]u8 = undefined;
+        var b: [padded.len]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, &message, try decrypt(&key, iv, &cipher, &a));
+        try std.testing.expectEqualSlices(u8, &message, try software(&key, iv, &cipher, &b));
+    }
 }

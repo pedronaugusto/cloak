@@ -6,6 +6,7 @@ const parser = @import("credentials/Key.zig");
 const certificate = @import("certificate.zig");
 const Sign = @import("credentials/Sign.zig");
 const mldsa = @import("crypto/mldsa.zig");
+const Pbe = @import("credentials/Pbe.zig");
 const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
@@ -34,6 +35,23 @@ fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) Pa
     state.material = .init(undefined);
     errdefer state.material.deinit();
     try parser.parse(gpa, bytes, options, state.material.exposeMut());
+    return .{ .state = state };
+}
+/// Package-internal (`Pkcs12`): a key bag's key, a PrivateKeyInfo or, when `shrouded`, an
+/// EncryptedPrivateKeyInfo opened with `password` in the form the file's MAC verified.
+pub fn parseBag(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, password: *const Pbe.Password, options: ParseOptions) ParseError!PrivateKey {
+    return aegis.secret.scrubbed(parse_stack, parseBagKey, .{ gpa, bag, shrouded, password, options });
+}
+
+fn parseBagKey(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, password: *const Pbe.Password, options: ParseOptions) ParseError!PrivateKey {
+    @setRuntimeSafety(true);
+    const state = try gpa.create(State);
+    errdefer gpa.destroy(state);
+    state.gpa = gpa;
+    state.refs = .init(1);
+    state.material = .init(undefined);
+    errdefer state.material.deinit();
+    if (shrouded) try parser.encryptedWith(gpa, bag, password, options, state.material.exposeMut()) else try parser.parsePlain(bag, options, state.material.exposeMut());
     return .{ .state = state };
 }
 /// A private key by its numbers, as a JWK (RFC 7518 section 6, RFC 8037) or another format

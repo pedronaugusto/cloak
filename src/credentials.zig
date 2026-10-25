@@ -2,6 +2,7 @@
 pub const Pem = @import("credentials/Pem.zig");
 pub const Cbc = @import("credentials/Cbc.zig");
 pub const Des3 = @import("credentials/Des3.zig");
+pub const Rc2 = @import("credentials/Rc2.zig");
 pub const Curve = @import("credentials/Curve.zig");
 pub const Key = @import("credentials/Key.zig");
 pub const Ecdh = @import("credentials/Ecdh.zig");
@@ -10,6 +11,7 @@ test {
     _ = Pem;
     _ = Cbc;
     _ = Des3;
+    _ = Rc2;
     _ = Key;
     _ = Curve;
     _ = Ecdh;

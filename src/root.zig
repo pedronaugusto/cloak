@@ -13,6 +13,8 @@ pub const PrivateKey = certificates.PrivateKey;
 pub const Identity = certificates.Identity;
 /// Constructs immutable client authentication material.
 pub const ClientAuth = certificates.ClientAuth;
+/// Reads a PKCS#12 (PFX, .p12) file into its key and certificates.
+pub const Pkcs12 = certificates.Pkcs12;
 
 /// Portable bounded certificate verification.
 pub const verify = certificates.verify;

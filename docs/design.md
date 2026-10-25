@@ -116,6 +116,40 @@ modulo each prime up to 167) and checked against the published ones; a random mo
 with probability below 2^-150. Trusting such a key is the failure, not its speed: a certificate
 with one is invalid (bad_certificate), like any malformed key.
 
+## PKCS#12
+
+`Pkcs12.parse` reads a PFX (RFC 7292) into what cloak's owners already take: a `PrivateKey`
+and DER certificates, the key's certificate first, then its issuers by Name in chain order,
+then the file's others in file order. It builds no Identity and no Trust; the caller hands
+`chain()` and the key to `Identity.init`, or a key-less file's certificates to `Trust`.
+
+The walk (`credentials/Pkcs12.zig`) owns the container. BER is normalised to DER once per
+encoded layer (`wire/Ber.zig`: indefinite lengths made definite, constructed universal strings
+joined; a context tag's chunks are kept for their reader, as EncryptedData's implicit content
+is), so the strict DER reader reads every byte. The MAC is checked before anything is
+decrypted, over the authenticated safe's content octets, and compared in constant time: HMAC
+under appendix B's KDF with SHA-1 or SHA-2, or PBMAC1 (RFC 9579, PBKDF2 keyed, keyLength
+required, the MacData's own salt and count unused). An empty password has two encodings (the
+NUL-terminated empty BMPString, or no bytes); the one the MAC verifies is the one the bags are
+opened with. A file without a MAC is refused unless the caller opts out: decrypting
+unauthenticated ciphertext would hand padding verdicts to whoever wrote the file.
+
+Password-based decryption has one owner, `credentials/Pbe.zig`, shared with encrypted PKCS#8:
+PBES2 (PBKDF2 over HMAC-SHA-1/-2, AES-CBC or DES-EDE3-CBC) and PKCS#12's PBE (appendix B's KDF
+over SHA-1; 3DES, two-key 3DES, RC2-128, RC2-40). RC2 is read only, for the certificates Windows
+and OpenSSL 1.x encrypted under it, and runs in constant time: its PITABLE and key-word lookups
+scan their whole tables. Derived keys are `aegis.Secret`s, decrypted SafeContents
+`SecretBytes` (an unencrypted key bag may sit inside), and the whole read runs in a scrubbed
+frame. A key bag goes to the key parser (`PrivateKey.parseBag`), whose checks every key gets;
+every certificate to the certificate parser before it is kept. One key per file; the leaf is
+the certificate whose public key is the key's (localKeyId is only a label). Bounds: input
+1 MiB, 10^6 KDF rounds per derivation, 64 bags, 64 certificates, SafeContents nested 4 deep.
+
+The cost of a file is its KDF rounds. PBKDF2 keeps HMAC's keyed states across rounds; SHA-1 runs
+on the ARMv8 SHA-1 instructions (`crypto/sha1.zig`; std's SHA-1 has no accelerated path); AES-CBC
+on the AES instructions where the target has them, the fixed-arithmetic AES elsewhere. x86_64's
+SHA extensions are not used yet: there SHA-1 is std's.
+
 ## Build and verification decisions
 
 The shipped module uses published aegis, std and native platform trust APIs.

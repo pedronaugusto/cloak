@@ -58,10 +58,15 @@ const Modulus = struct {
         // Newton's iteration doubles the correct low bits: 3, 6, 12, 24, 48, 96.
         for (0..5) |_| v *%= 2 -% out.m[0] *% v;
         out.inv = 0 -% v;
-        // R^2 mod m by doubling 1 in 2 * 64 * len steps, each a masked conditional subtraction.
+        // R^2 mod m: 1 doubled 64 * len + len times, each a masked conditional subtraction, is
+        // 2^len in Montgomery form; six Montgomery squarings make it 2^(64 * len) = R in that
+        // form, which is R^2 mod m. Half the doublings of doubling all the way.
+        // The doublings below the modulus's width only shift: begin at its top bit (the width is
+        // public, as every RSA implementation takes it), which is below m.
         const rr = out.rr[0..len];
-        rr[0] = 1;
-        for (0..2 * 64 * len) |_| {
+        const width = bitLength(out.m[0..len]);
+        rr[(width - 1) / 64] = @as(u64, 1) << @intCast((width - 1) % 64); // safe: the remainder of a division by 64
+        for (0..65 * len - (width - 1)) |_| {
             var carry: u64 = 0;
             for (rr) |*limb| {
                 const next = limb.* >> 63;
@@ -70,6 +75,7 @@ const Modulus = struct {
             }
             out.reduceOnce(rr, rr, carry);
         }
+        for (0..6) |_| out.mul(rr, rr, rr);
         out.mul(out.rrr[0..len], rr, rr);
     }
 
@@ -78,7 +84,8 @@ const Modulus = struct {
         @setRuntimeSafety(true);
         const len = self.len;
         var d: Limbs = undefined;
-        defer wipe(&d);
+        // Only the low `len` limbs are written: the wipe covers them, not the whole array.
+        defer wipeLimbs(d[0..len]);
         var borrow: u1 = 0;
         for (0..len) |i| d[i], borrow = subb(t[i], self.m[i], borrow);
         // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
@@ -90,8 +97,9 @@ const Modulus = struct {
     fn mul(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var t: [max_limbs + 2]u64 = @splat(0);
-        defer wipe(&t);
+        var t: [max_limbs + 2]u64 = undefined;
+        @memset(t[0 .. len + 2], 0);
+        defer wipeLimbs(t[0 .. len + 2]);
         for (0..len) |i| {
             var carry: u64 = 0;
             for (0..len) |j| {
@@ -248,6 +256,20 @@ fn limbsOf(bytes: []const u8) usize {
 
 fn wipe(value: anytype) void {
     std.crypto.secureZero(u8, std.mem.asBytes(value));
+}
+
+/// The bit length of a public value: the position of its top set bit, plus one.
+fn bitLength(limbs: []const u64) usize {
+    var i = limbs.len;
+    while (i > 0) {
+        i -= 1;
+        if (limbs[i] != 0) return 64 * i + 64 - @clz(limbs[i]);
+    }
+    return 0;
+}
+
+fn wipeLimbs(limbs: []u64) void {
+    std.crypto.secureZero(u64, limbs);
 }
 
 /// A two-prime RSA private key, ready for the CRT operation. Holds secrets: the owner erases it.

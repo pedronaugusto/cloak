@@ -4,6 +4,17 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Added
+
+- `Pkcs12`: PKCS#12 (PFX, `.p12`, RFC 7292) files read into their private key and certificates, the key's certificate first and then its issuers in chain order (`chain()`, what `Identity.init` takes); a key-less trust store gives its certificates alone. The MAC is checked first, before anything is decrypted: HMAC under RFC 7292's KDF (SHA-1, SHA-224, SHA-256, SHA-384, SHA-512) or PBMAC1 (RFC 9579), compared in constant time; a file without one is `Unauthenticated` unless the caller sets `require_mac = false`. Contents under PBES2 (PBKDF2 with AES-CBC or DES-EDE3-CBC) or PKCS#12's PBE (3DES, two-key 3DES, RC2-128 and RC2-40, as Windows and OpenSSL 1.x exports encrypt certificates); RC4 and public-key privacy are `UnsupportedEncryption`. BER (NSS's and Windows' writers) is normalised to DER first. Passwords are UTF-8; the BMPString form RFC 7292 asks for is made for its KDF, and an empty password is tried in both encodings writers use. One key per file (`MultipleKeys`); a key no certificate matches is `KeyMismatch`. Read against OpenSSL 4.0.3 (default, legacy, PBMAC1, no MAC, no encryption, empty and non-ASCII passwords), NSS 3.128, go-pkcs12 0.7.4, Python cryptography 46.0.5 and macOS's `security export`.
+- `PrivateKey.parse` reads encrypted PKCS#8 under PKCS#12's PBE too (`openssl pkcs8 -topk8 -v1 PBE-SHA1-3DES`): one password-based decryptor serves both.
+
+### Changed
+
+- RSA private keys load about 50 times faster (10.4 ms to 0.21 ms for RSA-2048 on an M3): the agreement checks reduce over the integers' encoded widths instead of the fixed 8192-bit capacity, skip the bits below the modulus's width, check e * dp and e * dq (half as long) beside d's agreement with dp and dq, and the Montgomery constants start at the modulus's top bit. Every check is the one before; the widths walked are the DER lengths, public.
+- AES-CBC key-file decryption runs on the AES instructions where the target has them (AES-128 and AES-256), the fixed-arithmetic AES elsewhere and for AES-192.
+- PBKDF2 keeps HMAC's keyed inner and outer states across rounds, two compressions per round instead of four, and SHA-1 runs on the ARMv8 SHA-1 instructions where the target has them (std's SHA-1 has no accelerated path).
+
 ### Fixed
 
 - Where std runs AES in software (x86_64 without AES-NI and AVX, AArch64 without its AES instructions), the record and ticket kernels left AES key schedules and round state on the stack: std's software rounds reach about 19 KiB optimized (88 KiB in Debug), and the kernels erased the 4 KiB the hardware path needs. An AES kernel now erases 32 KiB there (128 KiB in Debug); ChaCha20-Poly1305 and hardware AES keep 4 KiB. The kernels' depth test measures each kernel against its own depth. Found by the F93 campaign under x86_64 without AES-NI.

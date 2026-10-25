@@ -51,7 +51,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     }
     const host = b.graph.host;
     preflight.addCi(b, p, .{ .tests = test_step, .portable_tests = true, .hardened = if (freestanding) null else .{ .fuzz_step = "parser-fuzz", .tsan_step = "concurrent", .fuzz_iterations = 1000 }, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" }, .{ .name = "speed", .source = "bench/speed.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" }, .{ .name = "speed", .source = "bench/speed.zig" }, .{ .name = "pkcs12", .source = "bench/pkcs12.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,
         .optimize = optimize,

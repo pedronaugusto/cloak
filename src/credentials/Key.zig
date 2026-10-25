@@ -6,10 +6,9 @@ const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
-const Kdf = @import("Kdf.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
-const oid_des3 = "\x2a\x86\x48\x86\xf7\x0d\x03\x07";
+const Pbe = @import("Pbe.zig");
 const P256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
 const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
 const Ed25519 = std.crypto.sign.Ed25519;
@@ -253,7 +252,8 @@ pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Mate
         const encoded = point.affine().toSec1();
         var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
         defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-        if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
+        // The derived point's own encoding: std's would invert its z again.
+        if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
         out.* = .{ .p256 = kp };
         return;
     }
@@ -296,78 +296,42 @@ pub fn rsaFromIntegers(integers: *const [8][]const u8, out: *Material) ParseErro
 }
 fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
+    const passphrase = options.passphrase orelse return error.PasswordRequired;
+    var password = Pbe.Password.init(gpa, passphrase, false, pbeLimits(options)) catch |err| return pbeError(err);
+    defer password.deinit();
+    return encryptedWith(gpa, bytes, &password, options, out);
+}
+/// An EncryptedPrivateKeyInfo opened with `password`, as given or as a PKCS#12 file's MAC
+/// verified it, parsed into `out`.
+pub fn encryptedWith(gpa: std.mem.Allocator, bytes: []const u8, password: *const Pbe.Password, options: Options, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
     try validate(bytes, options);
-    const password = options.passphrase orelse return error.PasswordRequired;
     var info = (try Der.single(bytes, 0x30)).reader();
-    var algorithm = (try info.expect(0x30)).reader();
-    if (!std.mem.eql(u8, (try algorithm.expect(6)).value, "\x2a\x86\x48\x86\xf7\x0d\x01\x05\x0d")) return error.UnsupportedEncryption;
-    var parameters = (try algorithm.expect(0x30)).reader();
-    try algorithm.finish();
-    var kdf = (try parameters.expect(0x30)).reader();
-    if (!std.mem.eql(u8, (try kdf.expect(6)).value, "\x2a\x86\x48\x86\xf7\x0d\x01\x05\x0c")) return error.UnsupportedEncryption;
-    var kp = (try kdf.expect(0x30)).reader();
-    try kdf.finish();
-    const salt = (try kp.expect(4)).value;
-    const iterations = try Der.number((try kp.expect(2)).value);
-    if (salt.len > options.salt_bytes or iterations == 0 or iterations > options.iterations or iterations > std.math.maxInt(u32)) return error.KdfLimit;
-    const key_length = if (kp.peek() == 2) try Der.number((try kp.next()).value) else null;
-    var hash: u8 = 7;
-    if (kp.peek() == 0x30) {
-        var prf = (try kp.next()).reader();
-        const id = (try prf.expect(6)).value;
-        const prefix = "\x2a\x86\x48\x86\xf7\x0d\x02";
-        if (id.len != 8 or !std.mem.eql(u8, id[0..7], prefix)) return error.UnsupportedEncryption;
-        hash = id[7];
-        if (!prf.empty()) {
-            const n = try prf.expect(5);
-            if (n.value.len != 0) return error.InvalidKey;
-        }
-        try prf.finish();
-    }
-    try kp.finish();
-    var scheme = (try parameters.expect(0x30)).reader();
-    try parameters.finish();
-    const cipher = (try scheme.expect(6)).value;
-    const key_len = try cipherLength(cipher);
-    if (key_length) |len| if (len != key_len) return error.InvalidKey;
-    const iv = (try scheme.expect(4)).value;
-    try scheme.finish();
-    const des3 = std.mem.eql(u8, cipher, oid_des3);
-    if (iv.len != (if (des3) @as(usize, 8) else 16)) return error.InvalidKey;
+    const algorithm = try info.expect(0x30);
     const data = (try info.expect(4)).value;
     try info.finish();
-    var key_owner = aegis.Secret([32]u8).init(undefined);
-    defer key_owner.deinit();
-    const key = key_owner.exposeMut();
-    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
-    switch (hash) {
-        7 => Kdf.derive(std.crypto.hash.Sha1, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
-        9 => Kdf.derive(std.crypto.hash.sha2.Sha256, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
-        10 => Kdf.derive(std.crypto.hash.sha2.Sha384, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
-        11 => Kdf.derive(std.crypto.hash.sha2.Sha512, key[0..key_len], password, salt, rounds) catch return error.KdfLimit,
-        else => return error.UnsupportedEncryption,
-    }
-    var plain_owner = try SecretBytes.init(gpa, data.len);
-    defer plain_owner.deinit();
-    plain_owner.resizeWithinCapacity(data.len) catch return error.InputLimit;
-    const plain = plain_owner.exposeMut();
-    const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, data, plain) else try Cbc.decrypt(key[0..key_len], iv[0..16].*, data, plain);
-    return parseDer(decoded, options, out) catch |err| switch (err) {
+    var plain = Pbe.decrypt(gpa, algorithm.encoded, data, password, pbeLimits(options)) catch |err| return pbeError(err);
+    defer plain.deinit();
+    return parseDer(plain.expose(), options, out) catch |err| switch (err) {
         error.OutOfMemory => err,
         else => error.BadPassword,
     };
 }
-fn cipherLength(id: []const u8) ParseError!usize {
-    @setRuntimeSafety(true);
-    if (std.mem.eql(u8, id, oid_des3)) return 24;
-    const prefix = "\x60\x86\x48\x01\x65\x03\x04\x01";
-    if (id.len == 9 and std.mem.eql(u8, id[0..8], prefix)) return switch (id[8]) {
-        2 => 16,
-        22 => 24,
-        42 => 32,
-        else => error.UnsupportedEncryption,
+/// A passphrase that is not UTF-8 cannot be the BMPString a PKCS#12 PBE key was made with.
+fn pbeError(err: Pbe.Error) ParseError {
+    return switch (err) {
+        error.InvalidPassword => error.BadPassword,
+        else => |e| e,
     };
-    return error.UnsupportedEncryption;
+}
+/// The key parser's bounds as the password-based decryptor takes them.
+pub fn pbeLimits(options: Options) Pbe.Limits {
+    return .{ .iterations = options.iterations, .salt_bytes = options.salt_bytes, .password_bytes = options.password_bytes };
+}
+/// Parses the DER PrivateKeyInfo, RSAPrivateKey or ECPrivateKey `bytes` into `out`: what a
+/// PKCS#12 key bag carries, decrypted or not.
+pub fn parsePlain(bytes: []const u8, options: Options, out: *Material) ParseError!void {
+    return parseDer(bytes, options, out);
 }
 fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError!SecretBytes {
     @setRuntimeSafety(true);
