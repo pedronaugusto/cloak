@@ -6,6 +6,7 @@ const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
+const p521 = @import("../crypto/p521.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
 const Pbe = @import("Pbe.zig");
@@ -15,7 +16,13 @@ const Ed25519 = std.crypto.sign.Ed25519;
 const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 const mldsa = @import("../crypto/mldsa.zig");
-pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair, mldsa: MlDsa };
+pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, p521: P521, ed25519: Ed25519.KeyPair, mldsa: MlDsa };
+/// A P-521 key: the scalar d at the curve's width (66 bytes), and the public point it derives,
+/// SEC 1 uncompressed.
+pub const P521 = struct {
+    secret: [p521.scalar_length]u8,
+    public: [p521.public_length]u8,
+};
 /// An ML-DSA key: the expanded private key (FIPS 204 skEncode), checked against itself, and
 /// the public key it belongs to. The first `secretLength`/`publicLength` bytes are the key's.
 pub const MlDsa = struct {
@@ -36,6 +43,7 @@ const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
 const oid_ed = "\x2b\x65\x70";
 const oid_p256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const oid_p384 = "\x2b\x81\x04\x00\x22";
+const oid_p521 = "\x2b\x81\x04\x00\x23";
 /// id-ml-dsa-44, -65 and -87 (RFC 9881), the last byte apart.
 const oid_mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
 /// Parses one private key into `out`, which holds it on success and nothing on failure: key
@@ -230,45 +238,57 @@ fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void
     const named = curve orelse return error.InvalidKey;
     if (std.mem.eql(u8, named, oid_p256)) return ecKey(.p256, scalar, public, out);
     if (std.mem.eql(u8, named, oid_p384)) return ecKey(.p384, scalar, public, out);
+    if (std.mem.eql(u8, named, oid_p521)) return ecKey(.p521, scalar, public, out);
     return error.UnsupportedKey;
 }
 
-pub const EcCurve = enum { p256, p384 };
+pub const EcCurve = enum { p256, p384, p521 };
 
 /// An EC key from its scalar, exactly the curve's width (SEC 1, RFC 7518 section 6.2.2.1), into
 /// `out`: 0 < d < n, and the public point derived from it, compared with `public` (SEC 1
 /// uncompressed, 0x04 || x || y) when one is given. The one path every EC private key takes.
 pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
-    if (named == .p256) {
-        if (scalar.len != 32) return error.InvalidKey;
-        var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        // 0 < d < n, checked in constant time; the comb of cloak's kernel derives the point.
-        if (!p256.scalarInRange(&sk.bytes)) return error.InvalidKey;
-        var point = p256.baseMul(&sk.bytes);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        // The derived public key is public; only its verdict and coordinates leave.
-        const encoded = point.affine().toSec1();
-        var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-        // The derived point's own encoding: std's would invert its z again.
-        if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
-        out.* = .{ .p256 = kp };
-        return;
-    }
-    {
-        if (scalar.len != 48) return error.InvalidKey;
-        var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        Curve.validate(P384.Curve, &sk.bytes) catch return error.InvalidKey;
-        var point = Curve.base(P384.Curve, .big, &sk.bytes) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-        if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
-        out.* = .{ .p384 = kp };
-        return;
+    switch (named) {
+        .p256 => {
+            if (scalar.len != 32) return error.InvalidKey;
+            var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
+            // 0 < d < n, checked in constant time; the comb of cloak's kernel derives the point.
+            if (!p256.scalarInRange(&sk.bytes)) return error.InvalidKey;
+            var point = p256.baseMul(&sk.bytes);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+            // The derived public key is public; only its verdict and coordinates leave.
+            const encoded = point.affine().toSec1();
+            var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
+            // The derived point's own encoding: std's would invert its z again.
+            if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
+            out.* = .{ .p256 = kp };
+        },
+        .p384 => {
+            if (scalar.len != 48) return error.InvalidKey;
+            var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
+            Curve.validate(P384.Curve, &sk.bytes) catch return error.InvalidKey;
+            var point = Curve.base(P384.Curve, .big, &sk.bytes) catch return error.InvalidKey;
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+            var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
+            if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
+            out.* = .{ .p384 = kp };
+        },
+        .p521 => {
+            if (scalar.len != p521.scalar_length) return error.InvalidKey;
+            const d = scalar[0..p521.scalar_length];
+            // 0 < d < n, checked in constant time; the curve's walk derives the point.
+            if (!p521.scalarInRange(d)) return error.InvalidKey;
+            var point = p521.baseMul(d);
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+            const encoded = point.affine().toSec1();
+            if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
+            out.* = .{ .p521 = .{ .secret = d.*, .public = encoded } };
+        },
     }
 }
 

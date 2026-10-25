@@ -19,7 +19,9 @@ pub const ParseOptions = parser.Options;
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
 /// A test measures every key type and scheme against them in each build mode.
 const parse_stack: usize = if (builtin.mode == .debug) 96 * 1024 else 64 * 1024;
-const sign_stack: usize = if (builtin.mode == .debug) 48 * 1024 else 24 * 1024;
+/// Debug's signing depth is P-521's: its nine-limb scalar arithmetic unrolls without
+/// optimization into a frame per step (91 KiB measured); the optimized builds stay below 24 KiB.
+const sign_stack: usize = if (builtin.mode == .debug) 128 * 1024 else 24 * 1024;
 
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
     return aegis.secret.scrubbed(parse_stack, parseKey, .{ gpa, bytes, options });
@@ -122,6 +124,10 @@ pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
             .ec => |p| p.curve == .p384 and std.mem.eql(u8, p.bytes, &k.public_key.toUncompressedSec1()),
             else => false,
         },
+        .p521 => |*k| switch (public_key) {
+            .ec => |p| p.curve == .p521 and std.mem.eql(u8, p.bytes, &k.public),
+            else => false,
+        },
         .ed25519 => |*k| switch (public_key) {
             .ed25519 => |p| std.mem.eql(u8, p, &k.public_key.toBytes()),
             else => false,
@@ -140,7 +146,8 @@ pub const max_public_key_info = certificate.Algorithm.max_public_key_info;
 pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 {
     @setRuntimeSafety(true);
     var point: [97]u8 = undefined;
-    const public: certificate.PublicKey = switch (key.state.material.expose().*) {
+    const material = key.state.material.expose();
+    const public: certificate.PublicKey = switch (material.*) {
         .rsa => |*k| .{ .rsa = .{ .modulus = k.n[0..k.size], .exponent = k.e[0..k.exponent_size] } },
         .p256 => |*k| blk: {
             point[0..65].* = k.public_key.toUncompressedSec1();
@@ -150,6 +157,7 @@ pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 
             point = k.public_key.toUncompressedSec1();
             break :blk .{ .ec = .{ .curve = .p384, .bytes = &point } };
         },
+        .p521 => |*k| .{ .ec = .{ .curve = .p521, .bytes = &k.public } },
         .ed25519 => |*k| blk: {
             point[0..32].* = k.public_key.toBytes();
             break :blk .{ .ed25519 = point[0..32] };
@@ -166,8 +174,8 @@ pub const max_signature = @max(Sign.max_signature, mldsa.Scheme(.mldsa87).signat
 
 pub const SignError = error{ UnsupportedAlgorithm, InvalidNoise, SigningFailed };
 
-/// How many bytes of fresh noise one signature draws: ECDSA on P-256 and P-384 hedges its
-/// nonces with 32 or 48, Ed25519 is deterministic (zero), ML-DSA hedges with 32, and RSA draws
+/// How many bytes of fresh noise one signature draws: ECDSA on P-256, P-384 and P-521 hedges
+/// its nonces with 32, 48 or 66, Ed25519 is deterministic (zero), ML-DSA hedges with 32, and RSA draws
 /// 96 for every scheme, a 32-byte blinding seed and room for the longest PSS salt.
 pub fn noiseLength(key: PrivateKey) usize {
     @setRuntimeSafety(true);
@@ -175,13 +183,14 @@ pub fn noiseLength(key: PrivateKey) usize {
         .rsa => Sign.rsa.noise_length,
         .p256 => Sign.P256.noise_length,
         .p384 => Sign.P384.noise_length,
+        .p521 => Sign.P521.noise_length,
         .ed25519 => 0,
         .mldsa => 32,
     };
 }
 
 /// Signs `message` under `algorithm`, which must be one this key's type and curve can make:
-/// ECDSA with SHA-256, SHA-384 or SHA-512 on P-256 or P-384 (a hash other than the curve's own
+/// ECDSA with SHA-256, SHA-384 or SHA-512 on P-256, P-384 or P-521 (a hash other than the curve's own
 /// as RFC 6979's bits2int takes it: TLS 1.2 and X.509 bind the hash, not the curve), Ed25519,
 /// and for RSA `.pss` (MGF1 on
 /// the same hash, a salt as long as the hash, as TLS requires) or `.rsa` (PKCS#1 v1.5, for
@@ -203,6 +212,9 @@ fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, mess
         },
         .p384 => |*pair| {
             return ecdsaSign(SignError, Sign.P384, &pair.secret_key.bytes, algorithm, message, false, noise[0..Sign.P384.noise_length], out);
+        },
+        .p521 => |*k| {
+            return ecdsaSign(SignError, Sign.P521, &k.secret, algorithm, message, false, noise[0..Sign.P521.noise_length], out);
         },
         .ed25519 => |*pair| {
             if (algorithm != .ed25519) return error.UnsupportedAlgorithm;
@@ -242,6 +254,9 @@ fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, di
         },
         .p384 => |*pair| {
             return ecdsaSign(SignDigestError, Sign.P384, &pair.secret_key.bytes, algorithm, digest, true, noise[0..Sign.P384.noise_length], out);
+        },
+        .p521 => |*k| {
+            return ecdsaSign(SignDigestError, Sign.P521, &k.secret, algorithm, digest, true, noise[0..Sign.P521.noise_length], out);
         },
         .ed25519, .mldsa => error.UnsupportedAlgorithm,
     };
@@ -334,6 +349,7 @@ test "a parse and a signature reach less stack than the depths that erase it" {
         @embedFile("crypto/testdata/rsa4096.der"),
         @embedFile("crypto/testdata/rsa2049.der"),
         @embedFile("credentials/testdata/p384.pkcs8.pem"),
+        @embedFile("credentials/testdata/p521.pkcs8.pem"),
         @embedFile("credentials/testdata/p256.pkcs8.pem"),
         @embedFile("credentials/testdata/ed25519.pkcs8.pem"),
         @embedFile("credentials/testdata/mldsa44.seed.pem"),
@@ -355,6 +371,7 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             .rsa => &.{ .{ .pss = .{ .hash = .sha512, .mgf_hash = .sha512, .salt_length = 64 } }, .{ .rsa = .sha256 } },
             .p256 => &.{ .{ .ecdsa = .sha256 }, .{ .ecdsa_p1363 = .sha256 } },
             .p384 => &.{ .{ .ecdsa = .sha384 }, .{ .ecdsa_p1363 = .sha384 } },
+            .p521 => &.{ .{ .ecdsa = .sha512 }, .{ .ecdsa_p1363 = .sha512 } },
             .ed25519 => &.{.ed25519},
             .mldsa => |*k| &.{.{ .mldsa = k.level }},
         };
@@ -365,7 +382,11 @@ test "a parse and a signature reach less stack than the depths that erase it" {
             const length: usize = switch (algorithm) {
                 .pss => 64,
                 .rsa => 32,
-                .ecdsa, .ecdsa_p1363 => |hash| if (hash == .sha256) 32 else 48,
+                .ecdsa, .ecdsa_p1363 => |hash| switch (hash) {
+                    .sha256 => 32,
+                    .sha384 => 48,
+                    .sha512 => 64,
+                },
                 else => unreachable,
             };
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signPrehashed, .{ key, algorithm, digest[0..length], noise[0..key.noiseLength()], &out }));

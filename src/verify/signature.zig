@@ -3,6 +3,7 @@ const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const A = @import("../certificate/Algorithm.zig");
 const p256 = @import("../crypto/p256.zig");
+const p521 = @import("../crypto/p521.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 pub const Error = error{ InvalidSignature, UnsupportedAlgorithm, InvalidPublicKey };
 /// The longest digest an algorithm here uses.
@@ -91,6 +92,9 @@ pub fn verifyDigest(key: A.PublicKey, algorithm: A.Signature, digest: []const u8
                 .p384 => switch (h) {
                     inline else => |hash| ecdsa(std.crypto.ecc.P384, Hash(hash), k.bytes, digest, signature),
                 },
+                .p521 => switch (h) {
+                    inline else => |hash| ecdsaP521(Hash(hash), .der, k.bytes, digest, signature),
+                },
             },
             else => return error.InvalidPublicKey,
         },
@@ -101,6 +105,9 @@ pub fn verifyDigest(key: A.PublicKey, algorithm: A.Signature, digest: []const u8
                 },
                 .p384 => switch (h) {
                     inline else => |hash| ecdsaP1363(std.crypto.ecc.P384, Hash(hash), k.bytes, digest, signature),
+                },
+                .p521 => switch (h) {
+                    inline else => |hash| ecdsaP521(Hash(hash), .p1363, k.bytes, digest, signature),
                 },
             },
             else => return error.InvalidPublicKey,
@@ -226,6 +233,33 @@ fn ecdsaP256(bytes: []const u8, digest: []const u8, signature: []const u8) Error
     // The leftmost 256 bits of the digest, reduced modulo the order.
     const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest[0..32]));
     if (!p256.verify(key, e, &sig.r, &sig.s)) return error.InvalidSignature;
+}
+/// P-521 through cloak's curve, public inputs only: the signature as DER (r and s minimal
+/// positive INTEGERs, nothing after them) or as r || s at 66 bytes each.
+fn ecdsaP521(comptime H: type, comptime form: enum { der, p1363 }, bytes: []const u8, digest: []const u8, signature: []const u8) Error!void {
+    @setRuntimeSafety(true);
+    if (digest.len != H.digest_length) return error.InvalidSignature;
+    const width = p521.scalar_length;
+    var r: [width]u8 = @splat(0);
+    var s: [width]u8 = @splat(0);
+    switch (form) {
+        .p1363 => {
+            if (signature.len != 2 * width) return error.InvalidSignature;
+            r = signature[0..width].*;
+            s = signature[width..][0..width].*;
+        },
+        .der => {
+            var reader = (Der.single(signature, 0x30) catch return error.InvalidSignature).reader();
+            inline for (.{ &r, &s }) |out| {
+                const value = Der.integer((reader.expect(2) catch return error.InvalidSignature).value) catch return error.InvalidSignature;
+                if (value.len > width) return error.InvalidSignature;
+                @memcpy(out[width - value.len ..], value);
+            }
+            reader.finish() catch return error.InvalidSignature;
+        },
+    }
+    const key = p521.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
+    if (!p521.verify(&key, p521.digestScalar(digest), &r, &s)) return error.InvalidSignature;
 }
 test {
     _ = @import("signature_test.zig");

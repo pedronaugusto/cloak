@@ -2,6 +2,7 @@ const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 const roca = @import("../crypto/roca.zig");
+const p521 = @import("../crypto/p521.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
@@ -11,7 +12,7 @@ pub const MlDsa = mldsa.Level;
 /// same algorithm with the signature as r || s, each at the curve's width (IEEE P1363), as JOSE
 /// (RFC 7518 3.4), COSE and WebAuthn write them. Certificates never carry it.
 pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ecdsa_p1363: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
-pub const Curve = enum { p256, p384 };
+pub const Curve = enum { p256, p384, p521 };
 pub const PublicKey = union(enum) {
     rsa: struct { modulus: []const u8, exponent: []const u8, pss: ?Pss = null, pss_only: bool = false },
     ec: struct { curve: Curve, bytes: []const u8 },
@@ -24,6 +25,7 @@ const ed_oid = "\x2b\x65\x70";
 const ec_oid = "\x2a\x86\x48\xce\x3d\x02\x01";
 const p256_oid = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const p384_oid = "\x2b\x81\x04\x00\x22";
+const p521_oid = "\x2b\x81\x04\x00\x23";
 /// id-ml-dsa-44, -65 and -87: 2.16.840.1.101.3.4.3.17 to .19 (RFC 9881), the last byte apart.
 const mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
 
@@ -173,8 +175,12 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
     if (eql(id, ec_oid)) {
         const p = param orelse return error.InvalidDer;
         if (p.tag != 6) return error.InvalidDer;
-        const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else return error.UnsupportedAlgorithm;
-        const point_length: usize = if (curve == .p256) 65 else 97;
+        const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else if (eql(p.value, p521_oid)) .p521 else return error.UnsupportedAlgorithm;
+        const point_length: usize = switch (curve) {
+            .p256 => 65,
+            .p384 => 97,
+            .p521 => p521.public_length,
+        };
         if (bytes.len != point_length or bytes[0] != 4) return error.InvalidPublicKey;
         switch (curve) {
             .p256 => {
@@ -182,6 +188,9 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
             },
             .p384 => {
                 _ = std.crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
+            },
+            .p521 => {
+                _ = p521.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
             },
         }
         return .{ .ec = .{ .curve = curve, .bytes = bytes } };
@@ -218,6 +227,7 @@ pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{Unsu
         .ec => |ec| .{ switch (ec.curve) {
             .p256 => "\x30\x13\x06\x07" ++ ec_oid ++ "\x06\x08" ++ p256_oid,
             .p384 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p384_oid,
+            .p521 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p521_oid,
         }, ec.bytes },
         .ed25519 => |bytes| .{ "\x30\x05\x06\x03" ++ ed_oid, bytes },
         .mldsa => |m| .{ switch (m.level) {
