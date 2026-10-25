@@ -1,6 +1,7 @@
 const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "crypto", .patterns = &.{ "src/crypto.zig", "src/crypto/**" } },
+    .{ .name = "cipher", .patterns = &.{"src/cipher.zig"} },
     .{ .name = "types", .patterns = &.{"src/types.zig"} },
     .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**" } },
     .{ .name = "certificate", .patterns = &.{ "src/certificate.zig", "src/certificate/**" } },

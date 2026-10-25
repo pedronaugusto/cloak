@@ -4,6 +4,9 @@
 pub const certificates = @import("certificates.zig");
 /// TLS 1.3, sans-I/O and over `std.Io`.
 pub const tls = @import("tls.zig");
+/// Symmetric constructions beside TLS's records: AES-GCM under a caller's nonce, AES key wrap,
+/// AES-CBC with HMAC-SHA-2 as one authenticated cipher (JOSE's, RFC 7518).
+pub const cipher = @import("cipher.zig");
 
 /// Builds and retains immutable trust material before traffic.
 pub const Trust = certificates.Trust;

@@ -5,6 +5,7 @@ test {
     @setRuntimeSafety(true);
     std.testing.refAllDecls(certificates);
     _ = @import("tls.zig");
+    _ = @import("cipher.zig");
     _ = @import("Trust.zig");
     _ = @import("verify.zig");
     _ = @import("services.zig");
@@ -32,4 +33,11 @@ test {
     _ = @import("services/windows.zig");
     _ = @import("crypto.zig");
     _ = @import("RsaHandshake_test.zig");
+}
+
+test "the cipher kernels erase what the record kernels erase" {
+    const Kernels = @import("tls/crypto/Kernels.zig");
+    const aes = @import("crypto/aes.zig");
+    try std.testing.expectEqual(Kernels.record_depth, aes.record_depth);
+    try std.testing.expectEqual(Kernels.software_aes_depth, aes.software_depth);
 }

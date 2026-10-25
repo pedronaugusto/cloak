@@ -4,6 +4,7 @@ pub const p256 = @import("crypto/p256.zig");
 pub const rsa = @import("crypto/rsa.zig");
 pub const mldsa = @import("crypto/mldsa.zig");
 pub const roca = @import("crypto/roca.zig");
+pub const aes = @import("crypto/aes.zig");
 test {
     _ = roca;
     _ = p256;
