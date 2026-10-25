@@ -35,13 +35,13 @@ pub fn AesGcm(comptime bits: u16) type {
 
         /// Encrypts `m` into `c` (as long as `m`) and writes the tag over `c` and `ad`.
         pub fn seal(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) void {
-            std.debug.assert(c.len == m.len);
+            aegis.assert.pre(c.len == m.len, "an AES-GCM ciphertext buffer is as long as the message");
             aegis.secret.scrubbed(aes.depth(), sealKernel, .{ c, tag, m, ad, nonce, key });
         }
 
         /// Checks the tag, then decrypts `c` into `m` (as long as `c`); on a refusal `m` is zeroed.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) Error!void {
-            std.debug.assert(m.len == c.len);
+            aegis.assert.pre(m.len == c.len, "an AES-GCM message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, nonce, key });
         }
 
@@ -79,8 +79,9 @@ pub const keyWrap = struct {
         }
     }
 
-    /// Unwraps `wrapped` under `kek` into `out`, 8 bytes shorter: written only when the integrity
-    /// check holds, compared in constant time; zeroed otherwise.
+    /// Unwraps `wrapped` under `kek` into `out`, 8 bytes shorter. The rounds run in `out`; the
+    /// integrity check is compared in constant time, and on a refusal `out` is zeroed before the
+    /// error returns, so it holds the key only when the check held.
     pub fn unwrap(kek: []const u8, wrapped: []const u8, out: []u8) (LengthError || Error)!void {
         if ((kek.len != 16 and kek.len != 32) or wrapped.len < 24 or wrapped.len % 8 != 0 or out.len + 8 != wrapped.len) return error.InvalidLength;
         return switch (kek.len) {
@@ -165,14 +166,14 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
 
         /// Encrypts `m` into `c` (`ciphertextLength(m.len)` bytes) under `iv`, and writes the tag.
         pub fn seal(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) void {
-            std.debug.assert(c.len == ciphertextLength(m.len));
+            aegis.assert.pre(c.len == ciphertextLength(m.len), "a CBC-HMAC ciphertext buffer is ciphertextLength(message) bytes");
             aegis.secret.scrubbed(aes.depth(), sealKernel, .{ c, tag, m, ad, iv, key });
         }
 
         /// Checks the tag, then decrypts `c` into `m` (as long as `c`) and returns the message
         /// without its padding. Any refusal is `AuthenticationFailed`, and `m` is zeroed.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) Error![]u8 {
-            std.debug.assert(m.len == c.len);
+            aegis.assert.pre(m.len == c.len, "a CBC-HMAC message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, iv, key });
         }
 
