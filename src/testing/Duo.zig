@@ -220,12 +220,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.longest_record = .{ 0, 0 };
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
-    try self.trust.addDer(pki.ca, .{});
-    try self.trust.addDer(pki.mldsa_ca, .{});
-    try self.trust.addDer(pki.mixed_ca, .{});
-    try self.trust.addDer(pki.dc_ca, .{});
-    try self.trust.addDer(pki.ct_ca, .{});
-    try self.trust.addDer(pki.p521_ca, .{});
+    for ([_][]const u8{ pki.ca, pki.mldsa_ca, pki.mixed_ca, pki.dc_ca, pki.ct_ca, pki.p521_ca }) |root| try self.trust.addDer(root, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
