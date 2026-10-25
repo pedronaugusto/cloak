@@ -6,6 +6,7 @@ const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
+const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
@@ -278,12 +279,14 @@ pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Mate
             if (scalar.len != 48) return error.InvalidKey;
             var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-            Curve.validate(P384.Curve, &sk.bytes) catch return error.InvalidKey;
-            var point = Curve.base(P384.Curve, .big, &sk.bytes) catch return error.InvalidKey;
+            // 0 < d < n, checked in constant time; the curve's walk derives the point.
+            if (!p384.scalarInRange(&sk.bytes)) return error.InvalidKey;
+            var point = p384.baseMul(&sk.bytes);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-            var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
+            const encoded = point.affine().toSec1();
+            var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = P384.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
             defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-            if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
+            if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
             out.* = .{ .p384 = kp };
         },
         .p521 => {

@@ -2,6 +2,8 @@ const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 const roca = @import("../crypto/roca.zig");
+const p256 = @import("../crypto/p256.zig");
+const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
@@ -187,21 +189,16 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
         const p = param orelse return error.InvalidDer;
         if (p.tag != 6) return error.InvalidDer;
         const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else if (eql(p.value, p521_oid)) .p521 else return error.UnsupportedAlgorithm;
-        const point_length: usize = switch (curve) {
-            .p256 => 65,
-            .p384 => 97,
-            .p521 => p521.public_length,
-        };
-        if (bytes.len != point_length or bytes[0] != 4) return error.InvalidPublicKey;
+        // Uncompressed only, and on the curve: cloak's curve checks the point.
         switch (curve) {
-            .p256 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-            .p384 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-            .p521 => {
-                _ = p521.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
+            inline else => |tag| {
+                const named = switch (tag) {
+                    .p256 => p256,
+                    .p384 => p384,
+                    .p521 => p521,
+                };
+                if (bytes.len != named.public_length or bytes[0] != 4) return error.InvalidPublicKey;
+                _ = named.Affine.fromSec1(bytes) catch return error.InvalidPublicKey;
             },
         }
         return .{ .ec = .{ .curve = curve, .bytes = bytes } };

@@ -1,6 +1,6 @@
-//! Signatures with a private key: ECDSA over P-256, P-384 and P-521, and Ed25519. The point
-//! multiplication by the secret nonce is the masked fixed-window walk of `Curve`, the
-//! modular arithmetic is std's constant-time scalar field, and every named temporary that
+//! Signatures with a private key: ECDSA over P-256, P-384 and P-521, and Ed25519. ECDSA's point
+//! multiplication by the secret nonce is cloak's curve (`crypto/weierstrass.zig`), its modular
+//! arithmetic the generic constant-time Montgomery field mod n, and every named temporary that
 //! held a secret is erased before return; the stack the kernels spill to is the caller's to
 //! scrub (`PrivateKey.sign` does). ECDSA nonces are hedged: the draft "Deterministic
 //! ECDSA and EdDSA Signatures with Additional Randomness" derives them from the key, the
@@ -12,6 +12,7 @@
 const std = @import("std");
 const Curve = @import("Curve.zig");
 const p256 = @import("../crypto/p256.zig");
+const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
 const kernel = @import("../crypto/rsa.zig");
 const rfc8017 = @import("../crypto/pkcs1.zig");
@@ -27,136 +28,119 @@ pub const Form = enum { der, p1363 };
 /// The longest signature any scheme here writes: RSA's, as long as a 4096-bit modulus.
 pub const max_signature = @max(max_ecdsa_signature, rsa.max_length);
 
-/// An ECDSA signature scheme: a curve with the hash of its security level.
-pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
-    const Scheme = std.crypto.sign.ecdsa.Ecdsa(Point, Hash);
-    comptime std.debug.assert(Hash.digest_length == Point.scalar.encoded_length);
+/// ECDSA over one of cloak's curves (`crypto/p256.zig`, `p384.zig`, `p521.zig`) with the hash of
+/// its security level, hedged nonces as above. RFC 6979's bits2int takes the leftmost bits of a
+/// draw as wide as the order (all of a P-256 or P-384 draw, 521 of P-521's 528), and a draw
+/// outside [1, n) is drawn again.
+pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
     return struct {
-        const Scalar = Point.scalar.Scalar;
         const Prf = std.crypto.auth.hmac.Hmac(Hash);
-        pub const secret_length = Point.scalar.encoded_length;
+        const Scalar = curve.Scalar;
+        const width = curve.scalar_length;
+        pub const secret_length = width;
         /// Bytes of fresh noise one signature draws.
-        pub const noise_length = Point.scalar.encoded_length;
+        pub const noise_length = width;
 
-        /// DER-encodes the signature over `message` by the big-endian secret scalar
-        /// into `out` and returns it. `noise` null makes the signature deterministic.
+        /// The signature over `message` by the big-endian secret scalar, in `form`, written
+        /// into `out`. `noise` null makes the signature deterministic.
         pub fn sign(secret: *const [secret_length]u8, message: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
             var digest: [Hash.digest_length]u8 = undefined;
             Hash.hash(message, &digest, .{});
-            return signDigest(secret, &digest, noise, form, out);
+            return signAnyDigest(secret, &digest, noise, form, out);
         }
 
-        /// The same signature over an already computed digest of the scheme's hash.
-        pub fn signDigest(secret: *const [secret_length]u8, digest: *const [Hash.digest_length]u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
-            @setRuntimeSafety(true);
-            var k = nonce(digest, secret, noise);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
-            var k_bytes = k.toBytes(.big);
-            defer std.crypto.secureZero(u8, &k_bytes);
-            if (comptime Point == std.crypto.ecc.P256) return signP256(secret, digest, &k_bytes, form, out);
-            var point = Curve.base(Point, .big, &k_bytes) catch return error.SigningFailed;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-            const r = reduce(Point.Fe.encoded_length, point.affineCoordinates().x.toBytes(.big));
-            if (r.isZero()) return error.SigningFailed;
-            var d = Scalar.fromBytes(secret.*, .big) catch return error.SigningFailed;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&d));
-            if (d.isZero()) return error.SigningFailed;
-            var k_inverse = k.invert();
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
-            var rd = r.mul(d);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
-            var blend = reduce(secret_length, digest.*).add(rd);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
-            const s = k_inverse.mul(blend);
-            if (s.isZero()) return error.SigningFailed;
-            const signature: Scheme.Signature = .{ .r = r.toBytes(.big), .s = s.toBytes(.big) };
-            return write(signature, form, out);
-        }
-
-        /// The signature over a digest of another hash: its leftmost bits when longer than the
-        /// scalar, all of it when shorter, as RFC 6979's bits2int takes it (section 2.3.2; both
-        /// orders are whole bytes), then as `signDigest`. TLS 1.2 and X.509 bind an ECDSA
-        /// signature to a hash, not to the curve (RFC 8446 section 4.2.3).
+        /// The signature over a digest of any hash: its leftmost bits when longer than the
+        /// order, all of it when shorter, as RFC 6979's bits2int takes it (section 2.3.2). TLS
+        /// 1.2 and X.509 bind an ECDSA signature to a hash, not to the curve (RFC 8446
+        /// section 4.2.3).
         pub fn signAnyDigest(secret: *const [secret_length]u8, digest: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
-            var e: [Hash.digest_length]u8 = @splat(0);
-            if (digest.len >= e.len) @memcpy(&e, digest[0..e.len]) else @memcpy(e[e.len - digest.len ..], digest);
-            return signDigest(secret, &e, noise, form, out);
-        }
-
-        /// P-256 through cloak's own kernel: comb multiplication by the nonce, Montgomery
-        /// scalars with a fixed-exponent inversion. Every secret scalar is erased.
-        fn signP256(secret: *const [32]u8, digest: *const [32]u8, k_bytes: *const [32]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
-            @setRuntimeSafety(true);
-            const r = p256.signR(k_bytes) orelse return error.SigningFailed;
+            const e = curve.digestScalar(digest);
+            var k_bytes = nonce(&e.toBytes(), secret, noise);
+            defer std.crypto.secureZero(u8, &k_bytes);
+            const r = curve.signR(&k_bytes) orelse return error.SigningFailed;
             // r is part of the signature: public.
             if (r.isZero()) return error.SigningFailed;
-            var d = p256.Scalar.fromBytes(secret) catch return error.SigningFailed;
+            var d = Scalar.fromBytes(secret) catch return error.SigningFailed;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&d));
             if (d.isZeroMask() != 0) return error.SigningFailed;
-            var k = p256.Scalar.fromBytes(k_bytes) catch return error.SigningFailed;
+            var k = Scalar.fromBytes(&k_bytes) catch return error.SigningFailed;
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
             var k_inverse = k.powModulusMinusTwo();
             defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
             // r * d with r public gives d: named, and erased.
             var rd = r.mul(d);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
-            var blend = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(digest)).add(rd);
+            var blend = e.add(rd);
             defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
             const s = k_inverse.mul(blend);
             if (s.isZero()) return error.SigningFailed;
-            const signature: Scheme.Signature = .{ .r = r.toBytes(), .s = s.toBytes() };
-            return write(signature, form, out);
+            return write(&r.toBytes(), &s.toBytes(), form, out);
         }
 
-        /// The signature in `out`, in the form asked for.
-        fn write(signature: Scheme.Signature, form: Form, out: *[max_signature]u8) []const u8 {
+        /// r and s in the form asked for: r || s at the order's width, or DER's minimal
+        /// INTEGERs.
+        fn write(r: *const [width]u8, s: *const [width]u8, form: Form, out: *[max_signature]u8) []const u8 {
             switch (form) {
                 .p1363 => {
-                    const encoded = signature.toBytes();
-                    @memcpy(out[0..encoded.len], &encoded);
-                    return out[0..encoded.len];
+                    out[0..width].* = r.*;
+                    out[width..][0..width].* = s.*;
+                    return out[0 .. 2 * width];
                 },
                 .der => {
-                    var der: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
-                    const encoded = signature.toDer(&der);
-                    @memcpy(out[0..encoded.len], encoded);
-                    return out[0..encoded.len];
+                    // Each INTEGER: its magnitude without leading zeros, a zero first when the
+                    // top bit is set. Each fits 67 bytes (a one-byte length) and the body 138.
+                    var at: usize = 3;
+                    inline for (.{ r, s }) |value| {
+                        var start: usize = 0;
+                        while (start < width - 1 and value[start] == 0) start += 1;
+                        const pad: usize = @intFromBool(value[start] & 0x80 != 0);
+                        const length = width - start + pad;
+                        out[at] = 2;
+                        out[at + 1] = @intCast(length); // safe: at most 67
+                        out[at + 2] = 0;
+                        @memcpy(out[at + 2 + pad ..][0 .. width - start], value[start..]);
+                        at += 2 + length;
+                    }
+                    const body = at - 3;
+                    if (body < 0x80) {
+                        // Short form: move the body up one byte.
+                        @memmove(out[2 .. 2 + body], out[3 .. 3 + body]);
+                        out[0] = 0x30;
+                        out[1] = @intCast(body); // safe: below 0x80
+                        return out[0 .. 2 + body];
+                    }
+                    out[0] = 0x30;
+                    out[1] = 0x81;
+                    out[2] = @intCast(body); // safe: at most 138
+                    return out[0..at];
                 },
             }
         }
 
-        fn reduce(comptime length: usize, bytes: [length]u8) Scalar {
-            comptime if (length > 64) @compileError("scalars reduce from at most 64 bytes");
-            if (length >= 48) {
-                var padded: [64]u8 = @splat(0);
-                @memcpy(padded[padded.len - length ..], &bytes);
-                return Scalar.fromBytes64(padded, .big);
-            }
-            var padded: [48]u8 = @splat(0);
-            @memcpy(padded[padded.len - length ..], &bytes);
-            return Scalar.fromBytes48(padded, .big);
-        }
-
-        /// HMAC-DRBG over the key, the hash and the noise, in the draft's order.
-        fn nonce(digest: *const [Hash.digest_length]u8, secret: *const [secret_length]u8, noise: ?*const [noise_length]u8) Scalar {
+        /// HMAC-DRBG over the key, the reduced digest (bits2octets) and the noise, in the
+        /// draft's order, drawing the order's width and keeping its leftmost bits until a value
+        /// in [1, n).
+        fn nonce(h: *const [width]u8, secret: *const [width]u8, noise: ?*const [noise_length]u8) [width]u8 {
+            const Wide = @Int(.unsigned, 8 * width);
+            const spare = 8 * width - Scalar.bits;
             var k: [Hash.digest_length]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &k);
-            var m: [Hash.digest_length + 1 + noise_length + secret_length + Hash.digest_length]u8 = @splat(0);
+            var m: [Hash.digest_length + 1 + noise_length + width + width]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &m);
-            var t: [Point.scalar.encoded_length]u8 = @splat(0);
+            var t: [width + Hash.digest_length]u8 = @splat(0);
             defer std.crypto.secureZero(u8, &t);
             const m_v = m[0..Hash.digest_length];
             const m_i = &m[m_v.len];
             const m_z = m[m_v.len + 1 ..][0..noise_length];
-            const m_x = m[m_v.len + 1 + noise_length ..][0..secret_length];
-            const m_h = m[m.len - Hash.digest_length ..];
+            const m_x = m[m_v.len + 1 + noise_length ..][0..width];
+            const m_h = m[m.len - width ..];
             @memset(m_v, 0x01);
             m_i.* = 0x00;
             if (noise) |bytes| @memcpy(m_z, bytes);
             @memcpy(m_x, secret);
-            @memcpy(m_h, digest);
+            @memcpy(m_h, h);
             Prf.create(&k, &m, &k);
             Prf.create(m_v, m_v, &k);
             m_i.* = 0x01;
@@ -164,14 +148,14 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
             Prf.create(m_v, m_v, &k);
             while (true) {
                 var offset: usize = 0;
-                while (offset < t.len) : (offset += m_v.len) {
-                    const end = @min(offset + m_v.len, t.len);
+                while (offset < width) : (offset += m_v.len) {
                     Prf.create(m_v, m_v, &k);
-                    @memcpy(t[offset..end], m_v[0 .. end - offset]);
+                    t[offset..][0..m_v.len].* = m_v.*;
                 }
-                if (Scalar.fromBytes(t, .big)) |candidate| {
-                    if (!candidate.isZero()) return candidate;
-                } else |_| {}
+                var candidate: [width]u8 = undefined;
+                std.mem.writeInt(Wide, &candidate, std.mem.readInt(Wide, t[0..width], .big) >> spare, .big);
+                if (curve.scalarInRange(&candidate)) return candidate;
+                std.crypto.secureZero(u8, &candidate);
                 m_i.* = 0x00;
                 Prf.create(&k, m[0 .. m_v.len + 1], &k);
                 Prf.create(m_v, m_v, &k);
@@ -180,137 +164,10 @@ pub fn Ecdsa(comptime Point: type, comptime Hash: type) type {
     };
 }
 
-pub const P256 = Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
-pub const P384 = Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384);
+pub const P256 = Ecdsa(p256, std.crypto.hash.sha2.Sha256);
+pub const P384 = Ecdsa(p384, std.crypto.hash.sha2.Sha384);
+pub const P521 = Ecdsa(p521, std.crypto.hash.sha2.Sha512);
 
-/// ECDSA over P-521 with SHA-512 by cloak's curve (`crypto/p521.zig`), the same surface and
-/// hedged nonces as `Ecdsa`. The order is 521 bits and its encodings 66 bytes, so RFC 6979's
-/// bits2int takes the leftmost 521 bits of a 66-byte draw (a shift right by seven) and the
-/// draw repeats until it is below n.
-pub const P521 = struct {
-    const Hash = std.crypto.hash.sha2.Sha512;
-    const Prf = std.crypto.auth.hmac.Hmac(Hash);
-    const Scalar = p521.Scalar;
-    const width = p521.scalar_length;
-    pub const secret_length = width;
-    pub const noise_length = width;
-
-    pub fn sign(secret: *const [secret_length]u8, message: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
-        @setRuntimeSafety(true);
-        var digest: [Hash.digest_length]u8 = undefined;
-        Hash.hash(message, &digest, .{});
-        return signAnyDigest(secret, &digest, noise, form, out);
-    }
-
-    pub fn signDigest(secret: *const [secret_length]u8, digest: *const [Hash.digest_length]u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
-        return signAnyDigest(secret, digest, noise, form, out);
-    }
-
-    /// The signature over a digest of any hash, its leftmost 521 bits taken (all of SHA-256's,
-    /// SHA-384's and SHA-512's).
-    pub fn signAnyDigest(secret: *const [secret_length]u8, digest: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
-        @setRuntimeSafety(true);
-        const e = p521.digestScalar(digest);
-        var k_bytes = nonce(&e.toBytes(), secret, noise);
-        defer std.crypto.secureZero(u8, &k_bytes);
-        const r = p521.signR(&k_bytes) orelse return error.SigningFailed;
-        // r is part of the signature: public.
-        if (r.isZero()) return error.SigningFailed;
-        var d = Scalar.fromBytes(secret) catch return error.SigningFailed;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&d));
-        if (d.isZeroMask() != 0) return error.SigningFailed;
-        var k = Scalar.fromBytes(&k_bytes) catch return error.SigningFailed;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
-        var k_inverse = k.powModulusMinusTwo();
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
-        var rd = r.mul(d);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
-        var blend = e.add(rd);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
-        const s = k_inverse.mul(blend);
-        if (s.isZero()) return error.SigningFailed;
-        return write(&r.toBytes(), &s.toBytes(), form, out);
-    }
-
-    /// r and s in the form asked for: r || s at 66 bytes each, or DER's minimal INTEGERs.
-    fn write(r: *const [width]u8, s: *const [width]u8, form: Form, out: *[max_signature]u8) []const u8 {
-        switch (form) {
-            .p1363 => {
-                out[0..width].* = r.*;
-                out[width..][0..width].* = s.*;
-                return out[0 .. 2 * width];
-            },
-            .der => {
-                // Each INTEGER: its magnitude without leading zeros, a zero first when the top
-                // bit is set. Both fit 67 bytes, so the body is below 256 and above 127.
-                var at: usize = 3;
-                inline for (.{ r, s }) |value| {
-                    var start: usize = 0;
-                    while (start < width - 1 and value[start] == 0) start += 1;
-                    const pad: usize = @intFromBool(value[start] & 0x80 != 0);
-                    const length = width - start + pad;
-                    out[at] = 2;
-                    out[at + 1] = @intCast(length); // safe: at most 67
-                    out[at + 2] = 0;
-                    @memcpy(out[at + 2 + pad ..][0 .. width - start], value[start..]);
-                    at += 2 + length;
-                }
-                const body = at - 3;
-                if (body < 0x80) {
-                    // Short form: move the body up one byte.
-                    @memmove(out[2 .. 2 + body], out[3 .. 3 + body]);
-                    out[0] = 0x30;
-                    out[1] = @intCast(body); // safe: below 0x80
-                    return out[0 .. 2 + body];
-                }
-                out[0] = 0x30;
-                out[1] = 0x81;
-                out[2] = @intCast(body); // safe: at most 138
-                return out[0..at];
-            },
-        }
-    }
-
-    /// HMAC-DRBG over the key, the reduced digest (bits2octets) and the noise, in the draft's
-    /// order, drawing 66 bytes and keeping their leftmost 521 bits until a value in [1, n).
-    fn nonce(h: *const [width]u8, secret: *const [width]u8, noise: ?*const [noise_length]u8) [width]u8 {
-        var k: [Hash.digest_length]u8 = @splat(0);
-        defer std.crypto.secureZero(u8, &k);
-        var m: [Hash.digest_length + 1 + noise_length + width + width]u8 = @splat(0);
-        defer std.crypto.secureZero(u8, &m);
-        var t: [width + Hash.digest_length]u8 = @splat(0);
-        defer std.crypto.secureZero(u8, &t);
-        const m_v = m[0..Hash.digest_length];
-        const m_i = &m[m_v.len];
-        const m_z = m[m_v.len + 1 ..][0..noise_length];
-        const m_x = m[m_v.len + 1 + noise_length ..][0..width];
-        const m_h = m[m.len - width ..];
-        @memset(m_v, 0x01);
-        m_i.* = 0x00;
-        if (noise) |bytes| @memcpy(m_z, bytes);
-        @memcpy(m_x, secret);
-        @memcpy(m_h, h);
-        Prf.create(&k, &m, &k);
-        Prf.create(m_v, m_v, &k);
-        m_i.* = 0x01;
-        Prf.create(&k, &m, &k);
-        Prf.create(m_v, m_v, &k);
-        while (true) {
-            var offset: usize = 0;
-            while (offset < width) : (offset += m_v.len) {
-                Prf.create(m_v, m_v, &k);
-                t[offset..][0..m_v.len].* = m_v.*;
-            }
-            var candidate: [width]u8 = undefined;
-            std.mem.writeInt(u528, &candidate, std.mem.readInt(u528, t[0..width], .big) >> 7, .big);
-            if (p521.scalarInRange(&candidate)) return candidate;
-            std.crypto.secureZero(u8, &candidate);
-            m_i.* = 0x00;
-            Prf.create(&k, m[0 .. m_v.len + 1], &k);
-            Prf.create(m_v, m_v, &k);
-        }
-    }
-};
 pub const ed25519 = struct {
     const Edwards = std.crypto.ecc.Edwards25519;
     const Sha512 = std.crypto.hash.sha2.Sha512;
