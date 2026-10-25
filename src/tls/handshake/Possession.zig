@@ -135,6 +135,8 @@ pub fn choose(key: Algorithm.PublicKey, own: []const Scheme, accepts: anytype) ?
         .mldsa => |m| switch (m.level) {
             inline else => |level| &.{comptime mldsaScheme(level)},
         },
+        // An agreement key signs nothing.
+        .x25519 => &.{},
     };
     return first(bind, order, own, key, accepts);
 }
@@ -232,6 +234,7 @@ pub fn chooseServer12(key: Algorithm.PublicKey, own: []const Scheme, accepts: an
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 },
         // TLS 1.3's only.
         .mldsa => &.{},
+        .x25519 => &.{},
     };
     return first(bind12, order, own, key, accepts);
 }
@@ -245,7 +248,7 @@ pub fn chooseClient12(key: Algorithm.PublicKey, own: []const Scheme, accepts: an
         .ec => |ec| if (ec.curve == .p256) &.{ .ecdsa_p256_sha256, .ecdsa_p384_sha384 } else &.{ .ecdsa_p384_sha384, .ecdsa_p256_sha256 },
         .ed25519 => &.{.ed25519},
         .rsa => |rsa| if (rsa.pss_only) &.{ .rsa_pss_pss_sha256, .rsa_pss_pss_sha384 } else &.{ .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pkcs1_sha256, .rsa_pkcs1_sha384 },
-        .mldsa => &.{},
+        .mldsa, .x25519 => &.{},
     };
     return first(bind12, order, own, key, accepts);
 }

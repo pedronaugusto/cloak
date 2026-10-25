@@ -14,6 +14,15 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - RSA private keys load about 50 times faster (10.4 ms to 0.21 ms for RSA-2048 on an M3): the agreement checks reduce over the integers' encoded widths instead of the fixed 8192-bit capacity, skip the bits below the modulus's width, check e * dp and e * dq (half as long) beside d's agreement with dp and dq, and the Montgomery constants start at the modulus's top bit. Every check is the one before; the widths walked are the DER lengths, public.
 - AES-CBC key-file decryption runs on the AES instructions where the target has them (AES-128 and AES-256), the fixed-arithmetic AES elsewhere and for AES-192.
 - PBKDF2 keeps HMAC's keyed inner and outer states across rounds, two compressions per round instead of four, and SHA-1 runs on the ARMv8 SHA-1 instructions where the target has them (std's SHA-1 has no accelerated path).
+- `cloak.cipher`, JOSE's symmetric constructions (RFC 7516 and 7518) on scrubbed kernels: `AesGcm(128 | 256)` sealing and opening under a caller's nonce and AAD, AES key wrap (`keyWrap`, RFC 3394, the integrity check in constant time and the key written only when it holds), and `CbcHmac(.a128cbc_hs256 | .a256cbc_hs512)`, RFC 7518 §5.2's composite, its tag checked in constant time before one block is decrypted and the padding checked under masks. CBC is exposed only as the composite. AES-192 is not offered. Wycheproof's aes_gcm, aes_wrap, a128cbc_hs256 and a256cbc_hs512 files.
+- RSA-OAEP (RFC 8017 §7.1): `PrivateKey.decrypt(scheme, ciphertext, noise, out)` on the blinded, publicly checked private operation, the encoding decoded in constant time, one `DecryptionFailed` for every bad ciphertext; `certificates.encryption.encrypt` for the public side. `certificate.Algorithm.Encryption` names the scheme (`oaep`: SHA-1, SHA-256, SHA-384 or SHA-512 for the label and MGF1). No RSAES-PKCS1-v1_5. Wycheproof's rsa_oaep files.
+- Key agreement with a held key: `PrivateKey.agree(peer, out)`, ECDH on P-256 and P-384 (the peer on the curve, not the identity) and X25519 (an all-zero result refused, RFC 7748 §6.1). Wycheproof's ecdh_secp256r1_ecpoint, ecdh_secp384r1_ecpoint and x25519 files.
+- X25519 keys: read from PKCS#8 (RFC 8410) or made by `fromComponents(.x25519)`; they agree and sign nothing.
+- `bench/jose.zig`: OAEP, agreement, key wrap, the composite and GCM beside std.
+
+### Changed
+
+- `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it. Breaking.
 
 ### Fixed
 

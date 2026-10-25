@@ -7,6 +7,8 @@ pub const rsa = @import("crypto/rsa.zig");
 pub const mldsa = @import("crypto/mldsa.zig");
 pub const roca = @import("crypto/roca.zig");
 pub const sha1 = @import("crypto/sha1.zig");
+pub const aes = @import("crypto/aes.zig");
+pub const pkcs1 = @import("crypto/pkcs1.zig");
 test {
     _ = roca;
     _ = sha1;
@@ -14,5 +16,6 @@ test {
     _ = p521;
     _ = p521_field;
     _ = rsa;
+    _ = pkcs1;
     _ = @import("crypto/mldsa_test.zig");
 }

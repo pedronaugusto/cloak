@@ -3,6 +3,7 @@ const Der = @import("../wire/Der.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 const roca = @import("../crypto/roca.zig");
 const p521 = @import("../crypto/p521.zig");
+const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
@@ -12,16 +13,26 @@ pub const MlDsa = mldsa.Level;
 /// same algorithm with the signature as r || s, each at the curve's width (IEEE P1363), as JOSE
 /// (RFC 7518 3.4), COSE and WebAuthn write them. Certificates never carry it.
 pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ecdsa_p1363: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
+/// RSAES-OAEP's parameters (RFC 8017 7.1): the label's hash, MGF1's hash and the label. JOSE's
+/// RSA-OAEP takes SHA-1 for both, RSA-OAEP-256 SHA-256 for both (RFC 7518 4.3).
+pub const Oaep = pkcs1.Oaep;
+/// A public-key encryption scheme. RSAES-PKCS1-v1_5 is not one: its decryption is the padding
+/// oracle Bleichenbacher's attack reads.
+pub const Encryption = union(enum) { oaep: Oaep };
 pub const Curve = enum { p256, p384, p521 };
 pub const PublicKey = union(enum) {
     rsa: struct { modulus: []const u8, exponent: []const u8, pss: ?Pss = null, pss_only: bool = false },
     ec: struct { curve: Curve, bytes: []const u8 },
     ed25519: []const u8,
     mldsa: struct { level: MlDsa, bytes: []const u8 },
+    /// An X25519 public key (RFC 7748, RFC 8410): 32 bytes, for key agreement alone. No
+    /// signature verifies under it and TLS authenticates with none.
+    x25519: []const u8,
 };
 pub const rsa_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 pub const pss_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a";
 const ed_oid = "\x2b\x65\x70";
+const x25519_oid = "\x2b\x65\x6e";
 const ec_oid = "\x2a\x86\x48\xce\x3d\x02\x01";
 const p256_oid = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const p384_oid = "\x2b\x81\x04\x00\x22";
@@ -207,6 +218,12 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
         point.rejectUnexpectedSubgroup() catch return error.InvalidPublicKey;
         return .{ .ed25519 = bytes };
     }
+    if (eql(id, x25519_oid)) {
+        // Every 32 bytes are an X25519 public key (RFC 7748 5); the agreement refuses the ones
+        // of small order.
+        if (param != null or bytes.len != 32) return error.InvalidPublicKey;
+        return .{ .x25519 = bytes };
+    }
     return error.UnsupportedAlgorithm;
 }
 
@@ -230,6 +247,7 @@ pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{Unsu
             .p521 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p521_oid,
         }, ec.bytes },
         .ed25519 => |bytes| .{ "\x30\x05\x06\x03" ++ ed_oid, bytes },
+        .x25519 => |bytes| .{ "\x30\x05\x06\x03" ++ x25519_oid, bytes },
         .mldsa => |m| .{ switch (m.level) {
             .mldsa44 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x11",
             .mldsa65 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x12",
