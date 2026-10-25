@@ -17,6 +17,7 @@
 //! session stores `io` for the entropy and clock requests and for the adapters' vtables; open it
 //! in place and do not move it afterwards.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const certificates = @import("../certificates.zig");
 const Connection = @import("Connection.zig");
 const Server = @import("handshake/Server.zig");
@@ -591,8 +592,9 @@ fn serve(session: *Session) OpenError!bool {
         answered = true;
         switch (request.service) {
             .entropy => |len| {
-                var bytes: [512]u8 = undefined;
-                defer std.crypto.secureZero(u8, &bytes);
+                var bytes_owner: Secret([512]u8) = .init(undefined);
+                defer bytes_owner.deinit();
+                const bytes = bytes_owner.exposeMut();
                 if (len > bytes.len) return error.EntropyUnavailable;
                 if (session.io.randomSecure(bytes[0..len])) {
                     try session.conn.provide(request.token, .{ .entropy = bytes[0..len] });

@@ -24,6 +24,7 @@ const Services = @import("../handshake/Services.zig");
 const Messages = @import("../handshake/Messages.zig");
 const Alert = @import("../wire/Alert.zig").Alert;
 const Record = @import("Record.zig");
+const Buffer = @import("../wire/Buffer.zig");
 const RecordLimits = @import("../handshake/RecordLimits.zig");
 const Hello = @import("../handshake/Hello.zig");
 const Psk = @import("../handshake/Psk.zig");
@@ -234,7 +235,7 @@ const Sent = struct {
     /// The record epoch it went out under: 0, 1 (DTLS 1.2) or 2 and up (DTLS 1.3).
     epoch: u64,
     /// The message in its TLS form: type, 24-bit length, body.
-    bytes: []u8 = &.{},
+    bytes: Buffer = .{},
     /// Bytes of the body this transmission has sent, and whether it has more (or, for an empty
     /// message, its one fragment) to send.
     cursor: usize = 0,
@@ -288,13 +289,13 @@ const Partial = struct {
     kind: u8,
     epoch: u64,
     /// Type and length header, then the body.
-    buf: []u8,
+    buf: Buffer,
     /// One bit per body byte received.
     have: []u8,
     received: usize = 0,
 
     fn total(self: *const Partial) usize {
-        return self.buf.len - 4;
+        return self.buf.view().len - 4;
     }
 };
 
@@ -787,11 +788,11 @@ fn deliverNext(self: *Datagram) Error!bool {
     self.receive_sequence += 1;
     // The connection-ID messages are the carrier's: the engine never sees them.
     if (taken.kind == request_connection_id or taken.kind == new_connection_id) {
-        try self.onCidMessage(taken.kind, taken.buf[4..], taken.epoch);
+        try self.onCidMessage(taken.kind, taken.buf.view()[4..], taken.epoch);
         return true;
     }
     // A DTLS 1.3 server ACKs the client's final flight, and either side a post-handshake message.
-    try self.hs.receive(taken.buf, self.engineEpoch(taken.epoch), true);
+    try self.hs.receive(taken.buf.view(), self.engineEpoch(taken.epoch), true);
     return true;
 }
 
@@ -951,11 +952,9 @@ fn queueMessage(self: *Datagram, epoch: Flight.Epoch, message: []const u8) Error
 /// Copies `message` into a new entry of a flight of `category` under record epoch `epoch`.
 fn queueOwn(self: *Datagram, category: Category, epoch: u64, message: []const u8) Error!void {
     @setRuntimeSafety(true);
-    const bytes = try self.gpa.dupe(u8, message);
-    errdefer {
-        std.crypto.secureZero(u8, bytes);
-        self.gpa.free(bytes);
-    }
+    var bytes: Buffer = .{};
+    errdefer bytes.free(self.gpa);
+    @memcpy(try bytes.ensure(self.gpa, message.len), message);
     const sequence = std.math.cast(u16, self.send_sequence) orelse return error.MessageSequenceExhausted;
     try self.queue(.{ .kind = .message, .epoch = epoch, .bytes = bytes, .sequence = sequence }, category);
     self.send_sequence += 1;
@@ -982,13 +981,13 @@ fn queue(self: *Datagram, entry: Sent, category: Category) Error!void {
         // Each post-handshake message is a flight of its own (RFC 9147 section 5.8.4).
         else => try self.openFlight(category),
     };
-    if (self.flight_bytes + entry.bytes.len > self.limits.flight) {
+    if (self.flight_bytes + entry.bytes.view().len > self.limits.flight) {
         if (flight.entries.items.len == 0) self.dropFlight(flight);
         return error.FlightLimit;
     }
     try flight.entries.append(self.gpa, entry);
-    flight.bytes += entry.bytes.len;
-    self.flight_bytes += entry.bytes.len;
+    flight.bytes += entry.bytes.view().len;
+    self.flight_bytes += entry.bytes.view().len;
     flight.transmitting = true;
     flight.deadline = null;
     // The peer's answer to this flight starts at the message it sends next.
@@ -1015,11 +1014,8 @@ fn slotOf(self: *const Datagram, flight: *const Outgoing) u8 {
 }
 
 fn dropFlight(self: *Datagram, flight: *Outgoing) void {
-    for (flight.entries.items) |entry| {
-        if (entry.bytes.len != 0) {
-            std.crypto.secureZero(u8, entry.bytes);
-            self.gpa.free(entry.bytes);
-        }
+    for (flight.entries.items) |*entry| {
+        entry.bytes.free(self.gpa);
         if (entry.covered.len != 0) self.gpa.free(entry.covered);
     }
     flight.entries.deinit(self.gpa);
@@ -1042,11 +1038,11 @@ fn dropPartials(self: *Datagram) void {
     self.partials.clearRetainingCapacity();
 }
 
-fn freePartial(self: *Datagram, p: Partial) void {
-    std.crypto.secureZero(u8, p.buf);
-    self.gpa.free(p.buf);
+fn freePartial(self: *Datagram, held: Partial) void {
+    var p = held;
+    self.partial_bytes -= p.buf.view().len + p.have.len;
+    p.buf.free(self.gpa);
     self.gpa.free(p.have);
-    self.partial_bytes -= p.buf.len + p.have.len;
 }
 
 // ---------------------------------------------------------------- receiving
@@ -1378,15 +1374,16 @@ fn absorb(self: *Datagram, kind: u8, length: u24, sequence: u16, offset: u24, fr
     } else blk: {
         const need = 4 + @as(usize, length) + (@as(usize, length) + 7) / 8;
         if (self.partials.items.len == self.limits.incomplete or self.partial_bytes + need > self.limits.reassembly) return .dropped;
-        const buf = try self.gpa.alloc(u8, 4 + @as(usize, length));
-        errdefer self.gpa.free(buf);
+        var buf: Buffer = .{};
+        errdefer buf.free(self.gpa);
+        const message = try buf.ensure(self.gpa, 4 + @as(usize, length));
         const have = try self.gpa.alloc(u8, (@as(usize, length) + 7) / 8);
         errdefer self.gpa.free(have);
         @memset(have, 0);
-        buf[0] = kind;
-        std.mem.writeInt(u24, buf[1..4], length, .big);
+        message[0] = kind;
+        std.mem.writeInt(u24, message[1..4], length, .big);
         try self.partials.append(self.gpa, .{ .sequence = sequence, .kind = kind, .epoch = epoch, .buf = buf, .have = have });
-        self.partial_bytes += buf.len + have.len;
+        self.partial_bytes += message.len + have.len;
         break :blk &self.partials.items[self.partials.items.len - 1];
     };
     var added = false;
@@ -1394,7 +1391,7 @@ fn absorb(self: *Datagram, kind: u8, length: u24, sequence: u16, offset: u24, fr
         const at = @as(usize, offset) + i;
         const bit = @as(u8, 1) << @intCast(at % 8);
         if (partial.have[at / 8] & bit != 0) continue;
-        partial.buf[4 + at] = byte;
+        partial.buf.bytes()[4 + at] = byte;
         partial.have[at / 8] |= bit;
         partial.received += 1;
         added = true;
@@ -1406,7 +1403,7 @@ fn absorb(self: *Datagram, kind: u8, length: u24, sequence: u16, offset: u24, fr
 fn overlapAgrees(partial: *const Partial, offset: u24, fragment: []const u8) bool {
     for (fragment, 0..) |byte, i| {
         const at = @as(usize, offset) + i;
-        if (partial.have[at / 8] & (@as(u8, 1) << @intCast(at % 8)) != 0 and partial.buf[4 + at] != byte) return false;
+        if (partial.have[at / 8] & (@as(u8, 1) << @intCast(at % 8)) != 0 and partial.buf.view()[4 + at] != byte) return false;
     }
     return true;
 }
@@ -1825,7 +1822,7 @@ fn transmit(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filling
 
 fn bodyLength(entry: Sent) usize {
     return switch (entry.kind) {
-        .message => entry.bytes.len - 4,
+        .message => entry.bytes.view().len - 4,
         .ccs => 1,
     };
 }
@@ -1866,7 +1863,7 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filli
                     if (filling.*) |f| if (f.epoch != entry.epoch or f.count == Filling.max_fragments or !self.packs(entry.epoch)) {
                         used.* = try self.closeRecord(filling, out, used.*);
                     };
-                    const body = entry.bytes[4..];
+                    const body = entry.bytes.view()[4..];
                     // Bytes an ACK covered do not go again (RFC 9147 section 7.2): the fragment
                     // starts past them and stops at the next.
                     if (entry.covered.len != 0) {
@@ -1900,8 +1897,8 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filli
                     if (filling.* == null) filling.* = .{ .epoch = entry.epoch, .at = used.*, .content = used.* + offset, .number = self.nextRecordNumber(entry.epoch) };
                     const f = &filling.*.?;
                     const fragment = out[start..][0..12];
-                    fragment[0] = entry.bytes[0];
-                    fragment[1..4].* = entry.bytes[1..4].*;
+                    fragment[0] = entry.bytes.view()[0];
+                    fragment[1..4].* = entry.bytes.view()[1..4].*;
                     std.mem.writeInt(u16, fragment[4..6], entry.sequence, .big);
                     // safe: offsets and lengths are below the 24-bit message length.
                     std.mem.writeInt(u24, fragment[6..9], @intCast(entry.cursor), .big);

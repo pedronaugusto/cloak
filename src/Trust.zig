@@ -1,5 +1,6 @@
 //! A mutable trust builder and immutable, retained trust snapshots.
 const std = @import("std");
+const aegis = @import("aegis");
 const TrustGeneration = @import("types.zig").TrustGeneration;
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
@@ -28,7 +29,7 @@ pub const Limits = struct {
 pub const AddDerError = std.mem.Allocator.Error || certificate.ParseError || error{TrustLimit};
 pub const AddPemError = AddDerError || error{ InvalidPem, InvalidPadding, InvalidCharacter };
 pub const LoadOptions = struct { limits: Limits = .{}, timeout: std.Io.Timeout = .none };
-pub const AddFileError = AddPemError || std.Io.Dir.ReadFileAllocError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error || std.Io.ConcurrentError || std.Io.Event.WaitTimeoutError;
+pub const AddFileError = AddPemError || aegis.own.ReadFileError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error || std.Io.ConcurrentError || std.Io.Event.WaitTimeoutError;
 pub const AddDirError = AddFileError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error;
 pub const AddSystemError = AddDirError || error{ SystemTrustUnavailable, UnsupportedPlatform };
 pub const FreezeError = certificate.Issuers.InitError || error{ NoTrustAnchors, GenerationExhausted };
@@ -208,7 +209,7 @@ fn systemTask(t: *Trust, io: std.Io, limits: Limits, event: *std.Io.Event) AddSy
 /// Loading occurs before traffic; `io` and file ownership remain per call.
 fn file(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddFileError!void {
     @setRuntimeSafety(true);
-    const pem = try std.Io.Dir.cwd().readFileAlloc(io, path, t.gpa, .limited(limits.file_bytes));
+    const pem = try aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes));
     defer t.gpa.free(pem);
     try t.addPem(pem, limits);
 }
@@ -228,7 +229,7 @@ fn directory(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddDirErro
         if (entries >= limits.directory_entries) return error.TrustLimit;
         entries += 1;
         if (entry.kind != .file and entry.kind != .sym_link) continue;
-        const pem = try dir.readFileAlloc(io, entry.name, t.gpa, .limited(limits.file_bytes));
+        const pem = try aegis.own.readFile(io, dir, entry.name, t.gpa, .fromRaw(limits.file_bytes));
         defer t.gpa.free(pem);
         try t.addPem(pem, limits);
     }
@@ -252,7 +253,7 @@ fn systemLoad(t: *Trust, io: std.Io, limits: Limits) AddSystemError!void {
 fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits) AddSystemError!void {
     @setRuntimeSafety(true);
     for (paths) |path| {
-        const pem = std.Io.Dir.cwd().readFileAlloc(io, path, t.gpa, .limited(limits.file_bytes)) catch |err| switch (err) {
+        const pem = aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes)) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };

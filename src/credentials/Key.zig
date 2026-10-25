@@ -96,7 +96,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
             if (block.legacy) {
                 if (!rsa_label and !ec_label) return error.InvalidKey;
                 var plain = try legacy(gpa, block, options);
-                defer plain.deinit();
+                defer plain.deinit(gpa);
                 try labelShape(plain.expose(), rsa_label, ec_label);
                 try parseDer(plain.expose(), options, out);
             } else if (encrypted_label) {
@@ -319,7 +319,7 @@ fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
     @setRuntimeSafety(true);
     const passphrase = options.passphrase orelse return error.PasswordRequired;
     var password = Pbe.Password.init(gpa, passphrase, false, pbeLimits(options)) catch |err| return pbeError(err);
-    defer password.deinit();
+    defer password.deinit(gpa);
     return encryptedWith(gpa, bytes, &password, options, out);
 }
 /// An EncryptedPrivateKeyInfo opened with `password`, as given or as a PKCS#12 file's MAC
@@ -332,7 +332,7 @@ pub fn encryptedWith(gpa: std.mem.Allocator, bytes: []const u8, password: *const
     const data = (try info.expect(4)).value;
     try info.finish();
     var plain = Pbe.decrypt(gpa, algorithm.encoded, data, password, pbeLimits(options)) catch |err| return pbeError(err);
-    defer plain.deinit();
+    defer plain.deinit(gpa);
     return parseDer(plain.expose(), options, out) catch |err| switch (err) {
         error.OutOfMemory => err,
         else => error.BadPassword,
@@ -386,7 +386,7 @@ fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError
         filled += n;
     }
     var plain_owner = try SecretBytes.init(gpa, block.der.len);
-    errdefer plain_owner.deinit();
+    errdefer plain_owner.deinit(gpa);
     plain_owner.resizeWithinCapacity(block.der.len) catch return error.InputLimit;
     const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, block.der, plain) else try Cbc.decrypt(key[0..key_len], iv, block.der, plain);

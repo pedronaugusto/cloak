@@ -62,10 +62,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             @setRuntimeSafety(true);
             aegis.assert.pre(!self.closed and self.owner == .software, "only keys this epoch holds are exported");
             @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
-            var iv = self.iv.expose().*;
+            const iv = keys.iv.exposeMut();
+            iv.* = self.iv.expose().*;
             if (explicit != 0) std.mem.writeInt(u64, iv[4..12], self.sequence.raw(), .big);
-            keys.iv.exposeMut().* = iv;
-            std.crypto.secureZero(u8, &iv);
             keys.sequence = self.sequence.raw();
         }
 
@@ -154,10 +153,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             try self.admit(len);
             // The peer chooses the explicit nonce; it is authenticated through the tag.
             const counter = if (explicit != 0) std.mem.readInt(u64, wire[5..13], .big) else self.sequence.raw();
-            Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch {
-                std.crypto.secureZero(u8, plain);
-                return self.bad();
-            };
+            Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch return self.bad();
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain };

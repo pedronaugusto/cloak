@@ -141,8 +141,9 @@ fn mac(key: *const Key, label: []const u8, address: []const u8, parts: []const [
 }
 
 fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []const []const u8, out: *[32]u8) void {
-    var h = Mac.init(key.material.expose());
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+    var h_owner: aegis.Secret(Mac) = .init(Mac.init(key.material.expose()));
+    defer h_owner.deinit();
+    const h = h_owner.exposeMut();
     h.update(label);
     h.update(&.{@intCast(address.len)});
     h.update(address);
@@ -164,11 +165,8 @@ fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []c
 fn retry13(self: *const Cookies, gpa: std.mem.Allocator, policy: Hello.Options, keys: []const Ech.Key, address: []const u8, seconds: u64, outer: *const ClientHello, outer_message: []const u8, record_sequence: u64, received: usize, out: []u8) Verdict {
     @setRuntimeSafety(true);
     var ech: Ech.Retried = .none;
-    var inner: []u8 = &.{};
-    defer if (inner.len != 0) {
-        std.crypto.secureZero(u8, inner);
-        gpa.free(inner);
-    };
+    var inner: aegis.SecretBytes = .empty;
+    defer inner.deinit(gpa);
     var inner_hello: ClientHello = undefined;
     if (keys.len != 0) if (outer.ech) |body| {
         const offer = switch (Ech.parseOffer(body) catch return .drop) {
@@ -179,13 +177,13 @@ fn retry13(self: *const Cookies, gpa: std.mem.Allocator, policy: Hello.Options, 
             var context = opened.context;
             context.deinit();
             inner = opened.inner;
-            inner_hello = ClientHello.parse(inner, .datagram) catch return .drop;
+            inner_hello = ClientHello.parse(inner.expose(), .datagram) catch return .drop;
             Server.checkInner(&inner_hello) catch return .drop;
             ech = .{ .accepted = .{ .config_id = offer.config_id, .suite = offer.suite, .enc = offer.enc[0..Hpke.enc_length].*, .random = inner_hello.random[0..32].* } };
         } else ech = .rejected;
     };
     const hello = if (ech == .accepted) &inner_hello else outer;
-    const message = if (ech == .accepted) inner else outer_message;
+    const message = if (ech == .accepted) inner.expose() else outer_message;
     if (!hello.null_compression_only or hello.legacy_cookie.len != 0 or !hello.has_schemes or !hello.has_groups or hello.sharesOutsideGroups()) return .drop;
     const suite = for (policy.suites) |candidate| {
         if (candidate.tls13()) |s| if (hello.offersSuite(@backingInt(s))) break s;

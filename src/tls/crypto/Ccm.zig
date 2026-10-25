@@ -32,36 +32,31 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             @setRuntimeSafety(true);
             aegis.assert.invariant(c.len == m.len, "CCM seals in place or into an equal buffer");
             aegis.assert.invariant(m.len <= max_message, "a CCM message is within its counter's reach");
-            var ctx = Aes.initEnc(key);
-            defer crypto.secureZero(u8, std.mem.asBytes(&ctx));
-            var mac: [block_length]u8 = undefined;
-            defer crypto.secureZero(u8, &mac);
-            cbcMac(&ctx, &mac, m, ad, npub);
-            var s0: [block_length]u8 = undefined;
-            defer crypto.secureZero(u8, &s0);
-            ctx.encrypt(&s0, &counterBlock(npub, 0));
-            for (tag, mac[0..tag_length], s0[0..tag_length]) |*t, a, b| t.* = a ^ b;
-            ctr(&ctx, c, m, npub);
+            var owner: aegis.Secret(struct { ctx: Context, mac: [block_length]u8, s0: [block_length]u8 }) = .init(.{ .ctx = Aes.initEnc(key), .mac = undefined, .s0 = undefined });
+            defer owner.deinit();
+            const s = owner.exposeMut();
+            cbcMac(&s.ctx, &s.mac, m, ad, npub);
+            s.ctx.encrypt(&s.s0, &counterBlock(npub, 0));
+            for (tag, s.mac[0..tag_length], s.s0[0..tag_length]) |*t, a, b| t.* = a ^ b;
+            ctr(&s.ctx, c, m, npub);
         }
 
-        /// Opens `c` into `m` (the same length; `m` may be `c`). On a wrong tag `m` is erased and
-        /// nothing of it is released.
+        /// Opens `c` into `m` (the same length; `m` may be `c`). On a wrong tag `m` holds `c` again:
+        /// the keystream is applied a second time, so nothing derived from the key is left in it.
         pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) crypto.errors.AuthenticationError!void {
             @setRuntimeSafety(true);
             aegis.assert.invariant(c.len == m.len, "CCM opens in place or into an equal buffer");
             if (c.len > max_message) return error.AuthenticationFailed;
-            var ctx = Aes.initEnc(key);
-            defer crypto.secureZero(u8, std.mem.asBytes(&ctx));
-            ctr(&ctx, m, c, npub);
-            var mac: [block_length]u8 = undefined;
-            defer crypto.secureZero(u8, &mac);
-            cbcMac(&ctx, &mac, m, ad, npub);
-            var expected: [block_length]u8 = undefined;
-            defer crypto.secureZero(u8, &expected);
-            ctx.encrypt(&expected, &counterBlock(npub, 0));
-            for (&expected, mac) |*e, a| e.* ^= a;
-            if (!aegis.secret.equal(tag_length, expected[0..tag_length], &tag).declassify("a bad tag drops the record")) {
-                crypto.secureZero(u8, m);
+            var owner: aegis.Secret(struct { ctx: Context, mac: [block_length]u8, expected: [block_length]u8 }) = .init(.{ .ctx = Aes.initEnc(key), .mac = undefined, .expected = undefined });
+            defer owner.deinit();
+            const s = owner.exposeMut();
+            ctr(&s.ctx, m, c, npub);
+            cbcMac(&s.ctx, &s.mac, m, ad, npub);
+            s.ctx.encrypt(&s.expected, &counterBlock(npub, 0));
+            for (&s.expected, s.mac) |*e, a| e.* ^= a;
+            if (!aegis.secret.equal(tag_length, s.expected[0..tag_length], &tag).declassify("a bad tag drops the record")) {
+                // m ^ keystream is c, public: the plaintext and the keystream both leave m.
+                ctr(&s.ctx, m, m, npub);
                 return error.AuthenticationFailed;
             }
         }
@@ -77,12 +72,13 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
 
         /// Counter mode from counter 1 (counter 0 masks the tag).
         fn ctr(ctx: *const Context, out: []u8, in: []const u8, npub: [nonce_length]u8) void {
-            var keystream: [block_length]u8 = undefined;
-            defer crypto.secureZero(u8, &keystream);
+            var keystream_owner: aegis.Secret([block_length]u8) = .init(undefined);
+            defer keystream_owner.deinit();
+            const keystream = keystream_owner.exposeMut();
             var counter: u24 = 1;
             var at: usize = 0;
             while (at < in.len) : (at += block_length) {
-                ctx.encrypt(&keystream, &counterBlock(npub, counter));
+                ctx.encrypt(keystream, &counterBlock(npub, counter));
                 const n = @min(block_length, in.len - at);
                 for (out[at..][0..n], in[at..][0..n], keystream[0..n]) |*o, i, k| o.* = i ^ k;
                 // The length bound keeps the counter below 2^24 blocks.
@@ -93,8 +89,8 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
         /// CBC-MAC over B0, the encoded additional data padded to a block, then the message
         /// padded to a block (RFC 3610 section 2.2).
         fn cbcMac(ctx: *const Context, mac: *[block_length]u8, m: []const u8, ad: []const u8, npub: [nonce_length]u8) void {
-            var state: Absorb = .{ .ctx = ctx };
-            defer crypto.secureZero(u8, std.mem.asBytes(&state));
+            mac.* = @splat(0);
+            var state: Absorb = .{ .ctx = ctx, .chain = mac };
             var b0: [block_length]u8 = undefined;
             const adata: u8 = if (ad.len != 0) 0x40 else 0;
             b0[0] = adata | ((tag_length - 2) / 2) << 3 | (L - 1);
@@ -120,13 +116,13 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             }
             state.update(m);
             state.pad();
-            mac.* = state.chain;
         }
 
-        /// The CBC chain and the bytes of the current block absorbed so far.
+        /// The CBC chain, kept in the caller's MAC block, and the bytes of the current block
+        /// absorbed so far.
         const Absorb = struct {
             ctx: *const Context,
-            chain: [block_length]u8 = @splat(0),
+            chain: *[block_length]u8,
             filled: usize = 0,
 
             fn update(self: *Absorb, bytes: []const u8) void {
@@ -146,7 +142,7 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             }
 
             fn flush(self: *Absorb) void {
-                self.ctx.encrypt(&self.chain, &self.chain);
+                self.ctx.encrypt(self.chain, self.chain);
                 self.filled = 0;
             }
         };

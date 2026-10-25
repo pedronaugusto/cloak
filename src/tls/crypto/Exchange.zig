@@ -156,8 +156,9 @@ pub const Share = struct {
         var self: Share = .{ .group = group, .private = undefined, .public = @splat(0) };
         switch (group) {
             .x25519 => {
-                var key = X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*);
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+                var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*));
+                defer key_owner.deinit();
+                const key = key_owner.expose();
                 self.private = .{ .x25519 = .init(key.secret_key) };
                 self.public[0..32].* = key.public_key;
             },
@@ -165,10 +166,12 @@ pub const Share = struct {
             .p384 => try initCurve(ecdh.P384, &self, entropy),
             .p521 => try initCurve(ecdh.P521, &self, entropy),
             .x25519_mlkem768 => {
-                var pair = MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy;
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-                var key = X25519.KeyPair.generateDeterministic(entropy[MlKem.seed_length..][0..X25519.seed_length].*);
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+                var pair_owner: aegis.Secret(MlKem.KeyPair) = .init(MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy); // aegis: boundary: std returns the pair by value; its copy is in the frame `scrubbed` erases (`depth`)
+                defer pair_owner.deinit();
+                const pair = pair_owner.expose();
+                var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[MlKem.seed_length..][0..X25519.seed_length].*));
+                defer key_owner.deinit();
+                const key = key_owner.expose();
                 self.private = .{ .x25519_mlkem768 = .{ .kem = .init(pair.secret_key), .x25519 = .init(key.secret_key) } };
                 const ek = pair.public_key.toBytes();
                 self.public[0..ek.len].* = ek;
@@ -186,8 +189,9 @@ pub const Share = struct {
     fn initPure(comptime P: type, self: *Share, entropy: []const u8) InitError!P.Private {
         @setRuntimeSafety(true);
         const seed = entropy[0..P.Kem.seed_length];
-        var pair = P.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
+        var pair_owner: aegis.Secret(P.Kem.KeyPair) = .init(P.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy);
+        defer pair_owner.deinit();
+        const pair = pair_owner.expose();
         const ek = pair.public_key.toBytes();
         self.public[0..ek.len].* = ek;
         return .init(if (P.keeps_seed) seed.* else pair.secret_key);
@@ -198,8 +202,9 @@ pub const Share = struct {
         const scalar = entropy[0..H.Curve.scalar_length];
         H.Curve.publicKey(scalar, self.public[0..H.Curve.public_length]) catch return error.InvalidEntropy;
         const seed = entropy[H.Curve.scalar_length..][0..H.Kem.seed_length];
-        var pair = H.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
+        var pair_owner: aegis.Secret(H.Kem.KeyPair) = .init(H.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy);
+        defer pair_owner.deinit();
+        const pair = pair_owner.expose();
         const ek = pair.public_key.toBytes();
         self.public[H.Curve.public_length..][0..ek.len].* = ek;
         const private: H.Private = .{ .kem = .init(if (H.keeps_seed) seed.* else pair.secret_key), .ec = .init(scalar.*) };
@@ -208,10 +213,11 @@ pub const Share = struct {
 
     fn initCurve(comptime G: type, self: *Share, entropy: []const u8) InitError!void {
         @setRuntimeSafety(true);
-        var scalar = curveScalar(G, entropy);
-        defer std.crypto.secureZero(u8, &scalar);
-        G.publicKey(&scalar, self.public[0..G.public_length]) catch return error.InvalidEntropy;
-        self.private = if (G == ecdh.P256) .{ .p256 = .init(scalar) } else if (G == ecdh.P384) .{ .p384 = .init(scalar) } else .{ .p521 = .init(scalar) };
+        var scalar_owner: aegis.Secret([G.scalar_length]u8) = .init(curveScalar(G, entropy));
+        defer scalar_owner.deinit();
+        const scalar = scalar_owner.expose();
+        G.publicKey(scalar, self.public[0..G.public_length]) catch return error.InvalidEntropy;
+        self.private = if (G == ecdh.P256) .{ .p256 = .init(scalar.*) } else if (G == ecdh.P384) .{ .p384 = .init(scalar.*) } else .{ .p521 = .init(scalar.*) };
     }
 
     /// The `key_exchange` bytes of the client's key_share entry.
@@ -251,11 +257,10 @@ pub const Share = struct {
             .x25519_mlkem768 => {
                 // ML-KEM decapsulation never signals an invalid ciphertext: FIPS 203 implicit
                 // rejection returns a pseudorandom key, so validity is not an oracle.
-                var kem = key.kem.expose().decaps(peer[0..MlKem.ciphertext_length]) catch return error.InvalidShare;
-                defer std.crypto.secureZero(u8, &kem);
-                into[0..kem.len].* = kem;
-                _ = try x25519(&key.x25519, peer[MlKem.ciphertext_length..][0..32], into[kem.len..][0..32]);
-                out.len = kem.len + 32;
+                const kem = MlKem.shared_length;
+                into[0..kem].* = key.kem.expose().decaps(peer[0..MlKem.ciphertext_length]) catch return error.InvalidShare;
+                _ = try x25519(&key.x25519, peer[MlKem.ciphertext_length..][0..32], into[kem..][0..32]);
+                out.len = kem + 32;
             },
             .secp256r1_mlkem768 => out.len = try agreeNist(P256MlKem768, key, peer, into),
             .secp384r1_mlkem1024 => out.len = try agreeNist(P384MlKem1024, key, peer, into),
@@ -268,19 +273,17 @@ pub const Share = struct {
     fn agreePure(comptime P: type, key: *const P.Private, peer: []const u8, into: *[max_secret]u8) AgreeError!usize {
         @setRuntimeSafety(true);
         // Implicit rejection: a damaged ciphertext yields an unrelated secret, never an error.
-        var kem = try decaps(P.Kem, P.keeps_seed, key.expose(), peer[0..P.Kem.ciphertext_length]);
-        defer std.crypto.secureZero(u8, &kem);
-        into[0..kem.len].* = kem;
-        return kem.len;
+        into[0..P.Kem.shared_length].* = try decaps(P.Kem, P.keeps_seed, key.expose(), peer[0..P.Kem.ciphertext_length]);
+        return P.Kem.shared_length;
     }
 
     /// Decapsulates under a kept ML-KEM key, or under the key expanded again from its kept seed.
     fn decaps(comptime K: type, comptime from_seed: bool, key: anytype, ciphertext: *const [K.ciphertext_length]u8) AgreeError![K.shared_length]u8 {
         @setRuntimeSafety(true);
         if (from_seed) {
-            var pair = K.KeyPair.generateDeterministic(key.*) catch return error.InvalidShare;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-            return pair.secret_key.decaps(ciphertext) catch error.InvalidShare;
+            var pair_owner: aegis.Secret(K.KeyPair) = .init(K.KeyPair.generateDeterministic(key.*) catch return error.InvalidShare);
+            defer pair_owner.deinit();
+            return pair_owner.expose().secret_key.decaps(ciphertext) catch error.InvalidShare;
         } else return key.decaps(ciphertext) catch error.InvalidShare;
     }
 
@@ -290,19 +293,15 @@ pub const Share = struct {
         H.Curve.agree(key.ec.expose(), peer[0..H.Curve.public_length], into[0..n]) catch |err| return mapCurve(err);
         // Implicit rejection, as for X25519MLKEM768: no validity oracle from the ciphertext.
         const ciphertext = peer[H.Curve.public_length..][0..H.Kem.ciphertext_length];
-        var kem = try decaps(H.Kem, H.keeps_seed, key.kem.expose(), ciphertext);
-        defer std.crypto.secureZero(u8, &kem);
-        into[n..][0..kem.len].* = kem;
-        return n + kem.len;
+        into[n..][0..H.Kem.shared_length].* = try decaps(H.Kem, H.keeps_seed, key.kem.expose(), ciphertext);
+        return n + H.Kem.shared_length;
     }
 
     fn x25519(key: *const aegis.Secret([32]u8), peer: *const [32]u8, out: *[32]u8) AgreeError!usize {
         @setRuntimeSafety(true);
         // scalarmult rejects the all-zero output of a low-order peer share.
-        var shared = X25519.scalarmult(key.expose().*, peer.*) catch return error.WeakKey;
-        defer std.crypto.secureZero(u8, &shared);
-        out.* = shared;
-        return shared.len;
+        out.* = X25519.scalarmult(key.expose().*, peer.*) catch return error.WeakKey;
+        return out.len;
     }
 
     fn mapCurve(err: ecdh.Error) AgreeError {
@@ -328,7 +327,6 @@ pub const Share = struct {
             },
             inline .mlkem768, .mlkem1024 => |*key| key.deinit(),
         }
-        std.crypto.secureZero(u8, &self.public);
         self.* = undefined;
     }
 };
@@ -359,7 +357,6 @@ pub const Response = struct {
     }
     pub fn deinit(self: *Response) void {
         self.agreed.deinit();
-        std.crypto.secureZero(u8, &self.public);
         self.* = undefined;
     }
 };
@@ -384,26 +381,25 @@ fn respondShare(comptime group: Group, client_share: []const u8, entropy: []cons
     const into = out.agreed.secret.exposeMut();
     switch (group) {
         .x25519 => {
-            var key = X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
+            var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*));
+            defer key_owner.deinit();
+            const key = key_owner.expose();
             out.public[0..32].* = key.public_key;
-            var shared = X25519.scalarmult(key.secret_key, client_share[0..32].*) catch return error.WeakKey;
-            defer std.crypto.secureZero(u8, &shared);
-            into[0..32].* = shared;
+            into[0..32].* = X25519.scalarmult(key.secret_key, client_share[0..32].*) catch return error.WeakKey;
             out.agreed.len = 32;
         },
         .x25519_mlkem768 => {
             const ek = MlKem.PublicKey.fromBytes(client_share[0..MlKem.PublicKey.encoded_length]) catch return error.InvalidShare;
-            var sealed = ek.encapsDeterministic(entropy[0..MlKem.encaps_seed_length]);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&sealed));
-            var key = X25519.KeyPair.generateDeterministic(entropy[MlKem.encaps_seed_length..][0..X25519.seed_length].*);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
-            var shared = X25519.scalarmult(key.secret_key, client_share[MlKem.PublicKey.encoded_length..][0..32].*) catch return error.WeakKey;
-            defer std.crypto.secureZero(u8, &shared);
+            var sealed_owner: aegis.Secret(MlKem.EncapsulatedSecret) = .init(ek.encapsDeterministic(entropy[0..MlKem.encaps_seed_length]));
+            defer sealed_owner.deinit();
+            const sealed = sealed_owner.expose();
+            var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[MlKem.encaps_seed_length..][0..X25519.seed_length].*));
+            defer key_owner.deinit();
+            const key = key_owner.expose();
+            into[32..64].* = X25519.scalarmult(key.secret_key, client_share[MlKem.PublicKey.encoded_length..][0..32].*) catch return error.WeakKey;
             out.public[0..MlKem.ciphertext_length].* = sealed.ciphertext;
             out.public[MlKem.ciphertext_length..][0..32].* = key.public_key;
             into[0..32].* = sealed.shared_secret;
-            into[32..64].* = shared;
             out.agreed.len = 64;
         },
         .p256 => try respondCurve(ecdh.P256, &out, client_share, entropy),
@@ -423,8 +419,9 @@ fn respondShare(comptime group: Group, client_share: []const u8, entropy: []cons
 fn respondPure(comptime K: type, out: *Response, client_share: []const u8, entropy: []const u8) AgreeError!void {
     @setRuntimeSafety(true);
     const ek = K.PublicKey.fromBytes(client_share[0..K.PublicKey.encoded_length]) catch return error.InvalidShare;
-    var sealed = ek.encapsDeterministic(entropy[0..K.encaps_seed_length]);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&sealed));
+    var sealed_owner: aegis.Secret(K.EncapsulatedSecret) = .init(ek.encapsDeterministic(entropy[0..K.encaps_seed_length]));
+    defer sealed_owner.deinit();
+    const sealed = sealed_owner.expose();
     out.public[0..K.ciphertext_length].* = sealed.ciphertext;
     out.agreed.secret.exposeMut()[0..K.shared_length].* = sealed.shared_secret;
     out.agreed.len = K.shared_length;
@@ -433,17 +430,19 @@ fn respondPure(comptime K: type, out: *Response, client_share: []const u8, entro
 fn respondNist(comptime H: type, out: *Response, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!void {
     @setRuntimeSafety(true);
     const n = H.Curve.scalar_length;
-    var scalar: [n]u8 = entropy[0..n].*;
-    defer std.crypto.secureZero(u8, &scalar);
-    H.Curve.publicKey(&scalar, out.public[0..H.Curve.public_length]) catch return error.InvalidEntropy;
+    var scalar_owner: aegis.Secret([n]u8) = .init(entropy[0..n].*);
+    defer scalar_owner.deinit();
+    const scalar = scalar_owner.expose();
+    H.Curve.publicKey(scalar, out.public[0..H.Curve.public_length]) catch return error.InvalidEntropy;
     const into = out.agreed.secret.exposeMut();
-    H.Curve.agree(&scalar, client_share[0..H.Curve.public_length], into[0..n]) catch |err| return switch (err) {
+    H.Curve.agree(scalar, client_share[0..H.Curve.public_length], into[0..n]) catch |err| return switch (err) {
         error.InvalidPublicKey => error.InvalidShare,
         error.InvalidScalar, error.IdentityElement => error.WeakKey,
     };
     const ek = H.Kem.PublicKey.fromBytes(client_share[H.Curve.public_length..][0..H.Kem.PublicKey.encoded_length]) catch return error.InvalidShare;
-    var sealed = ek.encapsDeterministic(entropy[n..][0..H.Kem.encaps_seed_length]);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&sealed));
+    var sealed_owner: aegis.Secret(H.Kem.EncapsulatedSecret) = .init(ek.encapsDeterministic(entropy[n..][0..H.Kem.encaps_seed_length]));
+    defer sealed_owner.deinit();
+    const sealed = sealed_owner.expose();
     out.public[H.Curve.public_length..][0..H.Kem.ciphertext_length].* = sealed.ciphertext;
     into[n..][0..H.Kem.shared_length].* = sealed.shared_secret;
     out.agreed.len = n + H.Kem.shared_length;
@@ -451,10 +450,11 @@ fn respondNist(comptime H: type, out: *Response, client_share: []const u8, entro
 
 fn respondCurve(comptime G: type, out: *Response, client_share: []const u8, entropy: []const u8) (InitError || AgreeError)!void {
     @setRuntimeSafety(true);
-    var scalar = curveScalar(G, entropy);
-    defer std.crypto.secureZero(u8, &scalar);
-    G.publicKey(&scalar, out.public[0..G.public_length]) catch return error.InvalidEntropy;
-    G.agree(&scalar, client_share, out.agreed.secret.exposeMut()[0..G.scalar_length]) catch |err| return switch (err) {
+    var scalar_owner: aegis.Secret([G.scalar_length]u8) = .init(curveScalar(G, entropy));
+    defer scalar_owner.deinit();
+    const scalar = scalar_owner.expose();
+    G.publicKey(scalar, out.public[0..G.public_length]) catch return error.InvalidEntropy;
+    G.agree(scalar, client_share, out.agreed.secret.exposeMut()[0..G.scalar_length]) catch |err| return switch (err) {
         error.InvalidPublicKey => error.InvalidShare,
         error.InvalidScalar, error.IdentityElement => error.WeakKey,
     };

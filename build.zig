@@ -79,7 +79,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     wasm.rdynamic = true;
     wasm.stack_size = 2 * 1024 * 1024;
     // The module must import nothing (no host Io can reach it); a runtime is not needed to see that.
-    const wasm_checker = b.addExecutable(.{ .name = "cloak-wasm-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/wasm.zig"), .target = host, .optimize = .safe }) });
+    const wasm_checker = b.addExecutable(.{ .name = "cloak-wasm-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/wasm.zig"), .target = host, .optimize = .safe, .imports = &.{.{ .name = "aegis", .module = p.dependency("aegis", .{ .target = host, .optimize = .safe }).module("aegis") }} }) });
     const wasm_run = b.addRunArtifact(wasm_checker);
     wasm_run.addFileArg(wasm.getEmittedBin());
     const check_wasm = b.step("check-wasm", "Check the portable core imports nothing on wasm32 and run its vectors");
@@ -147,6 +147,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "cloak", .module = package.module("cloak") },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },
+        .{ .name = "aegis", .module = p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis") },
     }) catch @panic("out of memory configuring benchmark");
 }
 

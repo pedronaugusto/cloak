@@ -2,12 +2,13 @@
 //! clock, entropy or allocator reaches it but what the caller passes, and it exports the vectors.
 //! Read from the built module's sections (WebAssembly core spec 5.5), no runtime needed.
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub fn main(init: std.process.Init) !void {
     @setRuntimeSafety(true);
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.WasmModuleRequired;
-    const module = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], init.arena.allocator(), .limited(16 * 1024 * 1024));
+    const module = try aegis.own.readFile(init.io, .cwd(), args[1], init.arena.allocator(), .fromRaw(16 * 1024 * 1024));
     try check(module);
 }
 

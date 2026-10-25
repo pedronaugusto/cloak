@@ -32,6 +32,7 @@ const Version = @import("crypto/Suite.zig").Version;
 const Protection = @import("record/Protection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
+const Buffer = @import("wire/Buffer.zig");
 const Flight = @import("handshake/Flight.zig");
 const Ech = @import("handshake/Ech.zig");
 const Compression = @import("handshake/Compression.zig");
@@ -204,7 +205,7 @@ split: bool = false,
 negotiated: ?Info = null,
 services: Services,
 // Inbound record and handshake message reassembly.
-record: []u8 = &.{},
+record: Buffer = .{},
 head: [5]u8 = undefined,
 record_have: usize = 0,
 plain_kind: ?Protection.Content = null,
@@ -212,7 +213,7 @@ plain_pos: usize = 0,
 plain_end: usize = 0,
 header: [4]u8 = undefined,
 header_have: u8 = 0,
-message: []u8 = &.{},
+message: Buffer = .{},
 message_total: usize = 0,
 message_have: usize = 0,
 seen_ccs: bool = false,
@@ -415,14 +416,8 @@ pub fn deinit(self: *Connection) void {
     if (self.rx) |*p| p.deinit();
     if (self.tx) |*p| p.deinit();
     self.hs.deinit();
-    if (self.record.len != 0) {
-        std.crypto.secureZero(u8, self.record);
-        self.gpa.free(self.record);
-    }
-    if (self.message.len != 0) {
-        std.crypto.secureZero(u8, self.message);
-        self.gpa.free(self.message);
-    }
+    self.record.free(self.gpa);
+    self.message.free(self.gpa);
     self.outbox.deinit(self.gpa);
     self.* = undefined;
 }
@@ -511,16 +506,8 @@ pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u
 /// the output buffer too. Safe to call at any time; the next input acquires them again.
 pub fn trim(self: *Connection) void {
     @setRuntimeSafety(true);
-    if (self.record_have == 0 and self.plain_kind == null and self.record.len != 0) {
-        std.crypto.secureZero(u8, self.record);
-        self.gpa.free(self.record);
-        self.record = &.{};
-    }
-    if (self.message_total == 0 and self.header_have == 0 and self.message.len != 0) {
-        std.crypto.secureZero(u8, self.message);
-        self.gpa.free(self.message);
-        self.message = &.{};
-    }
+    if (self.record_have == 0 and self.plain_kind == null) self.record.free(self.gpa);
+    if (self.message_total == 0 and self.header_have == 0) self.message.free(self.gpa);
     if (!self.split) self.outbox.trim(self.gpa);
     self.hs.settle();
 }
@@ -836,7 +823,7 @@ fn onPeerKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     try self.onControl();
     // Under a kernel, a KeyUpdate is its record's whole plaintext (`controlChecked`).
-    if (self.rx_kernel and (self.plain_end != key_update_len or self.record[0] != key_update_type)) return error.UnexpectedRecord;
+    if (self.rx_kernel and (self.plain_end != key_update_len or self.record.bytes()[0] != key_update_type)) return error.UnexpectedRecord;
     try self.rx.?.update();
     self.rx_asked_update = false;
     if (request_peer) try self.owe(owe_key_update);
@@ -1197,12 +1184,8 @@ fn controlChecked(self: *Connection, record_type: u8, plaintext: []const u8) Rec
         (plaintext.len != key_update_len or self.message_total != 0 or self.header_have != 0)) return error.UnexpectedRecord;
     // The record took one number of the kernel's count.
     protection.account(protection.records() + 1);
-    if (self.record.len < plaintext.len) {
-        if (self.record.len != 0) self.gpa.free(self.record);
-        self.record = &.{};
-        self.record = try self.gpa.alloc(u8, max_content);
-    }
-    @memcpy(self.record[0..plaintext.len], plaintext);
+    if (self.record.view().len < plaintext.len) _ = try self.record.ensure(self.gpa, max_content);
+    @memcpy(self.record.bytes()[0..plaintext.len], plaintext);
     self.plain_kind = content;
     self.plain_pos = 0;
     self.plain_end = plaintext.len;
@@ -1302,7 +1285,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
 pub fn readable(self: *const Connection) []const u8 {
     @setRuntimeSafety(true);
     if (self.plain_kind != .application) return &.{};
-    return self.record[self.plain_pos..self.plain_end];
+    return self.record.view()[self.plain_pos..self.plain_end];
 }
 
 pub fn consume(self: *Connection, n: usize) void {
@@ -1368,7 +1351,7 @@ fn receiveChecked(self: *Connection, input: []const u8) ReceiveError!usize {
 }
 
 fn recordComplete(self: *const Connection) bool {
-    return self.record_have >= 5 and self.record_have == 5 + std.mem.readInt(u16, self.record[3..5], .big);
+    return self.record_have >= 5 and self.record_have == 5 + std.mem.readInt(u16, self.record.view()[3..5], .big);
 }
 
 /// Copies the next part of a record: its header first, then a buffer sized to its length.
@@ -1383,16 +1366,11 @@ fn fill(self: *Connection, input: []const u8) ReceiveError!usize {
         if (self.record_have < 5) return used;
         try self.checkHeader();
         const total = 5 + @as(usize, std.mem.readInt(u16, self.head[3..5], .big));
-        if (self.record.len < total) {
-            if (self.record.len != 0) self.gpa.free(self.record);
-            self.record = &.{};
-            self.record = try self.gpa.alloc(u8, total);
-        }
-        @memcpy(self.record[0..5], &self.head);
+        @memcpy((try self.record.ensure(self.gpa, total))[0..5], &self.head);
     }
-    const total = 5 + @as(usize, std.mem.readInt(u16, self.record[3..5], .big));
+    const total = 5 + @as(usize, std.mem.readInt(u16, self.record.bytes()[3..5], .big));
     const n = @min(total - self.record_have, input.len - used);
-    @memcpy(self.record[self.record_have..][0..n], input[used..][0..n]);
+    @memcpy(self.record.bytes()[self.record_have..][0..n], input[used..][0..n]);
     self.record_have += n;
     return used + n;
 }
@@ -1435,12 +1413,12 @@ fn checkHeader(self: *Connection) ReceiveError!void {
 /// Where opened plaintext starts in the record buffer: after the header, and after a TLS 1.2
 /// explicit nonce.
 fn offsetOf(self: *const Connection, plain: []const u8) usize {
-    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.ptr); // aegis: no-danger: the plaintext is a slice of the record buffer, so its address is not below the buffer's
+    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.view().ptr); // aegis: no-danger: the plaintext is a slice of the record buffer, so its address is not below the buffer's
 }
 
 fn openRecord(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    const wire = self.record[0..self.record_have];
+    const wire = self.record.bytes()[0..self.record_have];
     switch (wire[0]) {
         20 => {
             if (self.hs.version() == .tls12) {
@@ -1475,7 +1453,7 @@ fn openRecord(self: *Connection) Error!void {
                     return;
                 }
                 try self.checkLimit(protection, wire.len);
-                const plain = try protection.open(wire, self.record[5..]);
+                const plain = try protection.open(wire, self.record.bytes()[5..]);
                 self.plain_kind = plain.content;
                 self.plain_pos = self.offsetOf(plain.bytes);
                 self.plain_end = self.plain_pos + plain.bytes.len;
@@ -1496,7 +1474,7 @@ fn openRecord(self: *Connection) Error!void {
             const plain = if (skip == .trial and self.rx_epoch == .handshake) trial: {
                 // Declined early data fails under the handshake keys and is skipped; the first
                 // record that opens begins the client's flight, and skipping ends.
-                const opened = protection.trialOpen(wire, self.record[5..]) catch |err| switch (err) {
+                const opened = protection.trialOpen(wire, self.record.bytes()[5..]) catch |err| switch (err) {
                     error.Undecryptable => return self.skipEarly(wire.len),
                     else => |e| return e,
                 };
@@ -1505,7 +1483,7 @@ fn openRecord(self: *Connection) Error!void {
                 break :trial opened;
             } else open: {
                 try self.checkLimit(protection, wire.len);
-                break :open try protection.open(wire, self.record[5..]);
+                break :open try protection.open(wire, self.record.bytes()[5..]);
             };
             if (plain.content == .application) {
                 // Nothing comes between a handshake message's fragments (RFC 8446 section 5.1).
@@ -1552,7 +1530,7 @@ fn dispatch(self: *Connection) ReceiveError!void {
 
 fn onAlert(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
-    const body = self.record[self.plain_pos..self.plain_end];
+    const body = self.record.bytes()[self.plain_pos..self.plain_end];
     self.clearRecord();
     if (body.len != 2) return error.UnexpectedRecord;
     // Only a warning can be passed over: any other level makes an error alert, as RFC 8446
@@ -1582,24 +1560,19 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
     while (self.plain_pos < self.plain_end) {
         if (self.message_total == 0) {
             const take = @min(4 - self.header_have, self.plain_end - self.plain_pos);
-            @memcpy(self.header[self.header_have..][0..take], self.record[self.plain_pos..][0..take]);
+            @memcpy(self.header[self.header_have..][0..take], self.record.bytes()[self.plain_pos..][0..take]);
             self.header_have += @intCast(take);
             self.plain_pos += take;
             if (self.header_have < 4) break;
             const total = 4 + @as(usize, std.mem.readInt(u24, self.header[1..4], .big));
             if (total > self.limits.handshake.message) return error.HandshakeLimit;
-            if (self.message.len < total) {
-                if (self.message.len != 0) self.gpa.free(self.message);
-                self.message = &.{};
-                self.message = try self.gpa.alloc(u8, total);
-            }
-            @memcpy(self.message[0..4], &self.header);
+            @memcpy((try self.message.ensure(self.gpa, total))[0..4], &self.header);
             self.message_total = total;
             self.message_have = 4;
             self.header_have = 0;
         }
         const take = @min(self.message_total - self.message_have, self.plain_end - self.plain_pos);
-        @memcpy(self.message[self.message_have..][0..take], self.record[self.plain_pos..][0..take]);
+        @memcpy(self.message.bytes()[self.message_have..][0..take], self.record.bytes()[self.plain_pos..][0..take]);
         self.message_have += take;
         self.plain_pos += take;
         if (self.message_have == self.message_total) {
@@ -1607,7 +1580,7 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
             self.message_total = 0;
             self.message_have = 0;
             const boundary = self.plain_pos == self.plain_end and self.header_have == 0;
-            try self.hs.receive(self.message[0..total], self.rx_epoch, boundary);
+            try self.hs.receive(self.message.bytes()[0..total], self.rx_epoch, boundary);
             try self.drain();
             if (self.hs.need() != .none) break;
         }

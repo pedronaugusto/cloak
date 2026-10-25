@@ -2,6 +2,7 @@
 //! extension's forms, ClientHelloInner reconstruction and the acceptance confirmations. The
 //! handshake roles drive it; nothing here keeps state of its own.
 const std = @import("std");
+const aegis = @import("aegis");
 const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
 const Extensions = @import("../wire/Extensions.zig");
@@ -288,7 +289,7 @@ pub const OpenError = ReconstructError || error{DecryptFailed};
 
 /// A first hello's ECH opened: the context it opened under, past that nonce, and the
 /// ClientHelloInner, the caller's to free.
-pub const Opened = struct { context: Hpke.Context, inner: []u8 };
+pub const Opened = struct { context: Hpke.Context, inner: aegis.SecretBytes };
 
 /// Opens the encrypted_client_hello `offer` of the ClientHelloOuter `wire` (a whole handshake
 /// message of `transport`) under each of `keys` with its config id and suite, a bounded trial,
@@ -300,11 +301,11 @@ pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: 
     if (offer.payload.len <= Hpke.tag_length) return null;
     const aad = try outerAad(gpa, wire, offer.payload);
     defer gpa.free(aad);
-    const encoded = try gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
-    defer {
-        std.crypto.secureZero(u8, encoded);
-        gpa.free(encoded);
-    }
+    var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
+    defer encoded_owner.deinit(gpa);
+    // unreachable: the live prefix grows to the capacity it is within.
+    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
+    const encoded = encoded_owner.exposeMut();
     var context = for (keys) |key| {
         const config = (parseConfig(key.config) catch continue).config orelse continue;
         if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
@@ -324,16 +325,16 @@ pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: 
 
 /// Opens a second hello's `offer` under the first one's `context`, at its next nonce: the
 /// ClientHelloInner, the caller's to free.
-pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u8, offer: Offer.Outer, transport: Transport) OpenError![]u8 {
+pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u8, offer: Offer.Outer, transport: Transport) OpenError!aegis.SecretBytes {
     @setRuntimeSafety(true);
     if (offer.payload.len <= Hpke.tag_length) return error.DecryptFailed;
     const aad = try outerAad(gpa, wire, offer.payload);
     defer gpa.free(aad);
-    const encoded = try gpa.alloc(u8, offer.payload.len - Hpke.tag_length);
-    defer {
-        std.crypto.secureZero(u8, encoded);
-        gpa.free(encoded);
-    }
+    var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
+    defer encoded_owner.deinit(gpa);
+    // unreachable: the live prefix grows to the capacity it is within.
+    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
+    const encoded = encoded_owner.exposeMut();
     context.open(encoded, aad, offer.payload) catch return error.DecryptFailed;
     return reconstruct(gpa, wire, encoded, transport);
 }
@@ -354,7 +355,7 @@ fn outerAad(gpa: std.mem.Allocator, wire: []const u8, payload: []const u8) error
 /// must hold each, once and in the same order. A datagram hello's cookie field is the inner
 /// hello's own (RFC 9849 section 5.1 takes RFC 9147's ClientHello). Linear in both inputs; the
 /// result is at most their sum.
-pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u8, transport: Transport) ReconstructError![]u8 {
+pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u8, transport: Transport) ReconstructError!aegis.SecretBytes {
     @setRuntimeSafety(true);
     const datagram = transport == .datagram;
     var r: Reader = .{ .bytes = encoded };
@@ -376,8 +377,11 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     _ = o.vector(u8) catch return error.IllegalParameter;
     var outer_ext: Reader = .{ .bytes = (o.vector(u16) catch return error.IllegalParameter).bytes };
 
-    const out = try gpa.alloc(u8, outer.len + encoded.len + 4);
-    errdefer gpa.free(out);
+    var owner = try aegis.SecretBytes.init(gpa, outer.len + encoded.len + 4);
+    errdefer owner.deinit(gpa);
+    // unreachable: the live prefix grows to the capacity it is within.
+    owner.resizeWithinCapacity(owner.capacity()) catch unreachable;
+    const out = owner.exposeMut();
     var w: Writer = .{ .bytes = out };
     const put = struct {
         fn bytes(writer: *Writer, data: []const u8) ReconstructError!void {
@@ -425,10 +429,9 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     if (ext_len > 65535 or w.pos - 4 > 0xffffff) return error.IllegalParameter;
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len), .big); // safe: checked above
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big); // safe: checked above
-    if (gpa.resize(out, w.pos)) return out[0..w.pos];
-    const exact = try gpa.dupe(u8, out[0..w.pos]);
-    gpa.free(out);
-    return exact;
+    // unreachable: the hello is within the allocation it was written to.
+    owner.resizeWithinCapacity(w.pos) catch unreachable;
+    return owner;
 }
 
 /// The eight bytes that confirm acceptance (RFC 9849 section 7.2): HKDF-Expand-Label over
@@ -436,12 +439,13 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
 /// "ech accept confirmation" for a ServerHello, "hrr ech accept confirmation" for a retry request.
 /// DTLS takes its own label prefix (RFC 9849 section 7.2, RFC 9147 section 5.9).
 pub fn confirmation(comptime Hash: type, transport: Transport, inner_random: *const [32]u8, label: []const u8, digest: *const [Hash.digest_length]u8) [8]u8 {
-    var prk: [Hash.digest_length]u8 = undefined;
-    defer std.crypto.secureZero(u8, &prk);
+    var prk_owner: aegis.Secret([Hash.digest_length]u8) = .init(undefined);
+    defer prk_owner.deinit();
+    const prk = prk_owner.exposeMut();
     const zero: [Hash.digest_length]u8 = @splat(0);
-    Labels.extract(Hash, &prk, &zero, inner_random);
+    Labels.extract(Hash, prk, &zero, inner_random);
     var out: [8]u8 = undefined;
-    Labels.expandWith(Hash, transport.prefix(), &out, &prk, label, digest) catch unreachable; // unreachable: fixed labels, hash-sized context
+    Labels.expandWith(Hash, transport.prefix(), &out, prk, label, digest) catch unreachable; // unreachable: fixed labels, hash-sized context
     return out;
 }
 
@@ -451,7 +455,7 @@ pub fn confirmation(comptime Hash: type, transport: Transport, inner_random: *co
 pub fn confirmRetry(transport: Transport, suite: Suite13, inner_random: *const [32]u8, hello_hash: []const u8, hrr: []u8) Transcripts.CommitError!void {
     @setRuntimeSafety(true);
     var transcript: Transcripts = .{};
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&transcript));
+    defer transcript.deinit();
     try transcript.restoreRetry(suite, hello_hash, hrr);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     switch (suite) {

@@ -24,8 +24,8 @@ fn run(comptime A: type, gpa: std.mem.Allocator, v: Vector) !void {
     const tag = try unhex(gpa, v.tag);
     defer gpa.free(tag);
     const valid = std.mem.eql(u8, v.result, "valid");
-    // Wycheproof's invalid cases here are tampered ciphertexts or tags: opening fails, nothing
-    // is released.
+    // Wycheproof's invalid cases here are tampered ciphertexts or tags: opening fails and leaves
+    // the ciphertext, nothing of the plaintext or the keystream.
     const opened = try gpa.alloc(u8, ct.len);
     defer gpa.free(opened);
     const result = A.decrypt(opened, ct, tag[0..A.tag_length].*, aad, iv[0..12].*, key[0..A.key_length].*);
@@ -40,7 +40,7 @@ fn run(comptime A: type, gpa: std.mem.Allocator, v: Vector) !void {
         try std.testing.expectEqualSlices(u8, tag, &got);
     } else {
         try std.testing.expectError(error.AuthenticationFailed, result);
-        for (opened) |b| try std.testing.expectEqual(@as(u8, 0), b);
+        try std.testing.expectEqualSlices(u8, ct, opened);
     }
 }
 
@@ -101,7 +101,7 @@ test "AES-CCM_8 is not a truncated CCM tag: the tag length is in the first block
     }
 }
 
-test "C8 AES-CCM seals and opens in place, and a flipped bit anywhere fails and erases" {
+test "C8 AES-CCM seals and opens in place, and a flipped bit anywhere fails and leaves the ciphertext" {
     const A = ccm.Aes128Ccm;
     const key: [16]u8 = @splat(0x11);
     const nonce: [12]u8 = @splat(0x22);
@@ -120,7 +120,10 @@ test "C8 AES-CCM seals and opens in place, and a flipped bit anywhere fails and 
         bad[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
         var out: [37]u8 = @splat(0xaa);
         try std.testing.expectError(error.AuthenticationFailed, A.decrypt(&out, &bad, tag, ad, nonce, key));
-        try std.testing.expectEqualSlices(u8, &@as([37]u8, @splat(0)), &out);
+        try std.testing.expectEqualSlices(u8, &bad, &out);
+        var in_place = bad;
+        try std.testing.expectError(error.AuthenticationFailed, A.decrypt(&in_place, &in_place, tag, ad, nonce, key));
+        try std.testing.expectEqualSlices(u8, &bad, &in_place);
     }
     for (0..128) |bit| {
         var bad = tag;

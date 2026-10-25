@@ -200,15 +200,14 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (overlap(wire, plain) and plain.ptr != cipher.ptr) return error.PartialOverlap;
             try self.admit(len);
             Kernels.open(A, plain, cipher, wire[wire.len - 16 ..][0..16], wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose()) catch {
-                std.crypto.secureZero(u8, plain);
                 if (trial) return error.Undecryptable;
                 return self.bad();
             };
             var end = len;
             while (end > 0 and plain[end - 1] == 0) end -= 1;
-            if (end == 0) return self.unexpected(plain);
-            const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected(plain);
-            if (content != .application and end == 1) return self.unexpected(plain);
+            if (end == 0) return self.unexpected();
+            const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected();
+            if (content != .application and end == 1) return self.unexpected();
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
@@ -217,9 +216,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.deinit();
             return error.BadRecord;
         }
-        /// An authenticated record the protocol forbids: its plaintext is erased with the epoch.
-        fn unexpected(self: *Self, plain: []u8) error{UnexpectedRecord} {
-            std.crypto.secureZero(u8, plain);
+        /// An authenticated record the protocol forbids: the epoch is erased; the plaintext is the
+        /// record buffer's, whose owner erases it.
+        fn unexpected(self: *Self) error{UnexpectedRecord} {
             self.deinit();
             return error.UnexpectedRecord;
         }
