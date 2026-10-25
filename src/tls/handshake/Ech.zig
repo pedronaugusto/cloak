@@ -342,7 +342,7 @@ pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u
 /// the payload zeroed; the caller's to free.
 fn outerAad(gpa: std.mem.Allocator, wire: []const u8, payload: []const u8) error{OutOfMemory}![]u8 {
     @setRuntimeSafety(true);
-    const at = @intFromPtr(payload.ptr) - @intFromPtr(wire.ptr); // safe: the payload is a slice of `wire`
+    const at = @intFromPtr(payload.ptr) - @intFromPtr(wire.ptr); // aegis: no-danger: the payload is a slice of `wire`
     const aad = try gpa.dupe(u8, wire[4..]);
     @memset(aad[at - 4 ..][0..payload.len], 0);
     return aad;

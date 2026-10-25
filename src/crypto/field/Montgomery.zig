@@ -31,7 +31,9 @@ inline fn row(comptime n: usize, a: u64, b: [n]u64) [n + 1]u64 {
     var c: u1 = 0;
     inline for (0..n) |i| {
         const low, const next = wide(a, b[i]);
-        r[i], c = addc(low, high, c);
+        const step = addc(low, high, c);
+        r[i] = step[0];
+        c = step[1];
         high = next;
     }
     // The high word of a 64x64 product is at most 2^64 - 2, so the carry fits.
@@ -44,6 +46,7 @@ pub inline fn barrier(value: u64) u64 {
     var v = value;
     if (@inComptime()) return v;
     switch (builtin.cpu.arch) {
+        // aegis: boundary: an empty asm that ties the value to a register, so the optimizer cannot see through a mask
         .x86_64, .aarch64 => asm volatile (""
             : [v] "+r" (v),
         ),
@@ -115,7 +118,11 @@ pub fn Field(comptime modulus: comptime_int) type {
         inline fn final(t: [n + 1]u64) Self {
             var d: Limbs = undefined;
             var b: u1 = 0;
-            inline for (0..n) |i| d[i], b = subb(t[i], m[i], b);
+            inline for (0..n) |i| {
+                const step = subb(t[i], m[i], b);
+                d[i] = step[0];
+                b = step[1];
+            }
             _, b = subb(t[n], 0, b);
             // A borrow means t < m: keep t.
             const keep = maskOf(b);
@@ -159,7 +166,11 @@ pub fn Field(comptime modulus: comptime_int) type {
         pub fn add(a: Self, b: Self) Self {
             var t: [n + 1]u64 = undefined;
             var c: u1 = 0;
-            inline for (0..n) |i| t[i], c = addc(a.limbs[i], b.limbs[i], c);
+            inline for (0..n) |i| {
+                const step = addc(a.limbs[i], b.limbs[i], c);
+                t[i] = step[0];
+                c = step[1];
+            }
             t[n] = c;
             return final(t);
         }
@@ -171,12 +182,20 @@ pub fn Field(comptime modulus: comptime_int) type {
         pub fn sub(a: Self, b: Self) Self {
             var d: Limbs = undefined;
             var borrow: u1 = 0;
-            inline for (0..n) |i| d[i], borrow = subb(a.limbs[i], b.limbs[i], borrow);
+            inline for (0..n) |i| {
+                const step = subb(a.limbs[i], b.limbs[i], borrow);
+                d[i] = step[0];
+                borrow = step[1];
+            }
             // On a borrow, add the modulus back.
             const fix = maskOf(borrow);
             var r: Self = undefined;
             var c: u1 = 0;
-            inline for (0..n) |i| r.limbs[i], c = addc(d[i], m[i] & fix, c);
+            inline for (0..n) |i| {
+                const step = addc(d[i], m[i] & fix, c);
+                r.limbs[i] = step[0];
+                c = step[1];
+            }
             return r;
         }
 

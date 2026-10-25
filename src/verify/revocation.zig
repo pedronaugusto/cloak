@@ -195,7 +195,7 @@ fn bit(index: usize) u16 {
 fn span(d: std.Io.Duration, comptime max: i64) Error!i64 {
     @setRuntimeSafety(true);
     if (d.nanoseconds < 0 or d.nanoseconds > @as(i96, max) * std.time.ns_per_s) return error.InvalidRevocation;
-    return @intCast(@divFloor(d.nanoseconds, std.time.ns_per_s)); // safe: bounded by max above
+    return @intCast(@divFloor(d.nanoseconds, std.time.ns_per_s)); // aegis: no-danger: bounded by max above
 }
 /// The configured skew in whole seconds, clamped to 0..86400 where it only widens a bound.
 fn skewSeconds(policy: T.RevocationPolicy) i64 {

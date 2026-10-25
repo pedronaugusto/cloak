@@ -6,9 +6,9 @@
 //! temporaries to the stack: secret computations run it inside `aegis.secret.scrubbed`, which
 //! scrubs that stack and sets the processor's data-independent timing mode around them.
 const std = @import("std");
-const builtin = @import("builtin");
 const fiat = @import("../vendor/fiat/p521_64.zig");
 const shared = @import("s2n.zig");
+const barrier = @import("Montgomery.zig").barrier;
 
 /// The big-endian encoding's length.
 const length = 66;
@@ -235,22 +235,6 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
             return a.eqlMask(b) != 0;
         }
     };
-}
-
-/// Hides a mask from the optimizer so a selection stays a selection and never becomes a branch.
-inline fn barrier(value: u64) u64 {
-    var v = value;
-    if (@inComptime()) return v;
-    switch (builtin.cpu.arch) {
-        .x86_64, .aarch64 => asm volatile (""
-            : [v] "+r" (v),
-        ),
-        else => {
-            const slot: *volatile u64 = &v;
-            return slot.*;
-        },
-    }
-    return v;
 }
 
 /// All ones when `x` is zero.

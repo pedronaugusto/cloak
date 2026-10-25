@@ -87,7 +87,11 @@ const Modulus = struct {
         // Only the low `len` limbs are written: the wipe covers them, not the whole array.
         defer wipeLimbs(d[0..len]);
         var borrow: u1 = 0;
-        for (0..len) |i| d[i], borrow = subb(t[i], self.m[i], borrow);
+        for (0..len) |i| {
+            const step = subb(t[i], self.m[i], borrow);
+            d[i] = step[0];
+            borrow = step[1];
+        }
         // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
         const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // safe: high is a carry, zero or one
         for (0..len) |i| out[i] = (t[i] & ~take) | (d[i] & take);

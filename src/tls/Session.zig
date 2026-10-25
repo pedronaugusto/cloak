@@ -725,7 +725,7 @@ fn releaseWrite(session: *Session) void {
 const reader_vtable: std.Io.Reader.VTable = .{ .stream = readerStream };
 
 fn fromReader(r: *std.Io.Reader) *Session {
-    return @alignCast(@fieldParentPtr("reader_interface", r)); // safe: the interface is a field of a Session, aligned for the Session
+    return @alignCast(@fieldParentPtr("reader_interface", r)); // aegis: no-danger: the interface is a field of a Session, aligned for the Session
 }
 
 fn readerStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
@@ -837,7 +837,7 @@ fn remember(session: *Session, err: anyerror) error{ReadFailed} {
 const writer_vtable: std.Io.Writer.VTable = .{ .drain = writerDrain, .flush = writerFlush };
 
 fn fromWriter(w: *std.Io.Writer) *Session {
-    return @alignCast(@fieldParentPtr("writer_interface", w)); // safe: the interface is a field of a Session, aligned for the Session
+    return @alignCast(@fieldParentPtr("writer_interface", w)); // aegis: no-danger: the interface is a field of a Session, aligned for the Session
 }
 
 fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
