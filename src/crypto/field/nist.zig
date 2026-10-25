@@ -7,8 +7,7 @@
 //! Multiplication, squaring and inversion run s2n-bignum's routines where the build has them.
 //! Addition, subtraction and negation run fiat-crypto's in both backends: they are a few
 //! instructions each, verified like the rest, and inline into the curve formulas, where a call
-//! into the assembly costs more than the operation itself (the P-256 walk of `bench/field.zig`
-//! went from 46.4 us to 38.6 us on the M3).
+//! into the assembly (a call, a frame, no inlining) costs more than the operation itself.
 //!
 //! Every operation runs the same instructions for every value. The assembly writes its
 //! temporaries to the stack: secret computations run it inside `aegis.secret.scrubbed`, which
