@@ -45,13 +45,13 @@ pub fn dev(b: *std.Build, tools: type) void {
         b.step("concurrent", "Run the tests whose tasks share a session, a snapshot or a job").dependOn(&b.addRunArtifact(concurrent_tests).step);
         const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
-        addAegis(p, check_module, target, optimize);
+        addAegisOnly(p, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
     }
     const host = b.graph.host;
     preflight.addCi(b, p, .{ .tests = test_step, .portable_tests = true, .hardened = if (freestanding) null else .{ .fuzz_step = "parser-fuzz", .tsan_step = "concurrent", .fuzz_iterations = 1000 }, .bench = .{
-        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" }, .{ .name = "speed", .source = "bench/speed.zig" }, .{ .name = "pkcs12", .source = "bench/pkcs12.zig" } },
+        .programs = &.{ .{ .name = "trust", .source = "bench/trust.zig" }, .{ .name = "credentials", .source = "bench/credentials.zig" }, .{ .name = "verification", .source = "bench/verification.zig" }, .{ .name = "constraints", .source = "bench/constraints.zig" }, .{ .name = "armor", .source = "bench/armor.zig" }, .{ .name = "services", .source = "bench/services.zig" }, .{ .name = "records", .source = "bench/records.zig" }, .{ .name = "handshake", .source = "bench/handshake.zig" }, .{ .name = "ecdh", .source = "bench/ecdh.zig" }, .{ .name = "speed", .source = "bench/speed.zig" }, .{ .name = "pkcs12", .source = "bench/pkcs12.zig" }, .{ .name = "field", .source = "bench/field.zig" }, .{ .name = "jose", .source = "bench/jose.zig" } },
         .imports = benchImports,
         .target = if (freestanding) host else target,
         .optimize = optimize,
@@ -66,7 +66,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
     // Timing evidence on the build that ships: a statistical test, run by hand, never a gate.
     const timing_module = b.createModule(.{ .root_source_file = p.path("bench/timing.zig"), .target = host, .optimize = .fast, .imports = benchImports(b, host, .fast) });
-    timing_module.addImport("aegis", p.dependency("aegis", .{ .target = host, .optimize = .fast }).module("aegis"));
+    addAegis(p, timing_module, host, .fast);
     timing_module.addImport("shakedown", b.dependency("shakedown", .{ .target = host, .optimize = .fast }).module("shakedown"));
     const timing = b.addRunArtifact(b.addExecutable(.{ .name = "cloak-timing", .root_module = timing_module }));
     timing.addPassthruArgs();
@@ -79,7 +79,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     wasm.rdynamic = true;
     wasm.stack_size = 2 * 1024 * 1024;
     // The module must import nothing (no host Io can reach it); a runtime is not needed to see that.
-    const wasm_checker = b.addExecutable(.{ .name = "cloak-wasm-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/wasm.zig"), .target = host, .optimize = .safe }) });
+    const wasm_checker = b.addExecutable(.{ .name = "cloak-wasm-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/wasm.zig"), .target = host, .optimize = .safe, .imports = &.{.{ .name = "aegis", .module = p.dependency("aegis", .{ .target = host, .optimize = .safe }).module("aegis") }} }) });
     const wasm_run = b.addRunArtifact(wasm_checker);
     wasm_run.addFileArg(wasm.getEmittedBin());
     const check_wasm = b.step("check-wasm", "Check the portable core imports nothing on wasm32 and run its vectors");
@@ -147,12 +147,60 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "cloak", .module = package.module("cloak") },
         .{ .name = "records", .module = records },
         .{ .name = "armor", .module = armor },
+        .{ .name = "aegis", .module = p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis") },
     }) catch @panic("out of memory configuring benchmark");
 }
 
+/// What every module rooted in `src` takes: aegis, and s2n-bignum's assembly for the target.
 fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
+    addAegisOnly(p, m, target, optimize);
+    addAssembly(p, m, target);
+}
+
+/// aegis without the assembly: for a module compiled to one object and never linked (`check`),
+/// which COFF cannot hold together with the assembly's objects.
+fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    @setRuntimeSafety(true);
     m.addImport("aegis", p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+}
+
+/// s2n-bignum's routines (src/crypto/vendor, PROVENANCE.md), assembled from its files unchanged:
+/// x86_64 everywhere (the Microsoft x64 prologues on Windows), AArch64 where the object format is
+/// ELF or Mach-O. `src/crypto/field/p521.zig`'s `assembly` names the same targets; every other
+/// target computes with fiat-crypto's Zig. The shim header on the include path first names each
+/// routine `cloak_<routine>`, private to the image.
+/// The s2n-bignum routines cloak computes with, by upstream directory: both forms of each NIST
+/// field's multiplication and squaring, its inversion, P-521's addition, subtraction and negation
+/// (P-256's and P-384's are fiat-crypto's, inlined), X25519's two ladders, and RSA's Montgomery
+/// multiplication and squaring (`field/bignum.zig`).
+const s2n_routines = [_]struct { []const u8, []const []const u8 }{
+    .{ "p256", &.{ "bignum_montmul_p256", "bignum_montmul_p256_alt", "bignum_montsqr_p256", "bignum_montsqr_p256_alt", "bignum_montinv_p256" } },
+    .{ "p384", &.{ "bignum_montmul_p384", "bignum_montmul_p384_alt", "bignum_montsqr_p384", "bignum_montsqr_p384_alt", "bignum_montinv_p384" } },
+    .{ "p521", &.{ "bignum_add_p521", "bignum_sub_p521", "bignum_neg_p521", "bignum_mul_p521", "bignum_mul_p521_alt", "bignum_sqr_p521", "bignum_sqr_p521_alt", "bignum_inv_p521" } },
+    .{ "curve25519", &.{ "curve25519_x25519", "curve25519_x25519_alt", "curve25519_x25519base", "curve25519_x25519base_alt" } },
+    .{ "fastmul", &.{ "bignum_kmul_16_32", "bignum_kmul_32_64", "bignum_ksqr_16_32", "bignum_ksqr_32_64", "bignum_emontredc_8n" } },
+    .{ "generic", &.{ "bignum_mul", "bignum_sqr", "bignum_montmul", "bignum_montsqr" } },
+};
+
+fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    @setRuntimeSafety(true);
+    const t = target.result;
+    const directory = switch (t.cpu.arch) {
+        .x86_64 => "x86",
+        .aarch64 => if (t.os.tag == .windows) return else "arm",
+        else => return,
+    };
+    m.addIncludePath(p.path("src/crypto/vendor/shim"));
+    m.addIncludePath(p.path("src/crypto/vendor"));
+    const windows = if (t.os.tag == .windows) "-DWINDOWS_ABI=1" else "-DWINDOWS_ABI=0";
+    for (s2n_routines) |group| {
+        const curve, const routines = group;
+        for (routines) |routine| {
+            const name = p.fmt("src/crypto/vendor/s2n-bignum/{s}/{s}/{s}.S", .{ directory, curve, routine });
+            m.addCSourceFile(.{ .file = p.path(name), .flags = &.{windows}, .language = .assembly_with_preprocessor });
+        }
+    }
 }
 
 /// The portable probes: certificates and the record and handshake kernels under one module, since a

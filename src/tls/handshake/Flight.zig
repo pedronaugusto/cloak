@@ -3,6 +3,7 @@
 //! secrets to install, and completion; the driver turns them into records or QUIC events.
 const std = @import("std");
 const aegis = @import("aegis");
+const Buffer = @import("../wire/Buffer.zig");
 const State = @import("State.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
@@ -144,7 +145,7 @@ pub const Secrets12 = struct {
         self.master.deinit();
         if (self.read) |*keys| keys.deinit();
         if (self.write) |*keys| keys.deinit();
-        std.crypto.secureZero(u8, std.mem.asBytes(self));
+        // The randoms went in the clear in both hellos: the owners above held every secret.
         gpa.destroy(self);
     }
 };
@@ -193,6 +194,21 @@ pub fn eraseEmit(emit: *Emit) void {
     }
 }
 
+/// Moves `from` into `to`, its secrets by their owners' `moveInto`, which erases them in `from`.
+pub fn moveEmit(from: *Emit, to: *Emit) void {
+    switch (from.*) {
+        .secret => |*s| {
+            to.* = .{ .secret = .{ .direction = s.direction, .epoch = s.epoch, .traffic = undefined } };
+            s.traffic.moveInto(&to.secret.traffic);
+        },
+        .keys12 => |*k| {
+            to.* = .{ .keys12 = .{ .direction = k.direction, .keys = undefined } };
+            k.keys.moveInto(&to.keys12.keys);
+        },
+        else => to.* = from.*,
+    }
+}
+
 pub const Error = error{ QueueFull, OutOfMemory };
 
 const Flight = @This();
@@ -200,7 +216,8 @@ const Flight = @This();
 queue: [16]?Emit = @splat(null),
 head: usize = 0,
 len: usize = 0,
-buf: []u8 = &.{},
+/// The messages queued, which carry handshake plaintext.
+buf: Buffer = .{},
 used: usize = 0,
 
 /// Queues `emit`, which carries no secret.
@@ -225,8 +242,7 @@ pub fn pop(self: *Flight, out: *Emit) bool {
     @setRuntimeSafety(true);
     if (self.len == 0) return false;
     const slot = &self.queue[self.head];
-    out.* = slot.*.?;
-    std.crypto.secureZero(u8, std.mem.asBytes(slot));
+    moveEmit(&slot.*.?, out);
     slot.* = null;
     self.head = (self.head + 1) % self.queue.len;
     self.len -= 1;
@@ -242,16 +258,11 @@ pub fn pending(self: *const Flight) bool {
 pub fn reserve(self: *Flight, gpa: std.mem.Allocator, want: usize, cap: usize) Error![]u8 {
     @setRuntimeSafety(true);
     const needed = (aegis.int.Checked(usize).init(self.used).add(want) catch return error.QueueFull).raw();
-    if (needed > self.buf.len) {
+    if (needed > self.buf.view().len) {
         if (needed > cap) return error.QueueFull;
-        const capacity = @min(cap, @max(needed, @max(4096, self.buf.len * 2)));
-        const grown = try gpa.alloc(u8, capacity);
-        @memcpy(grown[0..self.used], self.buf[0..self.used]);
-        std.crypto.secureZero(u8, self.buf);
-        gpa.free(self.buf);
-        self.buf = grown;
+        _ = try self.buf.ensure(gpa, @min(cap, @max(needed, @max(4096, self.buf.view().len * 2))));
     }
-    return self.buf[self.used..];
+    return self.buf.bytes()[self.used..];
 }
 
 /// The `n` bytes just written at the end of the buffer are a message to send at `epoch`.
@@ -265,7 +276,7 @@ pub fn queueMessage(self: *Flight, epoch: Epoch, n: usize) error{QueueFull}!void
 /// Bytes of a queued message; valid until `recycle` or the next reservation.
 pub fn bytes(self: *const Flight, start: u32, len: u32) []const u8 {
     @setRuntimeSafety(true);
-    return self.buf[start..][0..len];
+    return self.buf.view()[start..][0..len];
 }
 
 /// Releases the buffer for reuse once every message queued so far was read.
@@ -277,7 +288,6 @@ pub fn recycle(self: *Flight) void {
 pub fn deinit(self: *Flight, gpa: std.mem.Allocator) void {
     @setRuntimeSafety(true);
     for (&self.queue) |*slot| if (slot.*) |*emit| eraseEmit(emit);
-    std.crypto.secureZero(u8, self.buf);
-    gpa.free(self.buf);
+    self.buf.free(gpa);
     self.* = undefined;
 }

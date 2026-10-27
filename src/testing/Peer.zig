@@ -15,6 +15,9 @@ pub const pki = struct {
     pub const ca = @embedFile("pki/ca.der");
     pub const p256 = @embedFile("pki/p256.der");
     pub const p384 = @embedFile("pki/p384.der");
+    pub const p521 = @embedFile("pki/p521.der");
+    pub const p521_ca = @embedFile("pki/p521_ca.der");
+    pub const p521_pem = @embedFile("pki/p521.key.pem");
     pub const ed25519 = @embedFile("pki/ed25519.der");
     pub const rsa = @embedFile("pki/rsa.der");
     pub const client = @embedFile("pki/client.der");
@@ -607,7 +610,8 @@ pub fn Peer(comptime suite: Suite13) type {
                 .secp384r1_mlkem1024 => try nistHybrid(std.crypto.sign.ecdsa.EcdsaP384Sha384, std.crypto.kem.ml_kem.MLKem1024, share, &result),
                 .mlkem768 => try pure(std.crypto.kem.ml_kem.MLKem768, share, &result),
                 .mlkem1024 => try pure(std.crypto.kem.ml_kem.MLKem1024, share, &result),
-                _ => return error.UnsupportedGroup,
+                // std has no P-521; cloak's own ends and the interop peers exercise it.
+                .p521, _ => return error.UnsupportedGroup,
             }
             return result;
         }

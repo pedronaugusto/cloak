@@ -1,13 +1,13 @@
 //! HPKE base mode (RFC 9180) for Encrypted Client Hello: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256,
 //! and AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305. std has no HPKE; this is its smallest form,
-//! built on std's X25519, HMAC and AEADs. Single-shot sender and recipient contexts with the
+//! built on cloak's X25519 (crypto/x25519.zig) and std's HMAC and AEADs. Single-shot sender and recipient contexts with the
 //! sequence counter RFC 9180 section 5.2 defines; no PSK or authenticated modes, no exporter.
 const std = @import("std");
 const aegis = @import("aegis");
 const suites = @import("Suite.zig");
 const Kernels = @import("Kernels.zig");
 
-const X25519 = std.crypto.dh.X25519;
+const X25519 = @import("../../crypto/x25519.zig").Dh;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Hmac = std.crypto.auth.hmac.Hmac(Sha256);
 
@@ -131,7 +131,8 @@ pub const Context = struct {
     }
 
     /// Opens `ciphertext` (with its tag) into `out` (`ciphertext.len - tag_length` bytes). A
-    /// failure leaves the sequence number unchanged and writes nothing usable.
+    /// failure leaves the sequence number unchanged and decrypts nothing into `out`: each AEAD
+    /// checks the tag first.
     pub fn open(self: *Context, out: []u8, aad: []const u8, ciphertext: []const u8) OpenError!void {
         @setRuntimeSafety(true);
         if (ciphertext.len < tag_length) return error.AuthenticationFailed;
@@ -142,10 +143,7 @@ pub const Context = struct {
         switch (self.aead) {
             inline .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 => |a| {
                 const A = suites.AeadOf(comptime a.cipher());
-                Kernels.open(A, out, body, tag, aad, self.base_nonce.expose(), self.seq, self.key.expose()[0..A.key_length]) catch {
-                    std.crypto.secureZero(u8, out);
-                    return error.AuthenticationFailed;
-                };
+                Kernels.open(A, out, body, tag, aad, self.base_nonce.expose(), self.seq, self.key.expose()[0..A.key_length]) catch return error.AuthenticationFailed;
             },
             // unreachable: contexts are made only for supported AEADs
             _ => unreachable,
@@ -231,8 +229,9 @@ fn keySchedule(suite: Suite, shared: *const [32]u8, info: []const u8) Context {
 
 /// LabeledExtract(salt, label, ikm) = HKDF-Extract(salt, "HPKE-v1" || suite_id || label || ikm).
 fn labeledExtract(out: *[32]u8, suite_id: []const u8, salt: []const u8, label: []const u8, ikm: []const []const u8) void {
-    var h = Hmac.init(salt);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+    var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(salt));
+    defer h_owner.deinit();
+    const h = h_owner.exposeMut();
     h.update("HPKE-v1");
     h.update(suite_id);
     h.update(label);
@@ -247,17 +246,19 @@ fn labeledExpand(out: []u8, prk: *const [32]u8, suite_id: []const u8, label: []c
     aegis.assert.invariant(out.len <= 32, "a labeled expansion is one block");
     var length: [2]u8 = undefined;
     std.mem.writeInt(u16, &length, @intCast(out.len), .big); // safe: at most 32
-    var h = Hmac.init(prk);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+    var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(prk));
+    defer h_owner.deinit();
+    const h = h_owner.exposeMut();
     h.update(&length);
     h.update("HPKE-v1");
     h.update(suite_id);
     h.update(label);
     for (info) |part| h.update(part);
     h.update(&.{1});
-    var block: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &block);
-    h.final(&block);
+    var block_owner: aegis.Secret([32]u8) = .init(undefined);
+    defer block_owner.deinit();
+    const block = block_owner.exposeMut();
+    h.final(block);
     @memcpy(out, block[0..out.len]);
 }
 

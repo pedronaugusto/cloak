@@ -1,21 +1,44 @@
 //! Bounded key parsing into the material `PrivateKey` signs with.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
 const Rsa = @import("Rsa.zig");
 const p256 = @import("../crypto/p256.zig");
+const p384 = @import("../crypto/p384.zig");
+const p521 = @import("../crypto/p521.zig");
+const x25519 = @import("../crypto/x25519.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
 const Pbe = @import("Pbe.zig");
-const P256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
-const P384 = std.crypto.sign.ecdsa.EcdsaP384Sha384;
-const Ed25519 = std.crypto.sign.Ed25519;
 const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 const mldsa = @import("../crypto/mldsa.zig");
-pub const Material = union(enum) { rsa: Rsa.Key, p256: P256.KeyPair, p384: P384.KeyPair, ed25519: Ed25519.KeyPair, mldsa: MlDsa };
+pub const Material = union(enum) { rsa: Rsa.Key, p256: Ec(p256), p384: Ec(p384), p521: Ec(p521), ed25519: Ed25519Key, mldsa: MlDsa, x25519: X25519Key };
+/// A P-521 key: the scalar d at the curve's width (66 bytes), and the public point it derives,
+/// SEC 1 uncompressed.
+/// An EC key on one of cloak's curves: the scalar d at the curve's width and the public point it
+/// derives, SEC 1 uncompressed.
+pub fn Ec(comptime curve: type) type {
+    return struct {
+        secret: [curve.scalar_length]u8,
+        public: [curve.public_length]u8,
+    };
+}
+/// An Ed25519 key: RFC 8032's 32-byte seed, then the public key it derives (the 64 bytes the
+/// signer takes).
+pub const Ed25519Key = struct {
+    secret: [64]u8,
+
+    pub fn public(self: *const Ed25519Key) *const [32]u8 {
+        return self.secret[32..64];
+    }
+};
+/// An X25519 key (RFC 7748), for key agreement alone: the 32-byte private key as given (clamped
+/// where it is used) and the public key it makes.
+pub const X25519Key = struct { secret: [32]u8, public: [32]u8 };
 /// An ML-DSA key: the expanded private key (FIPS 204 skEncode), checked against itself, and
 /// the public key it belongs to. The first `secretLength`/`publicLength` bytes are the key's.
 pub const MlDsa = struct {
@@ -34,12 +57,15 @@ pub const ParseError = Der.Error || Pem.Error || Rsa.Error || Cbc.Error || error
 const oid_rsa = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
 const oid_ed = "\x2b\x65\x70";
+const oid_x25519 = "\x2b\x65\x6e";
 const oid_p256 = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const oid_p384 = "\x2b\x81\x04\x00\x22";
+const oid_p521 = "\x2b\x81\x04\x00\x23";
 /// id-ml-dsa-44, -65 and -87 (RFC 9881), the last byte apart.
 const oid_mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
-/// Parses one private key into `out`, which holds it on success and nothing on failure: key
-/// material is written where it will live, never returned by value through the frames between.
+/// Parses one private key into `out`, which holds it on success: key material is written where
+/// it will live (the caller's aegis `Secret`, which erases what a failure leaves in it), never
+/// returned by value through the frames between.
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     comptime {
@@ -54,7 +80,6 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
     if (armored) {
         var pem = Pem.init(bytes);
         var found = false;
-        errdefer if (found) std.crypto.secureZero(u8, std.mem.asBytes(out));
         while (try pem.next(gpa, options.bytes)) |decoded| {
             var block = decoded;
             defer block.deinit(gpa);
@@ -71,7 +96,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
             if (block.legacy) {
                 if (!rsa_label and !ec_label) return error.InvalidKey;
                 var plain = try legacy(gpa, block, options);
-                defer plain.deinit();
+                defer plain.deinit(gpa);
                 try labelShape(plain.expose(), rsa_label, ec_label);
                 try parseDer(plain.expose(), options, out);
             } else if (encrypted_label) {
@@ -117,10 +142,7 @@ fn parseDer(bytes: []const u8, options: Options, out: *Material) ParseError!void
 fn rsaKey(bytes: []const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     out.* = .{ .rsa = undefined };
-    Rsa.parse(bytes, &out.rsa) catch |err| {
-        std.crypto.secureZero(u8, std.mem.asBytes(out));
-        return err;
-    };
+    try Rsa.parse(bytes, &out.rsa);
 }
 fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
@@ -160,6 +182,10 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
         if (parameter != null) return error.InvalidKey;
         return ed25519Key((try Der.single(key, 4)).value, null, out);
     }
+    if (std.mem.eql(u8, id, oid_x25519)) {
+        if (parameter != null) return error.InvalidKey;
+        return x25519Key((try Der.single(key, 4)).value, null, out);
+    }
     return error.UnsupportedKey;
 }
 /// An ML-DSA private key (RFC 9881 section 6): the seed ([0], 32 bytes), the expanded key, or
@@ -169,7 +195,6 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
     @setRuntimeSafety(true);
     const M = mldsa.Scheme(level);
     out.* = .{ .mldsa = .{ .level = level, .secret = @splat(0), .public = @splat(0) } };
-    errdefer std.crypto.secureZero(u8, std.mem.asBytes(out));
     const key = &out.mldsa;
     const sk = key.secret[0..M.secret_key_length];
     const pk = key.public[0..M.public_key_length];
@@ -243,45 +268,35 @@ fn sec1(bytes: []const u8, outside: ?[]const u8, out: *Material) ParseError!void
     const named = curve orelse return error.InvalidKey;
     if (std.mem.eql(u8, named, oid_p256)) return ecKey(.p256, scalar, public, out);
     if (std.mem.eql(u8, named, oid_p384)) return ecKey(.p384, scalar, public, out);
+    if (std.mem.eql(u8, named, oid_p521)) return ecKey(.p521, scalar, public, out);
     return error.UnsupportedKey;
 }
 
-pub const EcCurve = enum { p256, p384 };
+pub const EcCurve = enum { p256, p384, p521 };
 
 /// An EC key from its scalar, exactly the curve's width (SEC 1, RFC 7518 section 6.2.2.1), into
 /// `out`: 0 < d < n, and the public point derived from it, compared with `public` (SEC 1
 /// uncompressed, 0x04 || x || y) when one is given. The one path every EC private key takes.
 pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
-    if (named == .p256) {
-        if (scalar.len != 32) return error.InvalidKey;
-        var sk = P256.SecretKey.fromBytes(scalar[0..32].*) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        // 0 < d < n, checked in constant time; the comb of cloak's kernel derives the point.
-        if (!p256.scalarInRange(&sk.bytes)) return error.InvalidKey;
-        var point = p256.baseMul(&sk.bytes);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        // The derived public key is public; only its verdict and coordinates leave.
-        const encoded = point.affine().toSec1();
-        var kp: P256.KeyPair = .{ .secret_key = sk, .public_key = P256.PublicKey.fromSec1(&encoded) catch return error.InvalidKey };
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-        // The derived point's own encoding: std's would invert its z again.
-        if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
-        out.* = .{ .p256 = kp };
-        return;
-    }
-    {
-        if (scalar.len != 48) return error.InvalidKey;
-        var sk = P384.SecretKey.fromBytes(scalar[0..48].*) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&sk));
-        Curve.validate(P384.Curve, &sk.bytes) catch return error.InvalidKey;
-        var point = Curve.base(P384.Curve, .big, &sk.bytes) catch return error.InvalidKey;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
-        var kp: P384.KeyPair = .{ .secret_key = sk, .public_key = .{ .p = point } };
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));
-        if (public) |p| if (!std.mem.eql(u8, p, &kp.public_key.toUncompressedSec1())) return error.InvalidKey;
-        out.* = .{ .p384 = kp };
-        return;
+    switch (named) {
+        inline else => |tag| {
+            const curve = switch (tag) {
+                .p256 => p256,
+                .p384 => p384,
+                .p521 => p521,
+            };
+            if (scalar.len != curve.scalar_length) return error.InvalidKey;
+            const d = scalar[0..curve.scalar_length];
+            // 0 < d < n, checked in constant time; the curve's walk derives the point.
+            if (!curve.scalarInRange(d)) return error.InvalidKey;
+            var point: Secret(@TypeOf(curve.baseMul(d))) = .init(curve.baseMul(d));
+            defer point.deinit();
+            // The derived public key is public; only its verdict and coordinates leave.
+            const encoded = point.expose().affine().toSec1();
+            if (public) |p| if (!std.mem.eql(u8, p, &encoded)) return error.InvalidKey;
+            out.* = @unionInit(Material, @tagName(tag), .{ .secret = d.*, .public = encoded });
+        },
     }
 }
 
@@ -290,28 +305,34 @@ pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Mate
 pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     if (seed.len != 32) return error.InvalidKey;
-    var owned_seed = seed[0..32].*;
-    defer std.crypto.secureZero(u8, &owned_seed);
-    var pair = EdKey.create(&owned_seed) catch return error.InvalidKey;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&pair));
-    if (public) |p| if (!std.mem.eql(u8, p, &pair.public_key.toBytes())) return error.InvalidKey;
-    out.* = .{ .ed25519 = pair };
+    out.* = .{ .ed25519 = undefined };
+    EdKey.create(seed[0..32], &out.ed25519.secret) catch return error.InvalidKey;
+    if (public) |p| if (!std.mem.eql(u8, p, out.ed25519.public())) return error.InvalidKey;
+}
+
+/// An X25519 key from its 32-byte private key (RFC 8410's CurvePrivateKey, RFC 8037's d), into
+/// `out`, its public key compared with `public` when one is given. The one path every X25519 key
+/// takes.
+pub fn x25519Key(secret: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    if (secret.len != 32) return error.InvalidKey;
+    out.* = .{ .x25519 = .{ .secret = secret[0..32].*, .public = undefined } };
+    // cloak's X25519 (crypto/x25519.zig), constant time in the key.
+    out.x25519.public = x25519.Dh.recoverPublicKey(out.x25519.secret);
+    if (public) |p| if (!std.mem.eql(u8, p, &out.x25519.public)) return error.InvalidKey;
 }
 
 /// An RSA key from its numbers (`Rsa.fromIntegers`), into `out`.
 pub fn rsaFromIntegers(integers: *const [8][]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     out.* = .{ .rsa = undefined };
-    Rsa.fromIntegers(integers, &out.rsa) catch |err| {
-        std.crypto.secureZero(u8, std.mem.asBytes(out));
-        return err;
-    };
+    try Rsa.fromIntegers(integers, &out.rsa);
 }
 fn encrypted(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     const passphrase = options.passphrase orelse return error.PasswordRequired;
     var password = Pbe.Password.init(gpa, passphrase, false, pbeLimits(options)) catch |err| return pbeError(err);
-    defer password.deinit();
+    defer password.deinit(gpa);
     return encryptedWith(gpa, bytes, &password, options, out);
 }
 /// An EncryptedPrivateKeyInfo opened with `password`, as given or as a PKCS#12 file's MAC
@@ -324,7 +345,7 @@ pub fn encryptedWith(gpa: std.mem.Allocator, bytes: []const u8, password: *const
     const data = (try info.expect(4)).value;
     try info.finish();
     var plain = Pbe.decrypt(gpa, algorithm.encoded, data, password, pbeLimits(options)) catch |err| return pbeError(err);
-    defer plain.deinit();
+    defer plain.deinit(gpa);
     return parseDer(plain.expose(), options, out) catch |err| switch (err) {
         error.OutOfMemory => err,
         else => error.BadPassword,
@@ -366,8 +387,9 @@ fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError
     const previous = previous_owner.exposeMut();
     var filled: usize = 0;
     while (filled < key_len) {
-        var h = std.crypto.hash.Md5.init(.{});
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: Secret(std.crypto.hash.Md5) = .init(std.crypto.hash.Md5.init(.{}));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         if (filled != 0) h.update(previous);
         h.update(password);
         h.update(iv[0..8]);
@@ -377,7 +399,7 @@ fn legacy(gpa: std.mem.Allocator, block: Pem.Block, options: Options) ParseError
         filled += n;
     }
     var plain_owner = try SecretBytes.init(gpa, block.der.len);
-    errdefer plain_owner.deinit();
+    errdefer plain_owner.deinit(gpa);
     plain_owner.resizeWithinCapacity(block.der.len) catch return error.InputLimit;
     const plain = plain_owner.exposeMut();
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, block.der, plain) else try Cbc.decrypt(key[0..key_len], iv, block.der, plain);

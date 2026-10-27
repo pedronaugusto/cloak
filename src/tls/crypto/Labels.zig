@@ -48,8 +48,9 @@ fn expandKernel(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [
     var offset: usize = 0;
     var counter: u8 = 1;
     while (offset < out.len) {
-        var h = Hmac.init(secret);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(secret));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         if (offset != 0) h.update(block.expose());
         h.update(info[0 .. ctx_at + 1 + context.len]);
         h.update(&.{counter});
@@ -64,8 +65,9 @@ pub fn extract(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []const 
     aegis.secret.scrubbed(Kernels.depth, extractKernel, .{ Hash, out, salt, input });
 }
 fn extractKernel(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []const u8, input: []const u8) void {
-    var h = std.crypto.auth.hmac.Hmac(Hash).init(salt);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+    var h_owner: aegis.Secret(std.crypto.auth.hmac.Hmac(Hash)) = .init(std.crypto.auth.hmac.Hmac(Hash).init(salt));
+    defer h_owner.deinit();
+    const h = h_owner.exposeMut();
     h.update(input);
     h.final(out);
 }

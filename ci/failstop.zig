@@ -10,6 +10,10 @@ const cases = [_]struct { name: []const u8, message: []const u8 }{
     .{ .name = "acknowledge", .message = "the caller acknowledges at most what is pending" },
     .{ .name = "control", .message = "control records go to a kernel that holds the write keys" },
     .{ .name = "receiveControl", .message = "control records come from a kernel that holds the read keys" },
+    .{ .name = "gcmSeal", .message = "an AES-GCM ciphertext buffer is as long as the message" },
+    .{ .name = "gcmOpen", .message = "an AES-GCM message buffer is as long as the ciphertext" },
+    .{ .name = "cbcSeal", .message = "a CBC-HMAC ciphertext buffer is ciphertextLength(message) bytes" },
+    .{ .name = "cbcOpen", .message = "a CBC-HMAC message buffer is as long as the ciphertext" },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -33,6 +37,18 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn misuse(gpa: std.mem.Allocator, name: []const u8) !void {
+    // A buffer one byte short of what the cipher writes.
+    const key: [64]u8 = @splat(7);
+    const iv: [16]u8 = @splat(9);
+    var tag: [32]u8 = @splat(0);
+    var buffer: [64]u8 = @splat(0);
+    const G = cloak.cipher.AesGcm(128);
+    const C = cloak.cipher.CbcHmac(.a128cbc_hs256);
+    if (std.mem.eql(u8, name, "gcmSeal")) G.seal(buffer[0..15], tag[0..16], buffer[16..32], "", iv[0..12], key[0..16]);
+    // The call never returns: the precondition stops it before the tag is read.
+    if (std.mem.eql(u8, name, "gcmOpen")) try G.open(buffer[0..15], buffer[16..32], tag[0..16], "", iv[0..12], key[0..16]);
+    if (std.mem.eql(u8, name, "cbcSeal")) C.seal(buffer[0..16], tag[0..16], buffer[32..48], "", &iv, key[0..32]);
+    if (std.mem.eql(u8, name, "cbcOpen")) _ = try C.open(buffer[0..15], buffer[16..32], tag[0..16], "", &iv, key[0..32]);
     var conn = try cloak.tls.Connection.client(gpa, .{ .identity = .{ .dns = "example.com" }, .verify = .none });
     defer conn.deinit();
     // Nothing is readable or pending yet: one byte is past either end.

@@ -2,8 +2,10 @@
 //! Windows and OpenSSL 1.x encrypted under pbeWithSHAAnd40BitRC2-CBC or -128BitRC2-CBC. Read
 //! only, never negotiated (the legacy key-file rule). The key schedule's PITABLE lookups and the
 //! mash rounds' key-word lookups take secret indices, so each scans its whole table and selects
-//! with masks: no secret reaches an address.
+//! with masks: no secret reaches an address. Secret temporaries live in aegis `Secret` owners;
+//! `out` is the caller's secret owner, which erases it when decryption fails.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 pub const Error = error{ InvalidCiphertext, BadPassword };
 
 /// Decrypts `encrypted` under `key` with `effective` key bits (40 or 128 for PKCS#12) in CBC
@@ -11,17 +13,16 @@ pub const Error = error{ InvalidCiphertext, BadPassword };
 pub fn decrypt(key: []const u8, effective: u10, iv: [8]u8, encrypted: []const u8, out: []u8) Error![]u8 {
     @setRuntimeSafety(true);
     if (key.len == 0 or key.len > 128 or effective == 0 or effective > 1024 or encrypted.len == 0 or encrypted.len % 8 != 0 or out.len != encrypted.len) return error.InvalidCiphertext;
-    errdefer std.crypto.secureZero(u8, out);
-    var k: [64]u16 = undefined;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
-    expand(key, effective, &k);
+    var owner: Secret(struct { k: [64]u16, block: [8]u8 }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    expand(key, effective, &s.k);
     var previous = iv;
     for (0..encrypted.len / 8) |i| {
         const cipher = encrypted[i * 8 ..][0..8].*;
-        var block = decryptBlock(&k, cipher);
-        defer std.crypto.secureZero(u8, &block);
-        for (&block, previous) |*b, p| b.* ^= p;
-        @memcpy(out[i * 8 ..][0..8], &block);
+        s.block = decryptBlock(&s.k, cipher);
+        for (&s.block, previous) |*b, p| b.* ^= p;
+        @memcpy(out[i * 8 ..][0..8], &s.block);
         previous = cipher;
     }
     const padding: usize = out[out.len - 1];
@@ -77,8 +78,9 @@ fn word(k: *const [64]u16, index: u16) u16 {
 /// RFC 2268 section 2.
 fn expand(key: []const u8, effective: u10, k: *[64]u16) void {
     @setRuntimeSafety(true);
-    var l: [128]u8 = @splat(0);
-    defer std.crypto.secureZero(u8, &l);
+    var owner: Secret([128]u8) = .init(@splat(0));
+    defer owner.deinit();
+    const l = owner.exposeMut();
     @memcpy(l[0..key.len], key);
     for (key.len..128) |i| l[i] = pi(l[i - 1] +% l[i - key.len]);
     const bytes: usize = (@as(usize, effective) + 7) / 8;
@@ -95,9 +97,10 @@ fn expand(key: []const u8, effective: u10, k: *[64]u16) void {
 
 fn decryptBlock(k: *const [64]u16, block: [8]u8) [8]u8 {
     @setRuntimeSafety(true);
-    var r: [4]u16 = undefined;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&r));
-    for (&r, 0..) |*w, i| w.* = std.mem.readInt(u16, block[2 * i ..][0..2], .little);
+    var owner: Secret([4]u16) = .init(undefined);
+    defer owner.deinit();
+    const r = owner.exposeMut();
+    for (r, 0..) |*w, i| w.* = std.mem.readInt(u16, block[2 * i ..][0..2], .little);
     var j: usize = 63;
     const rounds = [_]u8{ 5, 1, 6, 1, 5 };
     for (rounds, 0..) |count, step| {

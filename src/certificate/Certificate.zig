@@ -109,7 +109,8 @@ pub fn parse(bytes: []const u8, limits: Limits) ParseError!Certificate {
             var sr = (try Der.single(sig, 0x30)).reader();
             for (0..2) |_| {
                 const n = try Der.integer((try sr.expect(2)).value);
-                if (n.len > 48 or (n.len == 1 and n[0] == 0)) return error.InvalidCertificate;
+                // Up to P-521's order: 66 bytes.
+                if (n.len > 66 or (n.len == 1 and n[0] == 0)) return error.InvalidCertificate;
             }
             try sr.finish();
         },

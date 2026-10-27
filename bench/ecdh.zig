@@ -60,8 +60,47 @@ pub fn main(init: std.process.Init) !void {
         const std_mul = time(init.io, Std.mul, .{ peer, a }, iterations);
         try out.interface.print("{s}: cloak keygen={d}ns agree={d}ns | std basePoint.mul={d}ns point.mul={d}ns\n", .{ entry[0], cloak_base, cloak_agree, std_base, std_mul });
     }
+    try exchange25519(init, &out.interface, iterations);
     try signing(init, &out.interface, iterations);
     try out.interface.flush();
+}
+
+/// X25519: cloak's public key (the base ladder) and agreement (in its scrubbed frame, with the
+/// all-zero check) against std's.
+fn exchange25519(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void {
+    const Dh = harness.x25519.Dh;
+    const Std = std.crypto.dh.X25519;
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    init.io.random(&a);
+    init.io.random(&b);
+    const b_public = Std.recoverPublicKey(b);
+    const Cloak = struct {
+        fn publicKey(scalar: [32]u8) void {
+            const public = Dh.recoverPublicKey(scalar);
+            std.mem.doNotOptimizeAway(&public);
+        }
+        fn agree(scalar: *const [32]u8, public: []const u8, secret: *[32]u8) void {
+            ecdh.X25519.agree(scalar, public, secret) catch unreachable; // unreachable: the peer key is valid
+            std.mem.doNotOptimizeAway(secret);
+        }
+    };
+    const Theirs = struct {
+        fn publicKey(scalar: [32]u8) void {
+            const public = Std.recoverPublicKey(scalar);
+            std.mem.doNotOptimizeAway(&public);
+        }
+        fn agree(scalar: [32]u8, public: [32]u8) void {
+            const secret = Std.scalarmult(scalar, public) catch unreachable; // unreachable: the peer key is valid
+            std.mem.doNotOptimizeAway(&secret);
+        }
+    };
+    var shared: [32]u8 = undefined;
+    const cloak_base = time(init.io, Cloak.publicKey, .{a}, iterations);
+    const cloak_agree = time(init.io, Cloak.agree, .{ &a, &b_public, &shared }, iterations);
+    const std_base = time(init.io, Theirs.publicKey, .{a}, iterations);
+    const std_agree = time(init.io, Theirs.agree, .{ a, b_public }, iterations);
+    try out.print("X25519: cloak keygen={d}ns agree={d}ns | std keygen={d}ns agree={d}ns\n", .{ cloak_base, cloak_agree, std_base, std_agree });
 }
 
 /// A TLS CertificateVerify signature: cloak's `PrivateKey.sign` (hedged nonce, masked secret

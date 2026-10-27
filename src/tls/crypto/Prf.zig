@@ -23,8 +23,9 @@ fn prfKernel(comptime Hash: type, out: []u8, secret: []const u8, label: []const 
     defer block.deinit();
     // A(1) = HMAC(secret, seed).
     {
-        var h = Hmac.init(secret);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(secret));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         h.update(label);
         for (seeds) |seed| h.update(seed);
         h.final(a.exposeMut());
@@ -32,8 +33,9 @@ fn prfKernel(comptime Hash: type, out: []u8, secret: []const u8, label: []const 
     var offset: usize = 0;
     while (offset < out.len) {
         {
-            var h = Hmac.init(secret);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+            var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(secret));
+            defer h_owner.deinit();
+            const h = h_owner.exposeMut();
             h.update(a.expose());
             h.update(label);
             for (seeds) |seed| h.update(seed);
@@ -44,8 +46,9 @@ fn prfKernel(comptime Hash: type, out: []u8, secret: []const u8, label: []const 
         offset += n;
         if (offset == out.len) break;
         // A(i + 1) = HMAC(secret, A(i)).
-        var h = Hmac.init(secret);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(secret));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         h.update(a.expose());
         h.final(a.exposeMut());
     }

@@ -19,7 +19,7 @@ const Client = @import("../tls/handshake/Client.zig");
 const Hello = @import("../tls/handshake/Hello.zig");
 pub const pki = @import("Peer.zig").pki;
 
-pub const Cert = enum { p256, p384, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
+pub const Cert = enum { p256, p384, p521, ed25519, rsa, mldsa44, mldsa65, mldsa87, mldsa44_classical, p256_pqca, dc_p256, dc_no_signature, ct_leaf, ct_plain };
 
 pub const Options = struct {
     seed: u64 = 1,
@@ -140,6 +140,8 @@ pub const Options = struct {
     /// the client's chain by the test root even when the handshake asks for no certificate.
     client_post_auth: bool = false,
     server_post_auth: bool = false,
+    /// Both ends keep the peer's leaf (`peerLeaf`).
+    keep_peer_leaf: bool = false,
     /// record_size_limit (RFC 8449) each end names; null names the version's maximum.
     client_record_size_limit: ?u16 = null,
     server_record_size_limit: ?u16 = null,
@@ -218,11 +220,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
     self.longest_record = .{ 0, 0 };
     self.trust = certificates.Trust.init(gpa);
     errdefer self.trust.deinit();
-    try self.trust.addDer(pki.ca, .{});
-    try self.trust.addDer(pki.mldsa_ca, .{});
-    try self.trust.addDer(pki.mixed_ca, .{});
-    try self.trust.addDer(pki.dc_ca, .{});
-    try self.trust.addDer(pki.ct_ca, .{});
+    for ([_][]const u8{ pki.ca, pki.mldsa_ca, pki.mixed_ca, pki.dc_ca, pki.ct_ca, pki.p521_ca }) |root| try self.trust.addDer(root, .{});
     self.snapshot = try self.trust.freeze();
     errdefer self.snapshot.deinit();
     const cert: Cert = if (options.server_delegated and options.cert == .p256) .dc_p256 else options.cert;
@@ -293,6 +291,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .accept_delegated = options.client_accept_delegated,
         .post_handshake_auth = options.client_post_auth,
         .key_log = options.client_key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     errdefer self.client.deinit();
     self.server = try Connection.server(gpa, .{
@@ -322,6 +321,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) !*Duo {
         .accept_delegated = options.server_accept_delegated,
         .post_handshake_auth = options.server_post_auth,
         .key_log = options.server_key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
     });
     return self;
 }
@@ -367,6 +367,7 @@ fn keyOf(gpa: std.mem.Allocator, cert: Cert) !certificates.PrivateKey {
     return certificates.PrivateKey.parse(gpa, switch (cert) {
         .p256, .dc_p256, .dc_no_signature, .ct_leaf, .ct_plain => pki.p256_pem,
         .p384 => pki.p384_pem,
+        .p521 => pki.p521_pem,
         .ed25519 => pki.ed25519_pem,
         .rsa => pki.rsa_pem,
         .mldsa44 => pki.mldsa44_pem,
@@ -385,6 +386,7 @@ fn leafOf(cert: Cert) []const u8 {
         .ct_plain => pki.ct_plain,
         .p256 => pki.p256,
         .p384 => pki.p384,
+        .p521 => pki.p521,
         .ed25519 => pki.ed25519,
         .rsa => pki.rsa,
         .mldsa44 => pki.mldsa44,
@@ -401,6 +403,7 @@ fn rootOf(cert: Cert) []const u8 {
         .ct_leaf, .ct_plain => pki.ct_ca,
         .mldsa44, .mldsa65, .mldsa87, .p256_pqca => pki.mldsa_ca,
         .mldsa44_classical => pki.mixed_ca,
+        .p521 => pki.p521_ca,
         else => pki.ca,
     };
 }

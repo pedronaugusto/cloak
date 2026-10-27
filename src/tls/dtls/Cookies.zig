@@ -15,6 +15,7 @@
 //! or the one before it.
 const std = @import("std");
 const aegis = @import("aegis");
+const types = @import("../../certificates.zig").types;
 const Kernels = @import("../crypto/Kernels.zig");
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -101,7 +102,7 @@ pub fn check(self: *const Cookies, gpa: std.mem.Allocator, options: *const Datag
     const fragment_len: usize = std.mem.readInt(u24, body[9..12], .big);
     if (offset != 0 or fragment_len > body.len - 12 or fragment_len > length or length > 64 * 1024) return .drop;
     const fragment = body[12..][0..fragment_len];
-    const seconds: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_s)));
+    const seconds: u64 = @intCast(@max(0, types.seconds(now)));
     const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth };
     // A whole hello is read as such; the first fragment of a longer one can still carry its
     // cookie (in the cookie field or, early enough, the cookie extension).
@@ -131,7 +132,7 @@ fn keyFor(self: *const Cookies, id: u8) ?*const Key {
 }
 
 fn fresh(self: *const Cookies, issued: u64, now: u64) bool {
-    const lifetime: u64 = @intCast(@max(0, @divFloor(self.lifetime.nanoseconds, std.time.ns_per_s)));
+    const lifetime: u64 = @intCast(@max(0, types.spanSeconds(self.lifetime)));
     // A minute of the caller's clock running back is tolerated, not more.
     return issued <= now + 60 and now -| issued <= lifetime;
 }
@@ -141,8 +142,9 @@ fn mac(key: *const Key, label: []const u8, address: []const u8, parts: []const [
 }
 
 fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []const []const u8, out: *[32]u8) void {
-    var h = Mac.init(key.material.expose());
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+    var h_owner: aegis.Secret(Mac) = .init(Mac.init(key.material.expose()));
+    defer h_owner.deinit();
+    const h = h_owner.exposeMut();
     h.update(label);
     h.update(&.{@intCast(address.len)});
     h.update(address);
@@ -164,11 +166,8 @@ fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []c
 fn retry13(self: *const Cookies, gpa: std.mem.Allocator, policy: Hello.Options, keys: []const Ech.Key, address: []const u8, seconds: u64, outer: *const ClientHello, outer_message: []const u8, record_sequence: u64, received: usize, out: []u8) Verdict {
     @setRuntimeSafety(true);
     var ech: Ech.Retried = .none;
-    var inner: []u8 = &.{};
-    defer if (inner.len != 0) {
-        std.crypto.secureZero(u8, inner);
-        gpa.free(inner);
-    };
+    var inner: aegis.SecretBytes = .empty;
+    defer inner.deinit(gpa);
     var inner_hello: ClientHello = undefined;
     if (keys.len != 0) if (outer.ech) |body| {
         const offer = switch (Ech.parseOffer(body) catch return .drop) {
@@ -179,13 +178,13 @@ fn retry13(self: *const Cookies, gpa: std.mem.Allocator, policy: Hello.Options, 
             var context = opened.context;
             context.deinit();
             inner = opened.inner;
-            inner_hello = ClientHello.parse(inner, .datagram) catch return .drop;
+            inner_hello = ClientHello.parse(inner.expose(), .datagram) catch return .drop;
             Server.checkInner(&inner_hello) catch return .drop;
             ech = .{ .accepted = .{ .config_id = offer.config_id, .suite = offer.suite, .enc = offer.enc[0..Hpke.enc_length].*, .random = inner_hello.random[0..32].* } };
         } else ech = .rejected;
     };
     const hello = if (ech == .accepted) &inner_hello else outer;
-    const message = if (ech == .accepted) inner else outer_message;
+    const message = if (ech == .accepted) inner.expose() else outer_message;
     if (!hello.null_compression_only or hello.legacy_cookie.len != 0 or !hello.has_schemes or !hello.has_groups or hello.sharesOutsideGroups()) return .drop;
     const suite = for (policy.suites) |candidate| {
         if (candidate.tls13()) |s| if (hello.offersSuite(@backingInt(s))) break s;
@@ -328,7 +327,7 @@ fn admit12(self: *const Cookies, address: []const u8, seconds: u64, random: []co
     mac(key, "cloak dtls cookie 1.2", address, &.{ cookie[0..5], random, session, offered }, &expected);
     if (!aegis.secret.equal(27, expected[0..27], cookie[5..32]).declassify("a forged cookie is dropped")) return .drop;
     // The 32-bit time wraps: its age is the difference, which must be within the lifetime.
-    const lifetime: u64 = @intCast(@max(0, @divFloor(self.lifetime.nanoseconds, std.time.ns_per_s)));
+    const lifetime: u64 = @intCast(@max(0, types.spanSeconds(self.lifetime)));
     const age = @as(u32, @truncate(seconds)) -% std.mem.readInt(u32, cookie[1..5], .big);
     if (age > lifetime) return .drop;
     return .{ .admit = .{} };

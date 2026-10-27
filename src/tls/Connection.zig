@@ -32,6 +32,7 @@ const Version = @import("crypto/Suite.zig").Version;
 const Protection = @import("record/Protection.zig");
 const Alert = @import("wire/Alert.zig").Alert;
 const Outbox = @import("connection/Outbox.zig");
+const Buffer = @import("wire/Buffer.zig");
 const Flight = @import("handshake/Flight.zig");
 const Ech = @import("handshake/Ech.zig");
 const Compression = @import("handshake/Compression.zig");
@@ -137,6 +138,10 @@ pub const ClientOptions = struct {
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
     key_log: ?KeyLog = null,
+    /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
+    /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
+    /// connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -192,7 +197,7 @@ tx_epoch: Epoch = .initial,
 record_limits: RecordLimits = .{},
 /// The most plaintext one record this end sends carries (`max_fragment`).
 max_fragment: u16 = 1 << 14,
-phase_now: std.atomic.Value(Phase) = .init(.handshaking),
+phase_now: aegis.Atomic(Phase) = .init(.handshaking),
 /// Set once the handshake completes: from then on the halves may run on two tasks.
 split: bool = false,
 /// What the handshake negotiated, taken as it completes, before the halves may run on two
@@ -200,7 +205,7 @@ split: bool = false,
 negotiated: ?Info = null,
 services: Services,
 // Inbound record and handshake message reassembly.
-record: []u8 = &.{},
+record: Buffer = .{},
 head: [5]u8 = undefined,
 record_have: usize = 0,
 plain_kind: ?Protection.Content = null,
@@ -208,7 +213,7 @@ plain_pos: usize = 0,
 plain_end: usize = 0,
 header: [4]u8 = undefined,
 header_have: u8 = 0,
-message: []u8 = &.{},
+message: Buffer = .{},
 message_total: usize = 0,
 message_have: usize = 0,
 seen_ccs: bool = false,
@@ -220,16 +225,17 @@ early_skipped: usize = 0,
 early_done: bool = false,
 // Outbound.
 outbox: Outbox = .{},
-read_done: std.atomic.Value(bool) = .init(false),
-write_done: std.atomic.Value(bool) = .init(false),
+read_done: aegis.Atomic(Done) = .init(.open),
+write_done: aegis.Atomic(Done) = .init(.open),
 rx_asked_update: bool = false,
-/// The first failure, as an error value's integer; zero for none.
-failure: std.atomic.Value(u16) = .init(0),
-alert_sent: std.atomic.Value(u16) = .init(no_alert),
-alert_received: std.atomic.Value(u16) = .init(no_alert),
-/// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes.
-owed: std.atomic.Value(u8) = .init(0),
-owed_alert: std.atomic.Value(u8) = .init(0),
+/// The first failure.
+failure: aegis.Atomic(Failure) = .init(.none),
+alert_sent: aegis.Atomic(AlertCode) = .init(.none),
+alert_received: aegis.Atomic(AlertCode) = .init(.none),
+/// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes, which is
+/// the last this side sends.
+owed: aegis.Guarded(u8) = .init(0),
+owed_alert: aegis.Atomic(AlertCode) = .init(.none),
 /// The directions a kernel record layer holds: it seals or opens their records from then on.
 rx_kernel: bool = false,
 tx_kernel: bool = false,
@@ -237,7 +243,24 @@ tx_kernel: bool = false,
 /// sends under the old keys (the KeyUpdate and what came before it) before it takes the new.
 rekey_at: ?u32 = null,
 
-const no_alert: u16 = 0x100;
+/// Whether a half is done: closed by close_notify, or shut.
+const Done = enum(u8) { open, done };
+/// An error of the connection, as its integer, for an atomic cell.
+const Failure = enum(u16) { none = 0, _ };
+/// An alert's byte, or none.
+const AlertCode = enum(u16) {
+    none = 0x100,
+    _,
+
+    fn of(value: Alert) AlertCode {
+        return @fromBackingInt(@as(u16, @backingInt(value)));
+    }
+
+    fn alert(code: AlertCode) ?Alert {
+        if (code == .none) return null;
+        return @fromBackingInt(@as(u8, @intCast(@backingInt(code)))); // safe: stored codes are alert bytes or none
+    }
+};
 /// A KeyUpdate message: its type, and its length with the header.
 const key_update_type: u8 = 24;
 const key_update_len: usize = 5;
@@ -298,6 +321,7 @@ pub fn client(gpa: std.mem.Allocator, options: ClientOptions) InitError!Connecti
         .limits = options.limits.handshake,
         .compat = options.compat,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
         .generation = options.generation,
     });
     return .{ .gpa = gpa, .hs = .{ .state = .{ .client = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
@@ -361,6 +385,10 @@ pub const ServerOptions = struct {
     max_fragment: ?u16 = null,
     limits: Limits = .{},
     key_log: ?KeyLog = null,
+    /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
+    /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
+    /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
+    keep_peer_leaf: bool = false,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -395,6 +423,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Connecti
         .record_size_limit = options.record_size_limit,
         .limits = options.limits.handshake,
         .key_log = options.key_log,
+        .keep_peer_leaf = options.keep_peer_leaf,
         .generation = options.generation,
     });
     return .{ .gpa = gpa, .hs = .{ .state = .{ .server = hs } }, .limits = options.limits, .max_fragment = max_fragment, .services = .init(options.generation) };
@@ -405,14 +434,8 @@ pub fn deinit(self: *Connection) void {
     if (self.rx) |*p| p.deinit();
     if (self.tx) |*p| p.deinit();
     self.hs.deinit();
-    if (self.record.len != 0) {
-        std.crypto.secureZero(u8, self.record);
-        self.gpa.free(self.record);
-    }
-    if (self.message.len != 0) {
-        std.crypto.secureZero(u8, self.message);
-        self.gpa.free(self.message);
-    }
+    self.record.free(self.gpa);
+    self.message.free(self.gpa);
     self.outbox.deinit(self.gpa);
     self.* = undefined;
 }
@@ -425,24 +448,20 @@ pub fn phase(self: *const Connection) Phase {
 
 pub fn diagnostics(self: *const Connection) Diagnostics {
     // A fatal alert the read half owes is the one this side sends, written or not yet.
-    const sent = if (self.owed.load(.acquire) & owe_fatal != 0) self.owed_alert.load(.acquire) else self.alert_sent.load(.acquire);
-    return .{ .phase = self.phase(), .reason = self.failureError(), .alert_sent = alertOf(sent), .alert_received = alertOf(self.alert_received.load(.acquire)) };
-}
-
-fn alertOf(code: u16) ?Alert {
-    if (code == no_alert) return null;
-    return @fromBackingInt(@as(u8, @intCast(code))); // safe: stored codes are alert bytes or no_alert
+    const owed = self.owed_alert.load(.acquire);
+    const sent = if (owed != .none) owed else self.alert_sent.load(.acquire);
+    return .{ .phase = self.phase(), .reason = self.failureError(), .alert_sent = sent.alert(), .alert_received = self.alert_received.load(.acquire).alert() };
 }
 
 fn failureError(self: *const Connection) ?Error {
     const code = self.failure.load(.acquire);
-    if (code == 0) return null;
-    return @errorCast(@errorFromInt(code));
+    if (code == .none) return null;
+    return @errorCast(@errorFromInt(@backingInt(code)));
 }
 
 /// Records the first failure; a later one, from the other half, keeps it.
 fn recordFailure(self: *Connection, err: Error) void {
-    _ = self.failure.cmpxchgStrong(0, @intFromError(err), .acq_rel, .acquire);
+    _ = self.failure.cmpxchgStrong(.none, @fromBackingInt(@intFromError(err)), .acq_rel, .acquire);
     self.phase_now.store(.failed, .release);
 }
 
@@ -450,6 +469,21 @@ fn recordFailure(self: *Connection, err: Error) void {
 /// one), whether or not the handshake completed.
 pub fn certificateRequested(self: *const Connection) bool {
     return self.hs.certificateRequested();
+}
+
+/// The peer's leaf certificate (DER), once the handshake proved it: the chain passed the
+/// verification policy (under `.none` nothing checked it) and the leaf's key signed the
+/// handshake (CertificateVerify, or a TLS 1.2 server's ServerKeyExchange). A server's later
+/// post-handshake answer that proves a certificate replaces it as that answer settles. Null
+/// before the handshake completes, after a failure, when the peer proved no certificate (none
+/// asked for, an empty Certificate, a raw public key), and on resumption: tickets do not carry
+/// the leaf, and do not grow to. Only the leaf is kept (what RFC 8705 binds a token to). Valid
+/// until `deinit`; at a server, until the answer to its next `requestCertificate` settles.
+pub fn peerLeaf(self: *const Connection) ?[]const u8 {
+    if (self.info() == null) return null;
+    if (self.hs.postAuth()) |post| if (post.latestLeaf()) |leaf| return leaf;
+    const leaf = self.hs.peerLeaf();
+    return if (leaf.len == 0) null else leaf;
 }
 
 /// Negotiated parameters; null before the handshake completes and after a failure.
@@ -467,7 +501,7 @@ pub fn echRetryConfigs(self: *const Connection) ?[]const u8 {
 
 /// True once the peer sent close_notify: no more plaintext will arrive.
 pub fn readClosed(self: *const Connection) bool {
-    return self.read_done.load(.acquire);
+    return (self.read_done.load(.acquire) == .done);
 }
 
 pub const ExportError = Client.ExportError;
@@ -486,16 +520,8 @@ pub fn exportKeyingMaterial(self: *const Connection, out: []u8, label: []const u
 /// the output buffer too. Safe to call at any time; the next input acquires them again.
 pub fn trim(self: *Connection) void {
     @setRuntimeSafety(true);
-    if (self.record_have == 0 and self.plain_kind == null and self.record.len != 0) {
-        std.crypto.secureZero(u8, self.record);
-        self.gpa.free(self.record);
-        self.record = &.{};
-    }
-    if (self.message_total == 0 and self.header_have == 0 and self.message.len != 0) {
-        std.crypto.secureZero(u8, self.message);
-        self.gpa.free(self.message);
-        self.message = &.{};
-    }
+    if (self.record_have == 0 and self.plain_kind == null) self.record.free(self.gpa);
+    if (self.message_total == 0 and self.header_have == 0) self.message.free(self.gpa);
     if (!self.split) self.outbox.trim(self.gpa);
     self.hs.settle();
 }
@@ -553,8 +579,8 @@ fn failRead(self: *Connection, err: Error) void {
     if (!self.split) return self.failWhole(err);
     if (self.phase() == .failed and self.rx == null) return;
     self.recordFailure(err);
-    if (alerts(err)) self.owed_alert.store(@backingInt(self.alertFor(err)), .release);
-    _ = self.owed.fetchOr(if (alerts(err)) owe_fatal | owe_teardown else owe_teardown, .seq_cst);
+    if (alerts(err)) self.owed_alert.store(.of(self.alertFor(err)), .release);
+    self.addOwed(if (alerts(err)) owe_fatal | owe_teardown else owe_teardown);
     if (self.rx) |*p| p.deinit();
     self.rx = null;
     self.plain_kind = null;
@@ -593,23 +619,29 @@ fn sendAlert(self: *Connection, level: u8, alert: Alert) void {
     const dst = self.outbox.tail(self.gpa, body.len + record_overhead, self.limits.output + max_record) catch return;
     const wire = self.sealRecord(.alert, &body, dst) catch return;
     self.outbox.commit(wire.len);
-    self.alert_sent.store(@backingInt(alert), .release);
+    self.alert_sent.store(.of(alert), .release);
 }
 
 /// Writes what the read half owes, in the write half: a fatal alert (then the write keys go), a
 /// KeyUpdate answering or asking for one, a warning no_renegotiation.
 fn writeOwed(self: *Connection) void {
     @setRuntimeSafety(true);
-    const bits = self.owed.swap(0, .acq_rel);
+    const bits = bits: {
+        var held = self.owed.acquire();
+        defer held.deinit();
+        const taken = held.value().*;
+        held.value().* = 0;
+        break :bits taken;
+    };
     if (bits & owe_fatal != 0) {
-        if (self.tx != null) self.sendAlert(2, @fromBackingInt(self.owed_alert.load(.acquire)));
+        if (self.tx != null) self.sendAlert(2, self.owed_alert.load(.acquire).alert().?);
     }
     if (self.phase() == .failed) {
         if (self.tx) |*p| p.deinit();
         self.tx = null;
         return;
     }
-    if (self.write_done.load(.acquire)) {
+    if ((self.write_done.load(.acquire) == .done)) {
         // Nothing more goes out: an answer never sent frees the next request all the same.
         if (bits & owe_auth != 0) self.hs.postAuth().?.sent();
         return;
@@ -623,13 +655,17 @@ fn writeOwed(self: *Connection) void {
 
 /// Owes the write half `bits`; written at once before the handshake completes.
 fn owe(self: *Connection, bits: u8) Error!void {
+    self.addOwed(bits);
     if (!self.split) {
-        _ = self.owed.fetchOr(bits, .seq_cst);
         self.writeOwed();
         if (self.failureError()) |err| return err;
-        return;
     }
-    _ = self.owed.fetchOr(bits, .seq_cst);
+}
+
+fn addOwed(self: *Connection, bits: u8) void {
+    var held = self.owed.acquire();
+    defer held.deinit();
+    held.value().* |= bits;
 }
 
 /// One record of `content` in the current transmit epoch.
@@ -659,10 +695,14 @@ fn sealRecord(self: *Connection, content: Protection.Content, body: []const u8, 
 /// The KeyUpdate answering the peer's request waits for the next application data, which `send`
 /// writes it before: requests received while this end is silent get one answer (RFC 8446 section
 /// 4.6.3). A kernel holding the write keys sends that data unseen, so there the answer is owed at
-/// once. A read-modify-write, so that a task that releases the write half and then asks cannot
-/// miss what the other task owed meanwhile.
+/// once. Read under the lock the other task owes under, so a task that releases the write half
+/// and then asks cannot miss what the other task owed meanwhile.
 pub fn owes(self: *Connection) bool {
-    const bits = self.owed.fetchOr(0, .seq_cst);
+    const bits = bits: {
+        var held = self.owed.acquire();
+        defer held.deinit();
+        break :bits held.value().*;
+    };
     return bits & ~owe_key_update != 0 or (bits != 0 and self.tx_kernel);
 }
 
@@ -811,7 +851,7 @@ fn onPeerKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     try self.onControl();
     // Under a kernel, a KeyUpdate is its record's whole plaintext (`controlChecked`).
-    if (self.rx_kernel and (self.plain_end != key_update_len or self.record[0] != key_update_type)) return error.UnexpectedRecord;
+    if (self.rx_kernel and (self.plain_end != key_update_len or self.record.bytes()[0] != key_update_type)) return error.UnexpectedRecord;
     try self.rx.?.update();
     self.rx_asked_update = false;
     if (request_peer) try self.owe(owe_key_update);
@@ -824,7 +864,7 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
     if (self.tx.?.owner() == .next) {
         // A kernel has yet to take the keys of the last update: this one waits for it.
-        _ = self.owed.fetchOr(if (request_peer) owe_update_request else owe_key_update, .seq_cst);
+        self.addOwed(if (request_peer) owe_update_request else owe_key_update);
         return;
     }
     var message_buf: [5]u8 = undefined;
@@ -872,7 +912,7 @@ pub fn requestCertificate(self: *Connection) RequestError!u64 {
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     if (self.hs.role() != .server) return error.PostAuthUnavailable;
     const post = self.hs.postAuth() orelse return error.PostAuthUnavailable;
     var buf: [256 + @import("handshake/Authorities.zig").max_bytes]u8 = undefined;
@@ -938,7 +978,7 @@ pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     if (plaintext.len == 0) return 0;
     const n = @min(plaintext.len, self.sealLimit());
     if (self.outbox.pending().len + n + record_overhead > self.limits.output) return 0;
@@ -968,7 +1008,7 @@ pub fn keyUpdate(self: *Connection, request_peer: bool) SendError!void {
     defer timing.end();
     self.writeOwed();
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     // TLS 1.2 has none: a refusal, not a failure of the connection.
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
     self.sendKeyUpdate(request_peer) catch |err| return self.writeFailed(err);
@@ -981,17 +1021,17 @@ pub fn finish(self: *Connection) FinishError!void {
     defer timing.end();
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
-    if (self.write_done.load(.acquire)) return;
+    if ((self.write_done.load(.acquire) == .done)) return;
     if (self.phase() == .connected) {
         self.sendAlert(1, .close_notify);
     }
-    self.write_done.store(true, .release);
+    self.write_done.store(.done, .release);
     self.settlePhase();
 }
 
 /// Closed once both halves are done; either half may be the second.
 fn settlePhase(self: *Connection) void {
-    if (self.read_done.load(.acquire) and self.write_done.load(.acquire)) {
+    if ((self.read_done.load(.acquire) == .done) and (self.write_done.load(.acquire) == .done)) {
         _ = self.phase_now.cmpxchgStrong(.connected, .closed, .acq_rel, .acquire);
     }
 }
@@ -1053,8 +1093,8 @@ pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installe
         if (direction == .write and self.rekey_at != 0) return error.Unclean;
     } else {
         const done = switch (direction) {
-            .read => self.read_done.load(.acquire),
-            .write => self.write_done.load(.acquire),
+            .read => (self.read_done.load(.acquire) == .done),
+            .write => (self.write_done.load(.acquire) == .done),
         };
         if (done) return error.Closed;
         if (protection.kernelCipher() == null) return error.Unsupported;
@@ -1147,7 +1187,7 @@ pub fn receiveControl(self: *Connection, record_type: u8, plaintext: []const u8)
         self.rx = null;
         return error.Closed;
     }
-    if (self.read_done.load(.acquire)) return error.Closed;
+    if ((self.read_done.load(.acquire) == .done)) return error.Closed;
     self.controlChecked(record_type, plaintext) catch |err| return self.readFailed(err);
 }
 
@@ -1172,12 +1212,8 @@ fn controlChecked(self: *Connection, record_type: u8, plaintext: []const u8) Rec
         (plaintext.len != key_update_len or self.message_total != 0 or self.header_have != 0)) return error.UnexpectedRecord;
     // The record took one number of the kernel's count.
     protection.account(protection.records() + 1);
-    if (self.record.len < plaintext.len) {
-        if (self.record.len != 0) self.gpa.free(self.record);
-        self.record = &.{};
-        self.record = try self.gpa.alloc(u8, max_content);
-    }
-    @memcpy(self.record[0..plaintext.len], plaintext);
+    if (self.record.view().len < plaintext.len) _ = try self.record.ensure(self.gpa, max_content);
+    @memcpy(self.record.bytes()[0..plaintext.len], plaintext);
     self.plain_kind = content;
     self.plain_pos = 0;
     self.plain_end = plaintext.len;
@@ -1243,7 +1279,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
         .read => {
             aegis.assert.pre(self.rx_kernel, "records are counted by a kernel that holds the read keys");
             if (self.phase() == .failed) return error.Closed;
-            if (self.read_done.load(.acquire)) return;
+            if ((self.read_done.load(.acquire) == .done)) return;
             const p = if (self.rx) |*x| x else return error.Closed;
             if (p.owner() != .kernel) return;
             // Records past the control ones: application data came in between.
@@ -1251,7 +1287,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             p.account(records);
             if (p.remaining().records > p.recordLimit() / 4) return;
             if (p.tls12()) return self.readFailed(error.RecordLimit);
-            if (self.rx_asked_update or self.write_done.load(.acquire)) return;
+            if (self.rx_asked_update or (self.write_done.load(.acquire) == .done)) return;
             self.rx_asked_update = true;
             self.owe(owe_update_request) catch |err| return self.readFailed(err);
         },
@@ -1260,7 +1296,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             self.writeOwed();
             if (self.phase() == .failed) return error.Closed;
             // After close_notify nothing more is sealed, so nothing more is counted.
-            if (self.write_done.load(.acquire)) return;
+            if ((self.write_done.load(.acquire) == .done)) return;
             const p = if (self.tx) |*x| x else return error.Closed;
             if (p.owner() != .kernel) return;
             p.account(records);
@@ -1277,7 +1313,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
 pub fn readable(self: *const Connection) []const u8 {
     @setRuntimeSafety(true);
     if (self.plain_kind != .application) return &.{};
-    return self.record[self.plain_pos..self.plain_end];
+    return self.record.view()[self.plain_pos..self.plain_end];
 }
 
 pub fn consume(self: *Connection, n: usize) void {
@@ -1319,7 +1355,7 @@ pub fn receive(self: *Connection, input: []const u8) ReceiveError!usize {
         self.plain_kind = null;
         return error.Closed;
     }
-    if (self.read_done.load(.acquire)) return error.Closed;
+    if ((self.read_done.load(.acquire) == .done)) return error.Closed;
     return self.receiveChecked(input) catch |err| return self.readFailed(err);
 }
 
@@ -1328,7 +1364,7 @@ fn receiveChecked(self: *Connection, input: []const u8) ReceiveError!usize {
     var consumed: usize = 0;
     var records: usize = 0;
     while (true) {
-        if (self.blocked() or self.read_done.load(.acquire)) return consumed;
+        if (self.blocked() or (self.read_done.load(.acquire) == .done)) return consumed;
         if (self.plain_kind != null) {
             try self.dispatch();
             continue;
@@ -1343,7 +1379,7 @@ fn receiveChecked(self: *Connection, input: []const u8) ReceiveError!usize {
 }
 
 fn recordComplete(self: *const Connection) bool {
-    return self.record_have >= 5 and self.record_have == 5 + std.mem.readInt(u16, self.record[3..5], .big);
+    return self.record_have >= 5 and self.record_have == 5 + std.mem.readInt(u16, self.record.view()[3..5], .big);
 }
 
 /// Copies the next part of a record: its header first, then a buffer sized to its length.
@@ -1358,16 +1394,11 @@ fn fill(self: *Connection, input: []const u8) ReceiveError!usize {
         if (self.record_have < 5) return used;
         try self.checkHeader();
         const total = 5 + @as(usize, std.mem.readInt(u16, self.head[3..5], .big));
-        if (self.record.len < total) {
-            if (self.record.len != 0) self.gpa.free(self.record);
-            self.record = &.{};
-            self.record = try self.gpa.alloc(u8, total);
-        }
-        @memcpy(self.record[0..5], &self.head);
+        @memcpy((try self.record.ensure(self.gpa, total))[0..5], &self.head);
     }
-    const total = 5 + @as(usize, std.mem.readInt(u16, self.record[3..5], .big));
+    const total = 5 + @as(usize, std.mem.readInt(u16, self.record.bytes()[3..5], .big));
     const n = @min(total - self.record_have, input.len - used);
-    @memcpy(self.record[self.record_have..][0..n], input[used..][0..n]);
+    @memcpy(self.record.bytes()[self.record_have..][0..n], input[used..][0..n]);
     self.record_have += n;
     return used + n;
 }
@@ -1410,12 +1441,12 @@ fn checkHeader(self: *Connection) ReceiveError!void {
 /// Where opened plaintext starts in the record buffer: after the header, and after a TLS 1.2
 /// explicit nonce.
 fn offsetOf(self: *const Connection, plain: []const u8) usize {
-    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.ptr); // safe: the plaintext is a slice of the record buffer, so its address is not below the buffer's
+    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.view().ptr); // aegis: no-danger: the plaintext is a slice of the record buffer, so its address is not below the buffer's
 }
 
 fn openRecord(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    const wire = self.record[0..self.record_have];
+    const wire = self.record.bytes()[0..self.record_have];
     switch (wire[0]) {
         20 => {
             if (self.hs.version() == .tls12) {
@@ -1450,7 +1481,7 @@ fn openRecord(self: *Connection) Error!void {
                     return;
                 }
                 try self.checkLimit(protection, wire.len);
-                const plain = try protection.open(wire, self.record[5..]);
+                const plain = try protection.open(wire, self.record.bytes()[5..]);
                 self.plain_kind = plain.content;
                 self.plain_pos = self.offsetOf(plain.bytes);
                 self.plain_end = self.plain_pos + plain.bytes.len;
@@ -1471,7 +1502,7 @@ fn openRecord(self: *Connection) Error!void {
             const plain = if (skip == .trial and self.rx_epoch == .handshake) trial: {
                 // Declined early data fails under the handshake keys and is skipped; the first
                 // record that opens begins the client's flight, and skipping ends.
-                const opened = protection.trialOpen(wire, self.record[5..]) catch |err| switch (err) {
+                const opened = protection.trialOpen(wire, self.record.bytes()[5..]) catch |err| switch (err) {
                     error.Undecryptable => return self.skipEarly(wire.len),
                     else => |e| return e,
                 };
@@ -1480,7 +1511,7 @@ fn openRecord(self: *Connection) Error!void {
                 break :trial opened;
             } else open: {
                 try self.checkLimit(protection, wire.len);
-                break :open try protection.open(wire, self.record[5..]);
+                break :open try protection.open(wire, self.record.bytes()[5..]);
             };
             if (plain.content == .application) {
                 // Nothing comes between a handshake message's fragments (RFC 8446 section 5.1).
@@ -1508,7 +1539,7 @@ fn skipEarly(self: *Connection, len: usize) Error!void {
 /// Requests the peer's next write keys before this read epoch runs out.
 fn askForUpdate(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    if (self.rx_asked_update or self.phase() != .connected or self.write_done.load(.acquire) or self.rx.?.tls12()) return;
+    if (self.rx_asked_update or self.phase() != .connected or (self.write_done.load(.acquire) == .done) or self.rx.?.tls12()) return;
     const left = self.rx.?.remaining();
     if (left.records < 1024 or left.bytes < 64 * max_content) {
         self.rx_asked_update = true;
@@ -1527,7 +1558,7 @@ fn dispatch(self: *Connection) ReceiveError!void {
 
 fn onAlert(self: *Connection) ReceiveError!void {
     @setRuntimeSafety(true);
-    const body = self.record[self.plain_pos..self.plain_end];
+    const body = self.record.bytes()[self.plain_pos..self.plain_end];
     self.clearRecord();
     if (body.len != 2) return error.UnexpectedRecord;
     // Only a warning can be passed over: any other level makes an error alert, as RFC 8446
@@ -1535,9 +1566,9 @@ fn onAlert(self: *Connection) ReceiveError!void {
     // 5246 section 7.2) warns of nothing.
     const warning = body[0] == 1;
     const alert: Alert = @fromBackingInt(@intCast(body[1]));
-    self.alert_received.store(@backingInt(alert), .release);
+    self.alert_received.store(.of(alert), .release);
     if (alert == .close_notify and self.phase() == .connected) {
-        self.read_done.store(true, .release);
+        self.read_done.store(.done, .release);
         self.settlePhase();
         return;
     }
@@ -1557,24 +1588,19 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
     while (self.plain_pos < self.plain_end) {
         if (self.message_total == 0) {
             const take = @min(4 - self.header_have, self.plain_end - self.plain_pos);
-            @memcpy(self.header[self.header_have..][0..take], self.record[self.plain_pos..][0..take]);
+            @memcpy(self.header[self.header_have..][0..take], self.record.bytes()[self.plain_pos..][0..take]);
             self.header_have += @intCast(take);
             self.plain_pos += take;
             if (self.header_have < 4) break;
             const total = 4 + @as(usize, std.mem.readInt(u24, self.header[1..4], .big));
             if (total > self.limits.handshake.message) return error.HandshakeLimit;
-            if (self.message.len < total) {
-                if (self.message.len != 0) self.gpa.free(self.message);
-                self.message = &.{};
-                self.message = try self.gpa.alloc(u8, total);
-            }
-            @memcpy(self.message[0..4], &self.header);
+            @memcpy((try self.message.ensure(self.gpa, total))[0..4], &self.header);
             self.message_total = total;
             self.message_have = 4;
             self.header_have = 0;
         }
         const take = @min(self.message_total - self.message_have, self.plain_end - self.plain_pos);
-        @memcpy(self.message[self.message_have..][0..take], self.record[self.plain_pos..][0..take]);
+        @memcpy(self.message.bytes()[self.message_have..][0..take], self.record.bytes()[self.plain_pos..][0..take]);
         self.message_have += take;
         self.plain_pos += take;
         if (self.message_have == self.message_total) {
@@ -1582,7 +1608,7 @@ fn feedHandshake(self: *Connection) ReceiveError!void {
             self.message_total = 0;
             self.message_have = 0;
             const boundary = self.plain_pos == self.plain_end and self.header_have == 0;
-            try self.hs.receive(self.message[0..total], self.rx_epoch, boundary);
+            try self.hs.receive(self.message.bytes()[0..total], self.rx_epoch, boundary);
             try self.drain();
             if (self.hs.need() != .none) break;
         }
@@ -1595,7 +1621,7 @@ pub fn receiveEof(self: *Connection) Error!void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
-    if (self.read_done.load(.acquire)) return;
+    if ((self.read_done.load(.acquire) == .done)) return;
     if (self.phase() != .failed) {
         self.failRead(error.Truncated);
     }

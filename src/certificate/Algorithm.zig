@@ -2,6 +2,10 @@ const std = @import("std");
 const Der = @import("../wire/Der.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 const roca = @import("../crypto/roca.zig");
+const p256 = @import("../crypto/p256.zig");
+const p384 = @import("../crypto/p384.zig");
+const p521 = @import("../crypto/p521.zig");
+const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
 pub const Pss = struct { hash: Hash, mgf_hash: Hash, salt_length: usize, trailer: usize = 1 };
@@ -11,19 +15,30 @@ pub const MlDsa = mldsa.Level;
 /// same algorithm with the signature as r || s, each at the curve's width (IEEE P1363), as JOSE
 /// (RFC 7518 3.4), COSE and WebAuthn write them. Certificates never carry it.
 pub const Signature = union(enum) { rsa: Hash, pss: Pss, ecdsa: Hash, ecdsa_p1363: Hash, ed25519, mldsa: MlDsa, unsupported: []const u8 };
-pub const Curve = enum { p256, p384 };
+/// RSAES-OAEP's parameters (RFC 8017 7.1): the label's hash, MGF1's hash and the label. JOSE's
+/// RSA-OAEP takes SHA-1 for both, RSA-OAEP-256 SHA-256 for both (RFC 7518 4.3).
+pub const Oaep = pkcs1.Oaep;
+/// A public-key encryption scheme. RSAES-PKCS1-v1_5 is not one: its decryption is the padding
+/// oracle Bleichenbacher's attack reads.
+pub const Encryption = union(enum) { oaep: Oaep };
+pub const Curve = enum { p256, p384, p521 };
 pub const PublicKey = union(enum) {
     rsa: struct { modulus: []const u8, exponent: []const u8, pss: ?Pss = null, pss_only: bool = false },
     ec: struct { curve: Curve, bytes: []const u8 },
     ed25519: []const u8,
     mldsa: struct { level: MlDsa, bytes: []const u8 },
+    /// An X25519 public key (RFC 7748, RFC 8410): 32 bytes, for key agreement alone. No
+    /// signature verifies under it and TLS authenticates with none.
+    x25519: []const u8,
 };
 pub const rsa_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 pub const pss_oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a";
 const ed_oid = "\x2b\x65\x70";
+const x25519_oid = "\x2b\x65\x6e";
 const ec_oid = "\x2a\x86\x48\xce\x3d\x02\x01";
 const p256_oid = "\x2a\x86\x48\xce\x3d\x03\x01\x07";
 const p384_oid = "\x2b\x81\x04\x00\x22";
+const p521_oid = "\x2b\x81\x04\x00\x23";
 /// id-ml-dsa-44, -65 and -87: 2.16.840.1.101.3.4.3.17 to .19 (RFC 9881), the last byte apart.
 const mldsa_prefix = "\x60\x86\x48\x01\x65\x03\x04\x03";
 
@@ -131,6 +146,25 @@ pub fn pssParameters(e: Der.Element) Error!Pss {
     if (salt > 512) return error.DerLimit;
     return .{ .hash = hash, .mgf_hash = mgf_hash, .salt_length = salt };
 }
+/// The checks every EC public key gets, from a certificate, a raw key or built by a caller (a
+/// JWK's x and y): an uncompressed SEC 1 point of the curve's length, on the curve, not the
+/// identity.
+pub fn checkEc(curve: Curve, point: []const u8) error{InvalidPublicKey}!void {
+    @setRuntimeSafety(true);
+    // Uncompressed only, and on the curve: cloak's curve checks the point.
+    switch (curve) {
+        inline else => |tag| {
+            const named = switch (tag) {
+                .p256 => p256,
+                .p384 => p384,
+                .p521 => p521,
+            };
+            if (point.len != named.public_length or point[0] != 4) return error.InvalidPublicKey;
+            _ = named.Affine.fromSec1(point) catch return error.InvalidPublicKey;
+        },
+    }
+}
+
 /// The checks every RSA public key gets, from a certificate, a raw key or built by a caller (a
 /// JWK's n and e), before it verifies anything: 2048 to 4096 bits, odd, minimal encodings, an odd
 /// exponent of 3 to 2^32-1, and no ROCA fingerprint (CVE-2017-15361: a modulus anyone can factor
@@ -173,17 +207,8 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
     if (eql(id, ec_oid)) {
         const p = param orelse return error.InvalidDer;
         if (p.tag != 6) return error.InvalidDer;
-        const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else return error.UnsupportedAlgorithm;
-        const point_length: usize = if (curve == .p256) 65 else 97;
-        if (bytes.len != point_length or bytes[0] != 4) return error.InvalidPublicKey;
-        switch (curve) {
-            .p256 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-            .p384 => {
-                _ = std.crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(bytes) catch return error.InvalidPublicKey;
-            },
-        }
+        const curve: Curve = if (eql(p.value, p256_oid)) .p256 else if (eql(p.value, p384_oid)) .p384 else if (eql(p.value, p521_oid)) .p521 else return error.UnsupportedAlgorithm;
+        try checkEc(curve, bytes);
         return .{ .ec = .{ .curve = curve, .bytes = bytes } };
     }
     if (mldsaOf(id)) |level| {
@@ -197,6 +222,12 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
         point.rejectLowOrder() catch return error.InvalidPublicKey;
         point.rejectUnexpectedSubgroup() catch return error.InvalidPublicKey;
         return .{ .ed25519 = bytes };
+    }
+    if (eql(id, x25519_oid)) {
+        // Every 32 bytes are an X25519 public key (RFC 7748 5); the agreement refuses the ones
+        // of small order.
+        if (param != null or bytes.len != 32) return error.InvalidPublicKey;
+        return .{ .x25519 = bytes };
     }
     return error.UnsupportedAlgorithm;
 }
@@ -218,8 +249,10 @@ pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{Unsu
         .ec => |ec| .{ switch (ec.curve) {
             .p256 => "\x30\x13\x06\x07" ++ ec_oid ++ "\x06\x08" ++ p256_oid,
             .p384 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p384_oid,
+            .p521 => "\x30\x10\x06\x07" ++ ec_oid ++ "\x06\x05" ++ p521_oid,
         }, ec.bytes },
         .ed25519 => |bytes| .{ "\x30\x05\x06\x03" ++ ed_oid, bytes },
+        .x25519 => |bytes| .{ "\x30\x05\x06\x03" ++ x25519_oid, bytes },
         .mldsa => |m| .{ switch (m.level) {
             .mldsa44 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x11",
             .mldsa65 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x12",

@@ -90,8 +90,7 @@ test "service admission covers owned state and input allocation with a zero rece
 // This is not a generic fault allocator; NoResize owns allocation scheduling.
 const Cleanup = struct {
     backing: std.mem.Allocator,
-    guard: ?*const @FieldType(@typeInfo(@FieldType(Job, "state")).pointer.child, "shared") = null,
-    state_allocation: ?[*]u8 = null,
+    guard: ?*const @FieldType(@typeInfo(@FieldType(Job, "state").Ref).pointer.child, "shared") = null,
     frees: usize = 0,
     locked_frees: usize = 0,
     abandon_on_alloc: ?Job = null,
@@ -128,11 +127,11 @@ const Cleanup = struct {
     fn free(raw: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, ret: usize) void {
         @setRuntimeSafety(true);
         const self = context(raw);
-        // Allocator.destroy poisons State before rawFree in safe builds. Stop
-        // observing its guard at that boundary rather than reading dead state.
-        if (self.state_allocation == bytes.ptr) {
-            self.state_allocation = null;
-            self.guard = null;
+        // Allocator.destroy poisons the shared block before rawFree in safe builds. Stop
+        // observing its guard at the free of the block that holds it rather than read dead state.
+        if (self.guard) |guard| {
+            const at = @intFromPtr(guard);
+            if (at >= @intFromPtr(bytes.ptr) and at - @intFromPtr(bytes.ptr) < bytes.len) self.guard = null;
         }
         if (self.guard) |guard| {
             self.frees += 1;
@@ -152,12 +151,11 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
         const job = try Job.init(cleanup.allocator(), &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
         // Inject owned public native evidence, keeping the executor handle live.
         const path = try Path.init(cleanup.allocator(), request(), &.{"abc"});
-        var guard = job.state.shared.acquire();
+        var guard = job.state.get().shared.acquire();
         guard.value().phase = .ready;
         guard.value().result = path;
         guard.deinit();
-        cleanup.guard = &job.state.shared;
-        cleanup.state_allocation = std.mem.asBytes(job.state).ptr;
+        cleanup.guard = &job.state.get().shared;
         if (abandon) job.abandon();
         job.deinit();
         if (abandon) {
@@ -186,8 +184,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (abandoned during ev
     var q: Queue = .{};
     const job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{root} });
     defer job.deinit();
-    cleanup.guard = &job.state.shared;
-    cleanup.state_allocation = std.mem.asBytes(job.state).ptr;
+    cleanup.guard = &job.state.get().shared;
     cleanup.abandon_on_alloc = job;
     q.drain();
     try std.testing.expect(cleanup.abandon_on_alloc == null);
@@ -226,8 +223,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
         executor_job.run();
         executor_job.deinit();
     };
-    cleanup.guard = &executor_job.state.shared;
-    cleanup.state_allocation = std.mem.asBytes(executor_job.state).ptr;
+    cleanup.guard = &executor_job.state.get().shared;
     cleanup.pause = &pause;
     var worker = try io.concurrent(execute, .{executor_job});
     q.held = null;

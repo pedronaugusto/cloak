@@ -1,20 +1,22 @@
 //! Offline 3DES decryption, FIPS 46-3 Appendix 1. Every S-box entry is
-//! visited through volatile public indices; secrets select with masks.
+//! visited through volatile public indices; secrets select with masks. Each function's secret
+//! temporaries live in one aegis `Secret`; `out` is the caller's secret owner, which erases it
+//! when decryption fails.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 pub const Error = error{ InvalidCiphertext, BadPassword };
 pub fn decrypt(key: *const [24]u8, iv: [8]u8, encrypted: []const u8, out: []u8) Error![]u8 {
     @setRuntimeSafety(true);
     if (encrypted.len == 0 or encrypted.len % 8 != 0 or out.len != encrypted.len) return error.InvalidCiphertext;
-    errdefer std.crypto.secureZero(u8, out);
-    var keys: [3][16]u64 = undefined;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&keys));
-    for (0..3) |i| schedule(&keys[i], key[i * 8 ..][0..8]);
+    var owner: Secret(struct { keys: [3][16]u64, plain: u64 }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    for (0..3) |i| schedule(&s.keys[i], key[i * 8 ..][0..8]);
     var previous = std.mem.readInt(u64, &iv, .big);
     for (0..encrypted.len / 8) |i| {
         const encoded = std.mem.readInt(u64, encrypted[i * 8 ..][0..8], .big);
-        var plain = block(block(block(encoded, &keys[2], true), &keys[1], false), &keys[0], true) ^ previous;
-        std.mem.writeInt(u64, out[i * 8 ..][0..8], plain, .big);
-        std.crypto.secureZero(u8, std.mem.asBytes(&plain));
+        s.plain = block(block(block(encoded, &s.keys[2], true), &s.keys[1], false), &s.keys[0], true) ^ previous;
+        std.mem.writeInt(u64, out[i * 8 ..][0..8], s.plain, .big);
         previous = encoded;
     }
     const padding: usize = out[out.len - 1];
@@ -32,54 +34,50 @@ fn permutation(comptime width: usize, x: u64, table: []const u8) u64 {
 }
 fn schedule(keys: *[16]u64, key: *const [8]u8) void {
     @setRuntimeSafety(true);
-    var selected = permutation(64, std.mem.readInt(u64, key, .big), &pc1);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&selected));
-    var left: u28 = @truncate(selected >> 28); // safe: split the PC1 result into two 28-bit halves
-    var right: u28 = @truncate(selected); // safe: retain the low 28-bit PC1 half
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&left));
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&right));
+    var owner: Secret(struct { selected: u64, left: u28, right: u28 }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    s.selected = permutation(64, std.mem.readInt(u64, key, .big), &pc1);
+    s.left = @truncate(s.selected >> 28); // aegis: no-danger: split the PC1 result into two 28-bit halves
+    s.right = @truncate(s.selected); // aegis: no-danger: retain the low 28-bit PC1 half
     for (shifts, 0..) |shift, i| {
-        left = std.math.rotl(u28, left, shift);
-        right = std.math.rotl(u28, right, shift);
-        keys[i] = permutation(56, (@as(u64, left) << 28) | right, &pc2);
+        s.left = std.math.rotl(u28, s.left, shift);
+        s.right = std.math.rotl(u28, s.right, shift);
+        keys[i] = permutation(56, (@as(u64, s.left) << 28) | s.right, &pc2);
     }
 }
 fn block(encoded: u64, keys: *const [16]u64, reverse: bool) u64 {
     @setRuntimeSafety(true);
-    var selected = permutation(64, encoded, &ip);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&selected));
-    var left: u32 = @truncate(selected >> 32); // safe: split the initial permutation into 32-bit halves
-    var right: u32 = @truncate(selected); // safe: retain the low 32-bit initial-permutation half
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&left));
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&right));
+    var owner: Secret(struct { selected: u64, left: u32, right: u32, temp: u32 }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    s.selected = permutation(64, encoded, &ip);
+    s.left = @truncate(s.selected >> 32); // aegis: no-danger: split the initial permutation into 32-bit halves
+    s.right = @truncate(s.selected); // aegis: no-danger: retain the low 32-bit initial-permutation half
     for (0..16) |i| {
-        var temp = right;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&temp));
-        right = left ^ feistel(right, keys[if (reverse) 15 - i else i]);
-        left = temp;
+        s.temp = s.right;
+        s.right = s.left ^ feistel(s.right, keys[if (reverse) 15 - i else i]);
+        s.left = s.temp;
     }
-    return permutation(64, (@as(u64, right) << 32) | left, &fp);
+    return permutation(64, (@as(u64, s.right) << 32) | s.left, &fp);
 }
 fn feistel(right: u32, key: u64) u32 {
     @setRuntimeSafety(true);
-    var expanded = permutation(32, right, &expansion) ^ key;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&expanded));
-    var joined: u32 = 0;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&joined));
+    var owner: Secret(struct { expanded: u64, joined: u32, chunk: u8, index: u8, wanted: u8, selected: u8 }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    s.expanded = permutation(32, right, &expansion) ^ key;
+    s.joined = 0;
     for (0..8) |box| {
-        var chunk: u8 = @truncate((expanded >> @as(u6, @intCast(42 - box * 6))) & 63); // safe: public box is in 0..7; retain its six expansion bits
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&chunk));
-        var index = ((chunk & 32) >> 4) | (chunk & 1);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&index));
-        var wanted = index * 16 + ((chunk >> 1) & 15);
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&wanted));
-        var selected: u8 = 0;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&selected));
+        s.chunk = @truncate((s.expanded >> @as(u6, @intCast(42 - box * 6))) & 63); // aegis: no-danger: public box is in 0..7; retain its six expansion bits
+        s.index = ((s.chunk & 32) >> 4) | (s.chunk & 1);
+        s.wanted = s.index * 16 + ((s.chunk >> 1) & 15);
+        s.selected = 0;
         const table: *const volatile [64]u8 = &sboxes[box];
-        for (0..64) |i| selected |= table[i] & (0 -% @as(u8, @intFromBool(i == wanted)));
-        joined = (joined << 4) | selected;
+        for (0..64) |i| s.selected |= table[i] & (0 -% @as(u8, @intFromBool(i == s.wanted)));
+        s.joined = (s.joined << 4) | s.selected;
     }
-    return @truncate(permutation(32, joined, &p)); // safe: FIPS P permutation has exactly 32 output bits
+    return @truncate(permutation(32, s.joined, &p)); // aegis: no-danger: FIPS P permutation has exactly 32 output bits
 }
 const shifts = [_]u5{ 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1 };
 const ip = [_]u8{ 58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14, 6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11, 3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7 };
@@ -101,8 +99,8 @@ const sboxes = [8][64]u8{
 test "credential DES canonical block vector" {
     @setRuntimeSafety(true);
     const key = [_]u8{ 0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1 };
+    // FIPS 46-3's published example key: nothing to erase.
     var keys: [16]u64 = undefined;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&keys));
     schedule(&keys, &key);
     const encoded = block(0x0123456789abcdef, &keys, false);
     try std.testing.expectEqual(@as(u64, 0x85e813540f0ab405), encoded);

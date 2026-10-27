@@ -417,8 +417,8 @@ test "C6 permute_extensions under ECH: the server rebuilds the permuted inner he
         const encoded = try H.clientForm(&encoded_buf, &random, session, "", &shares, cookie, options, resumption, .encoded);
         var outer_buf: [4096]u8 = undefined;
         const outer = try H.clientForm(&outer_buf, &@as([32]u8, @splat(9)), session, "", &shares, cookie, options, .{ .modes = true }, .{ .outer = .{ .name = "public.example.org", .ext = "payload", .psk = &.{} } });
-        const rebuilt = try Ech.reconstruct(gpa, outer, encoded[4..], transport);
-        defer gpa.free(rebuilt);
-        try std.testing.expectEqualSlices(u8, inner, rebuilt);
+        var rebuilt = try Ech.reconstruct(gpa, outer, encoded[4..], transport);
+        defer rebuilt.deinit(gpa);
+        try std.testing.expectEqualSlices(u8, inner, rebuilt.expose());
     };
 }

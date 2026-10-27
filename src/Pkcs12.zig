@@ -129,6 +129,7 @@ fn samePublicKey(a: certificate.PublicKey, b: certificate.PublicKey) bool {
         .rsa => |x| b == .rsa and eql(u8, x.modulus, b.rsa.modulus) and eql(u8, x.exponent, b.rsa.exponent),
         .ec => |x| b == .ec and x.curve == b.ec.curve and eql(u8, x.bytes, b.ec.bytes),
         .ed25519 => |x| b == .ed25519 and eql(u8, x, b.ed25519),
+        .x25519 => |x| b == .x25519 and eql(u8, x, b.x25519),
         .mldsa => |x| b == .mldsa and x.level == b.mldsa.level and eql(u8, x.bytes, b.mldsa.bytes),
     };
 }

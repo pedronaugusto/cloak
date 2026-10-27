@@ -239,6 +239,7 @@ pub const SignatureScheme = enum(u16) {
     rsa_pkcs1_sha512 = 0x0601,
     ecdsa_p256_sha256 = 0x0403,
     ecdsa_p384_sha384 = 0x0503,
+    ecdsa_p521_sha512 = 0x0603,
     rsa_pss_rsae_sha256 = 0x0804,
     rsa_pss_rsae_sha384 = 0x0805,
     rsa_pss_rsae_sha512 = 0x0806,
@@ -258,7 +259,7 @@ pub const SignatureScheme = enum(u16) {
     }
 };
 /// The schemes of both versions' handshakes.
-const classical = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
+const classical = [_]SignatureScheme{ .ecdsa_p256_sha256, .ecdsa_p384_sha384, .ecdsa_p521_sha512, .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512, .ed25519, .rsa_pss_pss_sha256, .rsa_pss_pss_sha384, .rsa_pss_pss_sha512 };
 /// ML-DSA's, TLS 1.3 only.
 pub const mldsa_schemes = [_]SignatureScheme{ .mldsa44, .mldsa65, .mldsa87 };
 /// Schemes a TLS 1.3 CertificateVerify may use.

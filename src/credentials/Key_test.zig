@@ -146,21 +146,13 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as
     const signature = @import("../verify/signature.zig");
     const certificate = @import("../certificate.zig");
     const gpa = std.testing.allocator;
-    inline for (.{ .{ "testdata/p256.pkcs8.pem", certificate.Algorithm.Hash.sha256, certificate.Algorithm.Curve.p256, 32 }, .{ "testdata/p384.pkcs8.pem", .sha384, .p384, 48 } }) |row| {
+    inline for (.{ .{ "testdata/p256.pkcs8.pem", certificate.Algorithm.Hash.sha256, certificate.Algorithm.Curve.p256, 32 }, .{ "testdata/p384.pkcs8.pem", .sha384, .p384, 48 }, .{ "testdata/p521.pkcs8.pem", .sha512, .p521, 66 } }) |row| {
         const file, const hash, const curve, const width = row;
         const key = try PrivateKey.parse(gpa, @embedFile(file), .{});
         defer key.deinit();
-        const pair = key.state.material.expose().*;
-        var point: [97]u8 = undefined;
+        const pair = key.state.get().material.expose().*;
         const encoded: []const u8 = switch (pair) {
-            .p256 => |*p| blk: {
-                point[0..65].* = p.public_key.toUncompressedSec1();
-                break :blk point[0..65];
-            },
-            .p384 => |*p| blk: {
-                point = p.public_key.toUncompressedSec1();
-                break :blk point[0..97];
-            },
+            inline .p256, .p384, .p521 => |*p| p.public[0..],
             else => unreachable,
         };
         const public: certificate.Algorithm.PublicKey = .{ .ec = .{ .curve = curve, .bytes = encoded } };
@@ -179,8 +171,13 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as
         try std.testing.expectError(error.InvalidSignature, signature.verify(public, .{ .ecdsa_p1363 = hash }, "content", made_fixed[0 .. made_fixed.len - 1]));
         // The same nonce draw gives the same r and s in both forms.
         var digest_out: [PrivateKey.max_signature]u8 = undefined;
-        var digest: [width]u8 = undefined;
-        if (width == 32) std.crypto.hash.sha2.Sha256.hash("content", digest[0..32], .{}) else std.crypto.hash.sha2.Sha384.hash("content", digest[0..48], .{});
+        const Own = switch (@as(certificate.Algorithm.Hash, hash)) {
+            .sha256 => std.crypto.hash.sha2.Sha256,
+            .sha384 => std.crypto.hash.sha2.Sha384,
+            .sha512 => std.crypto.hash.sha2.Sha512,
+        };
+        var digest: [Own.digest_length]u8 = undefined;
+        Own.hash("content", &digest, .{});
         try std.testing.expectEqualSlices(u8, made_fixed, try key.signDigest(.{ .ecdsa_p1363 = hash }, &digest, noise[0..key.noiseLength()], &digest_out));
         // F142: every hash on either curve, from the message or its digest, as RFC 6979's
         // bits2int takes a hash not the curve's own; the verifier, which already took them,
@@ -298,6 +295,51 @@ test "C10 private keys from their components: the same key as parsed, and every 
     other_x[0] ^= 1;
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed, .public = &other_x } }));
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed[1..] } }));
+}
+
+test "P-521 private keys: SEC 1 and PKCS#8 read to one key, its SubjectPublicKeyInfo OpenSSL's, its components checked" {
+    @setRuntimeSafety(true);
+    const certificate = @import("../certificate.zig");
+    const Der = @import("../wire/Der.zig");
+    const gpa = std.testing.allocator;
+    const pkcs8 = try PrivateKey.parse(gpa, @embedFile("testdata/p521.pkcs8.pem"), .{});
+    defer pkcs8.deinit();
+    const sec1 = try PrivateKey.parse(gpa, @embedFile("testdata/p521.sec1.pem"), .{});
+    defer sec1.deinit();
+    var out: [PrivateKey.max_public_key_info]u8 = undefined;
+    const spki = pkcs8.publicKeyInfo(&out);
+    try std.testing.expectEqualSlices(u8, @embedFile("testdata/p521.pub.der"), spki);
+    const public = try certificate.Algorithm.publicKey(spki);
+    try std.testing.expect(sec1.matchesKey(public));
+    // The components: d and the point, from the SEC 1 form.
+    var block = try pemDer(@embedFile("testdata/p521.sec1.pem"));
+    defer block.deinit(gpa);
+    var e = (try Der.single(block.der, 0x30)).reader();
+    _ = try e.expect(2);
+    const d = (try e.expect(4)).value;
+    try std.testing.expectEqual(@as(usize, 66), d.len);
+    _ = try e.expect(0xa0);
+    const point = try Der.octetBits((try Der.single((try e.expect(0xa1)).value, 3)).value);
+    for ([_]?[]const u8{ null, point }) |given| {
+        const key = try PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p521, .d = d, .public = given } });
+        defer key.deinit();
+        try std.testing.expect(key.matchesKey(public));
+    }
+    var other_point = try gpa.dupe(u8, point);
+    defer gpa.free(other_point);
+    other_point[132] ^= 1;
+    var order: [66]u8 = undefined;
+    std.mem.writeInt(u528, &order, @import("../crypto/p521.zig").order, .big);
+    for ([_]struct { d: []const u8, public: ?[]const u8 = null }{
+        .{ .d = d, .public = other_point },
+        .{ .d = &@as([66]u8, @splat(0)) },
+        .{ .d = &order },
+        .{ .d = &@as([66]u8, @splat(0xff)) },
+        .{ .d = d[1..] },
+        .{ .d = &(@as([1]u8, .{0}) ++ @as([66]u8, @splat(1))) },
+    }) |bad| try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p521, .d = bad.d, .public = bad.public } }));
+    // A P-521 scalar is not a P-384 key.
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p384, .d = d } }));
 }
 
 test "C10 a private key writes its public half as the SubjectPublicKeyInfo its certificate carries" {

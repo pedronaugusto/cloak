@@ -138,3 +138,7 @@ test "Wycheproof P-256 ECDH on raw points: valid secrets agree, invalid-curve an
 test "Wycheproof P-384 ECDH on raw points: valid secrets agree, invalid-curve and malformed points are refused" {
     try agreementCampaign(Ecdh.P384, "ecdh_secp384r1_ecpoint_test.json");
 }
+
+test "Wycheproof P-521 ECDH on raw points: valid secrets agree, invalid-curve and malformed points are refused" {
+    try agreementCampaign(Ecdh.P521, "ecdh_secp521r1_ecpoint_test.json");
+}

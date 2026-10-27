@@ -1,6 +1,8 @@
 //! A mutable trust builder and immutable, retained trust snapshots.
 const std = @import("std");
-const TrustGeneration = @import("types.zig").TrustGeneration;
+const aegis = @import("aegis");
+const types = @import("types.zig");
+const TrustGeneration = types.TrustGeneration;
 const builtin = @import("builtin");
 const certificate = @import("certificate.zig");
 const Pem = @import("credentials/Pem.zig");
@@ -28,7 +30,7 @@ pub const Limits = struct {
 pub const AddDerError = std.mem.Allocator.Error || certificate.ParseError || error{TrustLimit};
 pub const AddPemError = AddDerError || error{ InvalidPem, InvalidPadding, InvalidCharacter };
 pub const LoadOptions = struct { limits: Limits = .{}, timeout: std.Io.Timeout = .none };
-pub const AddFileError = AddPemError || std.Io.Dir.ReadFileAllocError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error || std.Io.ConcurrentError || std.Io.Event.WaitTimeoutError;
+pub const AddFileError = AddPemError || aegis.own.ReadFileError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error || std.Io.ConcurrentError || std.Io.Cancelable || std.Io.Timeout.Error;
 pub const AddDirError = AddFileError || std.Io.Dir.OpenError || std.Io.Dir.Iterator.Error;
 pub const AddSystemError = AddDirError || error{ SystemTrustUnavailable, UnsupportedPlatform };
 pub const FreezeError = certificate.Issuers.InitError || error{ NoTrustAnchors, GenerationExhausted };
@@ -142,10 +144,10 @@ fn load(t: *Trust, io: std.Io, path: []const u8, options: LoadOptions, kind: Loa
     errdefer t.rollback(count, bytes);
     if (options.timeout == .none) return t.perform(io, path, options.limits, kind);
     const deadline = options.timeout.toDeadline(io);
-    if (deadline.deadline.durationFromNow(io).raw.nanoseconds <= 0) return error.Timeout;
-    var event: std.Io.Event = .unset;
-    var work = try io.concurrent(loadTask, .{ t, io, path, options.limits, kind, &event });
-    t.waitLoad(io, &event, deadline) catch |err| {
+    if (expired(io, deadline)) return error.Timeout;
+    var loading: Loading = .{};
+    var work = try io.concurrent(loadTask, .{ t, io, path, options.limits, kind, &loading });
+    loading.wait(io, deadline) catch |err| {
         _ = work.cancel(io) catch {
             // Cancellation joined the loader; preserve the expired caller deadline.
             return err;
@@ -161,24 +163,45 @@ fn perform(t: *Trust, io: std.Io, path: []const u8, limits: Limits, kind: LoadKi
         .directory => try t.directory(io, path, limits),
     }
 }
-fn loadTask(t: *Trust, io: std.Io, path: []const u8, limits: Limits, kind: LoadKind, event: *std.Io.Event) AddDirError!void {
+fn loadTask(t: *Trust, io: std.Io, path: []const u8, limits: Limits, kind: LoadKind, loading: *Loading) AddDirError!void {
     @setRuntimeSafety(true);
-    defer event.set(io);
+    defer loading.finish(io);
     try t.perform(io, path, limits, kind);
 }
-fn waitLoad(_: *Trust, io: std.Io, event: *std.Io.Event, deadline: std.Io.Timeout) std.Io.Event.WaitTimeoutError!void {
-    @setRuntimeSafety(true);
-    while (true) {
-        event.waitTimeout(io, deadline) catch |err| switch (err) {
-            error.Timeout => {
-                if (deadline.deadline.durationFromNow(io).raw.nanoseconds <= 0) return err;
-                continue;
-            },
-            else => return err,
-        };
-        if (deadline.deadline.durationFromNow(io).raw.nanoseconds <= 0) return error.Timeout;
-        return;
+
+/// A load running on a task of its own, and whether it has finished: the caller waits for it up
+/// to its deadline, then cancels it.
+const Loading = struct {
+    done: aegis.BlockingGuarded(bool) = .init(false),
+    finished: aegis.Condition = .init(),
+
+    fn finish(self: *Loading, io: std.Io) void {
+        var held = self.done.acquireUncancelable(io);
+        defer held.deinit(io);
+        held.value().* = true;
+        self.finished.signal(io);
     }
+
+    /// Until the load finishes, or `deadline` passes: a load that finishes after it is late all
+    /// the same.
+    fn wait(self: *Loading, io: std.Io, deadline: std.Io.Timeout) (std.Io.Cancelable || std.Io.Timeout.Error)!void {
+        @setRuntimeSafety(true);
+        {
+            var held = try self.done.acquire(io);
+            defer held.deinit(io);
+            while (!held.value().*) self.finished.wait(io, &held, deadline) catch |err| switch (err) {
+                error.Timeout => if (expired(io, deadline)) return error.Timeout,
+                error.Canceled => return error.Canceled,
+                error.WaiterLimit => unreachable, // unreachable: the caller is the one waiter
+            };
+        }
+        if (expired(io, deadline)) return error.Timeout;
+    }
+};
+
+/// Whether `deadline` has passed.
+fn expired(io: std.Io, deadline: std.Io.Timeout) bool {
+    return types.Nanoseconds.fromIoDuration(deadline.deadline.durationFromNow(io).raw, .exact).compare(.fromRaw(0)) != .gt;
 }
 fn systemTimed(t: *Trust, io: std.Io, options: LoadOptions) AddSystemError!void {
     @setRuntimeSafety(true);
@@ -187,10 +210,10 @@ fn systemTimed(t: *Trust, io: std.Io, options: LoadOptions) AddSystemError!void 
     errdefer t.rollback(count, bytes);
     if (options.timeout == .none) return t.systemLoad(io, options.limits);
     const deadline = options.timeout.toDeadline(io);
-    if (deadline.deadline.durationFromNow(io).raw.nanoseconds <= 0) return error.Timeout;
-    var event: std.Io.Event = .unset;
-    var work = try io.concurrent(systemTask, .{ t, io, options.limits, &event });
-    t.waitLoad(io, &event, deadline) catch |err| {
+    if (expired(io, deadline)) return error.Timeout;
+    var loading: Loading = .{};
+    var work = try io.concurrent(systemTask, .{ t, io, options.limits, &loading });
+    loading.wait(io, deadline) catch |err| {
         _ = work.cancel(io) catch {
             // Cancellation joined the loader; preserve the expired caller deadline.
             return err;
@@ -199,16 +222,16 @@ fn systemTimed(t: *Trust, io: std.Io, options: LoadOptions) AddSystemError!void 
     };
     try work.await(io);
 }
-fn systemTask(t: *Trust, io: std.Io, limits: Limits, event: *std.Io.Event) AddSystemError!void {
+fn systemTask(t: *Trust, io: std.Io, limits: Limits, loading: *Loading) AddSystemError!void {
     @setRuntimeSafety(true);
-    defer event.set(io);
+    defer loading.finish(io);
     try t.systemLoad(io, limits);
 }
 
 /// Loading occurs before traffic; `io` and file ownership remain per call.
 fn file(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddFileError!void {
     @setRuntimeSafety(true);
-    const pem = try std.Io.Dir.cwd().readFileAlloc(io, path, t.gpa, .limited(limits.file_bytes));
+    const pem = try aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes));
     defer t.gpa.free(pem);
     try t.addPem(pem, limits);
 }
@@ -228,7 +251,7 @@ fn directory(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddDirErro
         if (entries >= limits.directory_entries) return error.TrustLimit;
         entries += 1;
         if (entry.kind != .file and entry.kind != .sym_link) continue;
-        const pem = try dir.readFileAlloc(io, entry.name, t.gpa, .limited(limits.file_bytes));
+        const pem = try aegis.own.readFile(io, dir, entry.name, t.gpa, .fromRaw(limits.file_bytes));
         defer t.gpa.free(pem);
         try t.addPem(pem, limits);
     }
@@ -252,7 +275,7 @@ fn systemLoad(t: *Trust, io: std.Io, limits: Limits) AddSystemError!void {
 fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits) AddSystemError!void {
     @setRuntimeSafety(true);
     for (paths) |path| {
-        const pem = std.Io.Dir.cwd().readFileAlloc(io, path, t.gpa, .limited(limits.file_bytes)) catch |err| switch (err) {
+        const pem = aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes)) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };
@@ -268,13 +291,11 @@ pub fn freeze(t: *Trust) FreezeError!Snapshot {
     @setRuntimeSafety(true);
     if (t.roots.items.len == 0 and t.system == .portable) return error.NoTrustAnchors;
     const following = t.next_generation.successor() catch return error.GenerationExhausted;
-    const state = try t.gpa.create(State);
-    errdefer t.gpa.destroy(state);
     const roots = try t.gpa.dupe([]const u8, t.roots.items);
     errdefer t.gpa.free(roots);
     var index = try certificate.Issuers.init(t.gpa, roots, .{});
     errdefer index.deinit();
-    state.* = .{ .gpa = t.gpa, .roots = roots, .index = index, .generation = t.next_generation, .system = t.system };
+    const state: Handle = try .create(t.gpa, .{ .gpa = t.gpa, .roots = roots, .index = index, .generation = t.next_generation, .system = t.system });
     t.roots.clearRetainingCapacity();
     t.bytes = 0;
     t.next_generation = following;
@@ -288,58 +309,55 @@ fn rollback(t: *Trust, count: usize, bytes: usize) void {
     t.bytes = bytes;
 }
 
+const Handle = aegis.Shared(State, release);
 const State = struct {
     gpa: std.mem.Allocator,
-    refs: std.atomic.Value(usize) = .init(1),
     roots: []const []const u8,
     index: certificate.Issuers,
     generation: TrustGeneration,
     system: System,
 };
 
+/// The last snapshot's cleanup.
+fn release(state: *State) void {
+    @setRuntimeSafety(true);
+    state.index.deinit();
+    for (state.roots) |root| state.gpa.free(root);
+    state.gpa.free(state.roots);
+}
+
 pub const Snapshot = struct {
     /// Private: immutable state remains alive until its final release.
-    state: *State,
+    state: Handle,
 
     pub fn retain(s: Snapshot) Snapshot {
-        @setRuntimeSafety(true);
-        var old = s.state.refs.load(.monotonic);
-        while (true) {
-            if (old == 0 or old == std.math.maxInt(usize)) @panic("cloak retained owner exhausted");
-            if (s.state.refs.cmpxchgWeak(old, old + 1, .monotonic, .monotonic)) |actual| old = actual else break;
-        }
-        return s;
+        return .{ .state = s.state.retain() };
     }
 
     pub fn deinit(s: Snapshot) void {
-        @setRuntimeSafety(true);
-        if (s.state.refs.fetchSub(1, .acq_rel) != 1) return;
-        s.state.index.deinit();
-        for (s.state.roots) |root| s.state.gpa.free(root);
-        s.state.gpa.free(s.state.roots);
-        const gpa = s.state.gpa;
-        gpa.destroy(s.state);
+        var handle = s.state;
+        handle.release();
     }
 
     pub fn anchors(s: Snapshot) []const []const u8 {
         @setRuntimeSafety(true);
-        return s.state.roots;
+        return s.state.get().roots;
     }
 
     /// Borrowed index remains valid while this snapshot is retained.
     pub fn issuers(s: Snapshot) *const certificate.Issuers {
         @setRuntimeSafety(true);
-        return &s.state.index;
+        return &s.state.get().index;
     }
 
     pub fn generation(s: Snapshot) TrustGeneration {
         @setRuntimeSafety(true);
-        return s.state.generation;
+        return s.state.get().generation;
     }
 
     pub fn systemPolicy(s: Snapshot) System {
         @setRuntimeSafety(true);
-        return s.state.system;
+        return s.state.get().system;
     }
 };
 

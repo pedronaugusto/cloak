@@ -8,6 +8,11 @@
 //! in fixed four-bit windows over the full width, so the instruction sequence and the memory
 //! addresses depend only on the key's size.
 //!
+//! The Montgomery multiplications and squarings are s2n-bignum's verified routines where the
+//! build has its assembly (`field/bignum.zig`: Karatsuba and `emontredc_8n` at multiples of 8
+//! limbs, its generic routines at other widths), else the CIOS loop below, which is also the
+//! reference the assembly is tested against.
+//!
 //! One operation:
 //! 1. Blinding: r is drawn by SHAKE256 from a caller seed, a secret the key derives from its
 //!    factors and the message, so a weak seed alone does not make r predictable; the message
@@ -20,7 +25,9 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
-const ct = @import("p256/Montgomery.zig");
+const ct = @import("field/Montgomery.zig");
+const bignum = @import("field/bignum.zig");
+const Secret = aegis.secret.Secret;
 
 const addc = ct.addc;
 const subb = ct.subb;
@@ -39,8 +46,9 @@ pub const Error = error{SigningFailed};
 
 const Limbs = [max_limbs]u64;
 
-/// An odd modulus with its Montgomery constants, R = 2^(64 * len).
-const Modulus = struct {
+/// An odd modulus with its Montgomery constants, R = 2^(64 * len). Key generation
+/// (`rsa_keygen.zig`) tests its candidates and inverts with it.
+pub const Modulus = struct {
     m: Limbs = @splat(0),
     /// R^2 and R^3 mod m.
     rr: Limbs = @splat(0),
@@ -49,7 +57,7 @@ const Modulus = struct {
     inv: u64 = 0,
     len: usize = 0,
 
-    fn init(out: *Modulus, bytes: []const u8, len: usize) InitError!void {
+    pub fn init(out: *Modulus, bytes: []const u8, len: usize) InitError!void {
         @setRuntimeSafety(true);
         out.* = .{ .len = len };
         try decode(out.m[0..len], bytes);
@@ -75,31 +83,69 @@ const Modulus = struct {
             }
             out.reduceOnce(rr, rr, carry);
         }
-        for (0..6) |_| out.mul(rr, rr, rr);
-        out.mul(out.rrr[0..len], rr, rr);
+        for (0..6) |_| out.sqr(rr, rr);
+        out.sqr(out.rrr[0..len], rr);
     }
 
     /// `out = t - m` when `high:t` is at least m, else `t`; `high:t` must be below 2m.
     fn reduceOnce(self: *const Modulus, out: []u64, t: []const u64, high: u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var d: Limbs = undefined;
-        // Only the low `len` limbs are written: the wipe covers them, not the whole array.
-        defer wipeLimbs(d[0..len]);
+        // The borrow of t - m alone first, then t - (m & take): no difference is held between.
         var borrow: u1 = 0;
-        for (0..len) |i| d[i], borrow = subb(t[i], self.m[i], borrow);
+        for (0..len) |i| borrow = subb(t[i], self.m[i], borrow)[1];
         // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
-        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // safe: high is a carry, zero or one
-        for (0..len) |i| out[i] = (t[i] & ~take) | (d[i] & take);
+        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // aegis: no-danger: high is a carry, zero or one
+        borrow = 0;
+        for (0..len) |i| {
+            const step = subb(t[i], self.m[i] & take, borrow);
+            out[i] = step[0];
+            borrow = step[1];
+        }
     }
 
     /// Montgomery product `out = a * b / R mod m` for `a, b` below m; `out` may alias either.
+    /// s2n-bignum's where the build has it (`field/bignum.zig`), else the CIOS loop.
     fn mul(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
         @setRuntimeSafety(true);
+        if (comptime !bignum.assembly) return self.mulPortable(out, a, b);
+        switch (bignum.path(self.len)) {
+            .fast => {
+                var owner: Secret(bignum.Wide) = .init(undefined);
+                defer owner.deinit();
+                const wide = owner.exposeMut();
+                bignum.mulFast(wide, self.len, a, b, &self.m, self.inv);
+                self.reduceOnce(out, wide.words[self.len .. 2 * self.len], wide.carry);
+            },
+            .generic => bignum.mulGeneric(out[0..self.len], a, b, self.m[0..self.len]),
+        }
+    }
+
+    /// Montgomery square `out = a^2 / R mod m` for `a` below m; `out` may alias it.
+    fn sqr(self: *const Modulus, out: []u64, a: []const u64) void {
+        @setRuntimeSafety(true);
+        if (comptime !bignum.assembly) return self.mulPortable(out, a, a);
+        switch (bignum.path(self.len)) {
+            .fast => {
+                var owner: Secret(bignum.Wide) = .init(undefined);
+                defer owner.deinit();
+                const wide = owner.exposeMut();
+                bignum.sqrFast(wide, self.len, a, &self.m, self.inv);
+                self.reduceOnce(out, wide.words[self.len .. 2 * self.len], wide.carry);
+            },
+            .generic => bignum.sqrGeneric(out[0..self.len], a, self.m[0..self.len]),
+        }
+    }
+
+    /// The CIOS loop: the product where there is no assembly, and the reference every
+    /// s2n-bignum path is tested against.
+    fn mulPortable(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
+        @setRuntimeSafety(true);
         const len = self.len;
-        var t: [max_limbs + 2]u64 = undefined;
+        var owner: Secret([max_limbs + 2]u64) = .init(undefined);
+        defer owner.deinit();
+        const t = owner.exposeMut();
         @memset(t[0 .. len + 2], 0);
-        defer wipeLimbs(t[0 .. len + 2]);
         for (0..len) |i| {
             var carry: u64 = 0;
             for (0..len) |j| {
@@ -125,12 +171,13 @@ const Modulus = struct {
     }
 
     /// Montgomery reduction `out = t / R mod m` of a `t` below m * R of at most 2 * len limbs.
-    fn reduce(self: *const Modulus, out: []u64, input: []const u64) void {
+    pub fn reduce(self: *const Modulus, out: []u64, input: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
         aegis.assert.invariant(input.len <= 2 * len, "a reduction takes at most twice the modulus");
-        var t: [2 * max_limbs + 1]u64 = @splat(0);
-        defer wipe(&t);
+        var owner: Secret([2 * max_limbs + 1]u64) = .init(@splat(0));
+        defer owner.deinit();
+        const t = owner.exposeMut();
         @memcpy(t[0..input.len], input);
         for (0..len) |i| {
             const u = t[i] *% self.inv;
@@ -149,7 +196,7 @@ const Modulus = struct {
     }
 
     /// The Montgomery form of `x`, a value below m * R of at most 2 * len limbs: x * R mod m.
-    fn toMontgomery(self: *const Modulus, out: []u64, x: []const u64) void {
+    pub fn toMontgomery(self: *const Modulus, out: []u64, x: []const u64) void {
         @setRuntimeSafety(true);
         // reduce gives x / R; multiplying by R^3 gives x * R.
         self.reduce(out, x);
@@ -157,7 +204,7 @@ const Modulus = struct {
     }
 
     /// `out = a - b mod m` for `a, b` below m.
-    fn sub(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
+    pub fn sub(self: *const Modulus, out: []u64, a: []const u64, b: []const u64) void {
         @setRuntimeSafety(true);
         var borrow: u1 = 0;
         for (0..self.len) |i| out[i], borrow = subb(a[i], b[i], borrow);
@@ -170,14 +217,15 @@ const Modulus = struct {
     fn powPublic(self: *const Modulus, out: []u64, base: []const u64, e: u64) void {
         @setRuntimeSafety(true);
         aegis.assert.invariant(e != 0, "a public exponent is nonzero");
-        var acc: Limbs = undefined;
-        defer wipe(&acc);
+        var owner: Secret(Limbs) = .init(undefined);
+        defer owner.deinit();
+        const acc = owner.exposeMut();
         const len = self.len;
         @memcpy(acc[0..len], base);
         var bit: u6 = @intCast(63 - @as(u32, @clz(e))); // safe: e is nonzero, so its top bit index is below 64
         while (bit > 0) {
             bit -= 1;
-            self.mul(acc[0..len], acc[0..len], acc[0..len]);
+            self.sqr(acc[0..len], acc[0..len]);
             if ((e >> bit) & 1 == 1) self.mul(acc[0..len], acc[0..len], base);
         }
         @memcpy(out, acc[0..len]);
@@ -186,17 +234,16 @@ const Modulus = struct {
     /// `out = base^exponent` in Montgomery form for a secret `exponent` of `len` limbs: fixed
     /// four-bit windows from the top over all 64 * len bits, each window's multiple chosen by a
     /// scan of the whole table.
-    fn powSecret(self: *const Modulus, out: []u64, base: []const u64, exponent: []const u64) void {
+    pub fn powSecret(self: *const Modulus, out: []u64, base: []const u64, exponent: []const u64) void {
         @setRuntimeSafety(true);
         const len = self.len;
-        var table: [16][max_half]u64 = undefined;
-        defer wipe(&table);
-        var acc: [max_half]u64 = undefined;
-        defer wipe(&acc);
-        var chosen: [max_half]u64 = undefined;
-        defer wipe(&chosen);
-        var window: u64 = 0;
-        defer wipe(&window);
+        var owner: Secret(struct { table: [16][max_half]u64, acc: [max_half]u64, chosen: [max_half]u64, window: u64 }) = .init(undefined);
+        defer owner.deinit();
+        const work = owner.exposeMut();
+        const table = &work.table;
+        const acc = &work.acc;
+        const chosen = &work.chosen;
+        const window = &work.window;
         aegis.assert.invariant(len <= max_half, "a CRT half fits its buffers");
         // table[i] = base^i: table[0] is R mod m, the form of one.
         var one: Limbs = @splat(0);
@@ -208,9 +255,9 @@ const Modulus = struct {
         var bit = 64 * len;
         while (bit > 0) {
             bit -= 4;
-            for (0..4) |_| self.mul(acc[0..len], acc[0..len], acc[0..len]);
-            window = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // safe: a public bit offset below 64
-            select(chosen[0..len], &table, window);
+            for (0..4) |_| self.sqr(acc[0..len], acc[0..len]);
+            window.* = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // aegis: no-danger: a public bit offset below 64
+            select(chosen[0..len], table, window.*);
             self.mul(acc[0..len], acc[0..len], chosen[0..len]);
         }
         @memcpy(out, acc[0..len]);
@@ -254,10 +301,6 @@ fn limbsOf(bytes: []const u8) usize {
     return (bytes.len + 7) / 8;
 }
 
-fn wipe(value: anytype) void {
-    std.crypto.secureZero(u8, std.mem.asBytes(value));
-}
-
 /// The bit length of a public value: the position of its top set bit, plus one.
 fn bitLength(limbs: []const u64) usize {
     var i = limbs.len;
@@ -266,10 +309,6 @@ fn bitLength(limbs: []const u64) usize {
         if (limbs[i] != 0) return 64 * i + 64 - @clz(limbs[i]);
     }
     return 0;
-}
-
-fn wipeLimbs(limbs: []u64) void {
-    std.crypto.secureZero(u64, limbs);
 }
 
 /// A two-prime RSA private key, ready for the CRT operation. Holds secrets: the owner erases it.
@@ -317,8 +356,9 @@ pub const PrivateKey = struct {
         for (0..half) |i| out.p2[i], borrow = subb(out.p.m[i], two[i], borrow);
         borrow = 0;
         for (0..half) |i| out.q2[i], borrow = subb(out.q.m[i], two[i], borrow);
-        var xof = std.crypto.hash.sha3.Shake256.init(.{});
-        defer wipe(&xof);
+        var xof_owner: Secret(std.crypto.hash.sha3.Shake256) = .init(.init(.{}));
+        defer xof_owner.deinit();
+        const xof = xof_owner.exposeMut();
         xof.update("cloak rsa blinding hedge");
         xof.update(p);
         xof.update(q);
@@ -342,12 +382,13 @@ pub const PrivateKey = struct {
         const n = &key.n;
         const l = n.len;
         const h = key.p.len;
-        var s: Scratch = undefined;
-        defer wipe(&s);
-        try key.blind(m_bytes, seed, &s);
+        var owner: Secret(Scratch) = .init(undefined);
+        defer owner.deinit();
+        const s = owner.exposeMut();
+        try key.blind(m_bytes, seed, s);
 
-        key.crtHalf(&key.p, &key.dp, &key.p2, &s, s.sp[0..h]);
-        key.crtHalf(&key.q, &key.dq, &key.q2, &s, s.sq[0..h]);
+        key.crtHalf(&key.p, &key.dp, &key.p2, s, s.sp[0..h]);
+        key.crtHalf(&key.q, &key.dq, &key.q2, s, s.sq[0..h]);
         switch (fault) {
             .none => {},
             .p_half => s.sp[0] ^= 1,
@@ -413,14 +454,16 @@ pub const PrivateKey = struct {
 
         // r_mont is the Montgomery form of a uniform r (bias below 2^-64): the reduction of a
         // uniform (l + 1)-limb draw, read as Montgomery form, is uniform mod n.
-        var xof = std.crypto.hash.sha3.Shake256.init(.{});
-        defer wipe(&xof);
+        var xof_owner: Secret(std.crypto.hash.sha3.Shake256) = .init(.init(.{}));
+        defer xof_owner.deinit();
+        const xof = xof_owner.exposeMut();
         xof.update("cloak rsa blinding");
         xof.update(&key.hedge);
         xof.update(seed);
         xof.update(m_bytes);
-        var draw: [(max_limbs + 1) * 8]u8 = undefined;
-        defer wipe(&draw);
+        var draw_owner: Secret([(max_limbs + 1) * 8]u8) = .init(undefined);
+        defer draw_owner.deinit();
+        const draw = draw_owner.exposeMut();
         xof.squeeze(draw[0 .. (l + 1) * 8]);
         for (0..l + 1) |i| s.wide[i] = std.mem.readInt(u64, draw[i * 8 ..][0..8], .little);
         n.reduce(s.r[0..l], s.wide[0 .. l + 1]);
@@ -473,13 +516,61 @@ pub fn privateWithFault(key: *const PrivateKey, m: []const u8, seed: *const [see
 /// with `seed` would exponentiate, as little-endian limbs.
 pub fn blindingForTest(key: *const PrivateKey, m: []const u8, seed: *const [seed_length]u8, r: []u64, mb: []u64) Error!void {
     if (!builtin.is_test) @compileError("the blinding values are a test seam");
-    var s: Scratch = undefined;
-    defer wipe(&s);
-    try key.blind(m, seed, &s);
+    var owner: Secret(Scratch) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    try key.blind(m, seed, s);
     @memcpy(r, s.r[0..key.n.len]);
     @memcpy(mb, s.mb[0..key.n.len]);
 }
 
 test {
     _ = @import("rsa_test.zig");
+}
+
+test "F05 catalogue_kernel_carries_lengths_and_dispatch (RSA: s2n-bignum's Montgomery multiplication and squaring equal the CIOS loop, every width)" {
+    if (!bignum.assembly) return error.SkipZigTest;
+    var random = std.Random.DefaultPrng.init(0x125a);
+    var modulus: Modulus = undefined;
+    for (1..max_limbs + 1) |len| {
+        for (0..if (len % 8 == 0) 24 else 3) |round| {
+            var bytes: [max_bytes]u8 = undefined;
+            random.fill(bytes[0 .. 8 * len]);
+            bytes[8 * len - 1] |= 1;
+            // The top limb with its top bit set, and in some rounds small: both edges of a width.
+            bytes[0] = if (round % 3 == 2) 0 else bytes[0] | 0x80;
+            if (round % 3 == 2) bytes[1] |= 1;
+            try modulus.init(bytes[0 .. 8 * len], len);
+            const m = modulus.m[0..len];
+            var operands: [6]Limbs = undefined;
+            for (operands[0..4]) |*x| {
+                // Reduced to below m: a random value times R^2 / R.
+                var raw: Limbs = @splat(0);
+                for (raw[0 .. len - 1]) |*limb| limb.* = random.next();
+                modulus.mulPortable(x[0..len], raw[0..len], modulus.rr[0..len]);
+            }
+            operands[4] = @splat(0);
+            operands[4][0] = 1;
+            var borrow: u1 = 0;
+            for (0..len) |i| operands[5][i], borrow = subb(m[i], operands[4][i], borrow);
+            for (&operands) |*x| for (&operands) |*y| {
+                var ours: Limbs = undefined;
+                var theirs: Limbs = undefined;
+                modulus.mul(ours[0..len], x[0..len], y[0..len]);
+                modulus.mulPortable(theirs[0..len], x[0..len], y[0..len]);
+                try std.testing.expectEqualSlices(u64, theirs[0..len], ours[0..len]);
+            };
+            for (&operands) |*x| {
+                var ours: Limbs = undefined;
+                var theirs: Limbs = undefined;
+                modulus.sqr(ours[0..len], x[0..len]);
+                modulus.mulPortable(theirs[0..len], x[0..len], x[0..len]);
+                try std.testing.expectEqualSlices(u64, theirs[0..len], ours[0..len]);
+                // In place, as the walk squares.
+                ours = x.*;
+                modulus.sqr(ours[0..len], ours[0..len]);
+                try std.testing.expectEqualSlices(u64, theirs[0..len], ours[0..len]);
+            }
+        }
+    }
 }

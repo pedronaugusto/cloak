@@ -5,3 +5,8 @@ All twenty original credential fixture files are retained from [uplink](https://
 `rsa.invalid-qinv-range.der` and `rsa.invalid-d-range.der` re-encode the public
 dummy RSA fixture with congruent but noncanonical CRT coefficient/private
 exponent. They test range rejection before expensive prime validation.
+
+`p521.pkcs8.pem`, `p521.sec1.pem` and `p521.pub.der` are one disposable P-521 key made by
+OpenSSL 4.0.3 (2026-10-25): `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-521`,
+then `openssl ec` for the SEC 1 form and `openssl pkey -pubout -outform DER` for its
+SubjectPublicKeyInfo. Public test data.

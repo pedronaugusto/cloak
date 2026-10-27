@@ -61,6 +61,12 @@ test "Wycheproof P384 SHA384 signatures as r || s (P1363)" {
 test "Wycheproof P384 SHA512 signatures as r || s (P1363)" {
     try campaign("ecdsa_secp384r1_sha512_p1363_test.json", .{ .ecdsa_p1363 = .sha512 });
 }
+test "Wycheproof P521 SHA512 public signature campaign" {
+    try campaign("ecdsa_secp521r1_sha512_test.json", .{ .ecdsa = .sha512 });
+}
+test "Wycheproof P521 SHA512 signatures as r || s (P1363)" {
+    try campaign("ecdsa_secp521r1_sha512_p1363_test.json", .{ .ecdsa_p1363 = .sha512 });
+}
 test "Wycheproof Ed25519 strict public signature campaign" {
     try campaign("ed25519_test.json", .ed25519);
 }

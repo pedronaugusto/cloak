@@ -9,6 +9,8 @@ pub const Verification = @import("types.zig").Verification;
 test {
     _ = @import("verify/Verifier.zig");
     _ = @import("verify/signature.zig");
+    _ = @import("verify/encryption.zig");
+    _ = @import("verify/encryption_test.zig");
     _ = @import("verify/constraints.zig");
     _ = @import("verify/revocation.zig");
     _ = @import("verify/transparency.zig");

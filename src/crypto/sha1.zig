@@ -182,12 +182,14 @@ pub const Armv8 = struct {
     }
 
     fn h(e: u32) u32 {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1h %[out:s], %[in:s]"
             : [out] "=w" (-> u32),
             : [in] "w" (e),
         );
     }
     fn c(abcd: V, e: u32, wk: V) V {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1c %[x:q], %[e:s], %[w].4s"
             : [x] "=w" (-> V),
             : [_] "0" (abcd),
@@ -196,6 +198,7 @@ pub const Armv8 = struct {
         );
     }
     fn p(abcd: V, e: u32, wk: V) V {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1p %[x:q], %[e:s], %[w].4s"
             : [x] "=w" (-> V),
             : [_] "0" (abcd),
@@ -204,6 +207,7 @@ pub const Armv8 = struct {
         );
     }
     fn m(abcd: V, e: u32, wk: V) V {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1m %[x:q], %[e:s], %[w].4s"
             : [x] "=w" (-> V),
             : [_] "0" (abcd),
@@ -212,6 +216,7 @@ pub const Armv8 = struct {
         );
     }
     fn su0(a: V, b: V, c_: V) V {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1su0 %[a].4s, %[b].4s, %[c].4s"
             : [a] "=w" (-> V),
             : [_] "0" (a),
@@ -220,6 +225,7 @@ pub const Armv8 = struct {
         );
     }
     fn su1(a: V, b: V) V {
+        // aegis: boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
         return asm ("sha1su1 %[a].4s, %[b].4s"
             : [a] "=w" (-> V),
             : [_] "0" (a),

@@ -4,6 +4,7 @@
 //! with SHA-1, under 3DES or RC2). Every derived key is a secret owner; the plaintext is a
 //! `SecretBytes` the caller releases.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
@@ -35,7 +36,7 @@ pub const Password = struct {
         if (!std.unicode.utf8ValidateSlice(utf8)) return .{ .utf8 = utf8, .bmp = null };
         // At most two UTF-16 bytes per UTF-8 byte, and the NUL.
         var bmp = try SecretBytes.init(gpa, 2 * utf8.len + 2);
-        errdefer bmp.deinit();
+        errdefer bmp.deinit(gpa);
         bmp.resizeWithinCapacity(2 * utf8.len + 2) catch return error.InputLimit;
         const out = bmp.exposeMut();
         var at: usize = 0;
@@ -60,8 +61,8 @@ pub const Password = struct {
         return .{ .utf8 = utf8, .bmp = bmp };
     }
 
-    pub fn deinit(self: *Password) void {
-        if (self.bmp) |*bmp| bmp.deinit();
+    pub fn deinit(self: *Password, gpa: std.mem.Allocator) void {
+        if (self.bmp) |*bmp| bmp.deinit(gpa);
     }
 
     /// The BMP form, or `InvalidPassword` when the password is not UTF-8.
@@ -119,7 +120,7 @@ fn pbes2(gpa: std.mem.Allocator, parameters: Der.Element, data: []const u8, pass
     const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
     try pbkdf2(hash, key[0..key_len], password, salt, rounds);
     var plain = try SecretBytes.init(gpa, data.len);
-    errdefer plain.deinit();
+    errdefer plain.deinit(gpa);
     plain.resizeWithinCapacity(data.len) catch return error.InputLimit;
     const decoded = if (des3) try Des3.decrypt(key[0..24], iv[0..8].*, data, plain.exposeMut()) else try Cbc.decrypt(key[0..key_len], iv[0..16].*, data, plain.exposeMut());
     // The ciphertext-sized allocation is kept; the shrink wipes the padding.
@@ -206,7 +207,7 @@ fn pkcs12Pbe(gpa: std.mem.Allocator, which: u8, parameters: Der.Element, data: [
     var iv: [8]u8 = undefined;
     try pkcs12Kdf(Sha1, gpa, 2, bmp, salt, rounds, &iv);
     var plain = try SecretBytes.init(gpa, data.len);
-    errdefer plain.deinit();
+    errdefer plain.deinit(gpa);
     plain.resizeWithinCapacity(data.len) catch return error.InputLimit;
     const decoded = switch (cipher) {
         .des3, .des2 => try Des3.decrypt(key, iv, data, plain.exposeMut()),
@@ -228,7 +229,7 @@ pub fn pkcs12Kdf(comptime Hash: type, gpa: std.mem.Allocator, id: u8, bmp: []con
     const p_len = v * ((bmp.len + v - 1) / v);
     // I = S || P, each the input repeated to whole blocks.
     var i_owner = try SecretBytes.init(gpa, s_len + p_len);
-    defer i_owner.deinit();
+    defer i_owner.deinit(gpa);
     i_owner.resizeWithinCapacity(s_len + p_len) catch return error.InputLimit;
     const big_i = i_owner.exposeMut();
     for (0..s_len) |k| big_i[k] = salt[k % salt.len];
@@ -242,13 +243,14 @@ pub fn pkcs12Kdf(comptime Hash: type, gpa: std.mem.Allocator, id: u8, bmp: []con
     const b = b_owner.exposeMut();
     var offset: usize = 0;
     while (true) {
-        var h = Hash.init(.{});
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+        var h_owner: Secret(Hash) = .init(Hash.init(.{}));
+        defer h_owner.deinit();
+        const h = h_owner.exposeMut();
         h.update(&diversifier);
         h.update(big_i);
         h.final(a);
         for (1..rounds) |_| {
-            h = Hash.init(.{});
+            h.* = Hash.init(.{});
             h.update(a);
             h.final(a);
         }

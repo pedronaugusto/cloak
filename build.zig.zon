@@ -1,24 +1,24 @@
 .{
     .name = .cloak,
-    .version = "0.22.1",
+    .version = "0.22.2",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x8c4ddc1071f089f6,
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md", "CHANGELOG.md" },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.11#56636db4145754561d287a037b73c045fd087db6",
-            .hash = "aegis-0.1.11-rsxouuXxBwDqlz_tsMEeBAODszKlLvlRoJwCfY-Xh9zg",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=secretbytes-unmanaged#3dd390afd0ea71d63b26662d9d993b60200acd3b",
+            .hash = "aegis-0.1.18-rsxouv22CAB8z3YZeX530Qh9OaiKeE_4m3jgrWTgFa6p",
         },
     },
     .dev_dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.5#22e928fba1b897fd5888cc7ef92037b29e1d8e06",
-            .hash = "preflight-0.4.5-LX1ZwgeZDgD4Mmm3Cxjy04JQkPBUlcYKDQa9BPv4_GWW",
+            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.18.1#30011caf79609517f0f08073ca01b470e91e126d",
+            .hash = "preflight-0.18.1-LX1ZwmB0EwBVRRr1TC7B3glo_AEXhxCj31SBjQe4ozja",
         },
 
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.8#7fd3eda61e991b9e0eb754c1bd83b4ce57f221bd",
-            .hash = "shakedown-0.4.8-BR8U44xTFgCSgGkib258Bq2mgPxBk-drwk5Mg0ABYntZ",
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.17#b96c548a2fed2a4cc8b9d790fdbf29332b056f9d",
+            .hash = "shakedown-0.4.17-BR8U41SzFgBFNel0aa2pn9ELQvUHoVDmnXOWslP0wHV7",
         },
     },
 }

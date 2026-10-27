@@ -10,7 +10,7 @@ fn scalarBytes(value: u256) [32]u8 {
     return out;
 }
 
-fn sameAffine(ours: p256.Affine, theirs: Std) !void {
+fn sameAffine(ours: *const p256.Affine, theirs: Std) !void {
     const a = theirs.affineCoordinates();
     try std.testing.expectEqualSlices(u8, &a.x.toBytes(.big), &ours.x.toBytes());
     try std.testing.expectEqualSlices(u8, &a.y.toBytes(.big), &ours.y.toBytes());
@@ -65,15 +65,15 @@ test "F04 catalogue_scalar_nonce_length_and_tail_dispatch (P-256 base and variab
         } else 1 + prng.random().int(u256) % (p256.order - 1);
         const k = scalarBytes(value);
         const expected = try Std.basePoint.mul(k, .big);
-        try sameAffine(p256.baseMul(&k).affine(), expected);
+        try sameAffine(&p256.baseMul(&k).affine(), expected);
         // A peer point from another scalar.
         const other = scalarBytes(1 + prng.random().int(u256) % (p256.order - 1));
         const peer = try Std.basePoint.mul(other, .big);
         const peer_ours = try p256.Affine.fromSec1(&peer.toUncompressedSec1());
-        try sameAffine(p256.mul(peer_ours, &k).affine(), try peer.mul(k, .big));
+        try sameAffine(&p256.mul(&peer_ours, &k).affine(), try peer.mul(k, .big));
         // The doubling case inside the walk: the peer is the base point itself.
         const g = try p256.Affine.fromSec1(&Std.basePoint.toUncompressedSec1());
-        try sameAffine(p256.mul(g, &k).affine(), expected);
+        try sameAffine(&p256.mul(&g, &k).affine(), expected);
     }
 }
 
@@ -81,8 +81,8 @@ test "P-256 point decoding accepts exactly the points std accepts" {
     var prng = std.Random.DefaultPrng.init(5);
     for (0..100) |_| {
         const point = try Std.basePoint.mul(scalarBytes(1 + prng.random().int(u256) % (p256.order - 1)), .big);
-        try sameAffine(try p256.Affine.fromSec1(&point.toUncompressedSec1()), point);
-        try sameAffine(try p256.Affine.fromSec1(&point.toCompressedSec1()), point);
+        try sameAffine(&try p256.Affine.fromSec1(&point.toUncompressedSec1()), point);
+        try sameAffine(&try p256.Affine.fromSec1(&point.toCompressedSec1()), point);
         var bad = point.toUncompressedSec1();
         bad[64] ^= 1;
         try std.testing.expectError(error.InvalidEncoding, p256.Affine.fromSec1(&bad));
@@ -106,25 +106,15 @@ test "P-256 verification accepts std signatures and rejects altered ones" {
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(&message, &digest, .{});
         const e = p256.Scalar.reduce(p256.Scalar.limbsFromBytes(&digest));
-        try std.testing.expect(p256.verify(q, e, &signature.r, &signature.s));
+        try std.testing.expect(p256.verify(&q, e, &signature.r, &signature.s));
         var r = signature.r;
         r[31 - i % 32] ^= 1;
-        try std.testing.expect(!p256.verify(q, e, &r, &signature.s));
+        try std.testing.expect(!p256.verify(&q, e, &r, &signature.s));
         const other = p256.Scalar.reduce(.{ 1, 0, 0, 0 });
-        try std.testing.expect(!p256.verify(q, other, &signature.r, &signature.s));
+        try std.testing.expect(!p256.verify(&q, other, &signature.r, &signature.s));
         const zero: [32]u8 = @splat(0);
-        try std.testing.expect(!p256.verify(q, e, &zero, &signature.s));
+        try std.testing.expect(!p256.verify(&q, e, &zero, &signature.s));
         const n = scalarBytes(p256.order);
-        try std.testing.expect(!p256.verify(q, e, &signature.r, &n));
-    }
-}
-
-test "P-256 field inversion" {
-    var prng = std.Random.DefaultPrng.init(13);
-    for (0..100) |_| {
-        const x = p256.Fe.reduce(.{ prng.random().int(u64), prng.random().int(u64), prng.random().int(u64), prng.random().int(u64) });
-        if (x.isZero()) continue;
-        try std.testing.expect(x.mul(p256.invert(x)).eql(p256.Fe.one));
-        try std.testing.expect(p256.invert(x).eql(x.powModulusMinusTwo()));
+        try std.testing.expect(!p256.verify(&q, e, &signature.r, &n));
     }
 }

@@ -58,11 +58,24 @@ pub const Ring = struct {
         }
         return null;
     }
+
+    /// Moves the keys into `destination`, each material by its owner's `moveInto`, which erases
+    /// the source: how a ring built on the stack enters its shared block.
+    pub fn moveInto(ring: *Ring, destination: *Ring) void {
+        destination.* = .{ .count = ring.count, .lifetime = ring.lifetime };
+        for (ring.keys[0..ring.count], destination.keys[0..ring.count]) |*from, *to| {
+            to.* = .{ .id = from.id, .material = undefined, .installed = from.installed, .issue_until = from.issue_until, .decrypt_until = from.decrypt_until };
+            from.material.moveInto(&to.material);
+        }
+        ring.* = undefined;
+    }
 };
 
+/// The keys' material is the ring's only secret: an id is derived from its key and says nothing
+/// of it, and the times are public.
 fn erase(ring: *Ring) void {
     for (ring.keys[0..ring.count]) |*key| key.material.deinit();
-    std.crypto.secureZero(u8, std.mem.asBytes(ring));
+    ring.* = undefined;
 }
 
 const Handle = aegis.Shared(Ring, erase);
@@ -93,8 +106,8 @@ pub const InitError = error{InvalidOptions};
 /// address while connections use it.
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!TicketKeys {
     @setRuntimeSafety(true);
-    const lifetime = @divFloor(options.lifetime.nanoseconds, std.time.ns_per_s);
-    const rotation = @divFloor(options.rotation.nanoseconds, std.time.ns_per_s);
+    const lifetime = types.spanSeconds(options.lifetime);
+    const rotation = types.spanSeconds(options.rotation);
     if (lifetime <= 0 or lifetime > max_lifetime or rotation <= 0 or rotation > max_lifetime) return error.InvalidOptions;
     // safe: both were just bounded by seven days.
     return .{ .gpa = gpa, .lifetime = @intCast(lifetime), .rotation = @intCast(rotation) };
@@ -152,11 +165,10 @@ pub fn rotate(self: *TicketKeys, material: *const [32]u8, now: std.Io.Timestamp)
             };
             next.count += 1;
         };
-        var made = Handle.create(self.gpa, next) catch |err| {
+        var made = Handle.createFrom(self.gpa, &next) catch |err| {
             erase(&next);
             return err;
         };
-        std.crypto.secureZero(u8, std.mem.asBytes(&next));
         // Publish only over the snapshot this was built from; a concurrent rotation means rebuilding.
         var replaced: ?Handle = null;
         var swapped = false;

@@ -14,6 +14,7 @@
 //! answered as a wrong key would be, at the client's Finished, so a prober learns nothing of
 //! which identities exist.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
@@ -43,7 +44,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     scratch.renegotiation_info = hello.secureRenegotiation();
     if (!hello.uncompressed_points) return error.IllegalParameter;
     if (self.tls12 == null) self.tls12 = try @import("Flight.zig").Secrets12.create(self.gpa);
-    scratch.client_random = hello.random[0..32].*;
+    scratch.client_random.exposeMut().* = hello.random[0..32].*;
     @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
     // safe: parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
@@ -125,10 +126,14 @@ fn authenticationOf(key: certificates.certificate.Algorithm.PublicKey, hello: *c
     return switch (key) {
         .rsa => .rsa,
         // An ECDSA certificate's curve must be one the client lists (RFC 8422 section 5.1).
-        .ec => |ec| if (hello.offersGroup(if (ec.curve == .p256) .p256 else .p384)) .ecdsa else error.NoSharedSuite,
+        .ec => |ec| if (hello.offersGroup(switch (ec.curve) {
+            .p256 => .p256,
+            .p384 => .p384,
+            .p521 => .p521,
+        })) .ecdsa else error.NoSharedSuite,
         .ed25519 => .ecdsa,
-        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa).
-        .mldsa => error.NoSharedSuite,
+        // ML-DSA authenticates TLS 1.3 only (draft-ietf-tls-mldsa); an agreement key, nothing.
+        .mldsa, .x25519 => error.NoSharedSuite,
     };
 }
 
@@ -235,16 +240,16 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     // A server that speaks TLS 1.3 marks a TLS 1.2 random (RFC 8446 section 4.1.3).
     if (self.allows13()) random[24..32].* = Hello.downgrade_tls12.*;
     const salt_at = entropy.len - @as(usize, if (self.state.flags.ticket12) Ticket.salt_length else 0);
-    @memcpy(scratch.ticket_entropy[0 .. entropy.len - salt_at], entropy[salt_at..]);
+    @memcpy(scratch.ticket_entropy.exposeMut()[0 .. entropy.len - salt_at], entropy[salt_at..]);
     if (self.resumed) {
         self.need_now = .none;
-        @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
+        @memcpy(self.tls12.?.randoms[0..32], scratch.client_random.expose());
         @memcpy(self.tls12.?.randoms[32..64], &random);
         return sendResumed(self, &random);
     }
     if (self.external) {
         self.need_now = .none;
-        @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
+        @memcpy(self.tls12.?.randoms[0..32], scratch.client_random.expose());
         @memcpy(self.tls12.?.randoms[32..64], &random);
         @memcpy(scratch.psk.exposeMut()[0..decoy_length], entropy[32..][0..decoy_length]);
         return sendPskFlight(self, &random);
@@ -253,9 +258,9 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     const share_end = 32 + Exchange.entropyLength(group);
     scratch.share12 = Exchange.Share.init(group, entropy[32..share_end]) catch return error.InvalidEntropy;
     self.need_now = .none;
-    @memcpy(self.tls12.?.randoms[0..32], &scratch.client_random);
+    @memcpy(self.tls12.?.randoms[0..32], scratch.client_random.expose());
     @memcpy(self.tls12.?.randoms[32..64], &random);
-    @memcpy(scratch.sign_noise[0 .. salt_at - share_end], entropy[share_end..salt_at]);
+    @memcpy(scratch.sign_noise.exposeMut()[0 .. salt_at - share_end], entropy[share_end..salt_at]);
     var hello_buffer: [1024 + Hello.max_scts]u8 = undefined;
     const scts: ?[]const u8 = if (self.sends_scts) self.options.credentials[self.credential.?].scts else null;
     const hello = try Hello.buildServer12(&hello_buffer, self.options.transport, &random, "", self.suite12.?, self.alpn, .{ .server_name = scratch.server_name_len != 0, .renegotiation_info = scratch.renegotiation_info, .record_size_limit = scratch.record_size_answer, .point_formats = scratch.point_formats, .ticket = self.state.flags.ticket12, .connection_id = self.ownConnectionId(), .srtp = self.srtp, .server_certificate_type = scratch.server_type, .client_certificate_type = scratch.client_type, .scts = scts, .ocsp = scratch.sends_ocsp });
@@ -278,15 +283,15 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
         try self.queueMessage(.initial, status);
     }
     const share = &scratch.share12.?;
-    var params_buffer: [4 + 97]u8 = undefined;
+    var params_buffer: [4 + Messages12.max_public]u8 = undefined;
     const params = try Messages12.buildParams(&params_buffer, group, share.wire());
-    const content = Messages12.signedParams(&scratch.params12, &scratch.client_random, &random, params);
-    // safe: the signed content is at most 32 + 32 + 4 + 97 bytes.
+    const content = Messages12.signedParams(&scratch.params12, scratch.client_random.expose(), &random, params);
+    // safe: the signed content is at most `Messages12.max_signed`, 201 bytes.
     scratch.params12_len = @intCast(content.len);
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (identity.noiseLength()) |noise_length| {
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-        const signature = Possession.sign12(identity, self.scheme, content, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+        const signature = Possession.sign12(identity, self.scheme, content, scratch.sign_noise.expose()[0..noise_length], &out) catch return error.SigningFailed;
         return sendKeyExchange(self, signature);
     }
     self.need_now = .sign;
@@ -343,8 +348,8 @@ fn sendTicket(self: anytype) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     const now = types.seconds(self.now.?);
+    // The sealed ticket is ciphertext: it goes to the client as it is.
     var sealed_buf: [Ticket.max_length]u8 = undefined;
-    defer std.crypto.secureZero(u8, &sealed_buf);
     var sealed: []const u8 = "";
     var hint: u32 = 0;
     var snapshot = self.options.tickets.?.acquire();
@@ -373,7 +378,7 @@ fn sendTicket(self: anytype) Error!void {
             state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
             @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
             state.server_name_len = scratch.server_name_len;
-            sealed = Ticket.seal(key, scratch.ticket_entropy[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
+            sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
             hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
         }
     };
@@ -526,9 +531,10 @@ fn onPskKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: bool
     try scratch.transcripts.commit(msg);
     const known = knownKey(self, identity);
     self.authenticated = known != null;
-    var premaster: [Messages12.max_premaster]u8 = undefined;
-    defer std.crypto.secureZero(u8, &premaster);
-    deriveMaster(self, Messages12.pskPremaster(&premaster, known orelse scratch.psk.expose()[0..decoy_length]));
+    var premaster_owner: Secret([Messages12.max_premaster]u8) = .init(undefined);
+    defer premaster_owner.deinit();
+    const premaster = premaster_owner.exposeMut();
+    deriveMaster(self, Messages12.pskPremaster(premaster, known orelse scratch.psk.expose()[0..decoy_length]));
 }
 
 /// The key the caller's lookup holds for a TLS 1.2 identity, exactly as named; null for none.
@@ -581,6 +587,7 @@ fn onCertificateVerify(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     self.peer_scheme = scheme;
     try self.state.advance(.certificate_verify, epoch, .possession, boundary);
     try scratch.transcripts.commit(msg);
+    if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, scratch.chain[0], scratch.peer_raw);
     self.peer_certificate = true;
 }
 

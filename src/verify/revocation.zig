@@ -194,14 +194,14 @@ fn bit(index: usize) u16 {
 /// A policy span in whole seconds, refused when negative or above `max` seconds.
 fn span(d: std.Io.Duration, comptime max: i64) Error!i64 {
     @setRuntimeSafety(true);
-    if (d.nanoseconds < 0 or d.nanoseconds > @as(i96, max) * std.time.ns_per_s) return error.InvalidRevocation;
-    return @intCast(@divFloor(d.nanoseconds, std.time.ns_per_s)); // safe: bounded by max above
+    const ns = T.Nanoseconds.fromIoDuration(d, .exact);
+    if (ns.compare(.fromRaw(0)) == .lt or ns.compare(T.Seconds.fromRaw(max).convert(.nanosecond, i96, .exact)) == .gt) return error.InvalidRevocation;
+    return T.spanSeconds(d);
 }
 /// The configured skew in whole seconds, clamped to 0..86400 where it only widens a bound.
 fn skewSeconds(policy: T.RevocationPolicy) i64 {
     @setRuntimeSafety(true);
-    const ns = std.math.clamp(policy.clock_skew.nanoseconds, 0, 86400 * std.time.ns_per_s);
-    return @intCast(@divFloor(ns, std.time.ns_per_s)); // safe: clamped above
+    return std.math.clamp(T.spanSeconds(policy.clock_skew), 0, 86400);
 }
 fn deadline(expires: i64, policy: T.RevocationPolicy) i64 {
     @setRuntimeSafety(true);
