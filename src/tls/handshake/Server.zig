@@ -278,7 +278,8 @@ const Scratch = struct {
     sends_ocsp: bool = false,
     flight: Flight = .{},
     transcripts: Transcripts = .{},
-    client_random: [32]u8 = @splat(0),
+    /// A nonce, and with ECH the inner hello's, which no one else reads.
+    client_random: aegis.Secret([32]u8) = .init(@splat(0)),
     session: [32]u8 = @splat(0),
     session_len: u8 = 0,
     server_name: [253]u8 = undefined,
@@ -296,13 +297,13 @@ const Scratch = struct {
     retry_group: ?Group = null,
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
-    sign_content: [Messages.max_signed]u8 = undefined,
+    sign_content: aegis.Secret([Messages.max_signed]u8) = .init(@splat(0)),
     sign_content_len: u8 = 0,
     /// Fresh noise for the hedged signature, when the credential's key signs here.
-    sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
+    sign_noise: aegis.Secret([certificates.PrivateKey.max_noise]u8) = .init(@splat(0)),
     /// The resumed session's PSK, and each ticket's salt and age obfuscator.
     psk: aegis.Secret([48]u8) = .init(@splat(0)),
-    ticket_entropy: [tickets_per_handshake * ticket_entropy]u8 = @splat(0),
+    ticket_entropy: aegis.Secret([tickets_per_handshake * ticket_entropy]u8) = .init(@splat(0)),
     /// The offered identity the ServerHello selects.
     psk_index: u16 = 0,
     /// The ClientHello is held until the clock answers: tickets are opened and issued by it.
@@ -355,7 +356,7 @@ const EchScratch = struct {
     /// The first hello's enc, when a stateless retry request opened it: the second opens under
     /// its context again.
     enc: [Hpke.enc_length]u8 = undefined,
-    inner: []u8 = &.{},
+    inner: aegis.SecretBytes = .empty,
 };
 
 fn Keyed(comptime suite: Suite13) type {
@@ -504,14 +505,16 @@ fn releaseScratch(self: *Server) void {
     if (scratch.share12) |*share| share.deinit();
     scratch.share12 = null;
     if (scratch.ech.context) |*context| context.deinit();
-    if (scratch.ech.inner.len != 0) {
-        std.crypto.secureZero(u8, scratch.ech.inner);
-        self.gpa.free(scratch.ech.inner);
-    }
+    scratch.ech.inner.deinit(self.gpa);
     scratch.flight.deinit(self.gpa);
-    scratch.transcripts.release();
+    scratch.transcripts.deinit();
     scratch.psk.deinit();
-    std.crypto.secureZero(u8, std.mem.asBytes(scratch));
+    scratch.client_random.deinit();
+    scratch.sign_content.deinit();
+    scratch.sign_noise.deinit();
+    scratch.ticket_entropy.deinit();
+    // The rest is public: the session id, the server name and the client's key share as the
+    // hello carried them, the certificate types and the peer's chain.
     self.gpa.destroy(scratch);
     self.scratch = null;
 }
@@ -558,8 +561,8 @@ pub fn provideEntropy(self: *Server, entropy: []const u8) Client.Error!void {
     defer response.deinit();
     self.need_now = .none;
     const noise_end = exchange_end + if (self.pskMode()) 0 else self.signNoiseLength();
-    @memcpy(scratch.sign_noise[0 .. noise_end - exchange_end], entropy[exchange_end..noise_end]);
-    @memcpy(scratch.ticket_entropy[0 .. entropy.len - noise_end], entropy[noise_end..]);
+    @memcpy(scratch.sign_noise.exposeMut()[0 .. noise_end - exchange_end], entropy[exchange_end..noise_end]);
+    @memcpy(scratch.ticket_entropy.exposeMut()[0 .. entropy.len - noise_end], entropy[noise_end..]);
     try self.sendServerFlight(entropy[0..32], &response);
 }
 
@@ -637,7 +640,7 @@ pub fn signRequest(self: *const Server) SignRequest {
     const scratch = self.scratch.?;
     const credential = self.credential.?;
     if (self.version == .tls12) return .{ .scheme = self.scheme, .content = scratch.params12[0..scratch.params12_len], .credential = credential };
-    return .{ .scheme = self.scheme, .content = scratch.sign_content[0..scratch.sign_content_len], .credential = credential };
+    return .{ .scheme = self.scheme, .content = scratch.sign_content.expose()[0..scratch.sign_content_len], .credential = credential };
 }
 
 /// Checks the signature against the credential's public key before it is used.
@@ -683,9 +686,8 @@ pub fn provideParameters(self: *Server, accept: bool) Client.Error!void {
 pub fn pop(self: *Server, out: *Emit) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
-        const post = &(self.post orelse return false);
-        out.* = post.*;
-        std.crypto.secureZero(u8, std.mem.asBytes(&self.post));
+        const post = if (self.post) |*post| post else return false;
+        Flight.moveEmit(post, out);
         self.post = null;
         return true;
     };
@@ -748,15 +750,16 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
     @setRuntimeSafety(true);
     const sink = self.options.key_log orelse return;
     const scratch = self.scratch orelse return;
-    var line: [256]u8 = undefined;
-    defer std.crypto.secureZero(u8, &line);
+    var line_owner: aegis.Secret([256]u8) = .init(undefined);
+    defer line_owner.deinit();
+    const line = line_owner.exposeMut();
     const hex = "0123456789abcdef";
     var at: usize = 0;
     @memcpy(line[at..][0..label.len], label);
     at += label.len;
     line[at] = ' ';
     at += 1;
-    for (scratch.client_random) |b| {
+    for (scratch.client_random.expose()) |b| {
         line[at] = hex[b >> 4];
         line[at + 1] = hex[b & 15];
         at += 2;
@@ -918,7 +921,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
         if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
     }
     if (!second or self.stateless_retry) {
-        scratch.client_random = hello.random[0..32].*;
+        scratch.client_random.exposeMut().* = hello.random[0..32].*;
         @memcpy(scratch.session[0..hello.session.len], hello.session);
         // safe: parsing bounds the session id at 32 bytes.
         scratch.session_len = @intCast(hello.session.len);
@@ -1108,8 +1111,9 @@ fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Cli
             kind = .imported;
             break :plain answer;
         };
-        var key: [48]u8 = undefined;
-        defer std.crypto.secureZero(u8, &key);
+        var key_owner: aegis.Secret([48]u8) = .init(undefined);
+        defer key_owner.deinit();
+        const key = key_owner.exposeMut();
         const secret = if (kind == .imported) derived: {
             Psk.derive(found, self.options.transport.prefix(), offer.identity, key[0..hash.length()]);
             break :derived key[0..hash.length()];
@@ -1339,15 +1343,15 @@ fn sendRetry(self: *Server, group: Group) Client.Error!void {
     if (accepted) {
         // The confirmation covers the inner hello and this retry request with its eight
         // bytes zeroed, as built (RFC 9849 section 7.2.1).
-        var confirm = scratch.transcripts;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&confirm));
+        var confirm = scratch.transcripts.fork();
+        defer confirm.deinit();
         try confirm.retry(hrr);
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         switch (self.suite.?) {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = confirm.digest(&digest_buf);
-                hrr[hrr.len - 8 ..][0..8].* = Ech.confirmation(Hash, self.options.transport, &scratch.client_random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
+                hrr[hrr.len - 8 ..][0..8].* = Ech.confirmation(Hash, self.options.transport, scratch.client_random.expose(), Ech.retry_accept_label, digest[0..Hash.digest_length]);
             },
         }
     }
@@ -1396,7 +1400,7 @@ fn sendServerFlight(self: *Server, random: []const u8, response: *const Exchange
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = scratch.transcripts.digestWith(&digest_buf, Hash.digest_length, hello);
-                confirmed.* = Ech.confirmation(Hash, self.options.transport, &scratch.client_random, Ech.accept_label, digest[0..Hash.digest_length]);
+                confirmed.* = Ech.confirmation(Hash, self.options.transport, scratch.client_random.expose(), Ech.accept_label, digest[0..Hash.digest_length]);
             },
         }
     }
@@ -1513,20 +1517,20 @@ fn signCertificate(self: *Server, identity: certificates.Identity) Client.Error!
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const content = Messages.signedContent(&scratch.sign_content, true, scratch.transcripts.digest(&digest_buf));
+    const content = Messages.signedContent(scratch.sign_content.exposeMut(), true, scratch.transcripts.digest(&digest_buf));
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
     scratch.sign_content_len = @intCast(content.len);
     scratch.signing = true;
     if (self.delegating) {
         const delegated = self.options.credentials[self.credential.?].delegated.?;
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-        const signature = delegated.sign(content, scratch.sign_noise[0..delegated.noiseLength()], &out) catch return error.SigningFailed;
+        const signature = delegated.sign(content, scratch.sign_noise.expose()[0..delegated.noiseLength()], &out) catch return error.SigningFailed;
         return self.sendCertificateVerify(signature);
     }
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (identity.noiseLength()) |noise_length| {
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-        const signature = Possession.sign(identity, self.scheme, content, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+        const signature = Possession.sign(identity, self.scheme, content, scratch.sign_noise.expose()[0..noise_length], &out) catch return error.SigningFailed;
         return self.sendCertificateVerify(signature);
     }
     self.need_now = .sign;
@@ -1608,13 +1612,10 @@ fn openEch(self: *Server, wire: []const u8, outer: *const ClientHello, second: b
         e.status = .accepted;
         break :inner opened.inner;
     };
-    if (e.inner.len != 0) {
-        std.crypto.secureZero(u8, e.inner);
-        self.gpa.free(e.inner);
-    }
+    e.inner.deinit(self.gpa);
     e.inner = inner;
     self.ech_accepted = true;
-    return inner;
+    return e.inner.expose(); // aegis: design: the inner hello, lent for the handshake; the scratch that owns it outlives every use
 }
 
 fn notDecrypted(self: *Server) ?[]const u8 {
@@ -1763,7 +1764,7 @@ fn issueTickets(self: *Server) Client.Error!void {
     const scratch = self.scratch.?;
     const keys = &self.keys.?;
     for (0..tickets_per_handshake) |i| {
-        const drawn = scratch.ticket_entropy[i * ticket_entropy ..][0..ticket_entropy];
+        const drawn = scratch.ticket_entropy.expose()[i * ticket_entropy ..][0..ticket_entropy];
         var state: Ticket.State = .{
             .suite = Suite.from13(self.suite.?),
             .datagram = self.options.transport == .datagram,
@@ -1792,8 +1793,8 @@ fn issueTickets(self: *Server) Client.Error!void {
                 };
             },
         }
+        // The sealed ticket is ciphertext: it goes to the client as it is.
         var sealed_buf: [Ticket.max_length]u8 = undefined;
-        defer std.crypto.secureZero(u8, &sealed_buf);
         const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
         const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
         const dst = try self.reserve(4 + 4 + 4 + 2 + 2 + sealed.len + 2);

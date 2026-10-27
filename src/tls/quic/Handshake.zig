@@ -9,6 +9,7 @@ const types = certificates.types;
 const Client = @import("../handshake/Client.zig");
 const Machine = @import("../handshake/Machine.zig");
 const Emit = @import("../handshake/Flight.zig").Emit;
+const Buffer = @import("../wire/Buffer.zig");
 const Server = @import("../handshake/Server.zig");
 const Services = @import("../handshake/Services.zig");
 const Suite13 = @import("../crypto/Suite.zig").Suite13;
@@ -156,7 +157,7 @@ const Current = union(enum) {
 };
 
 const Partial = struct {
-    buf: []u8 = &.{},
+    buf: Buffer = .{},
     have: usize = 0,
     total: usize = 0,
     /// A key-changing message ended this level: nothing more may follow at it.
@@ -253,10 +254,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions) InitError!Handshak
 pub fn deinit(self: *Handshake) void {
     @setRuntimeSafety(true);
     if (self.current) |*current| if (current.* == .secret) current.secret.traffic.secret.deinit();
-    for (&self.partial) |*p| if (p.buf.len != 0) {
-        std.crypto.secureZero(u8, p.buf);
-        self.gpa.free(p.buf);
-    };
+    for (&self.partial) |*p| p.buf.free(self.gpa);
     self.hs.deinit();
     self.* = undefined;
 }
@@ -371,7 +369,7 @@ fn receiveChecked(self: *Handshake, level: Level, bytes: []const u8) Error!usize
         }
         consumed += try self.take(slot, bytes[consumed..]);
         if (slot.total == 0 or slot.have != slot.total) continue;
-        const message = slot.buf[0..slot.total];
+        const message = slot.buf.view()[0..slot.total];
         const boundary = consumed == bytes.len;
         slot.have = 0;
         slot.total = 0;
@@ -391,24 +389,18 @@ fn take(self: *Handshake, slot: *Partial, bytes: []const u8) Error!usize {
     @setRuntimeSafety(true);
     var used: usize = 0;
     if (slot.have < 4) {
-        if (slot.buf.len < 4) slot.buf = try self.gpa.alloc(u8, 4);
         const n = @min(4 - slot.have, bytes.len);
-        @memcpy(slot.buf[slot.have..][0..n], bytes[0..n]);
+        @memcpy((try slot.buf.ensure(self.gpa, 4))[slot.have..][0..n], bytes[0..n]);
         slot.have += n;
         used = n;
         if (slot.have < 4) return used;
-        const total = 4 + @as(usize, std.mem.readInt(u24, slot.buf[1..4], .big));
+        const total = 4 + @as(usize, std.mem.readInt(u24, slot.buf.view()[1..4], .big));
         if (total > self.hs.messageLimit()) return error.HandshakeLimit;
-        if (slot.buf.len < total) {
-            const grown = try self.gpa.alloc(u8, total);
-            @memcpy(grown[0..4], slot.buf[0..4]);
-            self.gpa.free(slot.buf);
-            slot.buf = grown;
-        }
+        _ = try slot.buf.ensure(self.gpa, total);
         slot.total = total;
     }
     const n = @min(slot.total - slot.have, bytes.len - used);
-    @memcpy(slot.buf[slot.have..][0..n], bytes[used..][0..n]);
+    @memcpy(slot.buf.bytes()[slot.have..][0..n], bytes[used..][0..n]);
     slot.have += n;
     return used + n;
 }
@@ -450,9 +442,9 @@ fn advance(self: *Handshake) void {
             return;
         },
         .secret => |*s| {
-            // The secret moves to the event; the copy it came in is erased.
-            self.current = .{ .secret = .{ .level = levelOf(s.epoch), .direction = s.direction, .traffic = s.traffic } };
-            std.crypto.secureZero(u8, std.mem.asBytes(&emit));
+            // The secret moves to the event, erased where it came.
+            self.current = .{ .secret = .{ .level = levelOf(s.epoch), .direction = s.direction, .traffic = undefined } };
+            s.traffic.moveInto(&self.current.?.secret.traffic);
             return;
         },
         .complete => {

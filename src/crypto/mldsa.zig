@@ -11,6 +11,7 @@
 //! SHAKE stream, as FIPS 204's reference does. The arithmetic follows std's (from CIRCL), whose
 //! bounds it keeps: coefficients below 2q into the inverse NTT.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const aegis = @import("aegis");
 const Shake128 = std.crypto.hash.sha3.Shake128;
 const Shake256 = std.crypto.hash.sha3.Shake256;
@@ -85,37 +86,40 @@ pub fn Scheme(comptime level: Level) type {
         /// key (FIPS 204 Algorithm 6).
         pub fn keyFromSeed(seed: *const [seed_length]u8, pk: *[public_key_length]u8, sk: *[secret_key_length]u8) void {
             @setRuntimeSafety(true);
-            var expanded: [128]u8 = undefined;
-            defer std.crypto.secureZero(u8, &expanded);
+            var expanded_owner: Secret([128]u8) = .init(undefined);
+            defer expanded_owner.deinit();
+            const expanded = expanded_owner.exposeMut();
             var h = Shake256.init(.{});
             h.update(seed);
             h.update(&.{ @as(u8, k), @as(u8, l) });
-            h.squeeze(&expanded);
+            h.squeeze(expanded);
             const rho = expanded[0..32];
             const rho_prime = expanded[32..96];
             pk[0..32].* = rho.*;
             sk[sk_rho..][0..32].* = rho.*;
             sk[sk_key..][0..32].* = expanded[96..128].*;
-            var acc: [k]Poly = undefined;
-            defer secureZeroPolys(&acc);
-            var s: Poly = undefined;
+            var acc_owner: Secret([k]Poly) = .init(undefined);
+            defer acc_owner.deinit();
+            const acc = acc_owner.exposeMut();
+            var s_owner: Secret(Poly) = .init(undefined);
+            defer s_owner.deinit();
+            const s = s_owner.exposeMut();
             var a: Poly = undefined;
-            defer secureZeroPoly(&s);
-            for (&acc) |*p| p.* = @splat(0);
+            for (acc) |*p| p.* = @splat(0);
             for (0..l) |j| {
-                expandS(&s, rho_prime, @intCast(j));
-                packEta(&s, sk[sk_s1 + eta_bytes * j ..][0..eta_bytes]);
-                ntt(&s);
+                expandS(s, rho_prime, @intCast(j));
+                packEta(s, sk[sk_s1 + eta_bytes * j ..][0..eta_bytes]);
+                ntt(s);
                 for (0..k) |i| {
                     expandA(&a, rho, i, j);
-                    mulAdd(&acc[i], &a, &s);
+                    mulAdd(&acc[i], &a, s);
                 }
             }
             for (0..k) |i| {
                 reduceLe2q(&acc[i]);
                 invNtt(&acc[i]);
-                expandS(&s, rho_prime, @intCast(l + i));
-                packEta(&s, sk[sk_s2 + eta_bytes * i ..][0..eta_bytes]);
+                expandS(s, rho_prime, @intCast(l + i));
+                packEta(s, sk[sk_s2 + eta_bytes * i ..][0..eta_bytes]);
                 // t = A s1 + s2, split into t1 (public) and t0 (secret).
                 for (&acc[i], s) |*t, si| t.* = modQ(t.* +% si);
                 var t1: Poly = undefined;
@@ -142,25 +146,27 @@ pub fn Scheme(comptime level: Level) type {
             if (!etaInRange(sk[sk_s1..sk_t0])) return error.InvalidKey;
             const rho = sk[sk_rho..][0..32];
             pk[0..32].* = rho.*;
-            var acc: [k]Poly = undefined;
-            defer secureZeroPolys(&acc);
-            var s: Poly = undefined;
+            var acc_owner: Secret([k]Poly) = .init(undefined);
+            defer acc_owner.deinit();
+            const acc = acc_owner.exposeMut();
+            var s_owner: Secret(Poly) = .init(undefined);
+            defer s_owner.deinit();
+            const s = s_owner.exposeMut();
             var a: Poly = undefined;
-            defer secureZeroPoly(&s);
-            for (&acc) |*p| p.* = @splat(0);
+            for (acc) |*p| p.* = @splat(0);
             for (0..l) |j| {
-                unpackEta(sk[sk_s1 + eta_bytes * j ..][0..eta_bytes], &s);
-                ntt(&s);
+                unpackEta(sk[sk_s1 + eta_bytes * j ..][0..eta_bytes], s);
+                ntt(s);
                 for (0..k) |i| {
                     expandA(&a, rho, i, j);
-                    mulAdd(&acc[i], &a, &s);
+                    mulAdd(&acc[i], &a, s);
                 }
             }
             var t0_matches = aegis.secret.equal(1, &.{0}, &.{0});
             for (0..k) |i| {
                 reduceLe2q(&acc[i]);
                 invNtt(&acc[i]);
-                unpackEta(sk[sk_s2 + eta_bytes * i ..][0..eta_bytes], &s);
+                unpackEta(sk[sk_s2 + eta_bytes * i ..][0..eta_bytes], s);
                 for (&acc[i], s) |*t, si| t.* = modQ(t.* +% si);
                 var t1: Poly = undefined;
                 for (&acc[i], &t1) |*t, *hi| {
@@ -169,10 +175,11 @@ pub fn Scheme(comptime level: Level) type {
                     hi.* = split.high;
                 }
                 packT1(&t1, pk[32 + t1_bytes * i ..][0..t1_bytes]);
-                var t0: [t0_bytes]u8 = undefined;
-                defer std.crypto.secureZero(u8, &t0);
-                packT0(&acc[i], &t0);
-                t0_matches = t0_matches.@"and"(aegis.secret.equal(t0_bytes, &t0, sk[sk_t0 + t0_bytes * i ..][0..t0_bytes]));
+                var t0_owner: Secret([t0_bytes]u8) = .init(undefined);
+                defer t0_owner.deinit();
+                const t0 = t0_owner.exposeMut();
+                packT0(&acc[i], t0);
+                t0_matches = t0_matches.@"and"(aegis.secret.equal(t0_bytes, t0, sk[sk_t0 + t0_bytes * i ..][0..t0_bytes]));
             }
             var tr: [64]u8 = undefined;
             Shake256.hash(pk, &tr, .{});
@@ -206,39 +213,45 @@ pub fn Scheme(comptime level: Level) type {
             const rho = sk[sk_rho..][0..32];
             var mu: [64]u8 = undefined;
             messageHash(sk[sk_tr..][0..64], message, context, &mu);
-            var rho2: [64]u8 = undefined;
-            defer std.crypto.secureZero(u8, &rho2);
+            var rho2_owner: Secret([64]u8) = .init(undefined);
+            defer rho2_owner.deinit();
+            const rho2 = rho2_owner.exposeMut();
             {
                 var h = Shake256.init(.{});
                 h.update(sk[sk_key..][0..32]);
                 h.update(noise);
                 h.update(&mu);
-                h.squeeze(&rho2);
+                h.squeeze(rho2);
             }
             // w and then w0, one polynomial per row; w1 packed as it is hashed.
-            var w: [k]Poly = undefined;
-            defer secureZeroPolys(&w);
-            var w1: [k * w1_bytes]u8 = undefined;
-            defer std.crypto.secureZero(u8, &w1);
-            var hints: [k][n / 64]u64 = undefined;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&hints));
-            var y: Poly = undefined;
-            defer secureZeroPoly(&y);
-            var s: Poly = undefined;
-            defer secureZeroPoly(&s);
+            var w_owner: Secret([k]Poly) = .init(undefined);
+            defer w_owner.deinit();
+            const w = w_owner.exposeMut();
+            var w1_owner: Secret([k * w1_bytes]u8) = .init(undefined);
+            defer w1_owner.deinit();
+            const w1 = w1_owner.exposeMut();
+            var hints_owner: Secret([k][n / 64]u64) = .init(undefined);
+            defer hints_owner.deinit();
+            const hints = hints_owner.exposeMut();
+            var y_owner: Secret(Poly) = .init(undefined);
+            defer y_owner.deinit();
+            const y = y_owner.exposeMut();
+            var s_owner: Secret(Poly) = .init(undefined);
+            defer s_owner.deinit();
+            const s = s_owner.exposeMut();
             var a: Poly = undefined;
             var c: Poly = undefined;
             var kappa: u16 = 0;
             // (6/7)^576 < 2^-128 for every level: a key that rejects this often is not a key.
             for (0..1000) |_| {
                 defer kappa += @intCast(l);
-                for (&w) |*p| p.* = @splat(0);
+                for (w) |*p| p.* = @splat(0);
                 for (0..l) |j| {
-                    expandMask(&y, &rho2, kappa + @as(u16, @intCast(j)));
-                    ntt(&y);
+                    expandMask(y, rho2, kappa + @as(u16, @intCast(j)));
+                    ntt(y);
                     for (0..k) |i| {
                         expandA(&a, rho, i, j);
-                        mulAdd(&w[i], &a, &y);
+                        mulAdd(&w[i], &a, y);
                     }
                 }
                 var h = Shake256.init(.{});
@@ -255,42 +268,42 @@ pub fn Scheme(comptime level: Level) type {
                     }
                     packW1(&hi, w1[w1_bytes * i ..][0..w1_bytes]);
                 }
-                h.update(&w1);
+                h.update(w1);
                 h.squeeze(sig[0..ctilde]);
                 sampleInBall(&c, sig[0..ctilde]);
                 ntt(&c);
                 // z = y + c s1, packed as it goes; any coefficient past gamma1 - beta rejects.
                 var reject: u32 = 0;
                 for (0..l) |j| {
-                    unpackEta(sk[sk_s1 + eta_bytes * j ..][0..eta_bytes], &s);
-                    ntt(&s);
-                    mulPoint(&s, &c);
-                    invNtt(&s);
-                    expandMask(&y, &rho2, kappa + @as(u16, @intCast(j)));
-                    for (&s, y) |*z, yc| z.* = modQ(z.* +% yc);
-                    reject |= exceeds(&s, gamma1 - beta);
-                    packZ(&s, sig[ctilde + z_bytes * j ..][0..z_bytes]);
+                    unpackEta(sk[sk_s1 + eta_bytes * j ..][0..eta_bytes], s);
+                    ntt(s);
+                    mulPoint(s, &c);
+                    invNtt(s);
+                    expandMask(y, rho2, kappa + @as(u16, @intCast(j)));
+                    for (s, y) |*z, yc| z.* = modQ(z.* +% yc);
+                    reject |= exceeds(s, gamma1 - beta);
+                    packZ(s, sig[ctilde + z_bytes * j ..][0..z_bytes]);
                 }
                 if (reject != 0) continue;
                 // r0 = w0 - c s2 within gamma2 - beta; then c t0 within gamma2, and the hints.
                 var count: u32 = 0;
                 for (0..k) |i| {
-                    unpackEta(sk[sk_s2 + eta_bytes * i ..][0..eta_bytes], &s);
-                    ntt(&s);
-                    mulPoint(&s, &c);
-                    invNtt(&s);
+                    unpackEta(sk[sk_s2 + eta_bytes * i ..][0..eta_bytes], s);
+                    ntt(s);
+                    mulPoint(s, &c);
+                    invNtt(s);
                     for (&w[i], s) |*r, cs| r.* = modQ(r.* +% (2 * q -% cs));
                     reject |= exceeds(&w[i], gamma2 - beta);
-                    unpackT0(sk[sk_t0 + t0_bytes * i ..][0..t0_bytes], &s);
-                    ntt(&s);
-                    mulPoint(&s, &c);
-                    invNtt(&s);
-                    normalize(&s);
-                    reject |= exceeds(&s, gamma2);
+                    unpackT0(sk[sk_t0 + t0_bytes * i ..][0..t0_bytes], s);
+                    ntt(s);
+                    mulPoint(s, &c);
+                    invNtt(s);
+                    normalize(s);
+                    reject |= exceeds(s, gamma2);
                     hints[i] = @splat(0);
                     for (0..n) |m| {
                         const z0 = modQ(w[i][m] +% s[m]);
-                        const bit = makeHint(z0, w1Coefficient(&w1, i, m));
+                        const bit = makeHint(z0, w1Coefficient(w1, i, m));
                         hints[i][m / 64] |= @as(u64, bit) << @intCast(m % 64);
                         count += bit;
                     }
@@ -298,7 +311,7 @@ pub fn Scheme(comptime level: Level) type {
                 reject |= over(count, omega);
                 if (reject != 0) continue;
                 // Accepted: the hints are part of the signature from here on.
-                packHints(&hints, sig[ctilde + z_bytes * l ..][0 .. omega + k]);
+                packHints(hints, sig[ctilde + z_bytes * l ..][0 .. omega + k]);
                 return;
             }
             // safe: the loop ends with probability below 2^-128 per signature.
@@ -432,25 +445,27 @@ pub fn Scheme(comptime level: Level) type {
 
         fn expandMask(p: *Poly, seed: *const [64]u8, nonce: u16) void {
             @setRuntimeSafety(true);
-            var buf: [z_bytes]u8 = undefined;
-            defer std.crypto.secureZero(u8, &buf);
+            var buf_owner: Secret([z_bytes]u8) = .init(undefined);
+            defer buf_owner.deinit();
+            const buf = buf_owner.exposeMut();
             var h = Shake256.init(.{});
             h.update(seed);
             h.update(&.{ @truncate(nonce), @truncate(nonce >> 8) });
-            h.squeeze(&buf);
-            unpackZ(&buf, p);
+            h.squeeze(buf);
+            unpackZ(buf, p);
         }
 
         fn expandS(p: *Poly, seed: *const [64]u8, nonce: u16) void {
             @setRuntimeSafety(true);
-            var buf: [Shake256.block_length]u8 = undefined;
-            defer std.crypto.secureZero(u8, &buf);
+            var buf_owner: Secret([Shake256.block_length]u8) = .init(undefined);
+            defer buf_owner.deinit();
+            const buf = buf_owner.exposeMut();
             var h = Shake256.init(.{});
             h.update(seed);
             h.update(&.{ @truncate(nonce), @truncate(nonce >> 8) });
             var i: usize = 0;
             while (i < n) {
-                h.squeeze(&buf);
+                h.squeeze(buf);
                 for (buf) |b| {
                     inline for (.{ b & 15, b >> 4 }) |t| {
                         // RejBoundedPoly: a nibble is kept below 15 (eta 2, then mod 5) or 9.
@@ -867,12 +882,4 @@ fn exceedsWith(p: *const Poly, bound: u32) u32 {
         result |= over(norm +% 1, bound);
     }
     return result;
-}
-
-fn secureZeroPoly(p: *Poly) void {
-    std.crypto.secureZero(u32, p);
-}
-
-fn secureZeroPolys(ps: anytype) void {
-    for (ps) |*p| secureZeroPoly(p);
 }

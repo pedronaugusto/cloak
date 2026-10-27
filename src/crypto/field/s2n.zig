@@ -8,6 +8,7 @@
 //! question to the processor, cached.
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 
 /// Whether s2n-bignum's assembly is in this build: x86_64, and AArch64 where the object format
 /// is ELF or Mach-O (its AArch64 files carry no COFF directives).
@@ -46,14 +47,17 @@ const fixed: ?Variant = switch (builtin.cpu.arch) {
     else => null,
 };
 
-/// The processor's answer, asked once: 0 unasked, else the variant's value plus one. Racing
-/// first calls reach the same answer.
+/// The processor's answer, asked once. Racing first calls reach the same answer.
 const asked = struct {
-    var state: std.atomic.Value(u8) = .init(0);
+    const Answer = enum(u8) { unasked, plain, alt };
+    var state: aegis.Atomic(Answer) = .init(.unasked);
 
     fn get() Variant {
-        const known = state.load(.monotonic);
-        if (known != 0) return @fromBackingInt(@intCast(known - 1));
+        switch (state.load(.monotonic)) {
+            .unasked => {},
+            .plain => return .plain,
+            .alt => return .alt,
+        }
         const variant: Variant = switch (builtin.cpu.arch) {
             .x86_64 => if (x86HasMulx()) .plain else .alt,
             .aarch64 => if (wideMultiplier()) .alt else .plain,
@@ -63,9 +67,11 @@ const asked = struct {
         return variant;
     }
 
-    /// Widened before the one is added: the variant's own backing integer is a u1.
     fn remember(variant: Variant) void {
-        state.store(@as(u8, @backingInt(variant)) + 1, .monotonic);
+        state.store(switch (variant) {
+            .plain => .plain,
+            .alt => .alt,
+        }, .monotonic);
     }
 };
 
@@ -87,8 +93,9 @@ fn x86HasMulx() bool {
 }
 
 fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
-    var eax: u32 = undefined;
-    var ebx: u32 = undefined;
+    var eax: u32 = 0;
+    var ebx: u32 = 0;
+    // aegis: boundary: cpuid, the processor's feature leaves, read once per process
     asm volatile ("cpuid"
         : [eax] "={eax}" (eax),
           [ebx] "={ebx}" (ebx),
@@ -104,6 +111,7 @@ fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
 fn wideMultiplier() bool {
     if (builtin.os.tag != .linux) return false;
     if (std.os.linux.getauxval(std.elf.AT.HWCAP) & (1 << 11) == 0) return false;
+    // aegis: boundary: MIDR_EL1, which the kernel emulates for user space under HWCAP_CPUID
     const midr = asm volatile ("mrs %[midr], midr_el1"
         : [midr] "=r" (-> u64),
     );

@@ -62,7 +62,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     var status: C.CERT_CHAIN.POLICY.STATUS = .{ .dwError = .SUCCESS, .lChainIndex = 0, .lElementIndex = 0, .pvExtraPolicyStatus = null };
     if (!C.CertVerifyCertificateChainPolicy(.SSL, raw, &policy, &status).toBool() or status.dwError != .SUCCESS) return error.NativePolicyFailure;
     // The SDK defines CONTEXT as this aligned prefix; CryptoAPI owns it until the deferred free.
-    const context: *const Context = @ptrCast(@alignCast(raw)); // safe: CryptoAPI returns this aligned SDK CONTEXT prefix, owned until deferred free
+    const context: *const Context = @ptrCast(@alignCast(raw)); // aegis: boundary: CryptoAPI returns this aligned SDK CONTEXT prefix, owned until deferred free
     if (context.count != 1 or context.status.error_status != 0) return error.NativeEvidenceUnavailable;
     const selected = context.chains[0];
     if (selected.count == 0 or selected.count > request.limits.depth) return error.NativeEvidenceUnavailable;
@@ -104,8 +104,11 @@ const EngineConfig = extern struct {
     exclusive_people: ?C.HCERTSTORE = null,
     exclusive_flags: u32 = 0,
 };
+// aegis: boundary: the CryptoAPI call itself, declared as the SDK declares it
 extern "crypt32" fn CertCreateCertificateContext(u32, [*]const u8, u32) callconv(.winapi) ?*const C.CERT_CONTEXT;
+// aegis: boundary: the CryptoAPI call itself, declared as the SDK declares it
 extern "crypt32" fn CertCreateCertificateChainEngine(*EngineConfig, *C.HCERTCHAINENGINE) callconv(.winapi) i32;
+// aegis: boundary: the CryptoAPI call itself, declared as the SDK declares it
 extern "crypt32" fn CertFreeCertificateChainEngine(C.HCERTCHAINENGINE) callconv(.winapi) void;
 test {
     @setRuntimeSafety(true);

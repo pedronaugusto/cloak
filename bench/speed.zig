@@ -6,6 +6,7 @@
 //! ReleaseFast; CI only compiles this.
 const std = @import("std");
 const harness = @import("harness");
+const aegis = @import("aegis");
 const cloak = harness.cloak;
 const ecdh = harness.ecdh;
 const Connection = cloak.tls.Connection;
@@ -25,7 +26,7 @@ const Context = struct {
 
     /// A fixture from `--pki`, or the copy built in from `bench/data/chain`.
     fn file(self: *const Context, name: []const u8) ![]u8 {
-        if (self.pki) |dir| return dir.readFileAlloc(self.io, name, self.gpa, .limited(1 << 20));
+        if (self.pki) |dir| return aegis.own.readFile(self.io, dir, name, self.gpa, .fromRaw(1 << 20));
         inline for (fixtures) |fixture| {
             if (std.mem.eql(u8, name, fixture)) return self.gpa.dupe(u8, @embedFile("data/chain/" ++ fixture));
         }

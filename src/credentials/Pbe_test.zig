@@ -5,7 +5,7 @@ const Sha1 = @import("../crypto/sha1.zig").Sha1;
 test "credential PBE PKCS#12 KDF matches RFC 7292 appendix B's known answers" {
     const gpa = std.testing.allocator;
     var password = try Pbe.Password.init(gpa, "sesame", false, .{});
-    defer password.deinit();
+    defer password.deinit(gpa);
     // golang.org/x/crypto/pkcs12's vectors: a 24-byte key over two hash outputs, and an I_j
     // whose sum leaves a leading zero byte.
     var key: [24]u8 = undefined;
@@ -26,7 +26,7 @@ test "credential PBE passwords become NUL-terminated UTF-16BE with surrogate pai
     };
     for (cases) |c| {
         var password = try Pbe.Password.init(gpa, c.utf8, c.absent, .{});
-        defer password.deinit();
+        defer password.deinit(gpa);
         if (c.bmp) |bmp| try std.testing.expectEqualSlices(u8, bmp, try password.bmpForm()) else try std.testing.expectError(error.InvalidPassword, password.bmpForm());
     }
     try std.testing.expectError(error.KdfLimit, Pbe.Password.init(gpa, "xxxxx", false, .{ .password_bytes = 4 }));

@@ -59,7 +59,8 @@ test "Wycheproof aes_gcm: every 128- and 256-bit case with a 96-bit nonce sealed
                         std.debug.print("aes_gcm tcId {d} opened\n", .{t.tcId});
                         return err;
                     };
-                    for (out) |b| try std.testing.expectEqual(@as(u8, 0), b);
+                    // The tag is checked before any block: no plaintext reached `out`.
+                    if (msg.len != 0) try std.testing.expect(!std.mem.eql(u8, msg, out));
                 }
             },
             else => unreachable, // unreachable: filtered above
@@ -101,11 +102,13 @@ test "Wycheproof aes_wrap: valid keys wrapped byte for byte and unwrapped, every
             try std.testing.expectEqualSlices(u8, msg, unwrapped);
         } else {
             const out = try arena.alloc(u8, if (ct.len >= 8) ct.len - 8 else 0);
+            @memset(out, 0x5c);
             if (cipher.keyWrap.unwrap(kek, ct, out)) |_| {
                 std.debug.print("aes_wrap tcId {d} unwrapped\n", .{t.tcId});
                 return error.InvalidUnwrapped;
             } else |err| switch (err) {
-                error.AuthenticationFailed => for (out) |b| try std.testing.expectEqual(@as(u8, 0), b),
+                // A refusal leaves `out` as it was.
+                error.AuthenticationFailed => for (out) |b| try std.testing.expectEqual(@as(u8, 0x5c), b),
                 error.InvalidLength => {},
             }
         }
@@ -135,6 +138,7 @@ fn compositeFile(comptime name: []const u8, comptime which: anytype) !void {
             continue;
         }
         const out = try arena.alloc(u8, ct.len);
+        @memset(out, 0x5c);
         const opened = C.open(out, ct, tag[0..C.tag_length], aad, iv[0..16], key[0..C.key_length]);
         if (valid) {
             try std.testing.expectEqualSlices(u8, msg, try opened);
@@ -148,6 +152,8 @@ fn compositeFile(comptime name: []const u8, comptime which: anytype) !void {
                 std.debug.print("{s} tcId {d} opened\n", .{ name, t.tcId });
                 return err;
             };
+            // A refusal, by tag or by padding, leaves `out` as it was.
+            for (out) |b| try std.testing.expectEqual(@as(u8, 0x5c), b);
         }
     };
     try std.testing.expectEqual(@as(usize, file.numberOfTests), ran);

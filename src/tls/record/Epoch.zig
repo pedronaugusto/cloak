@@ -152,7 +152,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             const wire_len = 5 + inner_len + A.tag_length;
             if (out.len < wire_len) return error.BufferTooSmall;
             const wire = out[0..wire_len];
-            if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // safe: compare live addresses only to permit exact ciphertext-body alias.
+            if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // aegis: no-danger: compare live addresses only to permit exact ciphertext-body alias.
             try self.admit(inner_len);
             wire[0..3].* = .{ 23, 3, 3 };
             // safe: bounded by max_inner + the fixed 16-byte AEAD tag.
@@ -200,15 +200,14 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (overlap(wire, plain) and plain.ptr != cipher.ptr) return error.PartialOverlap;
             try self.admit(len);
             Kernels.open(A, plain, cipher, wire[wire.len - 16 ..][0..16], wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose()) catch {
-                std.crypto.secureZero(u8, plain);
                 if (trial) return error.Undecryptable;
                 return self.bad();
             };
             var end = len;
             while (end > 0 and plain[end - 1] == 0) end -= 1;
-            if (end == 0) return self.unexpected(plain);
-            const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected(plain);
-            if (content != .application and end == 1) return self.unexpected(plain);
+            if (end == 0) return self.unexpected();
+            const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected();
+            if (content != .application and end == 1) return self.unexpected();
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
@@ -217,9 +216,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.deinit();
             return error.BadRecord;
         }
-        /// An authenticated record the protocol forbids: its plaintext is erased with the epoch.
-        fn unexpected(self: *Self, plain: []u8) error{UnexpectedRecord} {
-            std.crypto.secureZero(u8, plain);
+        /// An authenticated record the protocol forbids: the epoch is erased; the plaintext is the
+        /// record buffer's, whose owner erases it.
+        fn unexpected(self: *Self) error{UnexpectedRecord} {
             self.deinit();
             return error.UnexpectedRecord;
         }
@@ -228,8 +227,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
 fn overlap(a: []const u8, b: []const u8) bool {
     @setRuntimeSafety(true);
     if (a.len == 0 or b.len == 0) return false;
-    const x = @intFromPtr(a.ptr); // safe: live address used only for overlap validation.
-    const y = @intFromPtr(b.ptr); // safe: live address used only for overlap validation.
+    const x = @intFromPtr(a.ptr); // aegis: no-danger: live address used only for overlap validation.
+    const y = @intFromPtr(b.ptr); // aegis: no-danger: live address used only for overlap validation.
     return if (x <= y) y - x < a.len else x - y < b.len;
 }
 comptime {

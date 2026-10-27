@@ -93,9 +93,10 @@ pub const SealError = error{BufferTooSmall};
 /// Seals `state` under `key` with a fresh `salt` from the handshake's entropy.
 pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *const State, out: []u8) SealError![]u8 {
     @setRuntimeSafety(true);
-    var plain_buf: [max_plain]u8 = undefined;
-    defer std.crypto.secureZero(u8, &plain_buf);
-    const plain = encode(state, &plain_buf);
+    var plain_buf_owner: aegis.Secret([max_plain]u8) = .init(undefined);
+    defer plain_buf_owner.deinit();
+    const plain_buf = plain_buf_owner.exposeMut();
+    const plain = encode(state, plain_buf);
     const total = header_length + plain.len + Aead.tag_length;
     if (out.len < total) return error.BufferTooSmall;
     out[0] = format(state.version, state.datagram);
@@ -123,8 +124,9 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
     };
     const key = ring.find(ticket[1..9], now) orelse return error.Undecryptable;
     const salt = ticket[9..][0..salt_length];
-    var plain_buf: [max_plain]u8 = undefined;
-    defer std.crypto.secureZero(u8, &plain_buf);
+    var plain_buf_owner: aegis.Secret([max_plain]u8) = .init(undefined);
+    defer plain_buf_owner.deinit();
+    const plain_buf = plain_buf_owner.exposeMut();
     const length = ticket.len - header_length - Aead.tag_length;
     const plain = plain_buf[0..length];
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
@@ -144,12 +146,13 @@ fn derive(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.
 
 fn deriveKernel(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.key_length]u8) void {
     @setRuntimeSafety(true);
-    var prk = Hkdf.extract(salt, key.material.expose());
-    defer std.crypto.secureZero(u8, &prk);
+    var prk_owner: aegis.Secret([Hkdf.prk_length]u8) = .init(Hkdf.extract(salt, key.material.expose()));
+    defer prk_owner.deinit();
+    const prk = prk_owner.expose();
     var info: [16 + 8]u8 = undefined;
     info[0..16].* = "cloak ticket v1\x00".*;
     info[16..24].* = key.id;
-    Hkdf.expand(out, &info, prk);
+    Hkdf.expand(out, &info, prk.*);
 }
 
 fn encode(state: *const State, out: *[max_plain]u8) []const u8 {

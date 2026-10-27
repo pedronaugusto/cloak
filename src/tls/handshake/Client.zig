@@ -5,6 +5,7 @@
 //! records and QUIC levels belong to the callers that translate its outputs.
 const std = @import("std");
 const aegis = @import("aegis");
+const Buffer = @import("../wire/Buffer.zig");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
@@ -281,7 +282,8 @@ const Scratch = struct {
     options: Options = undefined,
     flight: Flight = .{},
     transcripts: Transcripts = .{},
-    random: [32]u8 = @splat(0),
+    /// A nonce, and with ECH the inner hello's, which only the client-facing server reads.
+    random: aegis.Secret([32]u8) = .init(@splat(0)),
     session: [32]u8 = @splat(0),
     session_len: u8 = 0,
     shares: [2]?Exchange.Share = @splat(null),
@@ -311,7 +313,7 @@ const Scratch = struct {
     /// schedules take (a plain key's own, an imported one's derived, `Psk.derive`), 48 bytes each,
     /// and the imported identities' bytes; owned, allocated only for a client with such keys.
     externals: []External13 = &.{},
-    external_keys: []u8 = &.{},
+    external_keys: Buffer = .{},
     imported: []u8 = &.{},
     /// TLS 1.2: a ServerKeyExchange that came where a CertificateStatus might have, owned; it is
     /// taken once the chain it follows is verified.
@@ -330,10 +332,10 @@ const Scratch = struct {
     cr_delegated_len: ?u16 = null,
     /// TLS 1.2: the certificate types a CertificateRequest named (Client12.rsa_sign, ecdsa_sign).
     cr_types: u8 = 0,
-    sign_content: [Messages.max_signed]u8 = undefined,
+    sign_content: aegis.Secret([Messages.max_signed]u8) = .init(@splat(0)),
     sign_content_len: u8 = 0,
     /// Fresh noise for the hedged client signature, drawn with the first entropy.
-    sign_noise: [certificates.PrivateKey.max_noise]u8 = @splat(0),
+    sign_noise: aegis.Secret([certificates.PrivateKey.max_noise]u8) = .init(@splat(0)),
     // TLS 1.2: the server's ECDHE public value and the client's share for it.
     /// The longest classical public value: P-521's uncompressed point.
     server_public: [133]u8 = undefined,
@@ -342,16 +344,31 @@ const Scratch = struct {
     ech: EchScratch = .{},
 };
 
+/// ECH's course: offered with the first hello, accepted by a retry request (which binds the
+/// ServerHello to accept it too) or by the ServerHello, or rejected.
+const EchMachine = aegis.state.Machine(enum { none, offered, accepted_retry, accepted, rejected }, enum { offer, accept_retry, accept, reject }, .{ .initial = .none, .terminal = &.{ .accepted, .rejected }, .edges = &.{
+    .{ .from = .none, .on = .offer, .to = .offered },
+    .{ .from = .offered, .on = .accept_retry, .to = .accepted_retry },
+    .{ .from = .offered, .on = .accept, .to = .accepted },
+    .{ .from = .accepted_retry, .on = .accept, .to = .accepted },
+    .{ .from = .offered, .on = .reject, .to = .rejected },
+} });
+
+/// Moves ECH's status along its machine; every caller reaches it from a state the event leaves.
+fn echStep(e: *EchScratch, event: @FieldType(EchMachine.Edge, "on")) void {
+    _ = e.status.step(event) catch aegis.assert.never("ECH's status moves along its machine's edges");
+}
+
 /// Encrypted Client Hello in flight: until the server's first answer, two hellos and two
 /// transcripts run side by side, the outer one on the wire and the inner one the transcript of an
 /// accepted handshake.
 const EchScratch = struct {
-    status: enum { none, offered, accepted_retry, accepted, rejected } = .none,
+    status: EchMachine.Runtime(void) = .init({}),
     outer_random: [32]u8 = @splat(0),
-    /// The HPKE ephemeral key's input, used once.
-    ikm: [32]u8 = @splat(0),
+    /// The HPKE ephemeral key's input, erased once the context is set up from it.
+    ikm: ?aegis.Secret([32]u8) = null,
     /// Seeds the GREASE bytes: a GREASE extension, or a GREASE PSK in the outer hello.
-    seed: [32]u8 = @splat(0),
+    seed: aegis.Secret([32]u8) = .init(@splat(0)),
     context: ?Hpke.Context = null,
     enc: [Hpke.enc_length]u8 = undefined,
     inner: Transcripts = .{},
@@ -531,8 +548,9 @@ fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
     const gpa = self.gpa;
     const externals = try gpa.alloc(External13, count);
     errdefer gpa.free(externals);
-    const keys = try gpa.alloc(u8, count * 48);
-    errdefer gpa.free(keys);
+    var keys_owner: Buffer = .{};
+    errdefer keys_owner.free(gpa);
+    const keys = try keys_owner.ensure(gpa, count * 48);
     const imported_bytes = try gpa.alloc(u8, bytes);
     var at: usize = 0;
     var n: usize = 0;
@@ -553,7 +571,7 @@ fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
         }
     }
     scratch.externals = externals;
-    scratch.external_keys = keys;
+    scratch.external_keys = keys_owner;
     scratch.imported = imported_bytes;
     self.external_live = @truncate((@as(u16, 1) << @intCast(n)) - 1); // safe: n is at most eight
 }
@@ -714,7 +732,7 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
     if (self.established) return self.postAnswered(self.post_auth.?.provideEntropy(entropy, self.kept.credentials));
     if (self.state.phase() == .start) {
         var at: usize = 0;
-        self.scratch.?.random = entropy[0..32].*;
+        self.scratch.?.random.exposeMut().* = entropy[0..32].*;
         at += 32;
         if (self.sendsSessionId()) {
             self.scratch.?.session = entropy[at..][0..32].*;
@@ -731,13 +749,13 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
         switch (self.options.ech) {
             .off => {},
             .grease => {
-                e.seed = entropy[at..][0..32].*;
+                e.seed.exposeMut().* = entropy[at..][0..32].*;
                 at += 32;
             },
             .config_list => {
                 e.outer_random = entropy[at..][0..32].*;
-                e.ikm = entropy[at + 32 ..][0..32].*;
-                e.seed = entropy[at + 64 ..][0..32].*;
+                e.ikm = .init(entropy[at + 32 ..][0..32].*);
+                e.seed.exposeMut().* = entropy[at + 64 ..][0..32].*;
                 at += 96;
             },
         }
@@ -749,7 +767,7 @@ pub fn provideEntropy(self: *Client, entropy: []const u8) Error!void {
             self.options.hello.permutation = .{ .key = entropy[at..][0..16].* };
             at += 16;
         }
-        @memcpy(self.scratch.?.sign_noise[0 .. entropy.len - at], entropy[at..]);
+        @memcpy(self.scratch.?.sign_noise.exposeMut()[0 .. entropy.len - at], entropy[at..]);
         self.need_now = .none;
         try self.sendHello();
     } else {
@@ -781,17 +799,20 @@ fn releaseScratch(self: *Client) void {
     self.eraseShares();
     self.releaseEch();
     scratch.flight.deinit(self.gpa);
-    scratch.transcripts.release();
+    scratch.transcripts.deinit();
+    scratch.random.deinit();
+    scratch.sign_content.deinit();
+    scratch.sign_noise.deinit();
+    scratch.external_keys.free(self.gpa);
+    // The rest is public: what the hellos carry in the clear (the outer random, the session id,
+    // the cookies, the connection ID), the peer's certificates and the statements about them (its
+    // SCTs and OCSP response), a TLS 1.2 ServerKeyExchange, the PSK identities and the
+    // CertificateRequest's lists. Each secret above had its own owner.
     if (scratch.scts.len != 0) self.gpa.free(scratch.scts);
     if (scratch.ocsp.len != 0) self.gpa.free(scratch.ocsp);
     if (scratch.held_ske.len != 0) self.gpa.free(scratch.held_ske);
     if (scratch.externals.len != 0) self.gpa.free(scratch.externals);
-    if (scratch.external_keys.len != 0) {
-        std.crypto.secureZero(u8, scratch.external_keys);
-        self.gpa.free(scratch.external_keys);
-    }
     if (scratch.imported.len != 0) self.gpa.free(scratch.imported);
-    std.crypto.secureZero(u8, std.mem.asBytes(scratch));
     self.gpa.destroy(scratch);
     self.scratch = null;
     self.options = undefined;
@@ -802,7 +823,10 @@ fn releaseEch(self: *Client) void {
     const e = &self.scratch.?.ech;
     if (e.context) |*context| context.deinit();
     e.context = null;
-    std.crypto.secureZero(u8, &e.ikm);
+    if (e.ikm) |*ikm| ikm.deinit();
+    e.ikm = null;
+    e.seed.deinit();
+    e.inner.deinit();
     for ([_]*[]u8{ &e.ext, &e.retry_list }) |slot| if (slot.len != 0) {
         self.gpa.free(slot.*);
         slot.* = &.{};
@@ -827,7 +851,7 @@ fn echConfig(self: *const Client) ?Ech.Config {
 
 fn echRejected(self: *const Client) bool {
     const scratch = self.scratch orelse return false;
-    return scratch.ech.status == .rejected;
+    return scratch.ech.status.current() == .rejected;
 }
 
 pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
@@ -974,17 +998,15 @@ fn pskOffers(self: *const Client, out: *[Hello.max_psk_offers]Offer) []const Off
     var n: usize = 0;
     for (scratch.externals, 0..) |external, slot| {
         if (self.external_live & (@as(u8, 1) << @intCast(slot)) == 0) continue; // safe: at most eight slots
-        out[n] = .{ .identity = external.identity, .secret = scratch.external_keys[slot * 48 ..][0..external.hash.length()], .binder_len = external.hash.length(), .kind = external.kind, .slot = @intCast(slot) };
+        out[n] = .{ .identity = external.identity, .secret = scratch.external_keys.view()[slot * 48 ..][0..external.hash.length()], .binder_len = external.hash.length(), .kind = external.kind, .slot = @intCast(slot) };
         n += 1;
     }
     return out[0..n];
 }
 
 pub fn dropTicket12(self: *Client) void {
-    if (self.ticket12.len != 0) {
-        std.crypto.secureZero(u8, self.ticket12);
-        self.gpa.free(self.ticket12);
-    }
+    // A ticket is the server's ciphertext, sent back in the clear.
+    if (self.ticket12.len != 0) self.gpa.free(self.ticket12);
     self.ticket12 = &.{};
 }
 
@@ -1099,7 +1121,7 @@ pub fn signRequest(self: *const Client) SignRequest {
     if (self.established) return self.post_auth.?.signRequest();
     // Ed25519 in TLS 1.2 signs the handshake messages, not their digest.
     if (self.version == .tls12 and self.sign_scheme == .ed25519) return .{ .scheme = .ed25519, .content = self.scratch.?.transcripts.keptBytes(), .credential = self.credential.? };
-    return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12, .credential = self.credential.? };
+    return .{ .scheme = self.sign_scheme, .content = self.scratch.?.sign_content.expose()[0..self.scratch.?.sign_content_len], .prehashed = self.version == .tls12, .credential = self.credential.? };
 }
 
 /// Checks the signature against the identity's public key before using it.
@@ -1136,9 +1158,8 @@ pub fn provideParameters(self: *Client, accept: bool) Error!void {
 pub fn pop(self: *Client, out: *Emit) bool {
     @setRuntimeSafety(true);
     const scratch = self.scratch orelse {
-        const post = &(self.post orelse return false);
-        out.* = post.*;
-        std.crypto.secureZero(u8, std.mem.asBytes(&self.post));
+        const post = if (self.post) |*post| post else return false;
+        Flight.moveEmit(post, out);
         self.post = null;
         return true;
     };
@@ -1223,7 +1244,7 @@ fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
 fn sendHello(self: *Client) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    switch (scratch.ech.status) {
+    switch (scratch.ech.status.current()) {
         .none, .accepted_retry, .offered => if (self.options.ech == .config_list) return self.sendEchHello(),
         .rejected => return self.sendOuterHello(),
         .accepted => unreachable, // unreachable: acceptance is decided by the ServerHello, after the last hello
@@ -1240,7 +1261,7 @@ fn sendHello(self: *Client) Error!void {
         form = .{ .grease = scratch.ech.ext };
     }
     const dst = try self.reserve(self.helloCapacity(shares) + scratch.ech.ext.len);
-    const hello = try Hello.clientForm(dst, &scratch.random, scratch.session[0..scratch.session_len], scratch.legacy_cookie[0..scratch.legacy_cookie_len], shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption, form);
+    const hello = try Hello.clientForm(dst, scratch.random.expose(), scratch.session[0..scratch.session_len], scratch.legacy_cookie[0..scratch.legacy_cookie_len], shares, scratch.cookie[0..scratch.cookie_len], self.options.hello, resumption, form);
     self.writeBinders(&scratch.transcripts, offers, hello, resumption.bindersLength());
     try self.state.advance(.client_hello, .initial, .parsed, true);
     try self.queueMessage(.initial, hello);
@@ -1258,7 +1279,7 @@ fn resumeOffer(self: *const Client, offers: []const Offer, out: *[Hello.max_psk_
         if (offer.kind == .resumption) {
             const entry = self.offered.?.entry;
             // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
-            const now_ms = @divFloor(self.now.?.nanoseconds, std.time.ns_per_ms);
+            const now_ms = types.milliseconds(self.now.?);
             const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
             identity.age = @truncate(age +% entry.age_add);
         }
@@ -1295,8 +1316,9 @@ fn writeBinders(self: *const Client, transcripts: *const Transcripts, offers: []
 fn makeGrease(self: *Client, shares: []const Hello.Share, resumption: Hello.Resume) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    var drbg = std.Random.ChaCha.init(scratch.ech.seed);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&drbg));
+    var drbg_owner: aegis.Secret(std.Random.ChaCha) = .init(.init(scratch.ech.seed.expose().*));
+    defer drbg_owner.deinit();
+    const drbg = drbg_owner.exposeMut();
     var draw: [34]u8 = undefined;
     drbg.fill(&draw);
     var key = Hpke.deriveKeyPair(draw[2..34]);
@@ -1304,9 +1326,9 @@ fn makeGrease(self: *Client, shares: []const Hello.Share, resumption: Hello.Resu
     // The length the inner hello would have, encoded and padded with no name bound.
     var options = self.options.hello;
     options.min_version = .tls13;
-    const buf = try self.gpa.alloc(u8, self.helloCapacity(shares));
-    defer self.gpa.free(buf);
-    const encoded = try Hello.clientForm(buf, &scratch.random, "", "", shares, "", options, resumption, .encoded);
+    var buf: Buffer = .{};
+    defer buf.free(self.gpa);
+    const encoded = try Hello.clientForm(try buf.ensure(self.gpa, self.helloCapacity(shares)), scratch.random.expose(), "", "", shares, "", options, resumption, .encoded);
     const payload_len = Ech.paddedLength(encoded.len - 4, options.sni.len, 0) + Hpke.tag_length;
     const suite: Hpke.Suite = .{ .kdf = .hkdf_sha256, .aead = if (draw[1] & 1 == 0) .aes_128_gcm else .chacha20_poly1305 };
     const ext = try self.gpa.alloc(u8, 8 + Hpke.enc_length + 2 + payload_len);
@@ -1320,8 +1342,9 @@ fn makeGrease(self: *Client, shares: []const Hello.Share, resumption: Hello.Resu
 /// section 6.1.2), the same each time from the GREASE seed.
 fn greasePsk(self: *const Client, offers: []const Offer, storage: []u8, out: *[Hello.max_psk_offers]Hello.GreasePsk) []const Hello.GreasePsk {
     @setRuntimeSafety(true);
-    var drbg = std.Random.ChaCha.init(self.scratch.?.ech.seed);
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&drbg));
+    var drbg_owner: aegis.Secret(std.Random.ChaCha) = .init(.init(self.scratch.?.ech.seed.expose().*));
+    defer drbg_owner.deinit();
+    const drbg = drbg_owner.exposeMut();
     var skip: [34]u8 = undefined;
     drbg.fill(&skip);
     drbg.fill(storage);
@@ -1357,21 +1380,17 @@ fn sendEchHello(self: *Client) Error!void {
     const resumption = self.resumeOffer(offers, &identities);
     const binders = resumption.bindersLength();
     const capacity = self.helloCapacity(shares) + 64;
-    const inner_buf = try self.gpa.alloc(u8, capacity);
-    defer {
-        std.crypto.secureZero(u8, inner_buf);
-        self.gpa.free(inner_buf);
-    }
-    const inner = try Hello.clientForm(inner_buf, &scratch.random, session, "", shares, cookie, self.options.hello, resumption, .inner);
+    var inner_owner: Buffer = .{};
+    defer inner_owner.free(self.gpa);
+    const inner_buf = try inner_owner.ensure(self.gpa, capacity);
+    const inner = try Hello.clientForm(inner_buf, scratch.random.expose(), session, "", shares, cookie, self.options.hello, resumption, .inner);
     self.writeBinders(&e.inner, offers, inner, binders);
     try e.inner.commitOwn(inner);
     // The encoded inner hello, padded (RFC 9849 section 6.1.3): its binders are the inner one's.
-    const encoded_buf = try self.gpa.alloc(u8, capacity + 255 + 9 + 32);
-    defer {
-        std.crypto.secureZero(u8, encoded_buf);
-        self.gpa.free(encoded_buf);
-    }
-    const encoded = try Hello.clientForm(encoded_buf, &scratch.random, session, "", shares, cookie, self.options.hello, resumption, .encoded);
+    var encoded_owner: Buffer = .{};
+    defer encoded_owner.free(self.gpa);
+    const encoded_buf = try encoded_owner.ensure(self.gpa, capacity + 255 + 9 + 32);
+    const encoded = try Hello.clientForm(encoded_buf, scratch.random.expose(), session, "", shares, cookie, self.options.hello, resumption, .encoded);
     @memcpy(encoded[encoded.len - binders ..], inner[inner.len - binders ..]);
     const padded = Ech.paddedLength(encoded.len - 4, self.options.hello.sni.len, config.max_name_length);
     @memset(encoded_buf[encoded.len .. 4 + padded], 0);
@@ -1382,9 +1401,10 @@ fn sendEchHello(self: *Client) Error!void {
     if (first) {
         const info_buf = try self.gpa.alloc(u8, 8 + config.raw.len);
         defer self.gpa.free(info_buf);
-        e.context = Hpke.setupSender(suite, config.public_key[0..Hpke.public_length], Ech.info(info_buf, config.raw), &e.ikm, &e.enc) catch return error.InvalidOptions;
-        std.crypto.secureZero(u8, &e.ikm);
-        e.status = .offered;
+        e.context = Hpke.setupSender(suite, config.public_key[0..Hpke.public_length], Ech.info(info_buf, config.raw), e.ikm.?.expose(), &e.enc) catch return error.InvalidOptions;
+        e.ikm.?.deinit();
+        e.ikm = null;
+        echStep(e, .offer);
     }
     const ext_buf = try self.gpa.alloc(u8, 8 + Hpke.enc_length + 2 + payload_len);
     defer self.gpa.free(ext_buf);
@@ -1488,7 +1508,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     if (parsed.retry) return self.onRetry(msg, parsed, epoch, boundary);
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     self.noteConnectionId(parsed.connection_id);
-    if (self.options.ech == .config_list and self.scratch.?.ech.status != .rejected) try self.decideEch(msg, parsed);
+    if (self.options.ech == .config_list and self.scratch.?.ech.status.current() != .rejected) try self.decideEch(msg, parsed);
     if (self.retry_suite) |suite| if (suite != parsed.suite) return error.IllegalParameter;
     // A ticket not taken is spent all the same: it is never offered again.
     defer self.releaseOffer();
@@ -1565,26 +1585,25 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
         inline else => |tag| blk: {
             const Hash = suites.Hash(tag);
             const digest = e.inner.digestWith(&digest_buf, Hash.digest_length, zeroed);
-            const expected = Ech.confirmation(Hash, self.options.hello.transport, &scratch.random, Ech.accept_label, digest[0..Hash.digest_length]);
+            const expected = Ech.confirmation(Hash, self.options.hello.transport, scratch.random.expose(), Ech.accept_label, digest[0..Hash.digest_length]);
             break :blk aegis.secret.equal(8, &expected, msg[4 + 2 + 24 ..][0..8]).declassify("ECH acceptance shows in the keys that follow");
         },
     };
     if (e.context) |*context| context.deinit();
     e.context = null;
     if (accepted) {
-        e.status = .accepted;
-        scratch.transcripts.release();
-        std.crypto.secureZero(u8, std.mem.asBytes(&scratch.transcripts));
-        scratch.transcripts = e.inner;
+        echStep(e, .accept);
+        scratch.transcripts.deinit();
+        e.inner.moveInto(&scratch.transcripts);
         e.inner = .{};
         self.ech_accepted = true;
         return;
     }
     // A retry request that accepted ECH binds the ServerHello to accept it too.
-    if (e.status == .accepted_retry) return error.IllegalParameter;
-    e.status = .rejected;
+    if (e.status.current() == .accepted_retry) return error.IllegalParameter;
+    echStep(e, .reject);
     // The handshake is the outer hello's now, and so is the random a key log names.
-    scratch.random = e.outer_random;
+    scratch.random.exposeMut().* = e.outer_random;
     // The outer hello offered only a GREASE PSK: a server that selects it is lying.
     if (parsed.psk != null) return error.IllegalParameter;
     self.releaseOffer13();
@@ -1617,15 +1636,16 @@ fn makeTraffic(self: *const Client, out: *Traffic, suite: Suite13, secret: []con
 pub fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
     @setRuntimeSafety(true);
     const sink = self.options.key_log orelse return;
-    var line: [256]u8 = undefined;
-    defer std.crypto.secureZero(u8, &line);
+    var line_owner: aegis.Secret([256]u8) = .init(undefined);
+    defer line_owner.deinit();
+    const line = line_owner.exposeMut();
     const hex = "0123456789abcdef";
     var at: usize = 0;
     @memcpy(line[at..][0..label.len], label);
     at += label.len;
     line[at] = ' ';
     at += 1;
-    for (self.scratch.?.random) |b| {
+    for (self.scratch.?.random.expose()) |b| {
         line[at] = hex[b >> 4];
         line[at + 1] = hex[b & 15];
         at += 2;
@@ -1695,28 +1715,28 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
     if (parsed.ech) |got| {
         const zeroed = try self.gpa.dupe(u8, msg);
         defer self.gpa.free(zeroed);
-        const at = @intFromPtr(got) - @intFromPtr(msg.ptr); // safe: the confirmation is a slice of `msg`
+        const at = @intFromPtr(got) - @intFromPtr(msg.ptr); // aegis: no-danger: the confirmation is a slice of `msg`
         @memset(zeroed[at..][0..8], 0);
-        var confirm = e.inner;
+        var confirm = e.inner.fork();
+        defer confirm.deinit();
         try confirm.retry(zeroed);
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         switch (parsed.suite) {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const digest = confirm.digest(&digest_buf);
-                const expected = Ech.confirmation(Hash, self.options.hello.transport, &scratch.random, Ech.retry_accept_label, digest[0..Hash.digest_length]);
+                const expected = Ech.confirmation(Hash, self.options.hello.transport, scratch.random.expose(), Ech.retry_accept_label, digest[0..Hash.digest_length]);
                 accepted = aegis.secret.equal(8, &expected, got).declassify("ECH acceptance shows in the keys that follow");
             },
         }
-        std.crypto.secureZero(u8, std.mem.asBytes(&confirm));
     }
     if (accepted) {
-        e.status = .accepted_retry;
+        echStep(e, .accept_retry);
         try e.inner.retry(msg);
         return;
     }
-    e.status = .rejected;
-    scratch.random = e.outer_random;
+    echStep(e, .reject);
+    scratch.random.exposeMut().* = e.outer_random;
     if (e.context) |*context| context.deinit();
     e.context = null;
     self.releaseOffer13();
@@ -1739,7 +1759,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
     try self.state.advance(.encrypted_extensions, epoch, .parsed, boundary);
     const e = &self.scratch.?.ech;
     const parsed = try Hello.encrypted(msg, self.options.hello, self.options.ech == .config_list or e.ext.len != 0);
-    if (parsed.ech) |list| switch (e.status) {
+    if (parsed.ech) |list| switch (e.status.current()) {
         // Retry configurations answer only a hello whose ECH the server did not use.
         .accepted => return error.UnsolicitedExtension,
         .rejected => e.retry_list = try self.gpa.dupe(u8, list),
@@ -1950,19 +1970,19 @@ fn continueFlight(self: *Client) Error!void {
     try self.state.advance(.local_certificate, .handshake, .parsed, true);
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const content = Messages.signedContent(&self.scratch.?.sign_content, false, self.scratch.?.transcripts.digest(&digest_buf));
+    const content = Messages.signedContent(self.scratch.?.sign_content.exposeMut(), false, self.scratch.?.transcripts.digest(&digest_buf));
     // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
     self.scratch.?.sign_content_len = @intCast(content.len);
     self.sign_scheme = scheme;
     if (delegated) |credential| {
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-        const signature = credential.sign(content, self.scratch.?.sign_noise[0..credential.noiseLength()], &out) catch return error.SigningFailed;
+        const signature = credential.sign(content, self.scratch.?.sign_noise.expose()[0..credential.noiseLength()], &out) catch return error.SigningFailed;
         return self.sendCertificateVerify(signature);
     }
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (auth.identity.noiseLength()) |noise_length| {
         var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-        const signature = Possession.sign(auth.identity, scheme, content, self.scratch.?.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+        const signature = Possession.sign(auth.identity, scheme, content, self.scratch.?.sign_noise.expose()[0..noise_length], &out) catch return error.SigningFailed;
         return self.sendCertificateVerify(signature);
     }
     self.need_now = .sign;
@@ -2052,7 +2072,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
     if (self.version != .tls13 or ticket.lifetime == 0 or self.external_used) return;
     const keys = if (self.keys) |*keys| keys else return;
     const now_s = types.seconds(now);
-    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const max_age = types.spanSeconds(resumption.max_age);
     const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
     const expires = @min(now_s +| @as(i64, ticket.lifetime), @min(by_age, self.auth_expires));
     if (expires <= now_s) return;
@@ -2067,7 +2087,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .suite = suites.Suite.from13(tag),
                 .secret = psk.expose(),
                 .age_add = ticket.age_add,
-                .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+                .received_ms = types.milliseconds(now),
                 .expires = expires,
                 .origin = self.origin,
                 .auth_expires = self.auth_expires,

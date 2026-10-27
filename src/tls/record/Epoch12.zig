@@ -62,10 +62,9 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             @setRuntimeSafety(true);
             aegis.assert.pre(!self.closed and self.owner == .software, "only keys this epoch holds are exported");
             @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
-            var iv = self.iv.expose().*;
+            const iv = keys.iv.exposeMut();
+            iv.* = self.iv.expose().*;
             if (explicit != 0) std.mem.writeInt(u64, iv[4..12], self.sequence.raw(), .big);
-            keys.iv.exposeMut().* = iv;
-            std.crypto.secureZero(u8, &iv);
             keys.sequence = self.sequence.raw();
         }
 
@@ -146,7 +145,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             const len = wire.len - overhead;
             if (content != .application and len == 0) return self.bad();
             const cipher_text = wire[5 + explicit ..][0..len];
-            const in_place = @intFromPtr(out.ptr) == @intFromPtr(wire.ptr) + 5; // safe: live addresses compared only to detect the in-buffer form
+            const in_place = @intFromPtr(out.ptr) == @intFromPtr(wire.ptr) + 5; // aegis: no-danger: live addresses compared only to detect the in-buffer form
             const skip: usize = if (in_place) explicit else 0;
             if (out.len < skip + len) return error.BufferTooSmall;
             const plain = out[skip..][0..len];
@@ -154,10 +153,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             try self.admit(len);
             // The peer chooses the explicit nonce; it is authenticated through the tag.
             const counter = if (explicit != 0) std.mem.readInt(u64, wire[5..13], .big) else self.sequence.raw();
-            Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch {
-                std.crypto.secureZero(u8, plain);
-                return self.bad();
-            };
+            Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch return self.bad();
             self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
             self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain };
@@ -173,8 +169,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
 fn overlap(a: []const u8, b: []const u8) bool {
     @setRuntimeSafety(true);
     if (a.len == 0 or b.len == 0) return false;
-    const x = @intFromPtr(a.ptr); // safe: live address used only for overlap validation.
-    const y = @intFromPtr(b.ptr); // safe: live address used only for overlap validation.
+    const x = @intFromPtr(a.ptr); // aegis: no-danger: live address used only for overlap validation.
+    const y = @intFromPtr(b.ptr); // aegis: no-danger: live address used only for overlap validation.
     return if (x <= y) y - x < a.len else x - y < b.len;
 }
 

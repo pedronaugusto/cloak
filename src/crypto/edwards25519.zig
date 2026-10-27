@@ -13,6 +13,7 @@
 //! it is at least 2^255, and every scalar passed here (below L, or L itself) is below that, so
 //! a point with a small-order component gives [h]A + [s]B as written, as std computes it.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const s2n = @import("field/s2n.zig");
 const Fe = @import("field/curve25519.zig").Fe;
 const Montgomery = @import("field/Montgomery.zig");
@@ -112,8 +113,9 @@ pub fn With(comptime chosen: Backend, comptime variant: ?s2n.Variant) type {
             switch (chosen) {
                 .fiat => portable.base(out, scalar),
                 .s2n => {
-                    var words: struct { point: Affine, scalar: [4]u64 } = undefined;
-                    defer std.crypto.secureZero(u8, std.mem.asBytes(&words));
+                    var owner: Secret(struct { point: Affine, scalar: [4]u64 }) = .init(undefined);
+                    defer owner.deinit();
+                    const words = owner.exposeMut();
                     words.scalar = toWords(scalar);
                     const F = fn (*[8]u64, *const [4]u64) callconv(.c) void;
                     const f = if (alt()) s2n.routine(F, "edwards25519_scalarmulbase_alt") else s2n.routine(F, "edwards25519_scalarmulbase");
@@ -172,11 +174,12 @@ pub fn reduce64(wide: *const [64]u8) [32]u8 {
 
 /// a * b + c mod L, for any 256-bit little-endian a, b and c.
 pub fn mulAdd(a: *const [32]u8, b: *const [32]u8, c: *const [32]u8) [32]u8 {
-    var product = Scalar.reduce(toWords(a)).mul(Scalar.reduce(toWords(b)));
-    defer std.crypto.secureZero(u64, &product.limbs);
-    var sum = product.add(Scalar.reduce(toWords(c)));
-    defer std.crypto.secureZero(u64, &sum.limbs);
-    return toBytes(sum);
+    var owner: Secret(struct { product: Scalar, sum: Scalar }) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
+    s.product = Scalar.reduce(toWords(a)).mul(Scalar.reduce(toWords(b)));
+    s.sum = s.product.add(Scalar.reduce(toWords(c)));
+    return toBytes(s.sum);
 }
 
 /// Whether a little-endian scalar is below L (RFC 8032 5.1.7's check on S).
@@ -185,8 +188,9 @@ pub fn isCanonical(s: *const [32]u8) bool {
 }
 
 fn toBytes(a: Scalar) [32]u8 {
-    var value = a.toInt();
-    defer std.crypto.secureZero(u64, &value);
+    var owner: Secret([4]u64) = .init(a.toInt());
+    defer owner.deinit();
+    const value = owner.exposeMut();
     var out: [32]u8 = undefined;
     for (0..4) |i| std.mem.writeInt(u64, out[8 * i ..][0..8], value[i], .little);
     return out;
@@ -278,8 +282,9 @@ const portable = struct {
     /// Sixty-four windows from the top, each four doublings and the addition of a table entry
     /// found by scanning all sixteen.
     fn base(out: *[encoded_length]u8, scalar: *const [32]u8) void {
-        var s: BaseState = undefined;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&s));
+        var owner: Secret(BaseState) = .init(undefined);
+        defer owner.deinit();
+        const s = owner.exposeMut();
         s.q = Point.identity;
         var i: usize = 64;
         while (i > 0) {

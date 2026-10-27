@@ -6,6 +6,7 @@
 //! `DecryptionFailed`, says nothing of which check failed: Manger's attack needs exactly that.
 //! Only a decoded message's length leaves the mask, once the whole encoding has held.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const ct = @import("field/Montgomery.zig");
 
 /// The hashes OAEP's label hash and MGF1 take: SHA-1 (JOSE's RSA-OAEP), SHA-256, SHA-384 and
@@ -67,8 +68,9 @@ pub fn mgf1(hash: Hash, seed: []const u8, out: []u8) void {
                 var count: [4]u8 = undefined;
                 std.mem.writeInt(u32, &count, counter, .big);
                 h.update(&count);
-                var block = h.finalResult();
-                defer std.crypto.secureZero(u8, &block);
+                var block_owner: Secret([H.digest_length]u8) = .init(h.finalResult());
+                defer block_owner.deinit();
+                const block = block_owner.expose();
                 const take = @min(block.len, out.len - at);
                 for (out[at..][0..take], block[0..take]) |*o, b| o.* ^= b;
                 at += take;
@@ -123,8 +125,9 @@ pub fn decode(scheme: Oaep, em: []const u8, out: []u8) DecodeError![]u8 {
     const limit = maxMessage(scheme.hash, em.len) orelse return error.DecryptionFailed;
     if (out.len < limit or em.len > max_em) return error.DecryptionFailed;
     const k = em.len;
-    var buffer: [max_em]u8 = undefined;
-    defer std.crypto.secureZero(u8, buffer[0..k]);
+    var buffer_owner: Secret([max_em]u8) = .init(undefined);
+    defer buffer_owner.deinit();
+    const buffer = buffer_owner.exposeMut();
     // seed = maskedSeed ^ MGF(maskedDB), DB = maskedDB ^ MGF(seed), in one owned copy.
     @memcpy(buffer[0..k], em);
     const seed = buffer[1..][0..h];

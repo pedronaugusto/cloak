@@ -1,4 +1,5 @@
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Base64 = @import("Base64.zig");
 const shakedown = @import("shakedown");
 
@@ -45,9 +46,11 @@ test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: byte round trip a
         try Base64.decode(output[0..len], text);
         try std.testing.expect(std.mem.eql(u8, input[0..len], output[0..len]));
     }
-    @memset(&output, 0xa5);
-    try std.testing.expectError(error.InvalidBase64, Base64.decode(&output, "AA=="));
-    try std.testing.expect(std.mem.allEqual(u8, &output, 0));
+    // A refused decode leaves its output to the caller's owner, which erases it.
+    var owner: Secret([256]u8) = .init(@splat(0xa5));
+    try std.testing.expectError(error.InvalidBase64, Base64.decode(owner.exposeMut(), "AA=="));
+    owner.deinit();
+    try std.testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&owner), 0));
 }
 
 test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: generated round trip)" {

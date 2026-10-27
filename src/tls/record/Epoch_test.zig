@@ -21,7 +21,9 @@ test "F35 catalogue_record_outer_type_and_wire_aad" {
             var out: [128]u8 = @splat(0xa5);
             try std.testing.expectError(error.BadRecord, rx.open(changed[0..sealed.len], &out));
             try std.testing.expectError(error.Closed, rx.open(sealed, &out));
-            if (i >= 5) try std.testing.expect(std.mem.allEqual(u8, out[0 .. sealed.len - 21], 0));
+            // A refused record leaves no plaintext: each AEAD checks the tag before it decrypts,
+            // and CCM, which must decrypt first, puts the ciphertext back.
+            if (i >= 5) try std.testing.expect(std.mem.find(u8, &out, "record payload") == null);
         }
     }
 }

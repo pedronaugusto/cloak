@@ -12,6 +12,7 @@
 //! that is wiped before they return; callers run them inside `aegis.secret.scrubbed`, which
 //! scrubs what the field's assembly leaves below.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Montgomery = @import("field/Montgomery.zig");
 
 pub const Params = struct {
@@ -269,8 +270,9 @@ pub fn Curve(comptime params: Params) type {
             multiples[0] = Jacobian.fromAffine(p);
             multiples[1] = multiples[0].dbl();
             for (2..16) |i| multiples[i] = if (i % 2 == 1) multiples[i / 2].dbl() else multiples[i - 1].addPublic(&multiples[0]);
-            var s: Scratch = undefined;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&s));
+            var owner: Secret(Scratch) = .init(undefined);
+            defer owner.deinit();
+            const s = owner.exposeMut();
             s.limbs = Scalar.limbsFromBytes(scalar);
             recode(window_bits, &s.limbs, windows, &s.digits);
             s.acc = Jacobian.identity;
@@ -404,8 +406,9 @@ pub fn Curve(comptime params: Params) type {
 
         /// x(R) mod n for R = k*G, as a scalar in Montgomery form, or null if R is the identity.
         pub fn signR(k: *const [scalar_length]u8) ?Scalar {
-            var r = baseMul(k);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&r));
+            var owner: Secret(@TypeOf(baseMul(k))) = .init(baseMul(k));
+            defer owner.deinit();
+            const r = owner.expose();
             if (r.z.isZero()) return null;
             const x = r.affine().x.toBytes();
             var padded: [@max(scalar_length, field_length)]u8 = @splat(0);

@@ -192,7 +192,7 @@ test "fuzz PKCS#12 key bags, plain and shrouded" {
             const seeds = [_][]const u8{ keyOf(.p256), keyOf(.ed25519), shrouded_iter1 };
             const input = inputs.draw(case, &buffer, &seeds, 64);
             var bag_password = try Pbe.Password.init(std.testing.allocator, password, false, .{});
-            defer bag_password.deinit();
+            defer bag_password.deinit(std.testing.allocator);
             for ([_]bool{ false, true }) |shrouded| {
                 if (PrivateKey.parseBag(std.testing.allocator, input, shrouded, &bag_password, .{ .iterations = 4 })) |key| key.deinit() else |_| {}
             }

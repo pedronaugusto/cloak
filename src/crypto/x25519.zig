@@ -9,6 +9,7 @@
 const std = @import("std");
 const s2n = @import("field/s2n.zig");
 const Fe = @import("field/curve25519.zig").Fe;
+const Secret = @import("aegis").secret.Secret;
 
 pub const length = 32;
 
@@ -36,8 +37,10 @@ pub fn With(comptime chosen: Backend, comptime variant: ?s2n.Variant) type {
             switch (chosen) {
                 .fiat => ladder(out, scalar, u),
                 .s2n => {
-                    var words: [3][4]u64 = undefined;
-                    defer std.crypto.secureZero(u64, &words[1]);
+                    // The scalar, the result, and the u-coordinate beside them.
+                    var owner: Secret([3][4]u64) = .init(undefined);
+                    defer owner.deinit();
+                    const words = owner.exposeMut();
                     words[1] = toWords(scalar);
                     words[2] = toWords(u);
                     const F = fn (*[4]u64, *const [4]u64, *const [4]u64) callconv(.c) void;
@@ -45,7 +48,6 @@ pub fn With(comptime chosen: Backend, comptime variant: ?s2n.Variant) type {
                         s2n.routine(F, "curve25519_x25519")(&words[0], &words[1], &words[2]);
                     } else s2n.routine(F, "curve25519_x25519_alt")(&words[0], &words[1], &words[2]);
                     out.* = fromWords(&words[0]);
-                    std.crypto.secureZero(u64, &words[0]);
                 },
             }
         }
@@ -54,8 +56,9 @@ pub fn With(comptime chosen: Backend, comptime variant: ?s2n.Variant) type {
             switch (chosen) {
                 .fiat => ladder(out, scalar, &nine),
                 .s2n => {
-                    var words: [2][4]u64 = undefined;
-                    defer std.crypto.secureZero(u8, std.mem.asBytes(&words));
+                    var owner: Secret([2][4]u64) = .init(undefined);
+                    defer owner.deinit();
+                    const words = owner.exposeMut();
                     words[1] = toWords(scalar);
                     const F = fn (*[4]u64, *const [4]u64) callconv(.c) void;
                     if ((variant orelse s2n.chosen()) == .plain) {
@@ -127,8 +130,9 @@ const LadderState = struct { k: [length]u8, x1: Fe, x2: Fe, z2: Fe, x3: Fe, z3: 
 
 /// RFC 7748 5's ladder, step for step.
 fn ladder(out: *[length]u8, scalar: *const [length]u8, u: *const [length]u8) void {
-    var s: LadderState = undefined;
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&s));
+    var owner: Secret(LadderState) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
     s.k = scalar.*;
     s.k[0] &= 248;
     s.k[31] &= 127;

@@ -13,9 +13,9 @@ pub const Block = struct {
     storage: SecretBytes,
     legacy: bool = false,
     dek: ?[]const u8 = null,
-    pub fn deinit(b: *Block, _: std.mem.Allocator) void {
+    pub fn deinit(b: *Block, gpa: std.mem.Allocator) void {
         @setRuntimeSafety(true);
-        b.storage.deinit();
+        b.storage.deinit(gpa);
         b.* = undefined;
     }
 };
@@ -45,7 +45,7 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     const body_start = begin.len + cut + 5;
     const end = std.mem.findPos(u8, rest, body_start, ending) orelse return error.InvalidPem;
     var compact_owner = try SecretBytes.init(gpa, end - body_start);
-    defer compact_owner.deinit();
+    defer compact_owner.deinit(gpa);
     compact_owner.resizeWithinCapacity(end - body_start) catch return error.InputLimit;
     const compact = compact_owner.exposeMut();
     var len: usize = 0;
@@ -72,7 +72,7 @@ pub fn next(it: *Pem, gpa: std.mem.Allocator, max_bytes: usize) Error!?Block {
     const size = Base64.size(compact[0..len]) catch return error.InvalidPem;
     if (size == 0 or size > max_bytes) return error.InputLimit;
     var storage = try SecretBytes.init(gpa, size);
-    errdefer storage.deinit();
+    errdefer storage.deinit(gpa);
     storage.resizeWithinCapacity(size) catch return error.InputLimit;
     const der = storage.exposeMut();
     Base64.decode(der, compact[0..len]) catch return error.InvalidPem;

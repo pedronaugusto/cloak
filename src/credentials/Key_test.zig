@@ -150,18 +150,9 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as
         const file, const hash, const curve, const width = row;
         const key = try PrivateKey.parse(gpa, @embedFile(file), .{});
         defer key.deinit();
-        const pair = key.state.material.expose().*;
-        var point: [133]u8 = undefined;
+        const pair = key.state.get().material.expose().*;
         const encoded: []const u8 = switch (pair) {
-            .p256 => |*p| blk: {
-                point[0..65].* = p.public_key.toUncompressedSec1();
-                break :blk point[0..65];
-            },
-            .p384 => |*p| blk: {
-                point[0..97].* = p.public_key.toUncompressedSec1();
-                break :blk point[0..97];
-            },
-            .p521 => |*p| p.public[0..],
+            inline .p256, .p384, .p521 => |*p| p.public[0..],
             else => unreachable,
         };
         const public: certificate.Algorithm.PublicKey = .{ .ec = .{ .curve = curve, .bytes = encoded } };
