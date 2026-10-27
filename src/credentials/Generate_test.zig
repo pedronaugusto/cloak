@@ -198,3 +198,27 @@ test "an ML-DSA key in both forms whose seed and expanded key disagree is refuse
         try std.testing.expectError(error.InvalidKey, PrivateKey.parse(gpa, read.der, .{}));
     }
 }
+
+test "an ML-DSA key from its seed (RFC 9964's AKP priv) is the key its PKCS#8 holds, its public key checked when given" {
+    const text = @embedFile("testdata/mldsa44.seed.pem");
+    var read = try fixture(text);
+    defer read.deinit(gpa);
+    const seed = (try choice(read.der))[2..];
+    var parsed = try PrivateKey.parse(gpa, text, .{});
+    defer parsed.deinit();
+    var info_buffer: [PrivateKey.max_public_key_info]u8 = undefined;
+    const info = parsed.publicKeyInfo(&info_buffer);
+    const public = info[info.len - certificate.Algorithm.mldsaPublicKeyLength(.mldsa44) ..];
+    var key = try PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa44, .seed = seed, .public = public } });
+    defer key.deinit();
+    var der = try key.pkcs8(gpa);
+    defer der.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, read.der, der.expose());
+    try expectRoundTrip(key, .{ .mldsa = .mldsa44 });
+    // Another level's key from the same seed, a public key that is not the seed's, a short seed.
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa65, .seed = seed, .public = public } }));
+    var other: [1312]u8 = public[0..1312].*;
+    other[0] ^= 1;
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa44, .seed = seed, .public = &other } }));
+    try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa44, .seed = seed[1..] } }));
+}

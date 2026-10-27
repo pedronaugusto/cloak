@@ -229,18 +229,22 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
     }
 }
 
-/// An ML-DSA key from its 32-byte seed (FIPS 204 ML-DSA.KeyGen_internal), into `out`.
-pub fn mldsaFromSeed(level: mldsa.Level, seed: *const [32]u8, out: *Material) ParseError!void {
+/// An ML-DSA key from its 32-byte seed (FIPS 204 ML-DSA.KeyGen_internal; RFC 9881's seed form,
+/// RFC 9964's AKP `priv`), into `out`, its public key compared with `public` when one is given.
+/// The one path every seed outside DER takes.
+pub fn mldsaFromSeed(level: mldsa.Level, seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
+    if (seed.len != 32) return error.InvalidKey;
     var encoded_owner: Secret([34]u8) = .init(undefined);
     defer encoded_owner.deinit();
     const encoded = encoded_owner.exposeMut();
     encoded[0] = 0x80;
     encoded[1] = 32;
-    encoded[2..].* = seed.*;
-    return switch (level) {
-        inline else => |tag| mldsaKey(tag, encoded, out),
-    };
+    encoded[2..].* = seed[0..32].*;
+    switch (level) {
+        inline else => |tag| try mldsaKey(tag, encoded, out),
+    }
+    if (public) |p| if (!std.mem.eql(u8, p, out.mldsa.publicKey())) return error.InvalidKey;
 }
 
 fn attributes(bytes: []const u8) ParseError!void {

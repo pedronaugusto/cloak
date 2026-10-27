@@ -80,6 +80,9 @@ pub const Components = union(enum) {
     /// An X25519 key (RFC 7748, a JWK's OKP `d` and `x`, RFC 8037): the 32-byte private key and
     /// optionally the 32-byte public key. It agrees (`agree`) and signs nothing.
     x25519: struct { d: []const u8, public: ?[]const u8 = null },
+    /// An ML-DSA key by its 32-byte seed (RFC 9964's AKP `priv`, the only private form it
+    /// defines) and optionally its encoded public key (the AKP's `pub`).
+    mldsa: struct { level: certificate.Algorithm.MlDsa, seed: []const u8, public: ?[]const u8 = null },
 };
 
 pub const ComponentsError = std.mem.Allocator.Error || error{ InvalidKey, UnsupportedKey };
@@ -98,6 +101,7 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
         .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
         .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
         .x25519 => |x| parser.x25519Key(x.d, x.public, out),
+        .mldsa => |m| parser.mldsaFromSeed(m.level, m.seed, m.public, out),
     }) catch |err| return switch (err) {
         error.UnsupportedKey => error.UnsupportedKey,
         else => error.InvalidKey,
@@ -165,7 +169,7 @@ fn generateKey(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!Pri
                 else => .mldsa87,
             };
             // unreachable: every 32-byte seed is a key.
-            parser.mldsaFromSeed(level, draw[0..32], out) catch unreachable;
+            parser.mldsaFromSeed(level, draw[0..32], null, out) catch unreachable;
         },
         .rsa => |size| {
             var integers_owner: Secret(rsa_keygen.Integers) = .init(undefined);
