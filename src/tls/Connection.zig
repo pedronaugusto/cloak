@@ -197,7 +197,7 @@ tx_epoch: Epoch = .initial,
 record_limits: RecordLimits = .{},
 /// The most plaintext one record this end sends carries (`max_fragment`).
 max_fragment: u16 = 1 << 14,
-phase_now: std.atomic.Value(Phase) = .init(.handshaking),
+phase_now: aegis.Atomic(Phase) = .init(.handshaking),
 /// Set once the handshake completes: from then on the halves may run on two tasks.
 split: bool = false,
 /// What the handshake negotiated, taken as it completes, before the halves may run on two
@@ -225,16 +225,17 @@ early_skipped: usize = 0,
 early_done: bool = false,
 // Outbound.
 outbox: Outbox = .{},
-read_done: std.atomic.Value(bool) = .init(false),
-write_done: std.atomic.Value(bool) = .init(false),
+read_done: aegis.Atomic(Done) = .init(.open),
+write_done: aegis.Atomic(Done) = .init(.open),
 rx_asked_update: bool = false,
-/// The first failure, as an error value's integer; zero for none.
-failure: std.atomic.Value(u16) = .init(0),
-alert_sent: std.atomic.Value(u16) = .init(no_alert),
-alert_received: std.atomic.Value(u16) = .init(no_alert),
-/// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes.
-owed: std.atomic.Value(u8) = .init(0),
-owed_alert: std.atomic.Value(u8) = .init(0),
+/// The first failure.
+failure: aegis.Atomic(Failure) = .init(.none),
+alert_sent: aegis.Atomic(AlertCode) = .init(.none),
+alert_received: aegis.Atomic(AlertCode) = .init(.none),
+/// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes, which is
+/// the last this side sends.
+owed: aegis.Guarded(u8) = .init(0),
+owed_alert: aegis.Atomic(AlertCode) = .init(.none),
 /// The directions a kernel record layer holds: it seals or opens their records from then on.
 rx_kernel: bool = false,
 tx_kernel: bool = false,
@@ -242,7 +243,24 @@ tx_kernel: bool = false,
 /// sends under the old keys (the KeyUpdate and what came before it) before it takes the new.
 rekey_at: ?u32 = null,
 
-const no_alert: u16 = 0x100;
+/// Whether a half is done: closed by close_notify, or shut.
+const Done = enum(u8) { open, done };
+/// An error of the connection, as its integer, for an atomic cell.
+const Failure = enum(u16) { none = 0, _ };
+/// An alert's byte, or none.
+const AlertCode = enum(u16) {
+    none = 0x100,
+    _,
+
+    fn of(value: Alert) AlertCode {
+        return @fromBackingInt(@as(u16, @backingInt(value)));
+    }
+
+    fn alert(code: AlertCode) ?Alert {
+        if (code == .none) return null;
+        return @fromBackingInt(@as(u8, @intCast(@backingInt(code)))); // safe: stored codes are alert bytes or none
+    }
+};
 /// A KeyUpdate message: its type, and its length with the header.
 const key_update_type: u8 = 24;
 const key_update_len: usize = 5;
@@ -430,24 +448,20 @@ pub fn phase(self: *const Connection) Phase {
 
 pub fn diagnostics(self: *const Connection) Diagnostics {
     // A fatal alert the read half owes is the one this side sends, written or not yet.
-    const sent = if (self.owed.load(.acquire) & owe_fatal != 0) self.owed_alert.load(.acquire) else self.alert_sent.load(.acquire);
-    return .{ .phase = self.phase(), .reason = self.failureError(), .alert_sent = alertOf(sent), .alert_received = alertOf(self.alert_received.load(.acquire)) };
-}
-
-fn alertOf(code: u16) ?Alert {
-    if (code == no_alert) return null;
-    return @fromBackingInt(@as(u8, @intCast(code))); // safe: stored codes are alert bytes or no_alert
+    const owed = self.owed_alert.load(.acquire);
+    const sent = if (owed != .none) owed else self.alert_sent.load(.acquire);
+    return .{ .phase = self.phase(), .reason = self.failureError(), .alert_sent = sent.alert(), .alert_received = self.alert_received.load(.acquire).alert() };
 }
 
 fn failureError(self: *const Connection) ?Error {
     const code = self.failure.load(.acquire);
-    if (code == 0) return null;
-    return @errorCast(@errorFromInt(code));
+    if (code == .none) return null;
+    return @errorCast(@errorFromInt(@backingInt(code)));
 }
 
 /// Records the first failure; a later one, from the other half, keeps it.
 fn recordFailure(self: *Connection, err: Error) void {
-    _ = self.failure.cmpxchgStrong(0, @intFromError(err), .acq_rel, .acquire);
+    _ = self.failure.cmpxchgStrong(.none, @fromBackingInt(@intFromError(err)), .acq_rel, .acquire);
     self.phase_now.store(.failed, .release);
 }
 
@@ -487,7 +501,7 @@ pub fn echRetryConfigs(self: *const Connection) ?[]const u8 {
 
 /// True once the peer sent close_notify: no more plaintext will arrive.
 pub fn readClosed(self: *const Connection) bool {
-    return self.read_done.load(.acquire);
+    return (self.read_done.load(.acquire) == .done);
 }
 
 pub const ExportError = Client.ExportError;
@@ -565,8 +579,8 @@ fn failRead(self: *Connection, err: Error) void {
     if (!self.split) return self.failWhole(err);
     if (self.phase() == .failed and self.rx == null) return;
     self.recordFailure(err);
-    if (alerts(err)) self.owed_alert.store(@backingInt(self.alertFor(err)), .release);
-    _ = self.owed.fetchOr(if (alerts(err)) owe_fatal | owe_teardown else owe_teardown, .seq_cst);
+    if (alerts(err)) self.owed_alert.store(.of(self.alertFor(err)), .release);
+    self.addOwed(if (alerts(err)) owe_fatal | owe_teardown else owe_teardown);
     if (self.rx) |*p| p.deinit();
     self.rx = null;
     self.plain_kind = null;
@@ -605,23 +619,29 @@ fn sendAlert(self: *Connection, level: u8, alert: Alert) void {
     const dst = self.outbox.tail(self.gpa, body.len + record_overhead, self.limits.output + max_record) catch return;
     const wire = self.sealRecord(.alert, &body, dst) catch return;
     self.outbox.commit(wire.len);
-    self.alert_sent.store(@backingInt(alert), .release);
+    self.alert_sent.store(.of(alert), .release);
 }
 
 /// Writes what the read half owes, in the write half: a fatal alert (then the write keys go), a
 /// KeyUpdate answering or asking for one, a warning no_renegotiation.
 fn writeOwed(self: *Connection) void {
     @setRuntimeSafety(true);
-    const bits = self.owed.swap(0, .acq_rel);
+    const bits = bits: {
+        var held = self.owed.acquire();
+        defer held.deinit();
+        const taken = held.value().*;
+        held.value().* = 0;
+        break :bits taken;
+    };
     if (bits & owe_fatal != 0) {
-        if (self.tx != null) self.sendAlert(2, @fromBackingInt(self.owed_alert.load(.acquire)));
+        if (self.tx != null) self.sendAlert(2, self.owed_alert.load(.acquire).alert().?);
     }
     if (self.phase() == .failed) {
         if (self.tx) |*p| p.deinit();
         self.tx = null;
         return;
     }
-    if (self.write_done.load(.acquire)) {
+    if ((self.write_done.load(.acquire) == .done)) {
         // Nothing more goes out: an answer never sent frees the next request all the same.
         if (bits & owe_auth != 0) self.hs.postAuth().?.sent();
         return;
@@ -635,13 +655,17 @@ fn writeOwed(self: *Connection) void {
 
 /// Owes the write half `bits`; written at once before the handshake completes.
 fn owe(self: *Connection, bits: u8) Error!void {
+    self.addOwed(bits);
     if (!self.split) {
-        _ = self.owed.fetchOr(bits, .seq_cst);
         self.writeOwed();
         if (self.failureError()) |err| return err;
-        return;
     }
-    _ = self.owed.fetchOr(bits, .seq_cst);
+}
+
+fn addOwed(self: *Connection, bits: u8) void {
+    var held = self.owed.acquire();
+    defer held.deinit();
+    held.value().* |= bits;
 }
 
 /// One record of `content` in the current transmit epoch.
@@ -671,10 +695,14 @@ fn sealRecord(self: *Connection, content: Protection.Content, body: []const u8, 
 /// The KeyUpdate answering the peer's request waits for the next application data, which `send`
 /// writes it before: requests received while this end is silent get one answer (RFC 8446 section
 /// 4.6.3). A kernel holding the write keys sends that data unseen, so there the answer is owed at
-/// once. A read-modify-write, so that a task that releases the write half and then asks cannot
-/// miss what the other task owed meanwhile.
+/// once. Read under the lock the other task owes under, so a task that releases the write half
+/// and then asks cannot miss what the other task owed meanwhile.
 pub fn owes(self: *Connection) bool {
-    const bits = self.owed.fetchOr(0, .seq_cst);
+    const bits = bits: {
+        var held = self.owed.acquire();
+        defer held.deinit();
+        break :bits held.value().*;
+    };
     return bits & ~owe_key_update != 0 or (bits != 0 and self.tx_kernel);
 }
 
@@ -836,7 +864,7 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
     if (self.tx.?.owner() == .next) {
         // A kernel has yet to take the keys of the last update: this one waits for it.
-        _ = self.owed.fetchOr(if (request_peer) owe_update_request else owe_key_update, .seq_cst);
+        self.addOwed(if (request_peer) owe_update_request else owe_key_update);
         return;
     }
     var message_buf: [5]u8 = undefined;
@@ -884,7 +912,7 @@ pub fn requestCertificate(self: *Connection) RequestError!u64 {
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     if (self.hs.role() != .server) return error.PostAuthUnavailable;
     const post = self.hs.postAuth() orelse return error.PostAuthUnavailable;
     var buf: [256 + @import("handshake/Authorities.zig").max_bytes]u8 = undefined;
@@ -950,7 +978,7 @@ pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     if (plaintext.len == 0) return 0;
     const n = @min(plaintext.len, self.sealLimit());
     if (self.outbox.pending().len + n + record_overhead > self.limits.output) return 0;
@@ -980,7 +1008,7 @@ pub fn keyUpdate(self: *Connection, request_peer: bool) SendError!void {
     defer timing.end();
     self.writeOwed();
     if (self.phase() != .connected) return error.NotConnected;
-    if (self.write_done.load(.acquire)) return error.WriteClosed;
+    if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
     // TLS 1.2 has none: a refusal, not a failure of the connection.
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
     self.sendKeyUpdate(request_peer) catch |err| return self.writeFailed(err);
@@ -993,17 +1021,17 @@ pub fn finish(self: *Connection) FinishError!void {
     defer timing.end();
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
-    if (self.write_done.load(.acquire)) return;
+    if ((self.write_done.load(.acquire) == .done)) return;
     if (self.phase() == .connected) {
         self.sendAlert(1, .close_notify);
     }
-    self.write_done.store(true, .release);
+    self.write_done.store(.done, .release);
     self.settlePhase();
 }
 
 /// Closed once both halves are done; either half may be the second.
 fn settlePhase(self: *Connection) void {
-    if (self.read_done.load(.acquire) and self.write_done.load(.acquire)) {
+    if ((self.read_done.load(.acquire) == .done) and (self.write_done.load(.acquire) == .done)) {
         _ = self.phase_now.cmpxchgStrong(.connected, .closed, .acq_rel, .acquire);
     }
 }
@@ -1065,8 +1093,8 @@ pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installe
         if (direction == .write and self.rekey_at != 0) return error.Unclean;
     } else {
         const done = switch (direction) {
-            .read => self.read_done.load(.acquire),
-            .write => self.write_done.load(.acquire),
+            .read => (self.read_done.load(.acquire) == .done),
+            .write => (self.write_done.load(.acquire) == .done),
         };
         if (done) return error.Closed;
         if (protection.kernelCipher() == null) return error.Unsupported;
@@ -1159,7 +1187,7 @@ pub fn receiveControl(self: *Connection, record_type: u8, plaintext: []const u8)
         self.rx = null;
         return error.Closed;
     }
-    if (self.read_done.load(.acquire)) return error.Closed;
+    if ((self.read_done.load(.acquire) == .done)) return error.Closed;
     self.controlChecked(record_type, plaintext) catch |err| return self.readFailed(err);
 }
 
@@ -1251,7 +1279,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
         .read => {
             aegis.assert.pre(self.rx_kernel, "records are counted by a kernel that holds the read keys");
             if (self.phase() == .failed) return error.Closed;
-            if (self.read_done.load(.acquire)) return;
+            if ((self.read_done.load(.acquire) == .done)) return;
             const p = if (self.rx) |*x| x else return error.Closed;
             if (p.owner() != .kernel) return;
             // Records past the control ones: application data came in between.
@@ -1259,7 +1287,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             p.account(records);
             if (p.remaining().records > p.recordLimit() / 4) return;
             if (p.tls12()) return self.readFailed(error.RecordLimit);
-            if (self.rx_asked_update or self.write_done.load(.acquire)) return;
+            if (self.rx_asked_update or (self.write_done.load(.acquire) == .done)) return;
             self.rx_asked_update = true;
             self.owe(owe_update_request) catch |err| return self.readFailed(err);
         },
@@ -1268,7 +1296,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             self.writeOwed();
             if (self.phase() == .failed) return error.Closed;
             // After close_notify nothing more is sealed, so nothing more is counted.
-            if (self.write_done.load(.acquire)) return;
+            if ((self.write_done.load(.acquire) == .done)) return;
             const p = if (self.tx) |*x| x else return error.Closed;
             if (p.owner() != .kernel) return;
             p.account(records);
@@ -1327,7 +1355,7 @@ pub fn receive(self: *Connection, input: []const u8) ReceiveError!usize {
         self.plain_kind = null;
         return error.Closed;
     }
-    if (self.read_done.load(.acquire)) return error.Closed;
+    if ((self.read_done.load(.acquire) == .done)) return error.Closed;
     return self.receiveChecked(input) catch |err| return self.readFailed(err);
 }
 
@@ -1336,7 +1364,7 @@ fn receiveChecked(self: *Connection, input: []const u8) ReceiveError!usize {
     var consumed: usize = 0;
     var records: usize = 0;
     while (true) {
-        if (self.blocked() or self.read_done.load(.acquire)) return consumed;
+        if (self.blocked() or (self.read_done.load(.acquire) == .done)) return consumed;
         if (self.plain_kind != null) {
             try self.dispatch();
             continue;
@@ -1511,7 +1539,7 @@ fn skipEarly(self: *Connection, len: usize) Error!void {
 /// Requests the peer's next write keys before this read epoch runs out.
 fn askForUpdate(self: *Connection) Error!void {
     @setRuntimeSafety(true);
-    if (self.rx_asked_update or self.phase() != .connected or self.write_done.load(.acquire) or self.rx.?.tls12()) return;
+    if (self.rx_asked_update or self.phase() != .connected or (self.write_done.load(.acquire) == .done) or self.rx.?.tls12()) return;
     const left = self.rx.?.remaining();
     if (left.records < 1024 or left.bytes < 64 * max_content) {
         self.rx_asked_update = true;
@@ -1538,9 +1566,9 @@ fn onAlert(self: *Connection) ReceiveError!void {
     // 5246 section 7.2) warns of nothing.
     const warning = body[0] == 1;
     const alert: Alert = @fromBackingInt(@intCast(body[1]));
-    self.alert_received.store(@backingInt(alert), .release);
+    self.alert_received.store(.of(alert), .release);
     if (alert == .close_notify and self.phase() == .connected) {
-        self.read_done.store(true, .release);
+        self.read_done.store(.done, .release);
         self.settlePhase();
         return;
     }
@@ -1593,7 +1621,7 @@ pub fn receiveEof(self: *Connection) Error!void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
-    if (self.read_done.load(.acquire)) return;
+    if ((self.read_done.load(.acquire) == .done)) return;
     if (self.phase() != .failed) {
         self.failRead(error.Truncated);
     }

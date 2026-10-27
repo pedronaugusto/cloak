@@ -8,6 +8,7 @@
 //! question to the processor, cached.
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 
 /// Whether s2n-bignum's assembly is in this build: x86_64, and AArch64 where the object format
 /// is ELF or Mach-O (its AArch64 files carry no COFF directives).
@@ -46,14 +47,17 @@ const fixed: ?Variant = switch (builtin.cpu.arch) {
     else => null,
 };
 
-/// The processor's answer, asked once: 0 unasked, else the variant's value plus one. Racing
-/// first calls reach the same answer.
+/// The processor's answer, asked once. Racing first calls reach the same answer.
 const asked = struct {
-    var state: std.atomic.Value(u8) = .init(0);
+    const Answer = enum(u8) { unasked, plain, alt };
+    var state: aegis.Atomic(Answer) = .init(.unasked);
 
     fn get() Variant {
-        const known = state.load(.monotonic);
-        if (known != 0) return @fromBackingInt(@intCast(known - 1));
+        switch (state.load(.monotonic)) {
+            .unasked => {},
+            .plain => return .plain,
+            .alt => return .alt,
+        }
         const variant: Variant = switch (builtin.cpu.arch) {
             .x86_64 => if (x86HasMulx()) .plain else .alt,
             .aarch64 => if (wideMultiplier()) .alt else .plain,
@@ -63,9 +67,11 @@ const asked = struct {
         return variant;
     }
 
-    /// Widened before the one is added: the variant's own backing integer is a u1.
     fn remember(variant: Variant) void {
-        state.store(@as(u8, @backingInt(variant)) + 1, .monotonic);
+        state.store(switch (variant) {
+            .plain => .plain,
+            .alt => .alt,
+        }, .monotonic);
     }
 };
 

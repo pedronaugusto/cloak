@@ -513,7 +513,7 @@ fn storeTicket(self: anytype) void {
     if (self.ticket12.len == 0) return;
     const now = self.now orelse return;
     const now_s = certificates.types.seconds(now);
-    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const max_age = certificates.types.spanSeconds(resumption.max_age);
     const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
     var expires = @min(by_age, self.auth_expires);
     if (self.ticket12_hint != 0) expires = @min(expires, now_s +| @as(i64, self.ticket12_hint));
@@ -526,7 +526,7 @@ fn storeTicket(self: anytype) void {
         .secret = self.tls12.?.master.expose(),
         .group = self.group.?,
         .age_add = 0,
-        .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+        .received_ms = certificates.types.milliseconds(now),
         .expires = expires,
         .origin = self.origin,
         .auth_expires = self.auth_expires,

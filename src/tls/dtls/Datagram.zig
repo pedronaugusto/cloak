@@ -534,9 +534,19 @@ fn keepOwnCid(self: *Datagram, cid: ?[]const u8) void {
     self.own_cid_len = @intCast(own.len); // safe: validated at 255 bytes
 }
 
+/// A wait at std's resolution, for the timers' arithmetic: checked, the unit carried.
+const Span = aegis.units.Duration(.nanosecond, i96);
+
+/// `wait`, or `cap` where `wait` is longer.
+fn shorter(wait: Span, cap: std.Io.Duration) std.Io.Duration {
+    const limit = Span.fromIoDuration(cap, .exact);
+    return (if (wait.compare(limit) == .gt) limit else wait).toIoDuration();
+}
+
 fn checkCommon(mtu: u16, timing: Timing) InitError!void {
     if (mtu < min_mtu or mtu > max_mtu) return error.InvalidOptions;
-    if (timing.initial.nanoseconds <= 0 or timing.max.nanoseconds < timing.initial.nanoseconds) return error.InvalidOptions;
+    const initial = Span.fromIoDuration(timing.initial, .exact);
+    if (initial.compare(.fromRaw(0)) != .gt or Span.fromIoDuration(timing.max, .exact).compare(initial) == .lt) return error.InvalidOptions;
 }
 
 pub fn deinit(self: *Datagram) void {
@@ -1157,7 +1167,7 @@ fn onRecord(self: *Datagram, next: Record.Split, now: std.Io.Timestamp) Error!vo
             // 9147 section 8: records of an older epoch SHOULD still be processed).
             if (number >= 3 and number > self.retire_below) {
                 self.retire_below = number;
-                self.retire_at = .{ .nanoseconds = now.nanoseconds + old_epoch_kept.nanoseconds };
+                self.retire_at = now.addDuration(old_epoch_kept);
             }
             try self.onOpened(opened, number, now);
         },
@@ -1189,7 +1199,7 @@ const old_epoch_kept: std.Io.Duration = .fromSeconds(4 * 60);
 /// no timer of its own wakes the caller for it.
 fn retireExpired(self: *Datagram, now: std.Io.Timestamp) void {
     const when = self.retire_at orelse return;
-    if (now.nanoseconds < when.nanoseconds) return;
+    if (now.compare(.lt, when)) return;
     self.retire_at = null;
     self.retireReadBefore(self.retire_below);
 }
@@ -1418,7 +1428,8 @@ fn onRetransmission(self: *Datagram, sequence: u16, offset: u24, now: std.Io.Tim
     if (@as(u32, sequence) + 1 != self.answer_from or offset != 0) return;
     const flight = self.flightOf(.handshake) orelse return;
     if (flight.transmitting) return;
-    if (flight.deadline) |when| if (when.nanoseconds - now.nanoseconds > @divTrunc(flight.backoff.nanoseconds, 2)) {
+    // Twice the time left against the whole wait: half a period, with no division.
+    if (flight.deadline) |when| if (Span.fromIoDuration(now.durationTo(when), .exact).saturatingMul(2).compare(Span.fromIoDuration(flight.backoff, .exact)) == .gt) {
         // Retransmitted within half a period of our own: the timer will do it.
         return;
     };
@@ -1688,7 +1699,7 @@ pub fn timeout(self: *const Datagram) ?std.Io.Timestamp {
     if (self.phase_now == .failed or self.transmitting()) return null;
     var earliest: ?std.Io.Timestamp = self.ack_at;
     for (self.flights) |slot| if (slot) |flight| if (flight.deadline) |when| {
-        if (earliest == null or when.nanoseconds < earliest.?.nanoseconds) earliest = when;
+        if (earliest == null or when.compare(.lt, earliest.?)) earliest = when;
     };
     return earliest;
 }
@@ -1736,7 +1747,7 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     var filling: ?Filling = null;
     if (self.flightOf(.handshake)) |flight| try self.transmit(flight, datagram, &used, &filling, now);
     used = try self.closeRecord(&filling, datagram, used);
-    if (self.ack_at) |when| if (now.nanoseconds >= when.nanoseconds) {
+    if (self.ack_at) |when| if (now.compare(.gte, when)) {
         self.ack_due = true;
     };
     if (self.ack_due and self.dtls13()) {
@@ -1785,7 +1796,7 @@ fn expire(self: *Datagram, flight: *Outgoing, now: std.Io.Timestamp) Error!void 
     @setRuntimeSafety(true);
     if (flight.transmitting) return;
     const when = flight.deadline orelse return;
-    if (now.nanoseconds < when.nanoseconds) return;
+    if (now.compare(.lt, when)) return;
     flight.retransmissions += 1;
     if (flight.retransmissions > self.timing.retransmissions) {
         // A handshake gives up; after it, a flight whose ACK never came (the final flight, a
@@ -1795,7 +1806,7 @@ fn expire(self: *Datagram, flight: *Outgoing, now: std.Io.Timestamp) Error!void 
         self.dropFlight(flight);
         return;
     }
-    flight.backoff = .{ .nanoseconds = @min(flight.backoff.nanoseconds * 2, self.timing.max.nanoseconds) };
+    flight.backoff = shorter(Span.fromIoDuration(flight.backoff, .exact).saturatingMul(2), self.timing.max);
     flight.deadline = null;
     flight.early = false;
     restartTransmission(flight);
@@ -1816,7 +1827,7 @@ fn transmit(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filling
         flight.transmitting = false;
         // The flight that made the application keys carries this end's Finished.
         if (flight.category == .handshake and self.write_current >= 3) self.finished_sent = true;
-        if (self.expectsAnswer(flight)) flight.deadline = .{ .nanoseconds = now.nanoseconds + flight.backoff.nanoseconds };
+        if (self.expectsAnswer(flight)) flight.deadline = now.addDuration(flight.backoff);
     }
 }
 
@@ -2097,9 +2108,8 @@ pub fn setTiming(self: *Datagram, timing: Timing) InitError!void {
     self.timing = timing;
     for (&self.flights) |*slot| if (slot.*) |*flight| {
         const doublings = @min(flight.retransmissions, 63);
-        const grown = std.math.shlExact(i96, timing.initial.nanoseconds, doublings) catch timing.max.nanoseconds;
-        const backoff: std.Io.Duration = .{ .nanoseconds = @min(grown, timing.max.nanoseconds) };
-        if (flight.deadline) |when| flight.deadline = .{ .nanoseconds = when.nanoseconds - flight.backoff.nanoseconds + backoff.nanoseconds };
+        const backoff = shorter(Span.fromIoDuration(timing.initial, .exact).saturatingMul(@as(i96, 1) << doublings), timing.max);
+        if (flight.deadline) |when| flight.deadline = when.subDuration(flight.backoff).addDuration(backoff);
         flight.backoff = backoff;
     };
     // A waiting ACK goes a quarter of the wait after the record that started it, the new wait's.

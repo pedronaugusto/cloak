@@ -15,6 +15,7 @@
 //! or the one before it.
 const std = @import("std");
 const aegis = @import("aegis");
+const types = @import("../../certificates.zig").types;
 const Kernels = @import("../crypto/Kernels.zig");
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
@@ -101,7 +102,7 @@ pub fn check(self: *const Cookies, gpa: std.mem.Allocator, options: *const Datag
     const fragment_len: usize = std.mem.readInt(u24, body[9..12], .big);
     if (offset != 0 or fragment_len > body.len - 12 or fragment_len > length or length > 64 * 1024) return .drop;
     const fragment = body[12..][0..fragment_len];
-    const seconds: u64 = @intCast(@max(0, @divFloor(now.nanoseconds, std.time.ns_per_s)));
+    const seconds: u64 = @intCast(@max(0, types.seconds(now)));
     const policy: Hello.Options = .{ .transport = .datagram, .suites = options.suites, .min_version = options.min_version, .max_version = options.max_version, .groups = options.groups, .require_hybrid = options.require_hybrid, .require_pq_auth = options.require_pq_auth };
     // A whole hello is read as such; the first fragment of a longer one can still carry its
     // cookie (in the cookie field or, early enough, the cookie extension).
@@ -131,7 +132,7 @@ fn keyFor(self: *const Cookies, id: u8) ?*const Key {
 }
 
 fn fresh(self: *const Cookies, issued: u64, now: u64) bool {
-    const lifetime: u64 = @intCast(@max(0, @divFloor(self.lifetime.nanoseconds, std.time.ns_per_s)));
+    const lifetime: u64 = @intCast(@max(0, types.spanSeconds(self.lifetime)));
     // A minute of the caller's clock running back is tolerated, not more.
     return issued <= now + 60 and now -| issued <= lifetime;
 }
@@ -326,7 +327,7 @@ fn admit12(self: *const Cookies, address: []const u8, seconds: u64, random: []co
     mac(key, "cloak dtls cookie 1.2", address, &.{ cookie[0..5], random, session, offered }, &expected);
     if (!aegis.secret.equal(27, expected[0..27], cookie[5..32]).declassify("a forged cookie is dropped")) return .drop;
     // The 32-bit time wraps: its age is the difference, which must be within the lifetime.
-    const lifetime: u64 = @intCast(@max(0, @divFloor(self.lifetime.nanoseconds, std.time.ns_per_s)));
+    const lifetime: u64 = @intCast(@max(0, types.spanSeconds(self.lifetime)));
     const age = @as(u32, @truncate(seconds)) -% std.mem.readInt(u32, cookie[1..5], .big);
     if (age > lifetime) return .drop;
     return .{ .admit = .{} };

@@ -90,7 +90,7 @@ pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, r
     const policy = (required orelse return .{ .status = .unchecked }).*;
     try validate(policy);
     if (path.len == 0 or scts.len > T.TransparencyPolicy.max_lists) return error.VerificationLimit;
-    const expires: ?i64 = if (policy.expires) |t| milliseconds(t) else null;
+    const expires: ?i64 = if (policy.expires) |t| T.milliseconds(t) else null;
     if (expires) |deadline| if (now_ms >= deadline) return error.StaleTransparency;
     const ids = try gpa.alloc([32]u8, policy.logs.len);
     defer gpa.free(ids);
@@ -112,7 +112,7 @@ pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, r
         var issuer_key_hash: [32]u8 = undefined;
         Sha256.hash(path[1].spki, &issuer_key_hash, .{});
         const lifetime = leaf.not_after -| leaf.not_before;
-        const need = if (lifetime > @divFloor(policy.long_lifetime.nanoseconds, std.time.ns_per_s)) policy.embedded_long else policy.embedded;
+        const need = if (lifetime > T.spanSeconds(policy.long_lifetime)) policy.embedded_long else policy.embedded;
         var tally: Tally = .{};
         while (list.next()) |sct| {
             try context.count(&tally, sct, .{ .precert = .{ .issuer_key_hash = &issuer_key_hash, .tbs = tbs } }, true);
@@ -143,12 +143,7 @@ pub fn validate(policy: T.TransparencyPolicy) error{InvalidTransparencyPolicy}!v
     const P = T.TransparencyPolicy;
     if (policy.logs.len == 0 or policy.logs.len > P.max_logs) return error.InvalidTransparencyPolicy;
     for ([_]u8{ policy.embedded, policy.embedded_long, policy.delivered, policy.operators }) |n| if (n == 0 or n > P.max_count) return error.InvalidTransparencyPolicy;
-    if (policy.long_lifetime.nanoseconds < 0) return error.InvalidTransparencyPolicy;
-}
-
-pub fn milliseconds(t: std.Io.Timestamp) i64 {
-    const ms = @divFloor(t.nanoseconds, std.time.ns_per_ms);
-    return std.math.cast(i64, ms) orelse if (ms < 0) std.math.minInt(i64) else std.math.maxInt(i64);
+    if (T.Nanoseconds.fromIoDuration(policy.long_lifetime, .exact).compare(.fromRaw(0)) == .lt) return error.InvalidTransparencyPolicy;
 }
 
 /// The distinct logs whose SCTs verified, in one tally (embedded or delivered).
@@ -199,8 +194,8 @@ const Context = struct {
         const log = self.policy.logs[index];
         const timestamp = std.math.cast(i64, sct.timestamp) orelse return;
         if (timestamp > self.now_ms) return;
-        const current = if (log.retired) |at| self.now_ms < milliseconds(at) else true;
-        if (log.retired) |at| if (timestamp >= milliseconds(at)) return;
+        const current = if (log.retired) |at| self.now_ms < T.milliseconds(at) else true;
+        if (log.retired) |at| if (timestamp >= T.milliseconds(at)) return;
         if (!embedded and !current) return;
         const key = try logKey(log.key);
         const signs: u8 = if (key.algorithm == .ecdsa) 3 else 1;

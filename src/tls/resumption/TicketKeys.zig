@@ -106,8 +106,8 @@ pub const InitError = error{InvalidOptions};
 /// address while connections use it.
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!TicketKeys {
     @setRuntimeSafety(true);
-    const lifetime = @divFloor(options.lifetime.nanoseconds, std.time.ns_per_s);
-    const rotation = @divFloor(options.rotation.nanoseconds, std.time.ns_per_s);
+    const lifetime = types.spanSeconds(options.lifetime);
+    const rotation = types.spanSeconds(options.rotation);
     if (lifetime <= 0 or lifetime > max_lifetime or rotation <= 0 or rotation > max_lifetime) return error.InvalidOptions;
     // safe: both were just bounded by seven days.
     return .{ .gpa = gpa, .lifetime = @intCast(lifetime), .rotation = @intCast(rotation) };

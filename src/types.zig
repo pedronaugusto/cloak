@@ -7,17 +7,40 @@ pub const TrustGeneration = aegis.id.Id(struct {}, u64);
 pub const PolicyGeneration = aegis.id.Id(struct {}, u64);
 pub const IdentityGeneration = aegis.id.Id(struct {}, u64);
 pub const RealSeconds = aegis.units.Instant(.real, .second, i64);
+/// A calendar instant at std's resolution: every `std.Io.Timestamp`, exactly.
+pub const RealNanoseconds = aegis.units.Instant(.real, .nanosecond, i96);
+/// A span at std's resolution: every `std.Io.Duration`, exactly.
+pub const Nanoseconds = aegis.units.Duration(.nanosecond, i96);
+/// A span in whole seconds, as policies bound them.
+pub const Seconds = aegis.units.Duration(.second, i64);
 
 /// Whole seconds of a calendar instant, rounded down and saturated; certificates and revocation
 /// evidence count in seconds.
 pub fn seconds(t: std.Io.Timestamp) i64 {
-    const s = @divFloor(t.nanoseconds, std.time.ns_per_s);
-    return std.math.cast(i64, s) orelse if (s < 0) std.math.minInt(i64) else std.math.maxInt(i64);
+    return whole(.second, RealNanoseconds.fromTimestamp(t, .exact));
+}
+
+/// Whole milliseconds of a calendar instant, rounded down and saturated: SCTs and ticket ages
+/// count in them.
+pub fn milliseconds(t: std.Io.Timestamp) i64 {
+    return whole(.millisecond, RealNanoseconds.fromTimestamp(t, .exact));
+}
+
+/// Whole seconds of a span, rounded down and saturated.
+pub fn spanSeconds(d: std.Io.Duration) i64 {
+    return whole(.second, Nanoseconds.fromIoDuration(d, .exact));
+}
+
+/// `value` (an instant or a span at std's resolution) in whole `unit`s, rounded down, saturated
+/// at `i64`'s bounds.
+fn whole(comptime unit: aegis.units.Unit, value: anytype) i64 {
+    const converted = value.convert(unit, i64, .down) catch return if (value.compare(.fromRaw(0)) == .lt) std.math.minInt(i64) else std.math.maxInt(i64);
+    return converted.raw();
 }
 
 /// The instant that starts a whole second.
 pub fn instant(s: i64) std.Io.Timestamp {
-    return .fromNanoseconds(@as(i96, s) * std.time.ns_per_s);
+    return RealSeconds.fromRaw(s).toTimestamp();
 }
 /// One service request of one connection: its generation and the request's number within it. A
 /// connection issues each once, so an answer naming another is stale.
@@ -151,7 +174,7 @@ pub const Request = struct {
         uint(&h, self.token.id.raw());
         uint(&h, self.trust_generation.raw());
         uint(&h, self.policy_generation.raw());
-        wide(&h, self.time.nanoseconds);
+        timestamp(&h, self.time);
         uint(&h, @backingInt(self.mode));
         uint(&h, @backingInt(self.purpose));
         uint(&h, @backingInt(self.identity));
@@ -170,8 +193,8 @@ pub const Request = struct {
         uint(&h, @intFromBool(self.policy.inhibit_any));
         uint(&h, @backingInt(self.policy.revocation.mode));
         uint(&h, @backingInt(self.policy.revocation.coverage));
-        wide(&h, self.policy.revocation.clock_skew.nanoseconds);
-        wide(&h, self.policy.revocation.max_age.nanoseconds);
+        span(&h, self.policy.revocation.clock_skew);
+        span(&h, self.policy.revocation.max_age);
         parts(&h, self.evidence.crls);
         parts(&h, self.evidence.ocsp);
         parts(&h, self.evidence.scts);
@@ -182,15 +205,15 @@ pub const Request = struct {
                 part(&h, log.key);
                 part(&h, log.operator);
                 uint(&h, @intFromBool(log.retired != null));
-                wide(&h, if (log.retired) |t| t.nanoseconds else 0);
+                timestamp(&h, log.retired orelse .zero);
             }
             uint(&h, ct.embedded);
             uint(&h, ct.embedded_long);
-            wide(&h, ct.long_lifetime.nanoseconds);
+            span(&h, ct.long_lifetime);
             uint(&h, ct.delivered);
             uint(&h, ct.operators);
             uint(&h, @intFromBool(ct.expires != null));
-            wide(&h, if (ct.expires) |t| t.nanoseconds else 0);
+            timestamp(&h, ct.expires orelse .zero);
         }
         inline for (@typeInfo(Limits).@"struct".field_names) |f| uint(&h, @field(self.limits, f));
         uint(&h, self.anchor_policies.len);
@@ -215,11 +238,11 @@ fn parts(h: *std.crypto.hash.sha2.Sha256, slices: []const []const u8) void {
     for (slices) |s| part(h, s);
 }
 /// A signed 96-bit count of nanoseconds, two's complement, big endian.
-fn wide(h: *std.crypto.hash.sha2.Sha256, n: i96) void {
-    @setRuntimeSafety(true);
-    var bytes: [12]u8 = undefined;
-    std.mem.writeInt(i96, &bytes, n, .big);
-    h.update(&bytes);
+fn timestamp(h: *std.crypto.hash.sha2.Sha256, t: std.Io.Timestamp) void {
+    h.update(&RealNanoseconds.fromTimestamp(t, .exact).encode(.big));
+}
+fn span(h: *std.crypto.hash.sha2.Sha256, d: std.Io.Duration) void {
+    h.update(&Nanoseconds.fromIoDuration(d, .exact).encode(.big));
 }
 fn uint(h: *std.crypto.hash.sha2.Sha256, n: u64) void {
     @setRuntimeSafety(true);

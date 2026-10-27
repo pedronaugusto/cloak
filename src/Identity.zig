@@ -8,7 +8,7 @@ const PrivateKey = @import("PrivateKey.zig");
 const Pem = @import("credentials/Pem.zig");
 const Identity = @This();
 /// Private: immutable material is wiped/released by the final owner.
-state: *State,
+state: Handle,
 pub const Options = struct {
     chain_bytes: usize = 65536,
     certificates: usize = 16,
@@ -21,7 +21,8 @@ pub const Options = struct {
 };
 pub const InitError = std.mem.Allocator.Error || certificate.ParseError || error{ IdentityLimit, EmptyChain, KeyMismatch };
 pub const InitPemError = InitError || Pem.Error || error{NotCertificate};
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds, raw: ?[]const u8 = null, public_key: certificate.PublicKey, issuers: []const []const u8 = &.{} };
+const Handle = aegis.Shared(State, release);
+const State = struct { gpa: std.mem.Allocator, chain: []const []const u8, storage: []u8, flight: []u8, key: ?PrivateKey, generation: types.IdentityGeneration, expires: types.RealSeconds, raw: ?[]const u8 = null, public_key: certificate.PublicKey, issuers: []const []const u8 = &.{} };
 /// What an identity presents: certificates (X.509), or a raw public key (RFC 7250), which a
 /// peer trusts by its pin and never as a certificate.
 pub const Form = enum { x509, raw_public_key };
@@ -95,17 +96,16 @@ fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options:
     if (spki.len > options.chain_bytes or spki.len > 0xffffff) return error.IdentityLimit;
     const public_key = try certificate.parsePublicKey(spki);
     if (key) |owned| if (!owned.matchesKey(public_key)) return error.KeyMismatch;
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
     const storage = try gpa.dupe(u8, spki);
     errdefer gpa.free(storage);
     const flight = try gpa.alloc(u8, 3 + spki.len);
     errdefer gpa.free(flight);
     std.mem.writeInt(u24, flight[0..3], @intCast(spki.len), .big); // safe: bounded to u24 above
     @memcpy(flight[3..], spki);
+    const held = if (key) |owned| owned.retain() else null;
+    errdefer if (held) |owned| owned.deinit();
     // The key parsed above borrows the caller's bytes: parse it again from the owned copy.
-    state.* = .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }; // unreachable: the same bytes parsed above
-    return .{ .state = state };
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }) }; // unreachable: the same bytes parsed above
 }
 
 /// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
@@ -136,8 +136,6 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
     const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();
     if (flight_size > 0xffffff) return error.IdentityLimit;
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
     const owned = try gpa.alloc([]const u8, certificates.len);
     errdefer gpa.free(owned);
     const storage = try gpa.alloc(u8, bytes);
@@ -157,95 +155,92 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    state.* = .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = if (key) |held| held.retain() else null, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = undefined, .issuers = names };
     // The leaf's key borrows the owned copy, not the caller's bytes.
-    state.public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // unreachable: the same bytes parsed above
-    return .{ .state = state };
+    const public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // unreachable: the same bytes parsed above
+    const held = if (key) |signer| signer.retain() else null;
+    errdefer if (held) |signer| signer.deinit();
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = public_key, .issuers = names }) };
 }
 pub fn retain(identity: Identity) Identity {
-    @setRuntimeSafety(true);
-    var count = identity.state.refs.load(.monotonic);
-    while (true) {
-        if (count == 0 or count == std.math.maxInt(usize)) @panic("cloak retained owner exhausted");
-        if (identity.state.refs.cmpxchgWeak(count, count + 1, .monotonic, .monotonic)) |actual| count = actual else break;
-    }
-    return identity;
+    return .{ .state = identity.state.retain() };
 }
 pub fn deinit(identity: Identity) void {
+    var handle = identity.state;
+    handle.release();
+}
+/// The last handle's cleanup.
+fn release(state: *State) void {
     @setRuntimeSafety(true);
-    if (identity.state.refs.fetchSub(1, .acq_rel) != 1) return;
-    const state = identity.state;
     const gpa = state.gpa;
     if (state.key) |key| key.deinit();
     gpa.free(state.chain);
     gpa.free(state.issuers);
     gpa.free(state.storage);
     gpa.free(state.flight);
-    gpa.destroy(state);
 }
 /// The certificates, leaf first; empty for a raw public key.
 pub fn chain(identity: Identity) []const []const u8 {
     @setRuntimeSafety(true);
-    return identity.state.chain;
+    return identity.state.get().chain;
 }
 /// Each certificate's issuer Name (DER), in chain order; empty for a raw public key. What a
 /// peer's certificate_authorities is matched against (RFC 8446 section 4.2.4).
 pub fn issuers(identity: Identity) []const []const u8 {
     @setRuntimeSafety(true);
-    return identity.state.issuers;
+    return identity.state.get().issuers;
 }
 pub fn form(identity: Identity) Form {
-    return if (identity.state.raw != null) .raw_public_key else .x509;
+    return if (identity.state.get().raw != null) .raw_public_key else .x509;
 }
 /// The raw public key's SubjectPublicKeyInfo; null for certificates.
 pub fn rawKey(identity: Identity) ?[]const u8 {
-    return identity.state.raw;
+    return identity.state.get().raw;
 }
 /// What a TLS Certificate message carries for this identity: the chain, or the one raw key.
 pub fn entries(identity: Identity) []const []const u8 {
     @setRuntimeSafety(true);
-    const state = identity.state;
+    const state = identity.state.get();
     return if (state.raw) |*raw| raw[0..1] else state.chain;
 }
 /// The public key that signs for this identity: the leaf's, or the raw one. It borrows the
 /// identity's storage.
 pub fn publicKey(identity: Identity) certificate.PublicKey {
-    return identity.state.public_key;
+    return identity.state.get().public_key;
 }
 /// TLS CertificateList entries: three-byte DER length followed by DER.
 /// Version-specific message headers and extensions remain handshake work.
 pub fn certificateList(identity: Identity) []const u8 {
     @setRuntimeSafety(true);
-    return identity.state.flight;
+    return identity.state.get().flight;
 }
 /// How many bytes of fresh noise one signature draws, or null when cloak does not sign for this
 /// identity: its key is held elsewhere.
 pub fn noiseLength(identity: Identity) ?usize {
     @setRuntimeSafety(true);
-    const key = identity.state.key orelse return null;
+    const key = identity.state.get().key orelse return null;
     return key.noiseLength();
 }
 /// Signs `message` with the identity's key; see `PrivateKey.sign`.
 pub fn sign(identity: Identity, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[PrivateKey.max_signature]u8) PrivateKey.SignError![]const u8 {
     @setRuntimeSafety(true);
-    const key = identity.state.key orelse return error.UnsupportedAlgorithm;
+    const key = identity.state.get().key orelse return error.UnsupportedAlgorithm;
     return key.sign(algorithm, message, noise, out);
 }
 /// Signs a digest with the key this identity holds; see `PrivateKey.signDigest`.
 pub fn signDigest(identity: Identity, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[PrivateKey.max_signature]u8) PrivateKey.SignDigestError![]const u8 {
     @setRuntimeSafety(true);
-    const key = identity.state.key orelse return error.UnsupportedAlgorithm;
+    const key = identity.state.get().key orelse return error.UnsupportedAlgorithm;
     return key.signDigest(algorithm, digest, noise, out);
 }
 pub fn generation(identity: Identity) types.IdentityGeneration {
     @setRuntimeSafety(true);
-    return identity.state.generation;
+    return identity.state.get().generation;
 }
 /// The start of the last second every certificate in the chain is valid for; a raw public key
 /// has no expiry of its own.
 pub fn expires(identity: Identity) std.Io.Timestamp {
     @setRuntimeSafety(true);
-    return types.instant(identity.state.expires.raw());
+    return types.instant(identity.state.get().expires.raw());
 }
 test {
     @setRuntimeSafety(true);

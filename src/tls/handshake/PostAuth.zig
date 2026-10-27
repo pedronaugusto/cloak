@@ -84,7 +84,7 @@ gpa: std.mem.Allocator,
 suite: Suite13,
 /// The handshake's transcript through the client's Finished.
 base: aegis.Secret(Transcripts.Selected),
-holder: std.atomic.Value(Half),
+holder: aegis.Atomic(Half),
 machine: union(Role) { client: ClientMachine.Runtime(void), server: ServerMachine.Runtime(void) },
 /// The exchange in progress, owned by `holder`.
 exchange: ?*Exchange = null,
@@ -101,8 +101,8 @@ peer: []const Hello.SignatureScheme,
 authorities: []const []const u8,
 /// The server's requests so far; each context is its number.
 requests: u64 = 0,
-/// `Outcome` packed: generation shifted left by one, authenticated in the low bit.
-outcome: std.atomic.Value(u64) = .init(0),
+/// The outcome, one cell so either half reads a generation with its own verdict.
+outcome: aegis.Atomic(Packed) = .init(.none),
 /// Server: the leaf certificate of the last answer that proved one, set as its exchange settles
 /// and before its outcome is published; owned, replaced by the next such answer. Kept only with
 /// `keep_leaf` (the server's `keep_peer_leaf`).
@@ -170,19 +170,33 @@ pub fn deinit(self: *PostAuth) void {
 
 /// The completed exchanges and the last one's verdict; from either half.
 pub fn result(self: *const PostAuth) Outcome {
-    const packed_outcome = self.outcome.load(.acquire);
-    return .{ .generation = packed_outcome >> 1, .authenticated = packed_outcome & 1 != 0 };
+    return self.outcome.load(.acquire).unpack();
 }
+
+/// An `Outcome` in one word: the generation shifted left by one, the verdict in the low bit.
+const Packed = enum(u64) {
+    none = 0,
+    _,
+
+    fn pack(outcome: Outcome) Packed {
+        return @fromBackingInt(outcome.generation << 1 | @intFromBool(outcome.authenticated));
+    }
+
+    fn unpack(self: Packed) Outcome {
+        const word = @backingInt(self);
+        return .{ .generation = word >> 1, .authenticated = word & 1 != 0 };
+    }
+};
 
 /// The leaf of the last settled answer that proved one, after its outcome; null when none has.
 pub fn latestLeaf(self: *const PostAuth) ?[]const u8 {
-    if (self.outcome.load(.acquire) == 0) return null;
+    if (self.outcome.load(.acquire) == .none) return null;
     return if (self.leaf.len == 0) null else self.leaf;
 }
 
 fn record(self: *PostAuth, authenticated: bool) void {
-    const generation = (self.outcome.load(.acquire) >> 1) + 1;
-    self.outcome.store(generation << 1 | @intFromBool(authenticated), .release);
+    const generation = self.outcome.load(.acquire).unpack().generation + 1;
+    self.outcome.store(.pack(.{ .generation = generation, .authenticated = authenticated }), .release);
 }
 
 fn startExchange(self: *PostAuth) std.mem.Allocator.Error!*Exchange {

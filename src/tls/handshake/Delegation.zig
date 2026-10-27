@@ -3,6 +3,7 @@
 //! The format, the checks a receiver makes, and `Credential`, the owned credential an endpoint
 //! presents with its certificate. One module serves both roles; only the signed label differs.
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const Reader = @import("../../wire/Reader.zig");
 const Writer = @import("../wire/Writer.zig");
@@ -154,11 +155,11 @@ pub fn lists(list: []const u8, scheme: u16) bool {
 /// made against the certificate that signed it, so a credential that no peer could accept is
 /// refused here rather than at every handshake.
 pub const Credential = struct {
-    state: *State,
+    state: Handle,
 
+    const Handle = aegis.Shared(State, release);
     const State = struct {
         gpa: std.mem.Allocator,
-        refs: std.atomic.Value(usize) = .init(1),
         bytes: []u8,
         view: View,
         key: PrivateKey,
@@ -191,51 +192,47 @@ pub const Credential = struct {
         const content = try signedContent(gpa, role, leaf_der, view.credential, view.algorithm);
         defer gpa.free(content);
         Possession.verifyKey(view.algorithm, &Hello.schemes, leaf.public_key, content, view.signature) catch return error.BadDelegation;
-        const state = try gpa.create(State);
-        errdefer gpa.destroy(state);
         const owned = try gpa.dupe(u8, bytes);
+        errdefer gpa.free(owned);
         var leaf_hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(leaf_der, &leaf_hash, .{});
-        state.* = .{ .gpa = gpa, .bytes = owned, .view = parse(owned) catch unreachable, .key = key.retain(), .role = role, .leaf = leaf_hash, .expires = expires }; // unreachable: the same bytes parsed above
-        return .{ .state = state };
+        const held = key.retain();
+        errdefer held.deinit();
+        return .{ .state = try .create(gpa, .{ .gpa = gpa, .bytes = owned, .view = parse(owned) catch unreachable, .key = held, .role = role, .leaf = leaf_hash, .expires = expires }) }; // unreachable: the same bytes parsed above
     }
 
     pub fn retain(self: Credential) Credential {
-        @setRuntimeSafety(true);
-        var n = self.state.refs.load(.monotonic);
-        while (true) {
-            if (n == 0 or n == std.math.maxInt(usize)) @panic("cloak retained owner exhausted");
-            if (self.state.refs.cmpxchgWeak(n, n + 1, .monotonic, .monotonic)) |actual| n = actual else break;
-        }
-        return self;
+        return .{ .state = self.state.retain() };
     }
 
     pub fn deinit(self: Credential) void {
-        @setRuntimeSafety(true);
-        if (self.state.refs.fetchSub(1, .acq_rel) != 1) return;
-        const state = self.state;
+        var handle = self.state;
+        handle.release();
+    }
+
+    /// The last handle's cleanup.
+    fn release(state: *State) void {
         state.key.deinit();
         state.gpa.free(state.bytes);
-        state.gpa.destroy(state);
     }
 
     /// The wire bytes, for the leaf's CertificateEntry.
     pub fn wire(self: Credential) []const u8 {
-        return self.state.bytes;
+        return self.state.get().bytes;
     }
 
     /// The scheme its key signs CertificateVerify with.
     pub fn keyScheme(self: Credential) Scheme {
-        return @fromBackingInt(self.state.view.scheme);
+        return @fromBackingInt(self.state.get().view.scheme);
     }
 
     pub fn side(self: Credential) Role {
-        return self.state.role;
+        return self.state.get().role;
     }
 
     /// When it expires: notBefore of its certificate plus its valid_time.
     pub fn expiresAt(self: Credential) std.Io.Timestamp {
-        return certificates.types.instant(self.state.expires);
+        return certificates.types.instant(self.state.get().expires);
     }
 
     /// Whether it was made for `identity`'s certificate.
@@ -244,29 +241,29 @@ pub const Credential = struct {
         if (identity.form() != .x509) return false;
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(identity.chain()[0], &hash, .{});
-        return std.mem.eql(u8, &hash, &self.state.leaf);
+        return std.mem.eql(u8, &hash, &self.state.get().leaf);
     }
 
     /// Whether a peer that listed `credential_schemes` for credentials and `accepts` signature
     /// schemes takes it at `now` (seconds): the peer would accept it by the checks of `check`.
     pub fn usable(self: Credential, now: i64, credential_schemes: []const u8, accepts: anytype) bool {
         @setRuntimeSafety(true);
-        const state = self.state;
+        const state = self.state.get();
         if (now >= state.expires or state.expires > now +| max_validity) return false;
         return lists(credential_schemes, state.view.scheme) and accepts.accepts(state.view.algorithm);
     }
 
     /// Fresh noise one signature by its key draws.
     pub fn noiseLength(self: Credential) usize {
-        return self.state.key.noiseLength();
+        return self.state.get().key.noiseLength();
     }
 
     /// Signs CertificateVerify content with its key, under its scheme.
     pub fn sign(self: Credential, content: []const u8, noise: []const u8, out: *[PrivateKey.max_signature]u8) Possession.SignError![]const u8 {
         @setRuntimeSafety(true);
-        const public_key = certificates.certificate.parsePublicKey(self.state.view.spki) catch return error.SigningFailed;
+        const public_key = certificates.certificate.parsePublicKey(self.state.get().view.spki) catch return error.SigningFailed;
         const algorithm = Possession.bind(self.keyScheme(), public_key) catch return error.SigningFailed;
-        return self.state.key.sign(algorithm, content, noise, out) catch error.SigningFailed;
+        return self.state.get().key.sign(algorithm, content, noise, out) catch error.SigningFailed;
     }
 };
 

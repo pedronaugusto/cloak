@@ -344,11 +344,26 @@ const Scratch = struct {
     ech: EchScratch = .{},
 };
 
+/// ECH's course: offered with the first hello, accepted by a retry request (which binds the
+/// ServerHello to accept it too) or by the ServerHello, or rejected.
+const EchMachine = aegis.state.Machine(enum { none, offered, accepted_retry, accepted, rejected }, enum { offer, accept_retry, accept, reject }, .{ .initial = .none, .terminal = &.{ .accepted, .rejected }, .edges = &.{
+    .{ .from = .none, .on = .offer, .to = .offered },
+    .{ .from = .offered, .on = .accept_retry, .to = .accepted_retry },
+    .{ .from = .offered, .on = .accept, .to = .accepted },
+    .{ .from = .accepted_retry, .on = .accept, .to = .accepted },
+    .{ .from = .offered, .on = .reject, .to = .rejected },
+} });
+
+/// Moves ECH's status along its machine; every caller reaches it from a state the event leaves.
+fn echStep(e: *EchScratch, event: @FieldType(EchMachine.Edge, "on")) void {
+    _ = e.status.step(event) catch aegis.assert.never("ECH's status moves along its machine's edges");
+}
+
 /// Encrypted Client Hello in flight: until the server's first answer, two hellos and two
 /// transcripts run side by side, the outer one on the wire and the inner one the transcript of an
 /// accepted handshake.
 const EchScratch = struct {
-    status: enum { none, offered, accepted_retry, accepted, rejected } = .none,
+    status: EchMachine.Runtime(void) = .init({}),
     outer_random: [32]u8 = @splat(0),
     /// The HPKE ephemeral key's input, erased once the context is set up from it.
     ikm: ?aegis.Secret([32]u8) = null,
@@ -836,7 +851,7 @@ fn echConfig(self: *const Client) ?Ech.Config {
 
 fn echRejected(self: *const Client) bool {
     const scratch = self.scratch orelse return false;
-    return scratch.ech.status == .rejected;
+    return scratch.ech.status.current() == .rejected;
 }
 
 pub fn provideTime(self: *Client, now: std.Io.Timestamp) Error!void {
@@ -1229,7 +1244,7 @@ fn helloCapacity(self: *const Client, shares: []const Hello.Share) usize {
 fn sendHello(self: *Client) Error!void {
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
-    switch (scratch.ech.status) {
+    switch (scratch.ech.status.current()) {
         .none, .accepted_retry, .offered => if (self.options.ech == .config_list) return self.sendEchHello(),
         .rejected => return self.sendOuterHello(),
         .accepted => unreachable, // unreachable: acceptance is decided by the ServerHello, after the last hello
@@ -1264,7 +1279,7 @@ fn resumeOffer(self: *const Client, offers: []const Offer, out: *[Hello.max_psk_
         if (offer.kind == .resumption) {
             const entry = self.offered.?.entry;
             // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
-            const now_ms = @divFloor(self.now.?.nanoseconds, std.time.ns_per_ms);
+            const now_ms = types.milliseconds(self.now.?);
             const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
             identity.age = @truncate(age +% entry.age_add);
         }
@@ -1389,7 +1404,7 @@ fn sendEchHello(self: *Client) Error!void {
         e.context = Hpke.setupSender(suite, config.public_key[0..Hpke.public_length], Ech.info(info_buf, config.raw), e.ikm.?.expose(), &e.enc) catch return error.InvalidOptions;
         e.ikm.?.deinit();
         e.ikm = null;
-        e.status = .offered;
+        echStep(e, .offer);
     }
     const ext_buf = try self.gpa.alloc(u8, 8 + Hpke.enc_length + 2 + payload_len);
     defer self.gpa.free(ext_buf);
@@ -1493,7 +1508,7 @@ fn onServerHello(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     if (parsed.retry) return self.onRetry(msg, parsed, epoch, boundary);
     try self.state.advance(.server_hello, epoch, .parsed, boundary);
     self.noteConnectionId(parsed.connection_id);
-    if (self.options.ech == .config_list and self.scratch.?.ech.status != .rejected) try self.decideEch(msg, parsed);
+    if (self.options.ech == .config_list and self.scratch.?.ech.status.current() != .rejected) try self.decideEch(msg, parsed);
     if (self.retry_suite) |suite| if (suite != parsed.suite) return error.IllegalParameter;
     // A ticket not taken is spent all the same: it is never offered again.
     defer self.releaseOffer();
@@ -1577,7 +1592,7 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
     if (e.context) |*context| context.deinit();
     e.context = null;
     if (accepted) {
-        e.status = .accepted;
+        echStep(e, .accept);
         scratch.transcripts.deinit();
         e.inner.moveInto(&scratch.transcripts);
         e.inner = .{};
@@ -1585,8 +1600,8 @@ fn decideEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!vo
         return;
     }
     // A retry request that accepted ECH binds the ServerHello to accept it too.
-    if (e.status == .accepted_retry) return error.IllegalParameter;
-    e.status = .rejected;
+    if (e.status.current() == .accepted_retry) return error.IllegalParameter;
+    echStep(e, .reject);
     // The handshake is the outer hello's now, and so is the random a key log names.
     scratch.random.exposeMut().* = e.outer_random;
     // The outer hello offered only a GREASE PSK: a server that selects it is lying.
@@ -1716,11 +1731,11 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
         }
     }
     if (accepted) {
-        e.status = .accepted_retry;
+        echStep(e, .accept_retry);
         try e.inner.retry(msg);
         return;
     }
-    e.status = .rejected;
+    echStep(e, .reject);
     scratch.random.exposeMut().* = e.outer_random;
     if (e.context) |*context| context.deinit();
     e.context = null;
@@ -1744,7 +1759,7 @@ fn onEncrypted(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Err
     try self.state.advance(.encrypted_extensions, epoch, .parsed, boundary);
     const e = &self.scratch.?.ech;
     const parsed = try Hello.encrypted(msg, self.options.hello, self.options.ech == .config_list or e.ext.len != 0);
-    if (parsed.ech) |list| switch (e.status) {
+    if (parsed.ech) |list| switch (e.status.current()) {
         // Retry configurations answer only a hello whose ECH the server did not use.
         .accepted => return error.UnsolicitedExtension,
         .rejected => e.retry_list = try self.gpa.dupe(u8, list),
@@ -2057,7 +2072,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
     if (self.version != .tls13 or ticket.lifetime == 0 or self.external_used) return;
     const keys = if (self.keys) |*keys| keys else return;
     const now_s = types.seconds(now);
-    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const max_age = types.spanSeconds(resumption.max_age);
     const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
     const expires = @min(now_s +| @as(i64, ticket.lifetime), @min(by_age, self.auth_expires));
     if (expires <= now_s) return;
@@ -2072,7 +2087,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .suite = suites.Suite.from13(tag),
                 .secret = psk.expose(),
                 .age_add = ticket.age_add,
-                .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+                .received_ms = types.milliseconds(now),
                 .expires = expires,
                 .origin = self.origin,
                 .auth_expires = self.auth_expires,

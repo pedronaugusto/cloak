@@ -13,14 +13,26 @@ const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
 /// Private: shares one immutable owner, never a caller's passphrase or DER.
-state: *State,
-const State = struct { gpa: std.mem.Allocator, refs: std.atomic.Value(usize) = .init(1), material: Secret(parser.Material) };
+state: Handle,
+const Handle = aegis.Shared(State, release);
+const State = struct {
+    gpa: std.mem.Allocator,
+    material: Secret(parser.Material),
+
+    /// Moves the key into its shared block, erasing it where it was built.
+    pub fn moveInto(self: *State, destination: *State) void {
+        destination.gpa = self.gpa;
+        self.material.moveInto(&destination.material);
+    }
+};
 pub const ParseError = parser.ParseError;
 pub const ParseOptions = parser.Options;
 /// Stack a parse and a signature reach below their entry, erased when they return: the frames
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
-/// A test measures every key type and scheme against them in each build mode.
-const parse_stack: usize = if (builtin.mode == .debug) 96 * 1024 else 64 * 1024;
+/// A test measures every key type and scheme against them in each build mode. A parse builds
+/// the key in its own frame before it moves into the shared block, which Debug's frames make
+/// pass 96 KiB.
+const parse_stack: usize = if (builtin.mode == .debug) 104 * 1024 else 64 * 1024;
 /// Debug's signing depth is P-521's: its nine-limb scalar arithmetic unrolls without
 /// optimization into a frame per step (91 KiB measured); the optimized builds stay below 24 KiB.
 const sign_stack: usize = if (builtin.mode == .debug) 128 * 1024 else 24 * 1024;
@@ -31,15 +43,11 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) P
 
 fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    // The owner first: the parser writes the key where it lives.
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
-    state.gpa = gpa;
-    state.refs = .init(1);
-    state.material = .init(undefined);
+    // Built in this frame, which `scrubbed` erases, and moved into the shared block.
+    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
     errdefer state.material.deinit();
     try parser.parse(gpa, bytes, options, state.material.exposeMut());
-    return .{ .state = state };
+    return .{ .state = try .createFrom(gpa, &state) };
 }
 /// Package-internal (`Pkcs12`): a key bag's key, a PrivateKeyInfo or, when `shrouded`, an
 /// EncryptedPrivateKeyInfo opened with `password` in the form the file's MAC verified.
@@ -49,14 +57,10 @@ pub fn parseBag(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, passwor
 
 fn parseBagKey(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, password: *const Pbe.Password, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
-    state.gpa = gpa;
-    state.refs = .init(1);
-    state.material = .init(undefined);
+    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
     errdefer state.material.deinit();
     if (shrouded) try parser.encryptedWith(gpa, bag, password, options, state.material.exposeMut()) else try parser.parsePlain(bag, options, state.material.exposeMut());
-    return .{ .state = state };
+    return .{ .state = try .createFrom(gpa, &state) };
 }
 /// A private key by its numbers, as a JWK (RFC 7518 section 6, RFC 8037) or another format
 /// carries them, never in DER. Each goes through the checks a parsed key of its kind gets, by the
@@ -84,11 +88,7 @@ pub fn fromComponents(gpa: std.mem.Allocator, components: Components) Components
 
 fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!PrivateKey {
     @setRuntimeSafety(true);
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
-    state.gpa = gpa;
-    state.refs = .init(1);
-    state.material = .init(undefined);
+    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
     errdefer state.material.deinit();
     const out = state.material.exposeMut();
     (switch (components) {
@@ -100,7 +100,7 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
         error.UnsupportedKey => error.UnsupportedKey,
         else => error.InvalidKey,
     };
-    return .{ .state = state };
+    return .{ .state = try .createFrom(gpa, &state) };
 }
 
 pub fn isEncrypted(bytes: []const u8) bool {
@@ -117,7 +117,7 @@ pub fn matches(key: PrivateKey, der: []const u8) bool {
 /// Whether `public_key` is this key's public half.
 pub fn matchesKey(key: PrivateKey, public_key: certificate.PublicKey) bool {
     @setRuntimeSafety(true);
-    return switch (key.state.material.expose().*) {
+    return switch (key.state.get().material.expose().*) {
         .rsa => |*k| switch (public_key) {
             .rsa => |p| std.mem.eql(u8, k.n[0..k.size], p.modulus) and std.mem.eql(u8, k.e[0..k.exponent_size], p.exponent),
             else => false,
@@ -147,7 +147,7 @@ pub const max_public_key_info = certificate.Algorithm.max_public_key_info;
 /// what a raw public key (RFC 7250, `Identity.initRawKey`) or a pin is made of.
 pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 {
     @setRuntimeSafety(true);
-    const material = key.state.material.expose();
+    const material = key.state.get().material.expose();
     const public: certificate.PublicKey = switch (material.*) {
         .rsa => |*k| .{ .rsa = .{ .modulus = k.n[0..k.size], .exponent = k.e[0..k.exponent_size] } },
         inline .p256, .p384, .p521 => |*k, tag| .{ .ec = .{ .curve = @field(certificate.Algorithm.Curve, @tagName(tag)), .bytes = &k.public } },
@@ -170,7 +170,7 @@ pub const SignError = error{ UnsupportedAlgorithm, InvalidNoise, SigningFailed }
 /// 96 for every scheme, a 32-byte blinding seed and room for the longest PSS salt.
 pub fn noiseLength(key: PrivateKey) usize {
     @setRuntimeSafety(true);
-    return switch (key.state.material.expose().*) {
+    return switch (key.state.get().material.expose().*) {
         .rsa => Sign.rsa.noise_length,
         .p256 => Sign.P256.noise_length,
         .p384 => Sign.P384.noise_length,
@@ -196,7 +196,7 @@ pub fn sign(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message
 fn signMessage(key: PrivateKey, algorithm: certificate.Algorithm.Signature, message: []const u8, noise: []const u8, out: *[max_signature]u8) SignError![]const u8 {
     @setRuntimeSafety(true);
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
-    switch (key.state.material.expose().*) {
+    switch (key.state.get().material.expose().*) {
         .rsa => |*rsa| return rsaSign(SignError, &rsa.crt, algorithm, message, false, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*k| {
             return ecdsaSign(SignError, Sign.P256, &k.secret, algorithm, message, false, noise[0..Sign.P256.noise_length], out);
@@ -239,7 +239,7 @@ pub fn signDigest(key: PrivateKey, algorithm: certificate.Algorithm.Signature, d
 fn signPrehashed(key: PrivateKey, algorithm: certificate.Algorithm.Signature, digest: []const u8, noise: []const u8, out: *[max_signature]u8) SignDigestError![]const u8 {
     @setRuntimeSafety(true);
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
-    return switch (key.state.material.expose().*) {
+    return switch (key.state.get().material.expose().*) {
         .rsa => |*rsa| rsaSign(SignDigestError, &rsa.crt, algorithm, digest, true, noise[0..Sign.rsa.noise_length], out),
         .p256 => |*k| {
             return ecdsaSign(SignDigestError, Sign.P256, &k.secret, algorithm, digest, true, noise[0..Sign.P256.noise_length], out);
@@ -275,7 +275,7 @@ pub const AgreeError = error{
 pub fn agree(key: PrivateKey, peer: []const u8, out: *[max_shared]u8) AgreeError![]const u8 {
     @setRuntimeSafety(true);
     // Each agreement erases its own frame (`Ecdh`), reading the scalar where the key holds it.
-    const length: usize, const made = switch (key.state.material.expose().*) {
+    const length: usize, const made = switch (key.state.get().material.expose().*) {
         .p256 => |*k| .{ Ecdh.P256.scalar_length, Ecdh.P256.agree(&k.secret, peer, out[0..Ecdh.P256.scalar_length]) },
         .p384 => |*k| .{ Ecdh.P384.scalar_length, Ecdh.P384.agree(&k.secret, peer, out[0..Ecdh.P384.scalar_length]) },
         .p521 => |*k| .{ Ecdh.P521.scalar_length, Ecdh.P521.agree(&k.secret, peer, out[0..Ecdh.P521.scalar_length]) },
@@ -314,7 +314,7 @@ pub fn decrypt(key: PrivateKey, scheme: certificate.Algorithm.Encryption, cipher
 fn decryptMessage(key: PrivateKey, scheme: certificate.Algorithm.Encryption, ciphertext: []const u8, noise: []const u8, out: *[max_plaintext]u8) DecryptError![]const u8 {
     @setRuntimeSafety(true);
     if (noise.len != key.noiseLength()) return error.InvalidNoise;
-    const rsa = switch (key.state.material.expose().*) {
+    const rsa = switch (key.state.get().material.expose().*) {
         .rsa => |*k| &k.crt,
         else => return error.UnsupportedAlgorithm,
     };
@@ -385,20 +385,15 @@ fn HashOf(comptime hash: certificate.Algorithm.Hash) type {
 }
 
 pub fn retain(key: PrivateKey) PrivateKey {
-    @setRuntimeSafety(true);
-    var count = key.state.refs.load(.monotonic);
-    while (true) {
-        if (count == 0 or count == std.math.maxInt(usize)) @panic("cloak retained owner exhausted");
-        if (key.state.refs.cmpxchgWeak(count, count + 1, .monotonic, .monotonic)) |actual| count = actual else break;
-    }
-    return key;
+    return .{ .state = key.state.retain() };
 }
 pub fn deinit(key: PrivateKey) void {
-    @setRuntimeSafety(true);
-    if (key.state.refs.fetchSub(1, .acq_rel) != 1) return;
-    const gpa = key.state.gpa;
-    key.state.material.deinit();
-    gpa.destroy(key.state);
+    var handle = key.state;
+    handle.release();
+}
+/// The last handle's cleanup.
+fn release(state: *State) void {
+    state.material.deinit();
 }
 test {
     @setRuntimeSafety(true);
@@ -436,7 +431,7 @@ test "a parse, a signature and a decryption reach less stack than the depths tha
         defer key.deinit();
         var noise: [max_noise]u8 = @splat(0x4e);
         var out: [max_signature]u8 = undefined;
-        const algorithms: []const certificate.Algorithm.Signature = switch (key.state.material.expose().*) {
+        const algorithms: []const certificate.Algorithm.Signature = switch (key.state.get().material.expose().*) {
             .rsa => &.{ .{ .pss = .{ .hash = .sha512, .mgf_hash = .sha512, .salt_length = 64 } }, .{ .rsa = .sha256 } },
             .p256 => &.{ .{ .ecdsa = .sha256 }, .{ .ecdsa_p1363 = .sha256 } },
             .p384 => &.{ .{ .ecdsa = .sha384 }, .{ .ecdsa_p1363 = .sha384 } },
@@ -445,12 +440,12 @@ test "a parse, a signature and a decryption reach less stack than the depths tha
             .mldsa => |*k| &.{.{ .mldsa = k.level }},
             .x25519 => &.{},
         };
-        if (key.state.material.expose().* == .rsa) {
+        if (key.state.get().material.expose().* == .rsa) {
             // Below the modulus, an encoding that fails: the whole private operation and the
             // whole decoding run all the same.
             var ciphertext: [512]u8 = @splat(1);
             var plain: [max_plaintext]u8 = undefined;
-            const size = key.state.material.expose().rsa.crt.size;
+            const size = key.state.get().material.expose().rsa.crt.size;
             const scheme: certificate.Algorithm.Encryption = .{ .oaep = .{ .hash = .sha1, .mgf_hash = .sha1 } };
             decrypting = @max(decrypting, aegis.secret.stackReach(4 * sign_stack, decryptMessage, .{ key, scheme, ciphertext[0..size], noise[0..key.noiseLength()], &plain }));
         }

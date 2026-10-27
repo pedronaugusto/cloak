@@ -150,7 +150,7 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as
         const file, const hash, const curve, const width = row;
         const key = try PrivateKey.parse(gpa, @embedFile(file), .{});
         defer key.deinit();
-        const pair = key.state.material.expose().*;
+        const pair = key.state.get().material.expose().*;
         const encoded: []const u8 = switch (pair) {
             inline .p256, .p384, .p521 => |*p| p.public[0..],
             else => unreachable,
