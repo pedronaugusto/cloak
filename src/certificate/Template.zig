@@ -5,6 +5,7 @@
 //! refused here first.
 const std = @import("std");
 const Builder = @import("../wire/Builder.zig");
+const types = @import("../types.zig");
 const Algorithm = @import("Algorithm.zig");
 
 /// One attribute of a subject Name, each its own RelativeDistinguishedName, in the order given.
@@ -347,52 +348,58 @@ fn extensions(b: *Builder, subject: Subject, key_usage: ?KeyUsage, purposes: []c
         try b.close(list);
         try end(b, e);
     }
-    if (constraints) |c| {
-        if (c.permitted.len == 0 and c.excluded.len == 0) return error.InvalidTemplate;
-        const e = try begin(b, oid_name_constraints, c.critical);
-        const list = try b.open(0x30);
-        for ([_][]const Subtree{ c.permitted, c.excluded }, [_]u8{ 0xa0, 0xa1 }) |trees, tag| {
-            if (trees.len == 0) continue;
-            const group = try b.open(tag);
-            for (trees) |tree| {
-                const subtree = try b.open(0x30);
-                switch (tree) {
-                    .dns => |v| try b.element(0x82, v),
-                    .email => |v| try b.element(0x81, v),
-                    .uri => |v| try b.element(0x86, v),
-                    .ip => |v| {
-                        if (v.len != 8 and v.len != 32) return error.InvalidName;
-                        try b.element(0x87, v);
-                    },
-                }
-                try b.close(subtree);
-            }
-            try b.close(group);
-        }
-        try b.close(list);
-        try end(b, e);
-    }
-    if (crl.len != 0) {
-        const e = try begin(b, oid_crl_dp, false);
-        const list = try b.open(0x30);
-        for (crl) |url| {
-            try checkUri(url);
-            const point = try b.open(0x30);
-            const name_field = try b.open(0xa0);
-            const full = try b.open(0xa0);
-            try b.element(0x86, url);
-            try b.close(full);
-            try b.close(name_field);
-            try b.close(point);
-        }
-        try b.close(list);
-        try end(b, e);
-    }
+    if (constraints) |c| try nameConstraints(b, c);
+    if (crl.len != 0) try crlPoints(b, crl);
     for (extra) |extension| {
         const e = try begin(b, extension.oid, extension.critical);
         try b.raw(extension.value);
         try end(b, e);
     }
+}
+
+/// nameConstraints (RFC 5280 4.2.1.10): the permitted, then the excluded subtrees.
+fn nameConstraints(b: *Builder, c: NameConstraints) Error!void {
+    if (c.permitted.len == 0 and c.excluded.len == 0) return error.InvalidTemplate;
+    const e = try begin(b, oid_name_constraints, c.critical);
+    const list = try b.open(0x30);
+    for ([_][]const Subtree{ c.permitted, c.excluded }, [_]u8{ 0xa0, 0xa1 }) |trees, tag| {
+        if (trees.len == 0) continue;
+        const group = try b.open(tag);
+        for (trees) |tree| {
+            const subtree = try b.open(0x30);
+            switch (tree) {
+                .dns => |v| try b.element(0x82, v),
+                .email => |v| try b.element(0x81, v),
+                .uri => |v| try b.element(0x86, v),
+                .ip => |v| {
+                    if (v.len != 8 and v.len != 32) return error.InvalidName;
+                    try b.element(0x87, v);
+                },
+            }
+            try b.close(subtree);
+        }
+        try b.close(group);
+    }
+    try b.close(list);
+    try end(b, e);
+}
+
+/// cRLDistributionPoints (RFC 5280 4.2.1.13): each a full name, one URI.
+fn crlPoints(b: *Builder, crl: []const []const u8) Error!void {
+    const e = try begin(b, oid_crl_dp, false);
+    const list = try b.open(0x30);
+    for (crl) |url| {
+        try checkUri(url);
+        const point = try b.open(0x30);
+        const name_field = try b.open(0xa0);
+        const full = try b.open(0xa0);
+        try b.element(0x86, url);
+        try b.close(full);
+        try b.close(name_field);
+        try b.close(point);
+    }
+    try b.close(list);
+    try end(b, e);
 }
 
 const Open = struct { extension: Builder.Mark, value: Builder.Mark };
@@ -410,7 +417,7 @@ fn end(b: *Builder, open: Open) Error!void {
 /// UTCTime through 2049, GeneralizedTime from 2050 (RFC 5280 4.1.2.5), whole seconds, Z.
 fn time(b: *Builder, at: std.Io.Timestamp) Error!void {
     @setRuntimeSafety(true);
-    const seconds = std.math.cast(u64, at.toSeconds()) orelse return error.InvalidValidity;
+    const seconds = std.math.cast(u64, types.seconds(at)) orelse return error.InvalidValidity;
     const epoch: std.time.epoch.EpochSeconds = .{ .secs = seconds };
     const day = epoch.getEpochDay().calculateYearDay();
     const month = day.calculateMonthDay();
@@ -419,10 +426,10 @@ fn time(b: *Builder, at: std.Io.Timestamp) Error!void {
     if (year > 9999) return error.InvalidValidity;
     var buffer: [15]u8 = undefined;
     if (year < 2050) {
-        const text = std.fmt.bufPrint(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year % 100, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 13 bytes
+        const text = std.mem.print(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year % 100, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 13 bytes
         try b.element(0x17, text);
     } else {
-        const text = std.fmt.bufPrint(&buffer, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 15 bytes
+        const text = std.mem.print(&buffer, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 15 bytes
         try b.element(0x18, text);
     }
 }
@@ -437,7 +444,8 @@ fn subjectEmpty(subject: Subject) bool {
 /// The checks a verifier would make of what the template says, before anything is written.
 pub fn checkCertificate(template: *const Certificate) Error!void {
     @setRuntimeSafety(true);
-    if (template.not_after.toSeconds() <= template.not_before.toSeconds() or template.not_before.toSeconds() < 0) return error.InvalidValidity;
+    const not_before = types.seconds(template.not_before);
+    if (types.seconds(template.not_after) <= not_before or not_before < 0) return error.InvalidValidity;
     try checkNames(template.names);
     try checkSubject(template.subject, template.names);
     if (template.key_usage) |usage| {

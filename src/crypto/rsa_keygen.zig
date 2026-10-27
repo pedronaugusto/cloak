@@ -39,6 +39,15 @@ pub const Size = enum(u16) {
 
 pub const Error = error{ EntropyUnavailable, GenerationFailed };
 
+/// `io.randomSecure` as a source: what `PrivateKey.generate` draws from.
+pub const IoSource = struct {
+    io: std.Io,
+
+    pub fn fill(self: *const IoSource, buffer: []u8) error{EntropyUnavailable}!void {
+        self.io.randomSecure(buffer) catch return error.EntropyUnavailable;
+    }
+};
+
 /// A key's numbers as `Rsa.fromIntegers` takes them: unsigned big-endian in their fewest
 /// bytes, n, e, d, p, q, dp, dq and qinv. The owner wipes it.
 pub const Integers = struct {

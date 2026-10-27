@@ -3,6 +3,7 @@
 //! parser and a verification of the signature under the issuer's public key. See docs/design.md
 //! "Issuing certificates".
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const certificate = @import("certificate.zig");
 const Template = @import("certificate/Template.zig");
 const Request = @import("certificate/Request.zig");
@@ -25,8 +26,8 @@ pub const Issuer = struct {
 
 pub const Error = Template.Error || certificate.ParseError || error{ EntropyUnavailable, KeyMismatch, IssuerNotCa, UnsupportedAlgorithm, SigningFailed, InvalidSignature };
 
-/// The signature a key makes by default: Ed25519; ECDSA with the curve's hash; RSA PKCS#1 v1.5
-/// with SHA-256 (Go's); ML-DSA of its parameter set.
+/// The signature a key makes by default: Ed25519; ECDSA with the curve's hash (SHA-512 for
+/// P-521); RSA PKCS#1 v1.5 with SHA-256 (Go's); ML-DSA of its parameter set.
 pub fn defaultAlgorithm(key: PrivateKey) Algorithm.Signature {
     var buffer: [PrivateKey.max_public_key_info]u8 = undefined;
     // unreachable: cloak encoded it.
@@ -36,8 +37,11 @@ pub fn defaultAlgorithm(key: PrivateKey) Algorithm.Signature {
         .ec => |ec| .{ .ecdsa = switch (ec.curve) {
             .p256 => .sha256,
             .p384 => .sha384,
+            .p521 => .sha512,
         } },
         .ed25519 => .ed25519,
+        // An agreement key signs nothing: `issue` refuses it as an issuer.
+        .x25519 => .{ .unsupported = "x25519" },
         .mldsa => |m| .{ .mldsa = m.level },
     };
 }
@@ -77,7 +81,7 @@ pub fn issue(gpa: std.mem.Allocator, io: std.Io, template: *const Template.Certi
             if (!issuer.key.matchesKey(try certificate.parsePublicKey(subject_key))) return error.KeyMismatch;
         }
         try Template.name(&name_builder, template.subject);
-        issuer_name = name_builder.bytes.items;
+        issuer_name = name_builder.written();
     }
     const algorithm = issuer.algorithm orelse defaultAlgorithm(issuer.key);
     const algorithm_der = Template.signatureAlgorithm(algorithm) catch return error.UnsupportedAlgorithm;
@@ -105,13 +109,13 @@ pub fn issue(gpa: std.mem.Allocator, io: std.Io, template: *const Template.Certi
     var b = Builder.init(gpa);
     defer b.deinit();
     const outer = try b.open(0x30);
-    const tbs_at = b.bytes.items.len;
+    const tbs_at = b.written().len;
     try Template.tbs(&b, template, serial, issuer_name, subject_key, algorithm_der, subject_id, if (issuer.certificate == null) null else authority_id);
-    const tbs_end = b.bytes.items.len;
+    const tbs_end = b.written().len;
     try b.raw(algorithm_der);
     var signature_buffer: [PrivateKey.max_signature]u8 = undefined;
     // The signature is over the TBS, copied out: the builder may grow under it.
-    const tbs = try gpa.dupe(u8, b.bytes.items[tbs_at..tbs_end]);
+    const tbs = try gpa.dupe(u8, b.written()[tbs_at..tbs_end]);
     defer gpa.free(tbs);
     const signed = try sign(io, issuer.key, algorithm, tbs, &signature_buffer);
     try b.bits(signed);
@@ -134,9 +138,9 @@ pub fn request(gpa: std.mem.Allocator, io: std.Io, template: *const Template.Req
     var b = Builder.init(gpa);
     defer b.deinit();
     const outer = try b.open(0x30);
-    const info_at = b.bytes.items.len;
+    const info_at = b.written().len;
     try Template.requestInfo(&b, template, spki);
-    const info = try gpa.dupe(u8, b.bytes.items[info_at..]);
+    const info = try gpa.dupe(u8, b.written()[info_at..]);
     defer gpa.free(info);
     try b.raw(algorithm_der);
     var signature_buffer: [PrivateKey.max_signature]u8 = undefined;
@@ -156,8 +160,9 @@ pub fn verifyRequest(parsed: *const Request) signature.Error!void {
 
 fn sign(io: std.Io, key: PrivateKey, algorithm: Algorithm.Signature, message: []const u8, out: *[PrivateKey.max_signature]u8) Error![]const u8 {
     @setRuntimeSafety(true);
-    var noise: [PrivateKey.max_noise]u8 = undefined;
-    defer std.crypto.secureZero(u8, &noise);
+    var noise_owner: Secret([PrivateKey.max_noise]u8) = .init(undefined);
+    defer noise_owner.deinit();
+    const noise = noise_owner.exposeMut();
     const length = key.noiseLength();
     io.randomSecure(noise[0..length]) catch return error.EntropyUnavailable;
     return key.sign(algorithm, message, noise[0..length], out) catch |err| switch (err) {
