@@ -9,12 +9,15 @@ const Path = @import("Path.zig");
 const Guarded = @import("aegis").Guarded;
 const Job = @This();
 /// Private: the independent completion remains alive through its executor handle.
-state: *State,
+state: Handle,
+const Handle = aegis.Shared(State, release);
 const State = struct {
+    /// Everything either handle changes is behind `shared`'s lock; the inputs are fixed from
+    /// creation, and the charge and inputs are released by the last handle alone.
+    pub const interior_lock = true;
     gpa: std.mem.Allocator,
     charge: Budget.Charge,
     inputs: OwnedRequest,
-    refs: std.atomic.Value(usize) = .init(1),
     shared: Guarded(Completion) = .init(.{}),
 };
 const Completion = struct { phase: Phase = .pending, result: ?Native.EvaluateError!Path = null };
@@ -31,26 +34,29 @@ pub const InitError = OwnedRequest.InitError || Budget.ReserveError || SubmitErr
 pub fn init(gpa: std.mem.Allocator, budget: *Budget, request: types.Request, options: Options) InitError!Job {
     @setRuntimeSafety(true);
     if (options.timeout != .none and options.executor == null) return error.ServiceExecutorRequired;
-    var charge = try budget.reserve(try inputSize(request, options.anchors));
-    errdefer charge.release();
-    var inputs = try OwnedRequest.init(gpa, request, options.anchors);
-    errdefer inputs.deinit();
-    const state = try gpa.create(State);
-    errdefer gpa.destroy(state);
-    state.* = .{ .gpa = gpa, .charge = charge, .inputs = inputs };
-    const job: Job = .{ .state = state };
+    const job = try make(gpa, budget, request, options.anchors);
     if (options.executor) |executor| {
-        _ = job.state.refs.fetchAdd(1, .monotonic);
-        executor.submit(executor.context, job) catch |err| {
-            _ = job.state.refs.fetchSub(1, .monotonic);
+        const handed: Job = .{ .state = job.state.retain() };
+        executor.submit(executor.context, handed) catch |err| {
+            handed.deinit();
+            job.deinit();
             return err;
         };
     } else job.run();
     return job;
 }
+/// The job with its one handle: the charge and the owned inputs move into it.
+fn make(gpa: std.mem.Allocator, budget: *Budget, request: types.Request, anchors: []const []const u8) (OwnedRequest.InitError || Budget.ReserveError || error{ServiceLimit})!Job {
+    @setRuntimeSafety(true);
+    var charge = try budget.reserve(try inputSize(request, anchors));
+    errdefer charge.release();
+    var inputs = try OwnedRequest.init(gpa, request, anchors);
+    errdefer inputs.deinit();
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .charge = charge, .inputs = inputs }) };
+}
 pub fn run(job: Job) void {
     @setRuntimeSafety(true);
-    var guard = job.state.shared.acquire();
+    var guard = job.state.get().shared.acquire();
     if (guard.value().phase == .abandoned) {
         guard.deinit();
         return;
@@ -58,8 +64,8 @@ pub fn run(job: Job) void {
     if (guard.value().phase != .pending) @panic("cloak service completion executed twice");
     guard.value().phase = .running;
     guard.deinit();
-    var result = Native.evaluate(job.state.gpa, job.state.inputs.request, job.state.inputs.anchors);
-    guard = job.state.shared.acquire();
+    var result = Native.evaluate(job.state.get().gpa, job.state.get().inputs.request, job.state.get().inputs.anchors);
+    guard = job.state.get().shared.acquire();
     const abandoned = guard.value().phase == .abandoned;
     if (!abandoned) {
         guard.value().result = result;
@@ -74,7 +80,7 @@ pub fn run(job: Job) void {
 /// Cancels only this completion. The executor remains responsible for reaping work.
 pub fn abandon(job: Job) void {
     @setRuntimeSafety(true);
-    var guard = job.state.shared.acquire();
+    var guard = job.state.get().shared.acquire();
     if (guard.value().phase == .acknowledged) {
         guard.deinit();
         return;
@@ -90,14 +96,14 @@ pub fn abandon(job: Job) void {
 pub const TakeError = Native.EvaluateError || Path.CheckError || error{ ServicePending, ServiceAbandoned, ServiceAcknowledged };
 pub fn take(job: Job, request: types.Request) TakeError!Path {
     @setRuntimeSafety(true);
-    var guard = job.state.shared.acquire();
+    var guard = job.state.get().shared.acquire();
     const phase = guard.value().phase;
     guard.deinit();
     try ready(phase);
     // Inputs are immutable while either handle is retained. Hash outside spin.
-    const expected = job.state.inputs.request.digest();
+    const expected = job.state.get().inputs.request.digest();
     const supplied = request.digest();
-    guard = job.state.shared.acquire();
+    guard = job.state.get().shared.acquire();
     defer guard.deinit();
     try ready(guard.value().phase);
     if (!aegis.secret.equal(32, &expected, &supplied).declassify("a request mismatch is refused")) return error.WrongVerificationRequest;
@@ -116,9 +122,13 @@ fn ready(phase: Phase) error{ ServicePending, ServiceAbandoned, ServiceAcknowled
     }
 }
 pub fn deinit(job: Job) void {
+    var handle = job.state;
+    handle.release();
+}
+/// The last handle's cleanup.
+fn release(state: *State) void {
     @setRuntimeSafety(true);
-    if (job.state.refs.fetchSub(1, .acq_rel) != 1) return;
-    var guard = job.state.shared.acquire();
+    var guard = state.shared.acquire();
     if (guard.value().phase == .running) @panic("cloak executor released running completion");
     var detached = guard.value().result;
     guard.value().result = null;
@@ -126,10 +136,8 @@ pub fn deinit(job: Job) void {
     if (detached) |*result| {
         if (result.*) |*path| path.deinit() else |_| {}
     }
-    job.state.inputs.deinit();
-    job.state.charge.release();
-    const gpa = job.state.gpa;
-    gpa.destroy(job.state);
+    state.inputs.deinit();
+    state.charge.release();
 }
 fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceLimit}!usize {
     @setRuntimeSafety(true);

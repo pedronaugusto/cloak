@@ -130,8 +130,9 @@ test "C6 ECH reconstruction copies named outer extensions once, in order, and re
     const encoded_msg = hello(&encoded_buf, "", &.{ .{ 0, "secret" }, .{ 0xfd00, &.{ 4, 0, 10, 0, 51 } }, .{ 0xfe0d, &.{1} } });
     // Padding of zeros follows the hello.
     @memset(encoded_buf[encoded_msg.len..][0..7], 0);
-    const inner = try Ech.reconstruct(gpa, outer, encoded_buf[4 .. encoded_msg.len + 7], .stream);
-    defer gpa.free(inner);
+    var inner_owner = try Ech.reconstruct(gpa, outer, encoded_buf[4 .. encoded_msg.len + 7], .stream);
+    defer inner_owner.deinit(gpa);
+    const inner = inner_owner.expose();
     var want_buf: [256]u8 = undefined;
     const want = hello(&want_buf, "sess", &.{ .{ 0, "secret" }, .{ 10, "groups" }, .{ 51, "share" }, .{ 0xfe0d, &.{1} } });
     try std.testing.expectEqualSlices(u8, want, inner);
@@ -167,17 +168,18 @@ test "C8 ECH over DTLS: a datagram hello's cookie field is read past, and the in
     try std.testing.expect(Ech.extensionSpan(outer, .stream) == null);
     var encoded_buf: [256]u8 = undefined;
     const encoded = helloOf(&encoded_buf, "", "", &.{ .{ 0, "secret" }, .{ 0xfd00, &.{ 2, 0, 10 } }, .{ 0xfe0d, &.{1} } });
-    const inner = try Ech.reconstruct(gpa, outer, encoded[4..], .datagram);
-    defer gpa.free(inner);
+    var inner_owner = try Ech.reconstruct(gpa, outer, encoded[4..], .datagram);
+    defer inner_owner.deinit(gpa);
+    const inner = inner_owner.expose();
     var want_buf: [256]u8 = undefined;
     const want = helloOf(&want_buf, "", "", &.{ .{ 0, "secret" }, .{ 10, "groups" }, .{ 0xfe0d, &.{1} } });
     try std.testing.expectEqualSlices(u8, want, inner);
     // The inner hello's cookie field is its own, whatever the outer one holds: the server refuses
     // a non-empty one as it refuses it in any DTLS 1.3 hello.
     const with_field = helloOf(&encoded_buf, "", "c", &.{.{ 0xfe0d, &.{1} }});
-    const kept = try Ech.reconstruct(gpa, outer, with_field[4..], .datagram);
-    defer gpa.free(kept);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 'c' }, kept[4 + 2 + 32 + 1 ..][0..2]);
+    var kept = try Ech.reconstruct(gpa, outer, with_field[4..], .datagram);
+    defer kept.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 'c' }, kept.expose()[4 + 2 + 32 + 1 ..][0..2]);
 }
 
 test "C6 ECH server keys must match their configs" {
@@ -230,12 +232,12 @@ fn fuzzEchInput(_: void, case: *shakedown.Case) !void {
         .inner => try std.testing.expectEqual(1, input.len),
         .outer => |o| try std.testing.expect(o.payload.len != 0 and o.enc.len + o.payload.len + 10 == input.len),
     } else |_| {}
-    if (Ech.reconstruct(gpa_fuzz, outer, input, .stream)) |inner| {
-        defer gpa_fuzz.free(inner);
-        // Never larger than what both hellos hold.
-        try std.testing.expect(inner.len <= outer.len + input.len + 4);
-        try std.testing.expectEqual(inner.len - 4, std.mem.readInt(u24, inner[1..4], .big));
-    } else |_| {}
+    var owner = Ech.reconstruct(gpa_fuzz, outer, input, .stream) catch return;
+    defer owner.deinit(gpa_fuzz);
+    const inner = owner.expose();
+    // Never larger than what both hellos hold.
+    try std.testing.expect(inner.len <= outer.len + input.len + 4);
+    try std.testing.expectEqual(inner.len - 4, std.mem.readInt(u24, inner[1..4], .big));
 }
 
 test "C8 ECH over DTLS: an inner hello offering DTLS 1.2 (or 1.0) is no inner hello" {

@@ -20,6 +20,7 @@
 //! request was made for.
 const std = @import("std");
 const aegis = @import("aegis");
+const Buffer = @import("../wire/Buffer.zig");
 const certificates = @import("../../certificates.zig");
 const types = certificates.types;
 const suites = @import("../crypto/Suite.zig");
@@ -82,8 +83,8 @@ const PostAuth = @This();
 gpa: std.mem.Allocator,
 suite: Suite13,
 /// The handshake's transcript through the client's Finished.
-base: Transcripts.Selected,
-holder: std.atomic.Value(Half),
+base: aegis.Secret(Transcripts.Selected),
+holder: aegis.Atomic(Half),
 machine: union(Role) { client: ClientMachine.Runtime(void), server: ServerMachine.Runtime(void) },
 /// The exchange in progress, owned by `holder`.
 exchange: ?*Exchange = null,
@@ -100,8 +101,8 @@ peer: []const Hello.SignatureScheme,
 authorities: []const []const u8,
 /// The server's requests so far; each context is its number.
 requests: u64 = 0,
-/// `Outcome` packed: generation shifted left by one, authenticated in the low bit.
-outcome: std.atomic.Value(u64) = .init(0),
+/// The outcome, one cell so either half reads a generation with its own verdict.
+outcome: aegis.Atomic(Packed) = .init(.none),
 /// Server: the leaf certificate of the last answer that proved one, set as its exchange settles
 /// and before its outcome is published; owned, replaced by the next such answer. Kept only with
 /// `keep_leaf` (the server's `keep_peer_leaf`).
@@ -109,24 +110,24 @@ leaf: []u8 = &.{},
 keep_leaf: bool = false,
 
 const Exchange = struct {
-    transcript: Transcripts.Selected,
+    transcript: aegis.Secret(Transcripts.Selected),
     context: [255]u8 = undefined,
     context_len: u8 = 0,
     /// Client: the Certificate and CertificateVerify, built here, sent by the write half.
-    flight: []u8 = &.{},
+    flight: Buffer = .{},
     flight_len: usize = 0,
     /// Client: what the CertificateVerify signs, its scheme and the credential that signs.
     sign_scheme: Hello.SignatureScheme = .ed25519,
     credential: u8 = 0,
-    sign_content: [Messages.max_signed]u8 = undefined,
+    sign_content: aegis.Secret([Messages.max_signed]u8) = .init(@splat(0)),
     sign_content_len: u8 = 0,
     /// The transcript through the CertificateVerify (or the empty Certificate), and at a server
     /// the Finished the client sent.
-    digest: [Transcripts.max_digest]u8 = undefined,
+    digest: aegis.Secret([Transcripts.max_digest]u8) = .init(@splat(0)),
     digest_len: u8 = 0,
-    received: [Transcripts.max_digest]u8 = undefined,
+    received: aegis.Secret([Transcripts.max_digest]u8) = .init(@splat(0)),
     /// Server: the client's Certificate, held while its chain is verified, and the chain in it.
-    held: []u8 = &.{},
+    held: Buffer = .{},
     chain: [Messages.max_certificates][]const u8 = undefined,
     chain_len: usize = 0,
     now: ?std.Io.Timestamp = null,
@@ -143,7 +144,7 @@ pub fn init(gpa: std.mem.Allocator, role: Role, suite: Suite13, transcript: *con
     self.* = .{
         .gpa = gpa,
         .suite = suite,
-        .base = transcript.selected(),
+        .base = .init(transcript.selected()),
         .holder = .init(if (role == .client) .read else .write),
         .machine = switch (role) {
             .client => .{ .client = .init({}) },
@@ -161,44 +162,60 @@ pub fn deinit(self: *PostAuth) void {
     const gpa = self.gpa;
     self.endExchange();
     if (self.leaf.len != 0) gpa.free(self.leaf);
-    std.crypto.secureZero(u8, std.mem.asBytes(self));
+    // The transcript is the only secret kept between exchanges; the leaf is the certificate
+    // handed to the caller.
+    self.base.deinit();
     gpa.destroy(self);
 }
 
 /// The completed exchanges and the last one's verdict; from either half.
 pub fn result(self: *const PostAuth) Outcome {
-    const packed_outcome = self.outcome.load(.acquire);
-    return .{ .generation = packed_outcome >> 1, .authenticated = packed_outcome & 1 != 0 };
+    return self.outcome.load(.acquire).unpack();
 }
+
+/// An `Outcome` in one word: the generation shifted left by one, the verdict in the low bit.
+const Packed = enum(u64) {
+    none = 0,
+    _,
+
+    fn pack(outcome: Outcome) Packed {
+        return @fromBackingInt(outcome.generation << 1 | @intFromBool(outcome.authenticated));
+    }
+
+    fn unpack(self: Packed) Outcome {
+        const word = @backingInt(self);
+        return .{ .generation = word >> 1, .authenticated = word & 1 != 0 };
+    }
+};
 
 /// The leaf of the last settled answer that proved one, after its outcome; null when none has.
 pub fn latestLeaf(self: *const PostAuth) ?[]const u8 {
-    if (self.outcome.load(.acquire) == 0) return null;
+    if (self.outcome.load(.acquire) == .none) return null;
     return if (self.leaf.len == 0) null else self.leaf;
 }
 
 fn record(self: *PostAuth, authenticated: bool) void {
-    const generation = (self.outcome.load(.acquire) >> 1) + 1;
-    self.outcome.store(generation << 1 | @intFromBool(authenticated), .release);
+    const generation = self.outcome.load(.acquire).unpack().generation + 1;
+    self.outcome.store(.pack(.{ .generation = generation, .authenticated = authenticated }), .release);
 }
 
 fn startExchange(self: *PostAuth) std.mem.Allocator.Error!*Exchange {
     aegis.assert.invariant(self.exchange == null, "one exchange at a time");
     const ex = try self.gpa.create(Exchange);
-    ex.* = .{ .transcript = self.base };
+    ex.* = .{ .transcript = .init(self.base.expose().*) };
     self.exchange = ex;
     return ex;
 }
 
 fn endExchange(self: *PostAuth) void {
     const ex = self.exchange orelse return;
-    if (ex.flight.len != 0) {
-        std.crypto.secureZero(u8, ex.flight);
-        self.gpa.free(ex.flight);
-    }
-    if (ex.held.len != 0) self.gpa.free(ex.held);
+    ex.flight.free(self.gpa);
+    ex.held.free(self.gpa);
     if (ex.leaf.len != 0) self.gpa.free(ex.leaf);
-    std.crypto.secureZero(u8, std.mem.asBytes(ex));
+    ex.transcript.deinit();
+    ex.sign_content.deinit();
+    ex.digest.deinit();
+    ex.received.deinit();
     self.gpa.destroy(ex);
     self.exchange = null;
     self.need = .none;
@@ -221,7 +238,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     const ex = try self.startExchange();
     @memcpy(ex.context[0..parsed.context.len], parsed.context);
     ex.context_len = @intCast(parsed.context.len); // safe: a vector<0..255>
-    try ex.transcript.commit(msg);
+    try ex.transcript.exposeMut().commit(msg);
     // A credential of the type the handshake agreed (RFC 7250), with a scheme the server takes,
     // the first that chains to an authority it names, else the first (RFC 8446 section 4.2.4).
     // Delegated credentials answer only the handshake's request: here the certificate's key signs.
@@ -239,13 +256,12 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     const entries: []const []const u8 = if (choice) |c| credentials[c.index].auth.entries() else &.{};
     var total: usize = 64 + 8 + certificates.PrivateKey.max_signature;
     for (entries) |der| total += der.len + 5;
-    ex.flight = try self.gpa.alloc(u8, total);
-    const certificate = try Messages.buildCertificate(ex.flight, parsed.context, entries, .{});
+    const certificate = try Messages.buildCertificate(try ex.flight.ensure(self.gpa, total), parsed.context, entries, .{});
     ex.flight_len = certificate.len;
-    try ex.transcript.commit(certificate);
+    try ex.transcript.exposeMut().commit(certificate);
     const chosen = scheme orelse return self.answered(false);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const content = Messages.signedContent(&ex.sign_content, false, ex.transcript.digest(&digest_buf));
+    const content = Messages.signedContent(ex.sign_content.exposeMut(), false, ex.transcript.expose().digest(&digest_buf));
     ex.sign_content_len = @intCast(content.len); // safe: signed content is at most 146 bytes
     ex.sign_scheme = chosen;
     const identity = credentials[ex.credential].auth.identity;
@@ -273,16 +289,17 @@ pub fn provideEntropy(self: *PostAuth, entropy: []const u8, credentials: []const
 fn signWith(self: *PostAuth, identity: certificates.Identity, noise: []const u8) Error!void {
     @setRuntimeSafety(true);
     const ex = self.exchange.?;
-    var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-    defer std.crypto.secureZero(u8, &out);
-    const signature = Possession.sign(identity, ex.sign_scheme, ex.sign_content[0..ex.sign_content_len], noise, &out) catch return error.SigningFailed;
+    var out_owner: aegis.Secret([certificates.PrivateKey.max_signature]u8) = .init(undefined);
+    defer out_owner.deinit();
+    const out = out_owner.exposeMut();
+    const signature = Possession.sign(identity, ex.sign_scheme, ex.sign_content.expose()[0..ex.sign_content_len], noise, out) catch return error.SigningFailed;
     return self.addCertificateVerify(signature);
 }
 
 /// What a key held elsewhere must sign; valid while `need` is `.sign`.
 pub fn signRequest(self: *const PostAuth) SignRequest {
     const ex = self.exchange.?;
-    return .{ .scheme = ex.sign_scheme, .content = ex.sign_content[0..ex.sign_content_len], .credential = ex.credential };
+    return .{ .scheme = ex.sign_scheme, .content = ex.sign_content.expose()[0..ex.sign_content_len], .credential = ex.credential };
 }
 
 /// A signature from a key held elsewhere, checked against the identity's key before it is sent.
@@ -290,7 +307,7 @@ pub fn provideSignature(self: *PostAuth, signature: []const u8, credentials: []c
     @setRuntimeSafety(true);
     if (self.need != .sign) return error.UnexpectedService;
     const ex = self.exchange.?;
-    Possession.verifyKey(@backingInt(ex.sign_scheme), &.{ex.sign_scheme}, credentials[ex.credential].auth.identity.publicKey(), ex.sign_content[0..ex.sign_content_len], signature) catch return error.BadSignature;
+    Possession.verifyKey(@backingInt(ex.sign_scheme), &.{ex.sign_scheme}, credentials[ex.credential].auth.identity.publicKey(), ex.sign_content.expose()[0..ex.sign_content_len], signature) catch return error.BadSignature;
     self.need = .none;
     return self.addCertificateVerify(signature);
 }
@@ -298,8 +315,8 @@ pub fn provideSignature(self: *PostAuth, signature: []const u8, credentials: []c
 fn addCertificateVerify(self: *PostAuth, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     const ex = self.exchange.?;
-    const built = try Messages.buildCertificateVerify(ex.flight[ex.flight_len..], @backingInt(ex.sign_scheme), signature);
-    try ex.transcript.commit(built);
+    const built = try Messages.buildCertificateVerify(ex.flight.bytes()[ex.flight_len..], @backingInt(ex.sign_scheme), signature);
+    try ex.transcript.exposeMut().commit(built);
     ex.flight_len += built.len;
     return self.answered(true);
 }
@@ -310,8 +327,8 @@ fn answered(self: *PostAuth, presented: bool) Error!void {
     const ex = self.exchange.?;
     ex.presented = presented;
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    const digest = ex.transcript.digest(&digest_buf);
-    @memcpy(ex.digest[0..digest.len], digest);
+    const digest = ex.transcript.expose().digest(&digest_buf);
+    @memcpy(ex.digest.exposeMut()[0..digest.len], digest);
     ex.digest_len = @intCast(digest.len); // safe: 32 or 48
     _ = self.machine.client.step(.answer) catch unreachable; // unreachable: answering until now
     self.holder.store(.write, .release);
@@ -333,7 +350,7 @@ pub const Response = struct {
 pub fn response(self: *const PostAuth) Response {
     aegis.assert.pre(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
     const ex = self.exchange.?;
-    return .{ .flight = ex.flight[0..ex.flight_len], .transcript = ex.digest[0..ex.digest_len] };
+    return .{ .flight = ex.flight.view()[0..ex.flight_len], .transcript = ex.digest.expose()[0..ex.digest_len] };
 }
 
 /// The write half sent the answer, or never will (it closed): the next request is the read
@@ -376,7 +393,7 @@ pub fn request(self: *PostAuth, out: []u8) (Error || error{RequestOutstanding})!
     errdefer self.endExchange();
     @memcpy(ex.context[0..8], &context);
     ex.context_len = 8;
-    try ex.transcript.commit(message);
+    try ex.transcript.exposeMut().commit(message);
     _ = self.machine.server.step(.request) catch unreachable; // unreachable: idle, checked above
     self.requests = number;
     return .{ .message = message, .number = number };
@@ -416,14 +433,15 @@ pub fn onCertificate(self: *PostAuth, msg: []const u8, policy: Policy) Error!voi
     if (!std.mem.eql(u8, parsed.context, ex.context[0..ex.context_len])) return error.IllegalParameter;
     if (parsed.count == 0) {
         _ = self.machine.server.step(.empty_certificate) catch unreachable; // unreachable: requested
-        try ex.transcript.commit(msg);
+        try ex.transcript.exposeMut().commit(msg);
         return;
     }
     _ = self.machine.server.step(.certificate) catch unreachable; // unreachable: requested
-    ex.held = try self.gpa.dupe(u8, msg);
-    const kept = try Messages.certificate(ex.held, policy.limits.certificates, policy.limits.chain_bytes, &ex.chain, .{});
+    const held = (try ex.held.ensure(self.gpa, msg.len))[0..msg.len];
+    @memcpy(held, msg);
+    const kept = try Messages.certificate(held, policy.limits.certificates, policy.limits.chain_bytes, &ex.chain, .{});
     ex.chain_len = kept.count;
-    try ex.transcript.commit(msg);
+    try ex.transcript.exposeMut().commit(msg);
     ex.presented = true;
     if (self.raw_client) {
         // The raw key the handshake agreed for the client (RFC 7250), one the policy pins.
@@ -498,11 +516,11 @@ pub fn onCertificateVerify(self: *PostAuth, msg: []const u8) Error!void {
     const parsed = try Messages.certificateVerify(msg);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     var content_buf: [Messages.max_signed]u8 = undefined;
-    const content = Messages.signedContent(&content_buf, false, ex.transcript.digest(&digest_buf));
+    const content = Messages.signedContent(&content_buf, false, ex.transcript.expose().digest(&digest_buf));
     var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
     try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.peer, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), &taken), try Possession.peerKey(ex.chain[0], self.raw_client), content, parsed.signature);
     _ = self.machine.server.step(.certificate_verify) catch unreachable; // unreachable: possession
-    try ex.transcript.commit(msg);
+    try ex.transcript.exposeMut().commit(msg);
     if (self.keep_leaf) try Possession.keepLeaf(self.gpa, &ex.leaf, ex.chain[0], self.raw_client);
 }
 
@@ -514,9 +532,9 @@ pub fn onFinished(self: *PostAuth, msg: []const u8) Error!void {
     if (self.machine.server.current() != .finished) return error.UnexpectedMessage;
     const n = self.digestLength();
     const received = try Messages.finished(msg, n);
-    @memcpy(ex.received[0..n], received);
+    @memcpy(ex.received.exposeMut()[0..n], received);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
-    @memcpy(ex.digest[0..n], ex.transcript.digest(&digest_buf));
+    @memcpy(ex.digest.exposeMut()[0..n], ex.transcript.expose().digest(&digest_buf));
     ex.digest_len = @intCast(n); // safe: 32 or 48
     _ = self.machine.server.step(.finished) catch unreachable; // unreachable: finished
 }
@@ -527,7 +545,7 @@ pub const FinishedCheck = struct { transcript: []const u8, received: []const u8 
 pub fn finishedCheck(self: *const PostAuth) FinishedCheck {
     aegis.assert.pre(self.machine.server.current() == .checking, "a received Finished awaits its check");
     const ex = self.exchange.?;
-    return .{ .transcript = ex.digest[0..ex.digest_len], .received = ex.received[0..ex.digest_len] };
+    return .{ .transcript = ex.digest.expose()[0..ex.digest_len], .received = ex.received.expose()[0..ex.digest_len] };
 }
 
 /// The record layer accepted the Finished: the exchange counts, and the next request is the

@@ -64,7 +64,7 @@ pub fn walk(gpa: std.mem.Allocator, bytes: []const u8, options: Options, comptim
     const passphrase = options.passphrase orelse "";
     var candidates: [2]Pbe.Password = undefined;
     var count: usize = 0;
-    defer for (candidates[0..count]) |*candidate| candidate.deinit();
+    defer for (candidates[0..count]) |*candidate| candidate.deinit(gpa);
     candidates[0] = try Pbe.Password.init(gpa, passphrase, false, pbe_limits);
     count = 1;
     if (passphrase.len == 0) {
@@ -95,7 +95,7 @@ pub fn walk(gpa: std.mem.Allocator, bytes: []const u8, options: Options, comptim
         } else if (std.mem.eql(u8, kind, oid_encrypted_data)) {
             if (options.passphrase == null and passphrase.len == 0 and mac_data == null) return error.PasswordRequired;
             var decrypted = try encryptedContent(gpa, try info.expect(0xa0), chosen, pbe_limits);
-            defer decrypted.deinit();
+            defer decrypted.deinit(gpa);
             try info.finish();
             try safeContents(decrypted.expose(), chosen, limits, &bags, 0, SinkError, sink);
         } else return error.UnsupportedEncryption;
@@ -238,10 +238,10 @@ fn encryptedContent(gpa: std.mem.Allocator, wrapper: Der.Element, password: *con
         else => return error.InvalidPkcs12,
     };
     var plain = try Pbe.decrypt(gpa, algorithm.encoded, ciphertext, password, limits);
-    defer plain.deinit();
+    defer plain.deinit(gpa);
     const length = Ber.measure(plain.expose(), .{}) catch return error.BadPassword;
     var der = try SecretBytes.init(gpa, length);
-    errdefer der.deinit();
+    errdefer der.deinit(gpa);
     der.resizeWithinCapacity(length) catch return error.InputLimit;
     Ber.write(plain.expose(), .{}, der.exposeMut()) catch return error.BadPassword;
     return der;

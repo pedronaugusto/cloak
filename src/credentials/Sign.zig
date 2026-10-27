@@ -10,6 +10,7 @@
 //! constant-time CRT operation of `crypto/rsa.zig`, which checks every result against the
 //! public key before it is written.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Curve = @import("Curve.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
@@ -57,24 +58,30 @@ pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
         pub fn signAnyDigest(secret: *const [secret_length]u8, digest: []const u8, noise: ?*const [noise_length]u8, form: Form, out: *[max_signature]u8) Error![]const u8 {
             @setRuntimeSafety(true);
             const e = curve.digestScalar(digest);
-            var k_bytes = nonce(&e.toBytes(), secret, noise);
-            defer std.crypto.secureZero(u8, &k_bytes);
-            const r = curve.signR(&k_bytes) orelse return error.SigningFailed;
+            var k_bytes_owner: Secret([width]u8) = .init(nonce(&e.toBytes(), secret, noise));
+            defer k_bytes_owner.deinit();
+            const k_bytes = k_bytes_owner.exposeMut();
+            const r = curve.signR(k_bytes) orelse return error.SigningFailed;
             // r is part of the signature: public.
             if (r.isZero()) return error.SigningFailed;
-            var d = Scalar.fromBytes(secret) catch return error.SigningFailed;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&d));
+            var d_owner: Secret(Scalar) = .init(Scalar.fromBytes(secret) catch return error.SigningFailed);
+            defer d_owner.deinit();
+            const d = d_owner.exposeMut();
             if (d.isZeroMask() != 0) return error.SigningFailed;
-            var k = Scalar.fromBytes(&k_bytes) catch return error.SigningFailed;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&k));
-            var k_inverse = k.powModulusMinusTwo();
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&k_inverse));
+            var k_owner: Secret(Scalar) = .init(Scalar.fromBytes(k_bytes) catch return error.SigningFailed);
+            defer k_owner.deinit();
+            const k = k_owner.exposeMut();
+            var k_inverse_owner: Secret(Scalar) = .init(k.powModulusMinusTwo());
+            defer k_inverse_owner.deinit();
+            const k_inverse = k_inverse_owner.exposeMut();
             // r * d with r public gives d: named, and erased.
-            var rd = r.mul(d);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&rd));
-            var blend = e.add(rd);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&blend));
-            const s = k_inverse.mul(blend);
+            var rd_owner: Secret(Scalar) = .init(r.mul(d.*));
+            defer rd_owner.deinit();
+            const rd = rd_owner.exposeMut();
+            var blend_owner: Secret(Scalar) = .init(e.add(rd.*));
+            defer blend_owner.deinit();
+            const blend = blend_owner.exposeMut();
+            const s = k_inverse.mul(blend.*);
             if (s.isZero()) return error.SigningFailed;
             return write(&r.toBytes(), &s.toBytes(), form, out);
         }
@@ -125,12 +132,15 @@ pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
         fn nonce(h: *const [width]u8, secret: *const [width]u8, noise: ?*const [noise_length]u8) [width]u8 {
             const Wide = @Int(.unsigned, 8 * width);
             const spare = 8 * width - Scalar.bits;
-            var k: [Hash.digest_length]u8 = @splat(0);
-            defer std.crypto.secureZero(u8, &k);
-            var m: [Hash.digest_length + 1 + noise_length + width + width]u8 = @splat(0);
-            defer std.crypto.secureZero(u8, &m);
-            var t: [width + Hash.digest_length]u8 = @splat(0);
-            defer std.crypto.secureZero(u8, &t);
+            var k_owner: Secret([Hash.digest_length]u8) = .init(@splat(0));
+            defer k_owner.deinit();
+            const k = k_owner.exposeMut();
+            var m_owner: Secret([Hash.digest_length + 1 + noise_length + width + width]u8) = .init(@splat(0));
+            defer m_owner.deinit();
+            const m = m_owner.exposeMut();
+            var t_owner: Secret([width + Hash.digest_length]u8) = .init(@splat(0));
+            defer t_owner.deinit();
+            const t = t_owner.exposeMut();
             const m_v = m[0..Hash.digest_length];
             const m_i = &m[m_v.len];
             const m_z = m[m_v.len + 1 ..][0..noise_length];
@@ -141,24 +151,26 @@ pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
             if (noise) |bytes| @memcpy(m_z, bytes);
             @memcpy(m_x, secret);
             @memcpy(m_h, h);
-            Prf.create(&k, &m, &k);
-            Prf.create(m_v, m_v, &k);
+            Prf.create(k, m, k);
+            Prf.create(m_v, m_v, k);
             m_i.* = 0x01;
-            Prf.create(&k, &m, &k);
-            Prf.create(m_v, m_v, &k);
+            Prf.create(k, m, k);
+            Prf.create(m_v, m_v, k);
             while (true) {
                 var offset: usize = 0;
                 while (offset < width) : (offset += m_v.len) {
-                    Prf.create(m_v, m_v, &k);
+                    Prf.create(m_v, m_v, k);
                     t[offset..][0..m_v.len].* = m_v.*;
                 }
-                var candidate: [width]u8 = undefined;
-                std.mem.writeInt(Wide, &candidate, std.mem.readInt(Wide, t[0..width], .big) >> spare, .big);
-                if (curve.scalarInRange(&candidate)) return candidate;
-                std.crypto.secureZero(u8, &candidate);
+                // The draw is the caller's when in range, erased here when not.
+                var candidate_owner: Secret([width]u8) = .init(undefined);
+                defer candidate_owner.deinit();
+                const candidate = candidate_owner.exposeMut();
+                std.mem.writeInt(Wide, candidate, std.mem.readInt(Wide, t[0..width], .big) >> spare, .big);
+                if (curve.scalarInRange(candidate)) return candidate.*;
                 m_i.* = 0x00;
-                Prf.create(&k, m[0 .. m_v.len + 1], &k);
-                Prf.create(m_v, m_v, &k);
+                Prf.create(k, m[0 .. m_v.len + 1], k);
+                Prf.create(m_v, m_v, k);
             }
         }
     };
@@ -180,37 +192,45 @@ pub const ed25519 = struct {
     /// Writes the RFC 8032 signature over `message` by the key into `out`.
     pub fn sign(key: *const [key_length]u8, message: []const u8, out: *[signature_length]u8) Error!void {
         @setRuntimeSafety(true);
-        var expanded: [64]u8 = undefined;
-        defer std.crypto.secureZero(u8, &expanded);
-        var hash = Sha512.init(.{});
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+        var expanded_owner: Secret([64]u8) = .init(undefined);
+        defer expanded_owner.deinit();
+        const expanded = expanded_owner.exposeMut();
+        var hash_owner: Secret(Sha512) = .init(Sha512.init(.{}));
+        defer hash_owner.deinit();
+        const hash = hash_owner.exposeMut();
         hash.update(key[0..32]);
-        hash.final(&expanded);
-        var scalar: [32]u8 = expanded[0..32].*;
-        defer std.crypto.secureZero(u8, &scalar);
-        scalars.clamp(&scalar);
-        var wide: [64]u8 = undefined;
-        defer std.crypto.secureZero(u8, &wide);
-        hash = Sha512.init(.{});
+        hash.final(expanded);
+        var scalar_owner: Secret([32]u8) = .init(expanded[0..32].*);
+        defer scalar_owner.deinit();
+        const scalar = scalar_owner.exposeMut();
+        scalars.clamp(scalar);
+        var wide_owner: Secret([64]u8) = .init(undefined);
+        defer wide_owner.deinit();
+        const wide = wide_owner.exposeMut();
+        hash.* = Sha512.init(.{});
         hash.update(expanded[32..64]);
         hash.update(message);
-        hash.final(&wide);
-        var nonce = scalars.reduce64(wide);
-        defer std.crypto.secureZero(u8, &nonce);
-        var point = Curve.base(Edwards, .little, &nonce) catch return error.SigningFailed;
-        defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+        hash.final(wide);
+        var nonce_owner: Secret([32]u8) = .init(scalars.reduce64(wide.*));
+        defer nonce_owner.deinit();
+        const nonce = nonce_owner.exposeMut();
+        var point_owner: Secret(Edwards) = .init(Curve.base(Edwards, .little, nonce) catch return error.SigningFailed);
+        defer point_owner.deinit();
+        const point = point_owner.exposeMut();
         const commitment = point.toBytes();
-        hash = Sha512.init(.{});
+        hash.* = Sha512.init(.{});
         hash.update(&commitment);
         hash.update(key[32..64]);
         hash.update(message);
-        hash.final(&wide);
-        var challenge = scalars.reduce64(wide);
-        defer std.crypto.secureZero(u8, &challenge);
-        var s = scalars.mulAdd(challenge, scalar, nonce);
-        defer std.crypto.secureZero(u8, &s);
+        hash.final(wide);
+        var challenge_owner: Secret([32]u8) = .init(scalars.reduce64(wide.*));
+        defer challenge_owner.deinit();
+        const challenge = challenge_owner.exposeMut();
+        var s_owner: Secret([32]u8) = .init(scalars.mulAdd(challenge.*, scalar.*, nonce.*));
+        defer s_owner.deinit();
+        const s = s_owner.exposeMut();
         out[0..32].* = commitment;
-        out[32..64].* = s;
+        out[32..64].* = s.*;
     }
 };
 

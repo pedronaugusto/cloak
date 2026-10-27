@@ -2,6 +2,7 @@
 //! `crypto/pkcs1.zig`'s and the public operation std's, as signature verification takes it.
 //! No private operation here: decryption is `PrivateKey.decrypt`'s.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const A = @import("../certificate/Algorithm.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 
@@ -37,9 +38,10 @@ pub fn encrypt(key: A.PublicKey, scheme: A.Encryption, message: []const u8, seed
     };
     try A.checkRsa(rsa.modulus, rsa.exponent);
     const k = rsa.modulus.len;
-    var em: [pkcs1.max_em]u8 = undefined;
     // The encoding holds the message: erased with it.
-    defer std.crypto.secureZero(u8, em[0..k]);
+    var em_owner: Secret([pkcs1.max_em]u8) = .init(undefined);
+    defer em_owner.deinit();
+    const em = em_owner.exposeMut();
     switch (scheme) {
         .oaep => |oaep| try pkcs1.encode(oaep, message, seed, em[0..k]),
     }

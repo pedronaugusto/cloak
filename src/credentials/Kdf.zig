@@ -1,5 +1,6 @@
 //! Bounded offline PBKDF2/HMAC orchestration with owned, erased working state.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const aegis = @import("aegis");
 pub const DeriveError = error{KdfLimit};
 /// The longest key `derive` makes: SHA-512's output, as PBMAC1 over HMAC-SHA-512 asks.
@@ -46,8 +47,9 @@ pub fn Keyed(comptime Hash: type) type {
             defer pad_owner.deinit();
             const pad = pad_owner.exposeMut();
             if (key.len > pad.len) {
-                var h = Hash.init(.{});
-                defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+                var h_owner: Secret(Hash) = .init(Hash.init(.{}));
+                defer h_owner.deinit();
+                const h = h_owner.exposeMut();
                 h.update(key);
                 h.final(pad[0..Hash.digest_length]);
             } else @memcpy(pad[0..key.len], key);
@@ -61,15 +63,16 @@ pub fn Keyed(comptime Hash: type) type {
         /// The MAC of `first || last` in `out`, which may alias either input.
         pub fn mac(self: *const Self, out: *[Hash.digest_length]u8, first: []const u8, last: []const u8) void {
             @setRuntimeSafety(true);
-            var h = self.inner;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&h));
+            var h_owner: Secret(Hash) = .init(self.inner);
+            defer h_owner.deinit();
+            const h = h_owner.exposeMut();
             h.update(first);
             h.update(last);
             var digest_owner = aegis.Secret([Hash.digest_length]u8).init(undefined);
             defer digest_owner.deinit();
             const digest = digest_owner.exposeMut();
             h.final(digest);
-            h = self.outer;
+            h.* = self.outer;
             h.update(digest);
             h.final(out);
         }

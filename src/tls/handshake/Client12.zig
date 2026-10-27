@@ -10,6 +10,7 @@
 //! ServerKeyExchange carrying an identity hint the client ignores, then the client's identity in
 //! its ClientKeyExchange; the key authenticates both ends.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");
@@ -72,7 +73,7 @@ pub fn onServerHello(self: anytype, msg: []const u8, hello: Hello.ServerHello12,
     const scratch = self.scratch.?;
     self.suite12 = hello.suite;
     self.tls12 = try Flight.Secrets12.create(self.gpa);
-    @memcpy(self.tls12.?.randoms[0..32], &scratch.random);
+    @memcpy(self.tls12.?.randoms[0..32], scratch.random.expose());
     @memcpy(self.tls12.?.randoms[32..64], hello.random);
     for (self.options.hello.alpn) |offered| if (std.mem.eql(u8, offered, hello.alpn)) {
         self.alpn = offered;
@@ -357,7 +358,7 @@ fn sendFlight(self: anytype) Error!void {
             const messages = scratch.transcripts.keptBytes();
             if (identity.noiseLength()) |noise_length| {
                 var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-                const signature = Possession.sign12(identity, chosen, messages, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+                const signature = Possession.sign12(identity, chosen, messages, scratch.sign_noise.expose()[0..noise_length], &out) catch return error.SigningFailed;
                 return sendCertificateVerify(self, signature);
             }
             self.need_now = .sign;
@@ -365,14 +366,14 @@ fn sendFlight(self: anytype) Error!void {
         }
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         const digest = scratch.transcripts.digestOf(&digest_buf, Possession.transcriptHash12(chosen).?);
-        @memcpy(scratch.sign_content[0..digest.len], digest);
+        @memcpy(scratch.sign_content.exposeMut()[0..digest.len], digest);
         // safe: a transcript digest is at most 48 bytes.
         scratch.sign_content_len = @intCast(digest.len);
         const identity = self.kept.credentials[self.credential.?].auth.identity;
         // Cloak signs for a key it holds; a key held elsewhere signs the digest for the caller.
         if (identity.noiseLength()) |noise_length| {
             var out: [certificates.PrivateKey.max_signature]u8 = undefined;
-            const signature = Possession.signDigest12(identity, chosen, digest, scratch.sign_noise[0..noise_length], &out) catch return error.SigningFailed;
+            const signature = Possession.signDigest12(identity, chosen, digest, scratch.sign_noise.expose()[0..noise_length], &out) catch return error.SigningFailed;
             return sendCertificateVerify(self, signature);
         }
         self.need_now = .sign;
@@ -404,9 +405,10 @@ fn sendPskFlight(self: anytype) Error!void {
     const exchange = try Messages12.buildPskClientKeyExchange(try self.reserve(8 + psk.identity.len), psk.identity);
     try self.state.advance(.local_key_exchange, .initial, .parsed, true);
     try self.queueMessage(.initial, exchange);
-    var premaster: [Messages12.max_premaster]u8 = undefined;
-    defer std.crypto.secureZero(u8, &premaster);
-    deriveMaster(self, Messages12.pskPremaster(&premaster, psk.secret));
+    var premaster_owner: Secret([Messages12.max_premaster]u8) = .init(undefined);
+    defer premaster_owner.deinit();
+    const premaster = premaster_owner.exposeMut();
+    deriveMaster(self, Messages12.pskPremaster(premaster, psk.secret));
     try finishFlight(self);
 }
 
@@ -418,7 +420,7 @@ pub fn onSignature(self: anytype, signature: []const u8) Error!void {
     if (self.sign_scheme == .ed25519) {
         Possession.verifyMessage12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, own, scratch.transcripts.keptBytes(), signature) catch return error.BadSignature;
     } else {
-        const digest = scratch.sign_content[0..scratch.sign_content_len];
+        const digest = scratch.sign_content.expose()[0..scratch.sign_content_len];
         Possession.verifyDigest12(@backingInt(self.sign_scheme), &.{self.sign_scheme}, own, digest, signature) catch return error.BadSignature;
     }
     self.need_now = .none;
@@ -511,7 +513,7 @@ fn storeTicket(self: anytype) void {
     if (self.ticket12.len == 0) return;
     const now = self.now orelse return;
     const now_s = certificates.types.seconds(now);
-    const max_age = @divFloor(resumption.max_age.nanoseconds, std.time.ns_per_s);
+    const max_age = certificates.types.spanSeconds(resumption.max_age);
     const by_age: i64 = std.math.cast(i64, @as(i96, self.origin) + max_age) orelse std.math.maxInt(i64);
     var expires = @min(by_age, self.auth_expires);
     if (self.ticket12_hint != 0) expires = @min(expires, now_s +| @as(i64, self.ticket12_hint));
@@ -524,7 +526,7 @@ fn storeTicket(self: anytype) void {
         .secret = self.tls12.?.master.expose(),
         .group = self.group.?,
         .age_add = 0,
-        .received_ms = std.math.cast(i64, @divFloor(now.nanoseconds, std.time.ns_per_ms)) orelse return,
+        .received_ms = certificates.types.milliseconds(now),
         .expires = expires,
         .origin = self.origin,
         .auth_expires = self.auth_expires,

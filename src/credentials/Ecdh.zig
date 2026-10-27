@@ -4,6 +4,7 @@
 //! X25519 is `crypto/x25519.zig`'s (s2n-bignum's verified ladder, or the RFC's over fiat-crypto's
 //! field), its shared secret the 32 bytes RFC 7748 names.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
@@ -35,8 +36,9 @@ fn Nist(comptime curve: type) type {
         fn derive(scalar: *const [scalar_length]u8, out: *[public_length]u8) Error!void {
             @setRuntimeSafety(true);
             try check(scalar);
-            var point = curve.baseMul(scalar);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&point));
+            var point_owner: Secret(@TypeOf(curve.baseMul(scalar))) = .init(curve.baseMul(scalar));
+            defer point_owner.deinit();
+            const point = point_owner.exposeMut();
             if (point.z.isZero()) return error.IdentityElement;
             out.* = point.affine().toSec1();
         }
@@ -52,12 +54,14 @@ fn Nist(comptime curve: type) type {
             try check(scalar);
             if (peer.len != public_length or peer[0] != 4) return error.InvalidPublicKey;
             const point = curve.Affine.fromSec1(peer) catch return error.InvalidPublicKey;
-            var product = curve.mul(&point, scalar);
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&product));
+            var product_owner: Secret(curve.Jacobian) = .init(curve.mul(&point, scalar));
+            defer product_owner.deinit();
+            const product = product_owner.exposeMut();
             if (product.z.isZero()) return error.IdentityElement;
             // The shared point is secret, both coordinates.
-            var shared = product.affine();
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&shared));
+            var shared_owner: Secret(curve.Affine) = .init(product.affine());
+            defer shared_owner.deinit();
+            const shared = shared_owner.exposeMut();
             out.* = shared.x.toBytes();
         }
     };

@@ -1,6 +1,7 @@
 //! Fixed-width borrowed arithmetic for RSA preparation. No secret-dependent
 //! active width, bigint copies in callees, or secret-indexed addressing.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Uint = @This();
 const width = @bitSizeOf(usize) - 1;
 const mask = std.math.maxInt(usize) >> 1;
@@ -25,12 +26,13 @@ pub fn encode(input: *const Uint, bytes: []u8) void {
 }
 pub fn eql(a: *const Uint, b: *const Uint) bool {
     @setRuntimeSafety(true);
-    var difference: usize = 0;
-    defer wipe(&difference);
+    var owner: Secret(usize) = .init(0);
+    defer owner.deinit();
+    const difference = owner.exposeMut();
     const x: *const volatile Uint = a;
     const y: *const volatile Uint = b;
-    for (0..a.limbs_buffer.len) |i| difference |= x.limbs_buffer[i] ^ y.limbs_buffer[i];
-    return difference == 0;
+    for (0..a.limbs_buffer.len) |i| difference.* |= x.limbs_buffer[i] ^ y.limbs_buffer[i];
+    return difference.* == 0;
 }
 pub fn isZero(a: *const Uint) bool {
     @setRuntimeSafety(true);
@@ -48,40 +50,34 @@ pub fn isOdd(a: *const Uint) bool {
 }
 pub fn subWithOverflow(out: *Uint, other: *const Uint) u1 {
     @setRuntimeSafety(true);
-    var difference: usize = 0;
-    defer wipe(&difference);
-    var borrow: usize = 0;
-    defer wipe(&borrow);
+    var owner: Secret(struct { difference: usize, borrow: usize }) = .init(.{ .difference = 0, .borrow = 0 });
+    defer owner.deinit();
+    const s = owner.exposeMut();
     for (0..out.limbs_buffer.len) |i| {
-        difference = out.limbs_buffer[i] -% other.limbs_buffer[i] -% borrow;
-        out.limbs_buffer[i] = difference & mask;
+        s.difference = out.limbs_buffer[i] -% other.limbs_buffer[i] -% s.borrow;
+        out.limbs_buffer[i] = s.difference & mask;
         // Radix reserves one machine bit: positive differences fit the low
         // radix; underflow alone sets the high bit. No wider arithmetic needed.
-        borrow = difference >> width;
+        s.borrow = s.difference >> width;
     }
-    return @intCast(borrow); // safe: wrapping unsigned subtraction produces exactly a zero/one borrow
+    return @intCast(s.borrow); // aegis: no-danger: wrapping unsigned subtraction produces exactly a zero/one borrow
 }
 pub fn addSmall(out: *Uint, amount: usize) void {
     @setRuntimeSafety(true);
-    var sum: u128 = 0;
-    defer wipe(&sum);
-    var carry: u128 = amount;
-    defer wipe(&carry);
+    var owner: Secret(struct { sum: u128, carry: u128 }) = .init(.{ .sum = 0, .carry = amount });
+    defer owner.deinit();
+    const s = owner.exposeMut();
     for (0..out.limbs_buffer.len) |i| {
-        sum = @as(u128, out.limbs_buffer[i]) + carry;
-        out.limbs_buffer[i] = @as(usize, @truncate(sum)) & mask; // safe: retain low radix bits and propagate carry in the next fixed-width iteration
-        carry = sum >> width;
+        s.sum = @as(u128, out.limbs_buffer[i]) + s.carry;
+        out.limbs_buffer[i] = @as(usize, @truncate(s.sum)) & mask; // aegis: no-danger: retain low radix bits and propagate carry in the next fixed-width iteration
+        s.carry = s.sum >> width;
     }
 }
 pub fn less(a: *const Uint, b: *const Uint) bool {
     @setRuntimeSafety(true);
-    var difference = a.*;
-    defer wipe(&difference);
-    return difference.subWithOverflow(b) != 0;
-}
-fn wipe(value: anytype) void {
-    @setRuntimeSafety(true);
-    std.crypto.secureZero(u8, std.mem.asBytes(value));
+    var owner: Secret(Uint) = .init(a.*);
+    defer owner.deinit();
+    return owner.exposeMut().subWithOverflow(b) != 0;
 }
 test {
     @setRuntimeSafety(true);

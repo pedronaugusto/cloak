@@ -6,9 +6,10 @@
 //! temporaries to the stack: secret computations run it inside `aegis.secret.scrubbed`, which
 //! scrubs that stack and sets the processor's data-independent timing mode around them.
 const std = @import("std");
-const builtin = @import("builtin");
+const Secret = @import("aegis").secret.Secret;
 const fiat = @import("../vendor/fiat/p521_64.zig");
 const shared = @import("s2n.zig");
+const barrier = @import("Montgomery.zig").barrier;
 
 /// The big-endian encoding's length.
 const length = 66;
@@ -68,16 +69,18 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
             var r: Self = undefined;
             switch (backend) {
                 .fiat => {
-                    var little: [encoded_length]u8 = undefined;
+                    var owner: Secret([encoded_length]u8) = .init(undefined);
+                    defer owner.deinit();
+                    const little = owner.exposeMut();
                     for (0..encoded_length) |i| little[i] = bytes[encoded_length - 1 - i];
-                    fiat.fromBytes(&r.limbs, little);
-                    std.crypto.secureZero(u8, &little);
+                    fiat.fromBytes(&r.limbs, little.*);
                 },
                 .s2n => {
-                    var padded: [72]u8 = @splat(0);
+                    var owner: Secret([72]u8) = .init(@splat(0));
+                    defer owner.deinit();
+                    const padded = owner.exposeMut();
                     padded[72 - encoded_length ..].* = bytes.*;
                     for (0..9) |i| r.limbs[i] = std.mem.readInt(u64, padded[72 - 8 * (i + 1) ..][0..8], .big);
-                    std.crypto.secureZero(u8, &padded);
                 },
             }
             return r;
@@ -88,16 +91,18 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
             var out: [encoded_length]u8 = undefined;
             switch (backend) {
                 .fiat => {
-                    var little: [encoded_length]u8 = undefined;
-                    fiat.toBytes(&little, a.limbs);
+                    var owner: Secret([encoded_length]u8) = .init(undefined);
+                    defer owner.deinit();
+                    const little = owner.exposeMut();
+                    fiat.toBytes(little, a.limbs);
                     for (0..encoded_length) |i| out[i] = little[encoded_length - 1 - i];
-                    std.crypto.secureZero(u8, &little);
                 },
                 .s2n => {
-                    var padded: [72]u8 = undefined;
+                    var owner: Secret([72]u8) = .init(undefined);
+                    defer owner.deinit();
+                    const padded = owner.exposeMut();
                     for (0..9) |i| std.mem.writeInt(u64, padded[72 - 8 * (i + 1) ..][0..8], a.limbs[i], .big);
                     out = padded[72 - encoded_length ..].*;
-                    std.crypto.secureZero(u8, &padded);
                 },
             }
             return out;
@@ -235,22 +240,6 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
             return a.eqlMask(b) != 0;
         }
     };
-}
-
-/// Hides a mask from the optimizer so a selection stays a selection and never becomes a branch.
-inline fn barrier(value: u64) u64 {
-    var v = value;
-    if (@inComptime()) return v;
-    switch (builtin.cpu.arch) {
-        .x86_64, .aarch64 => asm volatile (""
-            : [v] "+r" (v),
-        ),
-        else => {
-            const slot: *volatile u64 = &v;
-            return slot.*;
-        },
-    }
-    return v;
 }
 
 /// All ones when `x` is zero.

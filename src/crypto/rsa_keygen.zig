@@ -15,6 +15,7 @@
 //! multiplying by e^-1 mod 2^64 limb by limb: d from lambda, dp and dq from p - 1 and q - 1.
 //! qinv = q^(p-2) mod p.
 const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const rsa = @import("rsa.zig");
 const ct = @import("field/Montgomery.zig");
 
@@ -70,14 +71,15 @@ const max_candidates = 1 << 16;
 /// A new key of `size` from `source`, which has `fill(buffer) error{EntropyUnavailable}!void`
 /// and must be a cryptographic source (a key from a predictable one is predictable).
 pub fn generate(size: Size, source: anytype, out: *Integers) Error!void {
-    var s: State = undefined;
-    defer wipe(&s);
+    var owner: Secret(State) = .init(undefined);
+    defer owner.deinit();
+    const s = owner.exposeMut();
     const half = size.bits() / 2;
     const k = half / 64;
     while (true) {
-        try randomPrime(half, source, &s, &s.p);
-        try randomPrime(half, source, &s, &s.q);
-        if (try derive(size, &s, k)) break;
+        try randomPrime(half, source, s, &s.p);
+        try randomPrime(half, source, s, &s.q);
+        if (try derive(size, s, k)) break;
     }
     out.* = undefined;
     out.set(0, s.n[0 .. 2 * k]);
@@ -313,7 +315,6 @@ fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) bool {
         if (i < out.len) out[i] = q_i;
         borrow = @as(u64, @truncate((@as(u128, q_i) * e) >> 64)) + b1; // safe: the high word of q_i * e
     }
-    std.crypto.secureZero(u64, wide[0 .. x.len + 1]);
     return true;
 }
 
@@ -334,10 +335,10 @@ fn powModE(base: u32, comptime exponent: u32) u32 {
 /// step subtracts the smaller from the larger when both are odd, then halves the even one.
 fn gcdOdd(out: []u64, a_in: []const u64, b_in: []const u64) void {
     const k = out.len;
-    var a: Half = undefined;
-    var b: Half = undefined;
-    defer std.crypto.secureZero(u64, &a);
-    defer std.crypto.secureZero(u64, &b);
+    var owner: Secret(struct { a: Half, b: Half }) = .init(undefined);
+    defer owner.deinit();
+    const a = &owner.exposeMut().a;
+    const b = &owner.exposeMut().b;
     @memcpy(a[0..k], a_in);
     @memcpy(b[0..k], b_in);
     for (0..2 * 64 * k) |_| {
@@ -456,10 +457,6 @@ fn bigEndian(buffer: *[rsa.max_half * 8]u8, x: []const u64) []const u8 {
     const bytes = buffer[0 .. 8 * x.len];
     for (x, 0..) |limb, i| std.mem.writeInt(u64, bytes[bytes.len - 8 * (i + 1) ..][0..8], limb, .big);
     return bytes;
-}
-
-fn wipe(value: anytype) void {
-    std.crypto.secureZero(u8, std.mem.asBytes(value));
 }
 
 test {

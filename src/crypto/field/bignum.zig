@@ -10,10 +10,10 @@
 //!   instruction set, any width.
 //!
 //! Operands are below m; results are below 2m with the carry (fast) or below m (generic). The
-//! temporaries are wiped before return; the assembly's stack is the caller's to scrub.
-const std = @import("std");
+//! temporaries are their own owners, wiped on return; the assembly's stack is the caller's to scrub.
 const builtin = @import("builtin");
 const s2n = @import("s2n.zig");
+const Secret = @import("aegis").secret.Secret;
 
 pub const assembly = s2n.assembly;
 pub const max_limbs = 64;
@@ -43,8 +43,9 @@ pub const Wide = struct {
 
 /// `x * y / R` by the fast path into `out`; k a multiple of 8, `w` = -m^-1 mod 2^64.
 pub fn mulFast(out: *Wide, k: usize, x: []const u64, y: []const u64, m: []const u64, w: u64) void {
-    var t: [temporary_words]u64 = undefined;
-    defer std.crypto.secureZero(u64, &t);
+    var owner: Secret([temporary_words]u64) = .init(undefined);
+    defer owner.deinit();
+    const t = owner.exposeMut();
     const z = &out.words;
     switch (k) {
         16 => routine(fn (*[32]u64, *const [16]u64, *const [16]u64, *[32]u64) callconv(.c) void, "bignum_kmul_16_32")(z[0..32], x[0..16], y[0..16], t[0..32]),
@@ -56,8 +57,9 @@ pub fn mulFast(out: *Wide, k: usize, x: []const u64, y: []const u64, m: []const 
 
 /// `x^2 / R` by the fast path into `out`, as `mulFast`.
 pub fn sqrFast(out: *Wide, k: usize, x: []const u64, m: []const u64, w: u64) void {
-    var t: [temporary_words]u64 = undefined;
-    defer std.crypto.secureZero(u64, &t);
+    var owner: Secret([temporary_words]u64) = .init(undefined);
+    defer owner.deinit();
+    const t = owner.exposeMut();
     const z = &out.words;
     switch (k) {
         16 => routine(fn (*[32]u64, *const [16]u64, *[24]u64) callconv(.c) void, "bignum_ksqr_16_32")(z[0..32], x[0..16], t[0..24]),
@@ -74,17 +76,19 @@ fn reduce(k: usize, z: *[2 * max_limbs]u64, m: []const u64, w: u64) u64 {
 
 /// `out = x * y / R mod m` by the generic path; `out` may alias `x` or `y`.
 pub fn mulGeneric(out: []u64, x: []const u64, y: []const u64, m: []const u64) void {
-    var z: [max_limbs]u64 = undefined;
-    defer std.crypto.secureZero(u64, z[0..out.len]);
-    routine(fn (u64, [*]u64, [*]const u64, [*]const u64, [*]const u64) callconv(.c) void, "bignum_montmul")(out.len, &z, x.ptr, y.ptr, m.ptr);
+    var owner: Secret([max_limbs]u64) = .init(undefined);
+    defer owner.deinit();
+    const z = owner.exposeMut();
+    routine(fn (u64, [*]u64, [*]const u64, [*]const u64, [*]const u64) callconv(.c) void, "bignum_montmul")(out.len, z, x.ptr, y.ptr, m.ptr);
     @memcpy(out, z[0..out.len]);
 }
 
 /// `out = x^2 / R mod m` by the generic path; `out` may alias `x`.
 pub fn sqrGeneric(out: []u64, x: []const u64, m: []const u64) void {
-    var z: [max_limbs]u64 = undefined;
-    defer std.crypto.secureZero(u64, z[0..out.len]);
-    routine(fn (u64, [*]u64, [*]const u64, [*]const u64) callconv(.c) void, "bignum_montsqr")(out.len, &z, x.ptr, m.ptr);
+    var owner: Secret([max_limbs]u64) = .init(undefined);
+    defer owner.deinit();
+    const z = owner.exposeMut();
+    routine(fn (u64, [*]u64, [*]const u64, [*]const u64) callconv(.c) void, "bignum_montsqr")(out.len, z, x.ptr, m.ptr);
     @memcpy(out, z[0..out.len]);
 }
 

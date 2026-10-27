@@ -144,10 +144,10 @@ fn cost(entry: *const Entry) usize {
 
 fn free(self: *SessionCache, entry: *Entry) void {
     @setRuntimeSafety(true);
+    // The secret is the entry's one: the ticket is the server's ciphertext, sent in the clear, and
+    // the rest is its key and times.
     entry.secret.deinit();
-    std.crypto.secureZero(u8, entry.ticket);
     self.gpa.free(entry.ticket);
-    std.crypto.secureZero(u8, std.mem.asBytes(entry));
     self.gpa.destroy(entry);
 }
 

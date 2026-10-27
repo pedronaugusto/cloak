@@ -114,7 +114,7 @@ pub const Socket = struct {
     }
 
     fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
-        const self: *Socket = @ptrCast(@alignCast(context)); // safe: `installer` passes this Socket as the context
+        const self: *Socket = @ptrCast(@alignCast(context)); // aegis: no-danger: `installer` passes this Socket as the context
         return self.install(direction, keys);
     }
 
@@ -257,7 +257,7 @@ const Listener = struct {
         const fd = try openSocket();
         errdefer _ = descriptors.close(fd);
         var address: linux.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-        const any: *linux.sockaddr = @ptrCast(&address); // safe: sockaddr.in begins with the family, as every sockaddr does
+        const any: *linux.sockaddr = @ptrCast(&address); // aegis: boundary: sockaddr.in begins with the family, as every sockaddr does
         try check(linux.bind(fd, any, @sizeOf(linux.sockaddr.in)));
         try check(linux.listen(fd, 4));
         var len: linux.socklen_t = @sizeOf(linux.sockaddr.in);

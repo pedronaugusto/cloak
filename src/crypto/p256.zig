@@ -4,7 +4,7 @@
 //! The base multiplication walks the comb with a full scan of each window and complete
 //! projective additions, which have no exceptional cases; the comb's table holds the field's
 //! Montgomery limbs, which both of its backends share. Everything else is the shared curve's.
-const std = @import("std");
+const Secret = @import("aegis").secret.Secret;
 const Montgomery = @import("field/Montgomery.zig");
 const weierstrass = @import("weierstrass.zig");
 const table = @import("p256/table.zig");
@@ -120,8 +120,9 @@ fn Comb(comptime Curve: type) type {
         /// per window with the complete formula, so neither the identity nor a repeated point needs a
         /// branch.
         pub fn secret(scalar: *const [32]u8) Projective {
-            var s: BaseScratch = undefined;
-            defer std.crypto.secureZero(u8, std.mem.asBytes(&s));
+            var owner: Secret(BaseScratch) = .init(undefined);
+            defer owner.deinit();
+            const s = owner.exposeMut();
             s.limbs = Curve.Scalar.limbsFromBytes(scalar);
             Curve.recode(comb_bits, &s.limbs, comb_windows, &s.digits);
             s.acc = Projective.identity;

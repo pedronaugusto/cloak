@@ -1,7 +1,8 @@
 //! Private armor decoding without character-indexed tables.
 //! Length, padding count and final validity are framing decisions. Character
-//! classification and byte reconstruction use fixed arithmetic at public offsets.
-const std = @import("std");
+//! classification and byte reconstruction use fixed arithmetic at public offsets. `dest` is the
+//! caller's secret owner, which erases it when decoding fails.
+const Secret = @import("aegis").secret.Secret;
 pub const Error = error{InvalidBase64};
 
 pub fn size(source: []const u8) Error!usize {
@@ -14,11 +15,11 @@ pub fn size(source: []const u8) Error!usize {
 
 pub fn decode(dest: []u8, source: []const u8) Error!void {
     @setRuntimeSafety(true);
-    errdefer std.crypto.secureZero(u8, dest);
     const wanted = try size(source);
     if (dest.len != wanted) return error.InvalidBase64;
-    var scratch: struct { values: [4]Sextet = @splat(.{ .value = 0, .valid = 0 }), invalid: u8 = 0 } = .{};
-    defer std.crypto.secureZero(u8, std.mem.asBytes(&scratch));
+    var owner: Secret(struct { values: [4]Sextet, invalid: u8 }) = .init(.{ .values = @splat(.{ .value = 0, .valid = 0 }), .invalid = 0 });
+    defer owner.deinit();
+    const scratch = owner.exposeMut();
     const groups = dest.len / 3;
     for (0..groups) |group| {
         inline for (0..4) |i| {
