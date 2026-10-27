@@ -100,24 +100,3 @@ const sibling_references = [_]gantry.rules.ReferenceRule{
 };
 const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{ "std", "builtin", "shakedown", "aegis" } }};
 pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ sibling_references);
-pub const owned: []const gantry.rules.TokenRule = &(durability ++ no_async);
-
-/// Durable writes go through airlock.
-const durability = [_]gantry.rules.TokenRule{.{
-    .name = "durability belongs to airlock",
-    .sequences = &.{
-        &.{ ".", "sync", "(" },
-        &.{ ".", "syncFile", "(" },
-        &.{ ".", "syncDir", "(" },
-        &.{ "createFileAtomic", "(" },
-        &.{ "fsync", "(" },
-        &.{ "fdatasync", "(" },
-        &.{ "FlushFileBuffers", "(" },
-    },
-}};
-
-/// The caller owns asynchronous work.
-const no_async = [_]gantry.rules.TokenRule{.{
-    .name = "async belongs to the caller",
-    .sequences = &.{&.{ "io", ".", "async", "(" }},
-}};
