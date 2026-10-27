@@ -32,7 +32,7 @@ pub const Size = enum(u16) {
     @"4096" = 4096,
 
     fn bits(size: Size) usize {
-        return @intFromEnum(size);
+        return @backingInt(size);
     }
 };
 
@@ -93,7 +93,7 @@ pub fn generate(size: Size, source: anytype, out: *Integers) Error!void {
 }
 
 /// Every secret of one generation, in one owner wiped on return.
-const State = struct {
+pub const State = struct {
     p: Half,
     q: Half,
     n: Limbs,
@@ -182,7 +182,7 @@ fn randomPrime(bits: usize, source: anytype, s: *State, out: *Half) Error!void {
 
 /// Whether `w` (odd, 7 mod 8, top bit set) passes trial division, the e check and Miller-Rabin.
 /// Only the verdict leaves; a composite is discarded.
-fn isProbablePrime(w: []const u64, source: anytype, s: *State) Error!bool {
+pub fn isProbablePrime(w: []const u64, source: anytype, s: *State) Error!bool {
     const k = w.len;
     // Trial division and the e check, every remainder computed before the verdict.
     var divisible: u64 = 0;
@@ -222,7 +222,7 @@ fn isProbablePrime(w: []const u64, source: anytype, s: *State) Error!bool {
 }
 
 /// Whether 2 <= x <= w - 2, by a borrow chain.
-fn inBaseRange(x: []const u64, w: []const u64) bool {
+pub fn inBaseRange(x: []const u64, w: []const u64) bool {
     // x - 2 does not borrow, and (w - 2) - x does not borrow.
     var borrow: u1 = 0;
     for (x, 0..) |limb, i| _, borrow = subb(limb, if (i == 0) 2 else 0, borrow);
@@ -230,9 +230,9 @@ fn inBaseRange(x: []const u64, w: []const u64) bool {
     borrow = 0;
     var c: u1 = 0;
     for (x, w, 0..) |limb, wl, i| {
-        var top: u64 = undefined;
-        top, c = subb(wl, if (i == 0) 2 else 0, c);
-        _, borrow = subb(top, limb, borrow);
+        const top = subb(wl, if (i == 0) 2 else 0, c);
+        c = top[1];
+        _, borrow = subb(top[0], limb, borrow);
     }
     return ct.barrier(@as(u64, below_two | borrow)) == 0;
 }
@@ -241,7 +241,7 @@ fn inBaseRange(x: []const u64, w: []const u64) bool {
 const small_primes = blk: {
     @setEvalBranchQuota(1_000_000);
     const limit = 1 << 12;
-    var composite = [_]bool{false} ** limit;
+    var composite: [limit]bool = @splat(false);
     var list: [563]u32 = undefined;
     var count = 0;
     for (3..limit) |i| {
@@ -258,8 +258,8 @@ const small_primes = blk: {
 /// `x mod q` for q below 2^32 (comptime), over 32-bit chunks from the top: each step's value
 /// is below q * 2^32, reduced by its Barrett quotient (at most one short) and one masked
 /// correction. No division instruction.
-fn remainder(x: []const u64, comptime q: u32) u32 {
-    const m: u64 = comptime @intCast((1 << 64) / q);
+pub fn remainder(x: []const u64, comptime q: u32) u32 {
+    const m: u64 = comptime @intCast(@as(u128, 1 << 64) / q);
     var r: u64 = 0;
     var i = x.len;
     while (i > 0) {
@@ -287,7 +287,7 @@ fn zeroMask(x: u64) u64 {
 
 /// e^-1 mod x into `out` (as wide as x), or false when e divides x. With t = x mod e and
 /// u = t^(e-2) mod e, (1 + x (e - u)) is a multiple of e below e * x.
-fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) bool {
+pub fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) bool {
     const t = remainder(x, e);
     if (ct.barrier(t) == 0) return false;
     const u = powModE(t, e - 2);
@@ -320,7 +320,7 @@ fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) bool {
 
 /// base^exponent mod e for a public exponent, by square and multiply on words.
 fn powModE(base: u32, comptime exponent: u32) u32 {
-    const m: u64 = comptime @intCast((1 << 64) / e);
+    const m: u64 = comptime @intCast(@as(u128, 1 << 64) / e);
     var acc: u64 = 1;
     var bit: u5 = 31;
     while (true) : (bit -= 1) {
@@ -333,7 +333,7 @@ fn powModE(base: u32, comptime exponent: u32) u32 {
 
 /// gcd(a, b) of two odd values into `out`, by a binary gcd of a fixed 2 * 64 * k steps: each
 /// step subtracts the smaller from the larger when both are odd, then halves the even one.
-fn gcdOdd(out: []u64, a_in: []const u64, b_in: []const u64) void {
+pub fn gcdOdd(out: []u64, a_in: []const u64, b_in: []const u64) void {
     const k = out.len;
     var owner: Secret(struct { a: Half, b: Half }) = .init(undefined);
     defer owner.deinit();
@@ -375,7 +375,7 @@ fn halveIf(x: []u64, mask: u64) void {
 }
 
 /// `out = x / g` for x a multiple of g (any x: the quotient's floor), g below 2^32, bit by bit.
-fn divideSmall(out: []u64, x: []const u64, g: u32) void {
+pub fn divideSmall(out: []u64, x: []const u64, g: u32) void {
     var r: u64 = 0;
     var i = x.len;
     while (i > 0) {
@@ -432,7 +432,7 @@ fn shiftLeftOne(x: []u64) u64 {
 }
 
 /// Whether x > 2^power, by the bits at and above the power: the verdict alone leaves.
-fn greaterThanPowerOfTwo(x: []const u64, power: usize) bool {
+pub fn greaterThanPowerOfTwo(x: []const u64, power: usize) bool {
     var above: u64 = 0; // bits above the power
     var at: u64 = 0; // the bit at the power
     var below: u64 = 0; // bits below it
