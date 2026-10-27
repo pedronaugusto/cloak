@@ -170,8 +170,11 @@ fn derive(size: Size, s: *State, k: usize) Error!bool {
 
 // ---------------------------------------------------------------- primes
 
-/// Rounds of Miller-Rabin for a random candidate of `bits` (FIPS 186-5 B.3.1; Go's and
-/// BoringSSL's counts for a false positive below 2^-100 on random input).
+/// Rounds of Miller-Rabin for a candidate p or q of `bits`: FIPS 186-5 Table B.1 (Appendix
+/// B.3), its column whose error probability matches the security strength, M-R tests only:
+/// 1024 bits 5 rounds (2^-112), 1536 bits 4 (2^-128), 2048 bits 4 (2^-144). Go's counts.
+/// Trial division comes first, as B.3 allows, by the primes below 2^12: a limit L within B.3's
+/// 10^3 to 10^5 (2 needs no test: every candidate is odd).
 fn rounds(bits: usize) usize {
     return if (bits >= 1345) 4 else 5;
 }
@@ -477,6 +480,13 @@ fn bigEndian(buffer: *[rsa.max_half * 8]u8, x: []const u64) []const u8 {
     const bytes = buffer[0 .. 8 * x.len];
     for (x, 0..) |limb, i| std.mem.writeInt(u64, bytes[bytes.len - 8 * (i + 1) ..][0..8], limb, .big);
     return bytes;
+}
+
+test "Miller-Rabin's rounds are FIPS 186-5 Table B.1's for p and q at each size" {
+    // p and q of 1024, 1536 and 2048 bits: 5, 4 and 4 rounds (2^-112, 2^-128, 2^-144).
+    try std.testing.expectEqual(@as(usize, 5), rounds(1024));
+    try std.testing.expectEqual(@as(usize, 4), rounds(1536));
+    try std.testing.expectEqual(@as(usize, 4), rounds(2048));
 }
 
 test "a generation reaches less stack than the depth that scrubs it" {
