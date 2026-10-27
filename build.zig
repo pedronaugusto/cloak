@@ -66,7 +66,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
     // Timing evidence on the build that ships: a statistical test, run by hand, never a gate.
     const timing_module = b.createModule(.{ .root_source_file = p.path("bench/timing.zig"), .target = host, .optimize = .fast, .imports = benchImports(b, host, .fast) });
-    addAegis(p, timing_module, host, .fast);
+    addAegisOnly(p, timing_module, host, .fast);
     timing_module.addImport("shakedown", b.dependency("shakedown", .{ .target = host, .optimize = .fast }).module("shakedown"));
     const timing = b.addRunArtifact(b.addExecutable(.{ .name = "cloak-timing", .root_module = timing_module }));
     timing.addPassthruArgs();
@@ -134,13 +134,15 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     @setRuntimeSafety(true);
     const package = b.dependency("cloak", .{ .target = target, .optimize = optimize });
     const p = package.builder;
+    // Every program takes `cloak`, whose module carries the assembly once; a second module
+    // carrying it too gives a program each routine twice.
     const records = b.createModule(.{ .root_source_file = p.path("src/tls/record.zig"), .target = target, .optimize = optimize });
-    addAegis(p, records, target, optimize);
+    addAegisOnly(p, records, target, optimize);
     const armor = b.createModule(.{ .root_source_file = p.path("src/credentials/Pem.zig"), .target = target, .optimize = optimize });
-    addAegis(p, armor, target, optimize);
+    addAegisOnly(p, armor, target, optimize);
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
     const harness = b.createModule(.{ .root_source_file = p.path("src/testing.zig"), .target = target, .optimize = optimize });
-    addAegis(p, harness, target, optimize);
+    addAegisOnly(p, harness, target, optimize);
     nativeLinks(harness, target);
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "harness", .module = harness },
@@ -159,7 +161,8 @@ fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarge
 }
 
 /// aegis without the assembly: for a module compiled to one object and never linked (`check`),
-/// which COFF cannot hold together with the assembly's objects.
+/// which COFF cannot hold together with the assembly's objects, and for a module beside `cloak`'s
+/// in one program, which has the assembly already.
 fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
     m.addImport("aegis", p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
