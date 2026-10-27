@@ -38,8 +38,8 @@ fn schedule(keys: *[16]u64, key: *const [8]u8) void {
     defer owner.deinit();
     const s = owner.exposeMut();
     s.selected = permutation(64, std.mem.readInt(u64, key, .big), &pc1);
-    s.left = @truncate(s.selected >> 28); // aegis: no-danger: split the PC1 result into two 28-bit halves
-    s.right = @truncate(s.selected); // aegis: no-danger: retain the low 28-bit PC1 half
+    s.left = @truncate(s.selected >> 28); // split the PC1 result into two 28-bit halves
+    s.right = @truncate(s.selected); // retain the low 28-bit PC1 half
     for (shifts, 0..) |shift, i| {
         s.left = std.math.rotl(u28, s.left, shift);
         s.right = std.math.rotl(u28, s.right, shift);
@@ -52,8 +52,8 @@ fn block(encoded: u64, keys: *const [16]u64, reverse: bool) u64 {
     defer owner.deinit();
     const s = owner.exposeMut();
     s.selected = permutation(64, encoded, &ip);
-    s.left = @truncate(s.selected >> 32); // aegis: no-danger: split the initial permutation into 32-bit halves
-    s.right = @truncate(s.selected); // aegis: no-danger: retain the low 32-bit initial-permutation half
+    s.left = @truncate(s.selected >> 32); // split the initial permutation into 32-bit halves
+    s.right = @truncate(s.selected); // retain the low 32-bit initial-permutation half
     for (0..16) |i| {
         s.temp = s.right;
         s.right = s.left ^ feistel(s.right, keys[if (reverse) 15 - i else i]);
@@ -69,7 +69,7 @@ fn feistel(right: u32, key: u64) u32 {
     s.expanded = permutation(32, right, &expansion) ^ key;
     s.joined = 0;
     for (0..8) |box| {
-        s.chunk = @truncate((s.expanded >> @as(u6, @intCast(42 - box * 6))) & 63); // aegis: no-danger: public box is in 0..7; retain its six expansion bits
+        s.chunk = @truncate((s.expanded >> @as(u6, @intCast(42 - box * 6))) & 63); // public box is in 0..7; retain its six expansion bits
         s.index = ((s.chunk & 32) >> 4) | (s.chunk & 1);
         s.wanted = s.index * 16 + ((s.chunk >> 1) & 15);
         s.selected = 0;
@@ -77,7 +77,7 @@ fn feistel(right: u32, key: u64) u32 {
         for (0..64) |i| s.selected |= table[i] & (0 -% @as(u8, @intFromBool(i == s.wanted)));
         s.joined = (s.joined << 4) | s.selected;
     }
-    return @truncate(permutation(32, s.joined, &p)); // aegis: no-danger: FIPS P permutation has exactly 32 output bits
+    return @truncate(permutation(32, s.joined, &p)); // FIPS P permutation has exactly 32 output bits
 }
 const shifts = [_]u5{ 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1 };
 const ip = [_]u8{ 58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14, 6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11, 3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7 };

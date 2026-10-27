@@ -183,10 +183,10 @@ fn multiply(out: *Uint, x: *const Uint, y: *const Uint) u1 {
         s.carry = 0;
         for (0..len) |j| {
             s.sum = @as(u128, x.limbs_buffer[i]) * y.limbs_buffer[j] + wide[i + j] + s.carry;
-            wide[i + j] = @as(usize, @truncate(s.sum)) & mask; // aegis: no-danger: retain low multiplication radix bits and propagate high carry separately
+            wide[i + j] = @as(usize, @truncate(s.sum)) & mask; // retain low multiplication radix bits and propagate high carry separately
             s.carry = s.sum >> limb_bits;
         }
-        wide[i + len] = @intCast(s.carry); // aegis: no-danger: carry is bounded by the machine radix after the preceding shift
+        wide[i + len] = @intCast(s.carry); // carry is bounded by the machine radix after the preceding shift
     }
     @memcpy(&out.limbs_buffer, wide[0..len]);
     var overflow: usize = 0;

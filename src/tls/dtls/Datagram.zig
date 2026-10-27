@@ -537,6 +537,12 @@ fn keepOwnCid(self: *Datagram, cid: ?[]const u8) void {
 /// A wait at std's resolution, for the timers' arithmetic: checked, the unit carried.
 const Span = aegis.units.Duration(.nanosecond, i96);
 
+/// A quarter of `wait`, rounded toward zero: an ACK's delay (RFC 9147 section 7.1).
+fn quarter(wait: std.Io.Duration) std.Io.Duration {
+    // unreachable: 4 is neither zero nor -1
+    return (Span.fromIoDuration(wait, .exact).divTrunc(4) catch unreachable).toIoDuration();
+}
+
 /// `wait`, or `cap` where `wait` is longer.
 fn shorter(wait: Span, cap: std.Io.Duration) std.Io.Duration {
     const limit = Span.fromIoDuration(cap, .exact);
@@ -1078,7 +1084,7 @@ pub fn receive(self: *Datagram, datagram: []u8, now: std.Io.Timestamp) Error!voi
         if (self.phase_now == .failed or self.phase_now == .closed) return;
         if (self.ack_noted) {
             self.ack_noted = false;
-            if (self.ack_at == null) self.ack_at = .{ .nanoseconds = now.nanoseconds + @divTrunc(self.ackWait().nanoseconds, 4) };
+            if (self.ack_at == null) self.ack_at = now.addDuration(quarter(self.ackWait()));
         }
         // Each record's messages reach the engine before the next record is opened: the keys a
         // ServerHello or ChangeCipherSpec brings open the records after it in the same datagram.
@@ -2113,7 +2119,7 @@ pub fn setTiming(self: *Datagram, timing: Timing) InitError!void {
         flight.backoff = backoff;
     };
     // A waiting ACK goes a quarter of the wait after the record that started it, the new wait's.
-    if (self.ack_at) |when| self.ack_at = .{ .nanoseconds = when.nanoseconds - @divTrunc(ack_wait.nanoseconds, 4) + @divTrunc(self.ackWait().nanoseconds, 4) };
+    if (self.ack_at) |when| self.ack_at = when.subDuration(quarter(ack_wait)).addDuration(quarter(self.ackWait()));
 }
 
 /// Ends the association with close_notify, which the next `send` writes.

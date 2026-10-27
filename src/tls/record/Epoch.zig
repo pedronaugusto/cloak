@@ -152,7 +152,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             const wire_len = 5 + inner_len + A.tag_length;
             if (out.len < wire_len) return error.BufferTooSmall;
             const wire = out[0..wire_len];
-            if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // aegis: no-danger: compare live addresses only to permit exact ciphertext-body alias.
+            if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // compare live addresses only to permit exact ciphertext-body alias.
             try self.admit(inner_len);
             wire[0..3].* = .{ 23, 3, 3 };
             // safe: bounded by max_inner + the fixed 16-byte AEAD tag.
@@ -227,8 +227,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
 fn overlap(a: []const u8, b: []const u8) bool {
     @setRuntimeSafety(true);
     if (a.len == 0 or b.len == 0) return false;
-    const x = @intFromPtr(a.ptr); // aegis: no-danger: live address used only for overlap validation.
-    const y = @intFromPtr(b.ptr); // aegis: no-danger: live address used only for overlap validation.
+    const x = @intFromPtr(a.ptr); // live address used only for overlap validation.
+    const y = @intFromPtr(b.ptr); // live address used only for overlap validation.
     return if (x <= y) y - x < a.len else x - y < b.len;
 }
 comptime {

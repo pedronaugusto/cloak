@@ -237,7 +237,7 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
                 const inside: u8 = 0 -% @as(u8, @intFromBool(i < pad));
                 bad |= inside & (s.block[15 - i] ^ @as(u8, @truncate(pad)));
             }
-            // aegis: no-danger: the verdict is the only thing released, after the tag held
+            // the verdict is the only thing released, after the tag held
             if (bad != 0) return error.AuthenticationFailed;
             var previous = iv.*;
             for (0..blocks) |b| {

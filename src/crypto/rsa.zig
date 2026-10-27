@@ -88,7 +88,7 @@ const Modulus = struct {
         var borrow: u1 = 0;
         for (0..len) |i| borrow = subb(t[i], self.m[i], borrow)[1];
         // high:t >= m exactly when the high limb is set or the subtraction did not borrow.
-        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // aegis: no-danger: high is a carry, zero or one
+        const take = maskOf(@as(u1, @truncate(high)) | (borrow ^ 1)); // high is a carry, zero or one
         borrow = 0;
         for (0..len) |i| {
             const step = subb(t[i], self.m[i] & take, borrow);
@@ -215,7 +215,7 @@ const Modulus = struct {
         while (bit > 0) {
             bit -= 4;
             for (0..4) |_| self.mul(acc[0..len], acc[0..len], acc[0..len]);
-            window.* = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // aegis: no-danger: a public bit offset below 64
+            window.* = (exponent[bit / 64] >> @as(u6, @intCast(bit % 64))) & 15; // a public bit offset below 64
             select(chosen[0..len], table, window.*);
             self.mul(acc[0..len], acc[0..len], chosen[0..len]);
         }

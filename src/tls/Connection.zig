@@ -1441,7 +1441,7 @@ fn checkHeader(self: *Connection) ReceiveError!void {
 /// Where opened plaintext starts in the record buffer: after the header, and after a TLS 1.2
 /// explicit nonce.
 fn offsetOf(self: *const Connection, plain: []const u8) usize {
-    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.view().ptr); // aegis: no-danger: the plaintext is a slice of the record buffer, so its address is not below the buffer's
+    return @intFromPtr(plain.ptr) - @intFromPtr(self.record.view().ptr); // the plaintext is a slice of the record buffer, so its address is not below the buffer's
 }
 
 fn openRecord(self: *Connection) Error!void {

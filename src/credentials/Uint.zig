@@ -60,7 +60,7 @@ pub fn subWithOverflow(out: *Uint, other: *const Uint) u1 {
         // radix; underflow alone sets the high bit. No wider arithmetic needed.
         s.borrow = s.difference >> width;
     }
-    return @intCast(s.borrow); // aegis: no-danger: wrapping unsigned subtraction produces exactly a zero/one borrow
+    return @intCast(s.borrow); // wrapping unsigned subtraction produces exactly a zero/one borrow
 }
 pub fn addSmall(out: *Uint, amount: usize) void {
     @setRuntimeSafety(true);
@@ -69,7 +69,7 @@ pub fn addSmall(out: *Uint, amount: usize) void {
     const s = owner.exposeMut();
     for (0..out.limbs_buffer.len) |i| {
         s.sum = @as(u128, out.limbs_buffer[i]) + s.carry;
-        out.limbs_buffer[i] = @as(usize, @truncate(s.sum)) & mask; // aegis: no-danger: retain low radix bits and propagate carry in the next fixed-width iteration
+        out.limbs_buffer[i] = @as(usize, @truncate(s.sum)) & mask; // retain low radix bits and propagate carry in the next fixed-width iteration
         s.carry = s.sum >> width;
     }
 }

@@ -148,7 +148,7 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         @memcpy(storage[at..][0..der.len], der);
         entry.* = storage[at..][0..der.len];
         // The issuer moves with its certificate into the owned copy.
-        issuer.* = entry.*[@intFromPtr(issuer.ptr) - @intFromPtr(der.ptr) ..][0..issuer.len]; // aegis: no-danger: the issuer lies within its certificate's bytes
+        issuer.* = entry.*[@intFromPtr(issuer.ptr) - @intFromPtr(der.ptr) ..][0..issuer.len]; // the issuer lies within its certificate's bytes
         at += der.len;
         std.mem.writeInt(u24, flight[wire..][0..3], @intCast(der.len), .big); // safe: certificate length was checked against u24 above
         wire += 3;

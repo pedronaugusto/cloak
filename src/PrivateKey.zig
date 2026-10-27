@@ -18,21 +18,14 @@ const Handle = aegis.Shared(State, release);
 const State = struct {
     gpa: std.mem.Allocator,
     material: Secret(parser.Material),
-
-    /// Moves the key into its shared block, erasing it where it was built.
-    pub fn moveInto(self: *State, destination: *State) void {
-        destination.gpa = self.gpa;
-        self.material.moveInto(&destination.material);
-    }
 };
 pub const ParseError = parser.ParseError;
 pub const ParseOptions = parser.Options;
 /// Stack a parse and a signature reach below their entry, erased when they return: the frames
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
-/// A test measures every key type and scheme against them in each build mode. A parse builds
-/// the key in its own frame before it moves into the shared block, which Debug's frames make
-/// pass 96 KiB.
-const parse_stack: usize = if (builtin.mode == .debug) 104 * 1024 else 64 * 1024;
+/// A test measures every key type and scheme against them in each build mode. A key is built
+/// straight into its shared block (aegis `Shared.createWith`), never in a frame first.
+const parse_stack: usize = if (builtin.mode == .debug) 96 * 1024 else 64 * 1024;
 /// Debug's signing depth is P-521's: its nine-limb scalar arithmetic unrolls without
 /// optimization into a frame per step (91 KiB measured); the optimized builds stay below 24 KiB.
 const sign_stack: usize = if (builtin.mode == .debug) 128 * 1024 else 24 * 1024;
@@ -43,11 +36,14 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) P
 
 fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    // Built in this frame, which `scrubbed` erases, and moved into the shared block.
-    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
-    errdefer state.material.deinit();
-    try parser.parse(gpa, bytes, options, state.material.exposeMut());
-    return .{ .state = try .createFrom(gpa, &state) };
+    const Build = struct {
+        fn run(c: struct { std.mem.Allocator, []const u8, ParseOptions }, state: *State) ParseError!void {
+            state.* = .{ .gpa = c[0], .material = .init(undefined) };
+            errdefer state.material.deinit();
+            try parser.parse(c[0], c[1], c[2], state.material.exposeMut());
+        }
+    };
+    return .{ .state = try .createWith(gpa, .{ gpa, bytes, options }, Build.run) };
 }
 /// Package-internal (`Pkcs12`): a key bag's key, a PrivateKeyInfo or, when `shrouded`, an
 /// EncryptedPrivateKeyInfo opened with `password` in the form the file's MAC verified.
@@ -57,10 +53,15 @@ pub fn parseBag(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, passwor
 
 fn parseBagKey(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, password: *const Pbe.Password, options: ParseOptions) ParseError!PrivateKey {
     @setRuntimeSafety(true);
-    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
-    errdefer state.material.deinit();
-    if (shrouded) try parser.encryptedWith(gpa, bag, password, options, state.material.exposeMut()) else try parser.parsePlain(bag, options, state.material.exposeMut());
-    return .{ .state = try .createFrom(gpa, &state) };
+    const Build = struct {
+        fn run(c: struct { std.mem.Allocator, []const u8, bool, *const Pbe.Password, ParseOptions }, state: *State) ParseError!void {
+            state.* = .{ .gpa = c[0], .material = .init(undefined) };
+            errdefer state.material.deinit();
+            const out = state.material.exposeMut();
+            if (c[2]) try parser.encryptedWith(c[0], c[1], c[3], c[4], out) else try parser.parsePlain(c[1], c[4], out);
+        }
+    };
+    return .{ .state = try .createWith(gpa, .{ gpa, bag, shrouded, password, options }, Build.run) };
 }
 /// A private key by its numbers, as a JWK (RFC 7518 section 6, RFC 8037) or another format
 /// carries them, never in DER. Each goes through the checks a parsed key of its kind gets, by the
@@ -88,19 +89,23 @@ pub fn fromComponents(gpa: std.mem.Allocator, components: Components) Components
 
 fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!PrivateKey {
     @setRuntimeSafety(true);
-    var state: State = .{ .gpa = gpa, .material = .init(undefined) };
-    errdefer state.material.deinit();
-    const out = state.material.exposeMut();
-    (switch (components) {
-        .ec => |ec| parser.ecKey(ec.curve, ec.d, ec.public, out),
-        .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
-        .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
-        .x25519 => |x| parser.x25519Key(x.d, x.public, out),
-    }) catch |err| return switch (err) {
-        error.UnsupportedKey => error.UnsupportedKey,
-        else => error.InvalidKey,
+    const Build = struct {
+        fn run(c: struct { std.mem.Allocator, Components }, state: *State) error{ InvalidKey, UnsupportedKey }!void {
+            state.* = .{ .gpa = c[0], .material = .init(undefined) };
+            errdefer state.material.deinit();
+            const out = state.material.exposeMut();
+            (switch (c[1]) {
+                .ec => |ec| parser.ecKey(ec.curve, ec.d, ec.public, out),
+                .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
+                .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
+                .x25519 => |x| parser.x25519Key(x.d, x.public, out),
+            }) catch |err| return switch (err) {
+                error.UnsupportedKey => error.UnsupportedKey,
+                else => error.InvalidKey,
+            };
+        }
     };
-    return .{ .state = try .createFrom(gpa, &state) };
+    return .{ .state = try .createWith(gpa, .{ gpa, components }, Build.run) };
 }
 
 pub fn isEncrypted(bytes: []const u8) bool {

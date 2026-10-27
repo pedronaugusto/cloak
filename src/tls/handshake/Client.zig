@@ -1715,7 +1715,7 @@ fn retryEch(self: *Client, msg: []const u8, parsed: Hello.ServerHello) Error!voi
     if (parsed.ech) |got| {
         const zeroed = try self.gpa.dupe(u8, msg);
         defer self.gpa.free(zeroed);
-        const at = @intFromPtr(got) - @intFromPtr(msg.ptr); // aegis: no-danger: the confirmation is a slice of `msg`
+        const at = @intFromPtr(got) - @intFromPtr(msg.ptr); // the confirmation is a slice of `msg`
         @memset(zeroed[at..][0..8], 0);
         var confirm = e.inner.fork();
         defer confirm.deinit();

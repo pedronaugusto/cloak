@@ -80,7 +80,8 @@ test "trust file bounds errors cancellation and deadline preserve prior state" {
 test "trust FaultIo open read cancellation and finite stalled read rollback" {
     @setRuntimeSafety(true);
     const path = "src/credentials/testdata/p256.cert.pem";
-    inline for (.{ .dirOpenFile, .fileReadPositional }) |call| {
+    // aegis.own.readFile opens, then reads by streaming alone (no positional read, no stat).
+    inline for (.{ .dirOpenFile, .file_read_streaming }) |call| {
         const fault = try shakedown.FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = call, .n = 1 } }, .fault = .cancel }} });
         defer fault.deinit();
         var trust = Trust.init(std.testing.allocator);
@@ -92,7 +93,7 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
     var clock = shakedown.Clock.init(std.testing.io, .{});
     var started: std.Io.Event = .unset;
     const stall: shakedown.IoFault = .stall;
-    const fault = try shakedown.FaultIo.init(std.testing.allocator, clock.io(), .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 1 } }, .fault = .{ .call = .{ .f = signalRead, .ctx = &started, .then = &stall } } }} });
+    const fault = try shakedown.FaultIo.init(std.testing.allocator, clock.io(), .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_read_streaming, .n = 1 } }, .fault = .{ .call = .{ .f = signalRead, .ctx = &started, .then = &stall } } }} });
     defer fault.deinit();
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();

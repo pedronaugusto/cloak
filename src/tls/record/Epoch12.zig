@@ -145,7 +145,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             const len = wire.len - overhead;
             if (content != .application and len == 0) return self.bad();
             const cipher_text = wire[5 + explicit ..][0..len];
-            const in_place = @intFromPtr(out.ptr) == @intFromPtr(wire.ptr) + 5; // aegis: no-danger: live addresses compared only to detect the in-buffer form
+            const in_place = @intFromPtr(out.ptr) == @intFromPtr(wire.ptr) + 5; // live addresses compared only to detect the in-buffer form
             const skip: usize = if (in_place) explicit else 0;
             if (out.len < skip + len) return error.BufferTooSmall;
             const plain = out[skip..][0..len];
@@ -169,8 +169,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
 fn overlap(a: []const u8, b: []const u8) bool {
     @setRuntimeSafety(true);
     if (a.len == 0 or b.len == 0) return false;
-    const x = @intFromPtr(a.ptr); // aegis: no-danger: live address used only for overlap validation.
-    const y = @intFromPtr(b.ptr); // aegis: no-danger: live address used only for overlap validation.
+    const x = @intFromPtr(a.ptr); // live address used only for overlap validation.
+    const y = @intFromPtr(b.ptr); // live address used only for overlap validation.
     return if (x <= y) y - x < a.len else x - y < b.len;
 }
 
