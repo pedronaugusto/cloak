@@ -68,6 +68,39 @@ test "each kind of key generated signs, and its PKCS#8 reads back as itself" {
     }
 }
 
+/// The public value `agree` takes from a peer: the EC point or the X25519 key.
+fn peerValue(info: []const u8) ![]const u8 {
+    return switch (try certificate.parsePublicKey(info)) {
+        .ec => |ec| ec.bytes,
+        .x25519 => |bytes| bytes,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+test "two keys generated for agreement agree, each way, on every curve, and an X25519 key's PKCS#8 reads back" {
+    inline for (.{ PrivateKey.Kind.p256, PrivateKey.Kind.p384, PrivateKey.Kind.p521, PrivateKey.Kind.x25519 }) |kind| {
+        var a = try PrivateKey.generate(gpa, io, kind);
+        defer a.deinit();
+        var b = try PrivateKey.generate(gpa, io, kind);
+        defer b.deinit();
+        var x: [PrivateKey.max_public_key_info]u8 = undefined;
+        var y: [PrivateKey.max_public_key_info]u8 = undefined;
+        var ab: [PrivateKey.max_shared]u8 = undefined;
+        var ba: [PrivateKey.max_shared]u8 = undefined;
+        const one = try a.agree(try peerValue(b.publicKeyInfo(&y)), &ab);
+        const other = try b.agree(try peerValue(a.publicKeyInfo(&x)), &ba);
+        try std.testing.expectEqualSlices(u8, one, other);
+        try std.testing.expect(!std.mem.eql(u8, a.publicKeyInfo(&x), b.publicKeyInfo(&y)));
+        if (kind == .x25519) {
+            var der = try a.pkcs8(gpa);
+            defer der.deinit(gpa);
+            var again = try PrivateKey.parse(gpa, der.expose(), .{});
+            defer again.deinit();
+            try std.testing.expectEqualSlices(u8, a.publicKeyInfo(&x), again.publicKeyInfo(&y));
+        }
+    }
+}
+
 test "two keys generated are two keys" {
     var a = try PrivateKey.generate(gpa, io, .p256);
     defer a.deinit();

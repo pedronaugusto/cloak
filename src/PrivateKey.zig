@@ -105,15 +105,17 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
     return .{ .state = try .createFrom(gpa, &state) };
 }
 
-/// The kinds of key `generate` makes. X25519 is not one: it agrees and signs nothing.
-pub const Kind = union(enum) { p256, p384, p521, ed25519, mldsa44, mldsa65, mldsa87, rsa: RsaSize };
+/// The kinds of key `generate` makes. An X25519 key only agrees (`agree`): an ephemeral key for
+/// ECDH, as JWE's ECDH-ES draws one per message.
+pub const Kind = union(enum) { p256, p384, p521, ed25519, x25519, mldsa44, mldsa65, mldsa87, rsa: RsaSize };
 /// An RSA key's modulus, in bits: FIPS 186-5's sizes, e = 65537.
 pub const RsaSize = rsa_keygen.Size;
 /// `GenerationFailed`: the source gave no prime in 2^16 candidates, which a working one never does.
 pub const GenerateError = std.mem.Allocator.Error || error{ EntropyUnavailable, GenerationFailed };
 
 /// A new key of `kind` from `io.randomSecure`, built by the constructor a parsed key of its kind
-/// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed, an RSA
+/// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed, an X25519
+/// private key (clamped where it is used, RFC 7748), an RSA
 /// key's numbers (FIPS 186-5 A.1.3, `crypto/rsa_keygen.zig`) checked as a parsed key's are.
 pub fn generate(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
     return aegis.secret.scrubbed(parse_stack, generateKey, .{ gpa, io, kind });
@@ -149,6 +151,11 @@ fn generateKey(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!Pri
             io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
             // unreachable: every 32-byte seed is a key.
             parser.ed25519Key(draw[0..32], null, out) catch unreachable;
+        },
+        .x25519 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            // unreachable: every 32 bytes are an X25519 private key.
+            parser.x25519Key(draw[0..32], null, out) catch unreachable;
         },
         .mldsa44, .mldsa65, .mldsa87 => {
             io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
