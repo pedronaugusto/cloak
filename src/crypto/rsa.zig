@@ -20,7 +20,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
-const ct = @import("field/Montgomery.zig");
+const ct = @import("field.zig").Montgomery;
 const Secret = aegis.secret.Secret;
 
 const addc = ct.addc;

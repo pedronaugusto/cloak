@@ -7,8 +7,8 @@
 //! Every operation runs the same instructions for every scalar. The assembly writes its
 //! temporaries to the stack: callers run it inside `aegis.secret.scrubbed`.
 const std = @import("std");
-const s2n = @import("field/s2n.zig");
-const fiat = @import("vendor/fiat/curve25519_64.zig");
+const s2n = @import("field.zig").s2n;
+const fiat = @import("vendor/fiat.zig").curve25519;
 const Secret = @import("aegis").secret.Secret;
 
 pub const length = 32;

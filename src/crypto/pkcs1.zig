@@ -7,7 +7,7 @@
 //! Only a decoded message's length leaves the mask, once the whole encoding has held.
 const std = @import("std");
 const Secret = @import("aegis").secret.Secret;
-const ct = @import("field/Montgomery.zig");
+const ct = @import("field.zig").Montgomery;
 
 /// The hashes OAEP's label hash and MGF1 take: SHA-1 (JOSE's RSA-OAEP), SHA-256, SHA-384 and
 /// SHA-512.

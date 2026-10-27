@@ -21,10 +21,10 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
         pub const tag_length = tag_bytes;
         pub const nonce_length = 12;
         const block_length = 16;
-        /// Bytes of the counter and of the message length: 15 minus the nonce.
-        const L = 15 - nonce_length;
-        /// The longest message L bytes of length can state.
-        pub const max_message = (1 << (8 * L)) - 1;
+        /// Bytes of the counter and of the message length (RFC 3610's L): 15 minus the nonce.
+        const length_bytes = 15 - nonce_length;
+        /// The longest message `length_bytes` bytes of length can state.
+        pub const max_message = (1 << (8 * length_bytes)) - 1;
         const Context = @TypeOf(Aes.initEnc(@as([key_length]u8, undefined)));
 
         /// Seals `m` into `c` (the same length; `c` may be `m`) and writes the tag.
@@ -61,12 +61,12 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             }
         }
 
-        /// A counter block: flags (L - 1), the nonce, the counter in the last L bytes.
+        /// A counter block: flags (`length_bytes` - 1), the nonce, the counter in the last `length_bytes` bytes.
         fn counterBlock(npub: [nonce_length]u8, counter: u24) [block_length]u8 {
             var block: [block_length]u8 = undefined;
-            block[0] = L - 1;
+            block[0] = length_bytes - 1;
             block[1..][0..nonce_length].* = npub;
-            std.mem.writeInt(u24, block[1 + nonce_length ..][0..L], counter, .big);
+            std.mem.writeInt(u24, block[1 + nonce_length ..][0..length_bytes], counter, .big);
             return block;
         }
 
@@ -93,10 +93,10 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             var state: Absorb = .{ .ctx = ctx, .chain = mac };
             var b0: [block_length]u8 = undefined;
             const adata: u8 = if (ad.len != 0) 0x40 else 0;
-            b0[0] = adata | ((tag_length - 2) / 2) << 3 | (L - 1);
+            b0[0] = adata | ((tag_length - 2) / 2) << 3 | (length_bytes - 1);
             b0[1..][0..nonce_length].* = npub;
-            // safe: callers bound the message at max_message, the L-byte length's range.
-            std.mem.writeInt(u24, b0[1 + nonce_length ..][0..L], @intCast(m.len), .big);
+            // safe: callers bound the message at max_message, the `length_bytes`-byte length's range.
+            std.mem.writeInt(u24, b0[1 + nonce_length ..][0..length_bytes], @intCast(m.len), .big);
             state.update(&b0);
             if (ad.len != 0) {
                 var encoded: [6]u8 = undefined;

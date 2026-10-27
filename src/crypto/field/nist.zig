@@ -37,8 +37,8 @@ pub fn FieldWith(comptime curve: Curve, comptime backend: Backend, comptime vari
     return struct {
         const Self = @This();
         const fiat = switch (curve) {
-            .p256 => @import("../vendor/fiat/p256_64.zig"),
-            .p384 => @import("../vendor/fiat/p384_64.zig"),
+            .p256 => @import("../vendor/fiat.zig").p256,
+            .p384 => @import("../vendor/fiat.zig").p384,
         };
         pub const modulus: comptime_int = switch (curve) {
             .p256 => 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff,

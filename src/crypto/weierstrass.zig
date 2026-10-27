@@ -13,7 +13,7 @@
 //! scrubs what the field's assembly leaves below.
 const std = @import("std");
 const Secret = @import("aegis").secret.Secret;
-const Montgomery = @import("field/Montgomery.zig");
+const Montgomery = @import("field.zig").Montgomery;
 
 pub const Params = struct {
     /// The base field: `mul`, `sqr`, `add`, `sub`, `neg`, `invert`, `select`, encodings.

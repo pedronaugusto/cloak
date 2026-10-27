@@ -3,7 +3,7 @@
 const weierstrass = @import("weierstrass.zig");
 
 const C = weierstrass.Curve(.{
-    .Fe = @import("field/nist.zig").Fe(.p384),
+    .Fe = @import("field.zig").nist.Fe(.p384),
     .order = 0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973,
     .b = 0xb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef,
     .gx = 0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7,

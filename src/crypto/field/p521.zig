@@ -7,7 +7,7 @@
 //! scrubs that stack and sets the processor's data-independent timing mode around them.
 const std = @import("std");
 const Secret = @import("aegis").secret.Secret;
-const fiat = @import("../vendor/fiat/p521_64.zig");
+const fiat = @import("../vendor/fiat.zig").p521;
 const shared = @import("s2n.zig");
 const barrier = @import("Montgomery.zig").barrier;
 

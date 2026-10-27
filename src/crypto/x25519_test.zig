@@ -1,6 +1,6 @@
 const std = @import("std");
 const x25519 = @import("x25519.zig");
-const s2n = @import("field/s2n.zig");
+const s2n = @import("field.zig").s2n;
 const Fiat = x25519.With(.fiat, null);
 
 fn hex(comptime text: []const u8) [32]u8 {
