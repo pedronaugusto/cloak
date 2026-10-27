@@ -87,6 +87,9 @@ Files (path here = path upstream, under `s2n-bignum/`):
 
 | File | Upstream path | SHA-256 |
 |---|---|---|
+| `fiat/AUTHORS` | `AUTHORS` | `ad74c036a6afaedc418fed65f171c877c2f74a4c70938a03930aa11c98a20508` |
+| `fiat/COPYRIGHT` | `COPYRIGHT` | `6c935d087a2992d0f092665400a2fa99c98db58d96fbe29368f8f48182bed9aa` |
+| `fiat/LICENSE-MIT` | `LICENSE-MIT` | `0034712d5e97a4f5b900a160a5c19d582b740d8e0638b4e44fd07e7b492dcd13` |
 | `fiat/curve25519_64.zig` | `fiat-zig/src/curve25519_64.zig` | `516dcf3b161ecf3de43ebdf599625824b469c7e5c1c5e0c444217715c58c4c61` |
 | `fiat/p256_64.zig` | `fiat-zig/src/p256_64.zig` | `302d5b040a93fb608bc85521ee63079eaf4c2e68ae457c360f1f9c0f2d3abffb` |
 | `fiat/p256_scalar_64.zig` | `fiat-zig/src/p256_scalar_64.zig` | `d2873c59a1e566bd23e00fa140facaa54d9f0924861a730bdc4050fc2d86785f` |
