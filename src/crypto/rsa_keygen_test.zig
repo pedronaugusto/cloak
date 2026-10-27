@@ -242,6 +242,22 @@ test "near 2^64, 2^128, 2^256 and 2^1024, the kernel's verdicts are std's" {
     }
 }
 
+test "Miller-Rabin refuses strong pseudoprimes and a Carmichael number, and keeps primes, at any width" {
+    var owner: Secret(keygen.State) = .init(undefined);
+    defer owner.deinit();
+    var source: Drbg = .init(12);
+    // 2047 = 23 * 89, a strong pseudoprime to base 2; 3215031751 = 151 * 751 * 28351, one to
+    // bases 2, 3, 5 and 7; 8911 = 7 * 19 * 67, a Carmichael number. Each is 7 mod 8, as a
+    // candidate is, and each has a factor trial division would find: Miller-Rabin alone here.
+    for ([_]u64{ 2047, 3215031751, 8911 }) |composite| {
+        try std.testing.expect(!try keygen.millerRabin(&.{composite}, &source, owner.exposeMut()));
+    }
+    // 2^31 - 1, 2^61 - 1 and 2^89 - 1, below their limbs' width.
+    try std.testing.expect(try keygen.millerRabin(&.{0x7fff_ffff}, &source, owner.exposeMut()));
+    try std.testing.expect(try keygen.millerRabin(&.{0x1fff_ffff_ffff_ffff}, &source, owner.exposeMut()));
+    try std.testing.expect(try keygen.millerRabin(&.{ std.math.maxInt(u64), 0x1ff_ffff }, &source, owner.exposeMut()));
+}
+
 /// An independent Miller-Rabin over std's constant-time modular arithmetic: `rounds` fixed
 /// bases, for a prime of up to 2048 bits given big-endian.
 fn stdProbablePrime(w: []const u8, rounds: usize) !bool {

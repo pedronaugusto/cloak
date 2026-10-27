@@ -15,7 +15,8 @@
 //! multiplying by e^-1 mod 2^64 limb by limb: d from lambda, dp and dq from p - 1 and q - 1.
 //! qinv = q^(p-2) mod p.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const aegis = @import("aegis");
+const Secret = aegis.secret.Secret;
 const rsa = @import("rsa.zig");
 const ct = @import("field/Montgomery.zig");
 
@@ -69,8 +70,17 @@ const Half = [rsa.max_half]u64;
 const max_candidates = 1 << 16;
 
 /// A new key of `size` from `source`, which has `fill(buffer) error{EntropyUnavailable}!void`
-/// and must be a cryptographic source (a key from a predictable one is predictable).
+/// and must be a cryptographic source (a key from a predictable one is predictable). The whole
+/// runs as one secret computation, its stack scrubbed after.
 pub fn generate(size: Size, source: anytype, out: *Integers) Error!void {
+    return aegis.secret.scrubbed(depth, generateKernel, .{ size, source, out });
+}
+
+/// The stack `generateKernel` reaches at most, which a test holds it to: its state, the
+/// window's table and the products' temporaries. Debug keeps more copies in its frames.
+pub const depth = if (@import("builtin").mode == .debug) 48 * 1024 else 32 * 1024;
+
+pub fn generateKernel(size: Size, source: anytype, out: *Integers) Error!void {
     var owner: Secret(State) = .init(undefined);
     defer owner.deinit();
     const s = owner.exposeMut();
@@ -180,15 +190,24 @@ fn randomPrime(bits: usize, source: anytype, s: *State, out: *Half) Error!void {
     return error.GenerationFailed;
 }
 
-/// Whether `w` (odd, 7 mod 8, top bit set) passes trial division, the e check and Miller-Rabin.
-/// Only the verdict leaves; a composite is discarded.
+/// Whether `w` (odd, 7 mod 8, its top limb nonzero) passes trial division, the e check and
+/// Miller-Rabin. Only the verdict leaves; a composite is discarded.
 pub fn isProbablePrime(w: []const u64, source: anytype, s: *State) Error!bool {
-    const k = w.len;
     // Trial division and the e check, every remainder computed before the verdict.
     var divisible: u64 = 0;
     inline for (small_primes) |prime| divisible |= zeroMask(remainder(w, prime));
     divisible |= zeroMask(remainder(w, e) ^ 1);
     if (ct.barrier(divisible) != 0) return false;
+    return millerRabin(w, source, s);
+}
+
+/// Miller-Rabin on `w` (odd, 7 mod 8, its top limb nonzero) with `rounds` random bases: for
+/// w = 3 mod 4 one exponentiation by (w - 1)/2 per base, compared with +-1.
+pub fn millerRabin(w: []const u64, source: anytype, s: *State) Error!bool {
+    const k = w.len;
+    // Bases are drawn below 2^width, the width public as a candidate's is: at least half of
+    // the draws land in range.
+    const width_mask = @as(u64, std.math.maxInt(u64)) >> @intCast(@clz(w[k - 1]));
     s.modulus.init(bigEndian(&s.draw, w), k) catch return error.GenerationFailed;
     // 1 and -1 in Montgomery form, and the exponent (w - 1)/2 = w >> 1 for odd w.
     @memset(s.x[0..k], 0);
@@ -202,10 +221,11 @@ pub fn isProbablePrime(w: []const u64, source: anytype, s: *State) Error!bool {
     while (round < rounds(64 * k)) {
         draws += 1;
         if (draws > max_candidates) return error.GenerationFailed;
-        // A base uniform in [2, w - 2]: drawn below 2^bits and refused outside the range.
+        // A base uniform in [2, w - 2]: drawn below 2^width and refused outside the range.
         const base = s.draw[0 .. 8 * k];
         source.fill(base) catch return error.EntropyUnavailable;
         fromBigEndian(s.x[0..k], base);
+        s.x[k - 1] &= width_mask;
         if (!inBaseRange(s.x[0..k], w)) continue;
         s.modulus.toMontgomery(s.y[0..k], s.x[0..k]);
         s.modulus.powSecret(s.y[0..k], s.y[0..k], s.g[0..k]);
@@ -457,6 +477,21 @@ fn bigEndian(buffer: *[rsa.max_half * 8]u8, x: []const u64) []const u8 {
     const bytes = buffer[0 .. 8 * x.len];
     for (x, 0..) |limb, i| std.mem.writeInt(u64, bytes[bytes.len - 8 * (i + 1) ..][0..8], limb, .big);
     return bytes;
+}
+
+test "a generation reaches less stack than the depth that scrubs it" {
+    const Source = struct {
+        rng: std.Random.ChaCha = .init(@splat(11)),
+        pub fn fill(self: *@This(), buffer: []u8) error{EntropyUnavailable}!void {
+            self.rng.fill(buffer);
+        }
+    };
+    var source: Source = .{};
+    var out: Secret(Integers) = .init(undefined);
+    defer out.deinit();
+    inline for (.{ Size.@"2048", .@"4096" }) |size| {
+        try std.testing.expect(aegis.secret.stackReach(4 * depth, generateKernel, .{ size, &source, out.exposeMut() }) < depth);
+    }
 }
 
 test {
