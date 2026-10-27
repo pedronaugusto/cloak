@@ -178,8 +178,8 @@ pub const Pkcs8Error = std.mem.Allocator.Error;
 
 /// The key as a DER PrivateKeyInfo (RFC 5958), what `parse` reads back, in a secret owner the
 /// caller releases (`deinit(gpa)`): RSA's RSAPrivateKey (RFC 8017), an EC key with its public
-/// point (RFC 5915), Ed25519's and X25519's private key (RFC 8410), ML-DSA's expanded key
-/// (RFC 9881).
+/// point (RFC 5915), Ed25519's and X25519's private key (RFC 8410), ML-DSA's seed, or its
+/// expanded key when the seed is not known (RFC 9881).
 pub fn pkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBytes {
     return aegis.secret.scrubbed(sign_stack, writePkcs8, .{ key, gpa });
 }
@@ -244,8 +244,11 @@ fn writePkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBy
                 .mldsa87 => "\x13",
             });
             try b.close(algorithm);
+            // RFC 9881's seed form when the seed is known, the expanded key when it is not.
             const wrapped = try b.open(0x04);
-            switch (k.level) {
+            if (k.seed) |*seed| {
+                try b.element(0x80, seed);
+            } else switch (k.level) {
                 inline else => |level| try b.element(0x04, k.secret[0..mldsa.Scheme(level).secret_key_length]),
             }
             try b.close(wrapped);

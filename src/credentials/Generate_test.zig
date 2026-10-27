@@ -1,12 +1,14 @@
 //! `PrivateKey.generate` and `PrivateKey.pkcs8`: each kind's key signs what its public half
 //! verifies, writes PKCS#8 that `parse` reads back as the same key, and an RSA key also
-//! verifies PSS and decrypts OAEP.
+//! verifies PSS and decrypts OAEP. An ML-DSA key is written in RFC 9881's seed form whenever
+//! its seed is known, and as its expanded key only when it is not.
 const std = @import("std");
 const PrivateKey = @import("../PrivateKey.zig");
 const certificate = @import("../certificate.zig");
 const signature = @import("../verify/signature.zig");
 const encryption = @import("../verify/encryption.zig");
 const Pem = @import("Pem.zig");
+const Der = @import("../wire/Der.zig");
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
@@ -94,4 +96,72 @@ test "a generated RSA key signs PKCS#1 v1.5 and PSS, decrypts OAEP, and its PKCS
     var random: [PrivateKey.max_noise]u8 = undefined;
     try std.testing.expectEqualStrings("a secret for the key", try key.decrypt(scheme, sealed, noise(key, &random), &plaintext));
     try expectRoundTrip(key, .{ .rsa = .sha256 });
+}
+
+/// A key fixture's DER, its PEM decoded.
+fn fixture(text: []const u8) !Pem.Block {
+    var pem = Pem.init(text);
+    return (try pem.next(gpa, 1 << 16)) orelse error.TestUnexpectedResult;
+}
+
+/// What a PKCS#8 ML-DSA key's privateKey holds: RFC 9881's seed, expandedKey or both.
+fn choice(der: []const u8) ![]const u8 {
+    var r = (try Der.single(der, 0x30)).reader();
+    _ = try r.expect(0x02);
+    _ = try r.expect(0x30);
+    const key = (try r.expect(0x04)).value;
+    try r.finish();
+    return key;
+}
+
+test "a generated ML-DSA key's PKCS#8 is RFC 9881's seed form" {
+    inline for (.{ PrivateKey.Kind.mldsa44, PrivateKey.Kind.mldsa65, PrivateKey.Kind.mldsa87 }) |kind| {
+        var key = try PrivateKey.generate(gpa, io, kind);
+        defer key.deinit();
+        var der = try key.pkcs8(gpa);
+        defer der.deinit(gpa);
+        const held = try choice(der.expose());
+        try std.testing.expectEqual(@as(usize, 34), held.len);
+        try std.testing.expectEqualSlices(u8, &.{ 0x80, 32 }, held[0..2]);
+    }
+}
+
+test "an ML-DSA key read is written back in the seed form when its form carries the seed, as its expanded key when not" {
+    // The seed alone and the expanded key alone come back as they were read.
+    for ([_][]const u8{ @embedFile("testdata/mldsa44.seed.pem"), @embedFile("testdata/mldsa87.expanded.pem") }) |text| {
+        var read = try fixture(text);
+        defer read.deinit(gpa);
+        var key = try PrivateKey.parse(gpa, text, .{});
+        defer key.deinit();
+        var der = try key.pkcs8(gpa);
+        defer der.deinit(gpa);
+        try std.testing.expectEqualSlices(u8, read.der, der.expose());
+    }
+    // Both: the seed alone, the same key.
+    const both = @embedFile("testdata/mldsa65.both.pem");
+    var read = try fixture(both);
+    defer read.deinit(gpa);
+    var pair = (try Der.single(try choice(read.der), 0x30)).reader();
+    const seed = (try pair.expect(0x04)).value;
+    var key = try PrivateKey.parse(gpa, both, .{});
+    defer key.deinit();
+    var der = try key.pkcs8(gpa);
+    defer der.deinit(gpa);
+    const held = try choice(der.expose());
+    try std.testing.expectEqualSlices(u8, &.{ 0x80, 32 }, held[0..2]);
+    try std.testing.expectEqualSlices(u8, seed, held[2..]);
+    try expectRoundTrip(key, .{ .mldsa = .mldsa65 });
+}
+
+test "an ML-DSA key in both forms whose seed and expanded key disagree is refused" {
+    const both = @embedFile("testdata/mldsa65.both.pem");
+    // The seed's byte, then the expanded key's last.
+    for ([_]bool{ true, false }) |in_seed| {
+        var read = try fixture(both);
+        defer read.deinit(gpa);
+        const held = try choice(read.der);
+        const at = @intFromPtr(held.ptr) - @intFromPtr(read.der.ptr) + if (in_seed) 6 else held.len - 1;
+        read.der[at] ^= 1;
+        try std.testing.expectError(error.InvalidKey, PrivateKey.parse(gpa, read.der, .{}));
+    }
 }
