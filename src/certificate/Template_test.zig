@@ -53,7 +53,7 @@ test "a full template's extensions are each written once and valid as a verifier
     try std.testing.expectEqual(@as(?usize, 1), basic.path_length);
     try std.testing.expect(cert.x509(19).?.critical);
     try std.testing.expect(cert.x509(15).?.critical);
-    try std.testing.expectEqual(@as(u16, 1 << 5 | 1 << 6), try Extensions.keyUsage(cert.x509(15).?.value));
+    try std.testing.expectEqual(@as(u16, (1 << 5) | (1 << 6)), try Extensions.keyUsage(cert.x509(15).?.value));
     try Extensions.nameConstraints(cert.x509(30).?.value);
     try std.testing.expect(cert.x509(30).?.critical);
     for ([_]u8{ 14, 17, 31, 32, 37 }) |id| try std.testing.expect(cert.x509(id) != null);

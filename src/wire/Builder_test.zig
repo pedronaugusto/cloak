@@ -12,7 +12,7 @@ test "DER builder writes short and long lengths, minimal integers and named bits
     try b.small(128);
     try b.unsigned(&.{ 0, 0, 0x80, 1 });
     try b.boolean(true);
-    try b.namedBits(1 << 0 | 1 << 5); // digitalSignature, keyCertSign
+    try b.namedBits((1 << 0) | (1 << 5)); // digitalSignature, keyCertSign
     try b.namedBits(1 << 0);
     try b.namedBits(1 << 8);
     const long = try b.open(0x04);
