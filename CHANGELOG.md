@@ -4,6 +4,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Breaking
+
+- `PrivateKey.Components` gains `mldsa` (an ML-DSA key from its seed): a switch over it that names every case needs one more.
+
 ### Added
 
 - ML-DSA keys from their seed: `fromComponents(.mldsa)` takes the 32-byte seed and optionally the public key, compared with the seed's, as RFC 9964's JOSE keys (`AKP`) carry them; the same constructor RFC 9881's seed form is read through.
