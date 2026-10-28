@@ -26,7 +26,12 @@ pub fn deinit(self: *Kernel) void {
 }
 
 pub fn installer(self: *Kernel) Keys.Installer {
-    return .{ .context = self, .installFn = installOpaque };
+    return .{ .context = self, .installFn = installOpaque, .rekeysFn = rekeysOpaque };
+}
+
+fn rekeysOpaque(context: *anyopaque, _: Keys.Direction) bool {
+    const self: *Kernel = @ptrCast(@alignCast(context)); // safe: `installer` passes this Kernel as the context
+    return self.rekeys;
 }
 
 fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {

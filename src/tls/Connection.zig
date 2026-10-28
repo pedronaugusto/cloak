@@ -239,6 +239,10 @@ owed_alert: aegis.Atomic(AlertCode) = .init(.none),
 /// The directions a kernel record layer holds: it seals or opens their records from then on.
 rx_kernel: bool = false,
 tx_kernel: bool = false,
+/// Whether the kernel holding each direction takes its keys again (`Installer.rekeys`): one
+/// that does not cannot follow a KeyUpdate, so the connection closes before needing one.
+rx_rekeys: bool = false,
+tx_rekeys: bool = false,
 /// With the write keys in a kernel and a key update made: the pending control bytes the kernel
 /// sends under the old keys (the KeyUpdate and what came before it) before it takes the new.
 rekey_at: ?u32 = null,
@@ -862,6 +866,10 @@ fn sendKeyUpdate(self: *Connection, request_peer: bool) Error!void {
     @setRuntimeSafety(true);
     // TLS 1.2 has no key update; its connection closes before the record or byte cap instead.
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
+    // A kernel that takes the write keys once cannot follow a KeyUpdate: the peer would read on
+    // under the next keys and the stream end there. The write side closes cleanly instead,
+    // before the epoch runs out, the peer's request for one included.
+    if (self.tx_kernel and !self.tx_rekeys) return self.closeWrite();
     if (self.tx.?.owner() == .next) {
         // A kernel has yet to take the keys of the last update: this one waits for it.
         self.addOwed(if (request_peer) owe_update_request else owe_key_update);
@@ -1009,8 +1017,11 @@ pub fn keyUpdate(self: *Connection, request_peer: bool) SendError!void {
     self.writeOwed();
     if (self.phase() != .connected) return error.NotConnected;
     if ((self.write_done.load(.acquire) == .done)) return error.WriteClosed;
-    // TLS 1.2 has none: a refusal, not a failure of the connection.
+    // TLS 1.2 has none, and nor has a kernel that takes keys once: a refusal, not a failure
+    // of the connection.
     if (self.tx.?.tls12()) return error.NoKeyUpdate;
+    if (self.tx_kernel and !self.tx_rekeys) return error.NoKeyUpdate;
+    if (request_peer and self.rx_kernel and !self.rx_rekeys) return error.NoKeyUpdate;
     self.sendKeyUpdate(request_peer) catch |err| return self.writeFailed(err);
 }
 
@@ -1022,6 +1033,11 @@ pub fn finish(self: *Connection) FinishError!void {
     self.writeOwed();
     if (self.phase() == .failed) return error.Closed;
     if ((self.write_done.load(.acquire) == .done)) return;
+    self.closeWrite();
+}
+
+/// close_notify, and the write side done.
+fn closeWrite(self: *Connection) void {
     if (self.phase() == .connected) {
         self.sendAlert(1, .close_notify);
     }
@@ -1065,9 +1081,11 @@ pub const OffloadError = Keys.InstallError || error{
 ///
 /// A key update in a kernel direction (TLS 1.3) turns the epoch here at once: a KeyUpdate
 /// received, or one sent once the kernel has written it. The kernel takes the next keys
-/// through this call. A kernel that refuses them (`RekeyUnsupported`: before Linux 6.14) ends
-/// the connection, since the old keys are gone and records under them would be refused by the
-/// peer or forged by anyone reusing them.
+/// through this call. Under a kernel that takes a direction's keys once (`Installer.rekeys`:
+/// FreeBSD, Linux before 6.14) this end sends no KeyUpdate: `keyUpdate` refuses
+/// (`NoKeyUpdate`), and where one is due (the record budget, the peer's request) the write side
+/// closes with close_notify instead. A peer's KeyUpdate still ends the connection, since the
+/// old read keys are gone and the kernel cannot take the next.
 ///
 /// record_size_limit (RFC 8449): the write direction hands the kernel the peer's limit, which it
 /// must take before the keys; a read direction under a limit of this end's own below the version's
@@ -1121,9 +1139,13 @@ pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installe
     };
     protection.release();
     switch (direction) {
-        .read => self.rx_kernel = true,
+        .read => {
+            self.rx_kernel = true;
+            self.rx_rekeys = installer.rekeys(.read);
+        },
         .write => {
             self.tx_kernel = true;
+            self.tx_rekeys = installer.rekeys(.write);
             self.rekey_at = null;
         },
     }
@@ -1268,9 +1290,12 @@ pub fn offloadInterval(self: *const Connection, direction: Direction) u64 {
 
 /// Reports the kernel's count of records in an offloaded direction under its current keys (the
 /// next record's number, as the kernel's crypto state holds it), at least every
-/// `offloadInterval` records, read after the direction's last `offload`. With a quarter of the epoch's record limit left, a TLS 1.3 connection updates its
-/// write keys or asks the peer to update its own; TLS 1.2, which has no key update, ends the
-/// connection there, before the limit.
+/// `offloadInterval` records, read after the direction's last `offload`. A kernel that cannot
+/// count its records reports `Keys.equivalentRecords` of the bytes it has been handed under the
+/// current keys (design C9.1). With a quarter of the epoch's record limit left, a TLS 1.3
+/// connection updates its write keys or asks the peer to update its own; TLS 1.2, which has no
+/// key update, ends the connection there, before the limit, and so does a TLS 1.3 direction
+/// whose kernel takes its keys once (the write side with close_notify).
 pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Error!void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
@@ -1286,7 +1311,8 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             if (records > p.records()) self.control_run = 0;
             p.account(records);
             if (p.remaining().records > p.recordLimit() / 4) return;
-            if (p.tls12()) return self.readFailed(error.RecordLimit);
+            // No key update to ask for: TLS 1.2, or a kernel that takes the read keys once.
+            if (p.tls12() or !self.rx_rekeys) return self.readFailed(error.RecordLimit);
             if (self.rx_asked_update or (self.write_done.load(.acquire) == .done)) return;
             self.rx_asked_update = true;
             self.owe(owe_update_request) catch |err| return self.readFailed(err);

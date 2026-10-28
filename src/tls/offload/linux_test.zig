@@ -176,7 +176,7 @@ fn run(suite: Suite) !void {
     try duo.handshake();
     const tcp = try Tcp.open();
     defer tcp.close();
-    var socket: ktls.Socket = .{ .fd = tcp.server };
+    var socket: ktls.Socket = .{ .fd = tcp.server, .capabilities = capabilities() };
     var out: [1 << 16]u8 = undefined;
     // A record each way in software over the socket, then both directions move.
     _ = try duo.client.send("soft");
@@ -253,7 +253,7 @@ fn run(suite: Suite) !void {
     try std.testing.expect(duo.client.readClosed());
 }
 
-test "C9 a key update of the server's own through the Linux kernel: the next keys, or the end where the kernel has none" {
+test "C9 a key update of the server's own through the Linux kernel: the next keys, or a clean close where the kernel has none" {
     const caps = capabilities();
     if (!caps.supports(.tls13, .aes_128_gcm, .write)) return error.SkipZigTest;
     var duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .server_suites = &.{.aes_128_gcm_sha256} });
@@ -261,18 +261,21 @@ test "C9 a key update of the server's own through the Linux kernel: the next key
     try duo.handshake();
     const tcp = try Tcp.open();
     defer tcp.close();
-    var socket: ktls.Socket = .{ .fd = tcp.server };
+    var socket: ktls.Socket = .{ .fd = tcp.server, .capabilities = capabilities() };
     var out: [64]u8 = undefined;
     try duo.server.offload(.write, socket.installer());
     try writeAll(tcp.server, "before");
     try std.testing.expectEqualSlices(u8, "before", try clientReads(duo, tcp.client, 6, &out));
-    try duo.server.keyUpdate(false);
     if (!caps.rekeys(.write)) {
-        try std.testing.expectError(error.RekeyUnsupported, serverControl(duo, &socket));
-        try std.testing.expectEqual(Connection.Phase.failed, duo.server.phase());
-        try std.testing.expect(duo.server.control() == null);
+        // A kernel before 6.14: the KeyUpdate is refused before it goes out, and the close goes
+        // out under the keys the kernel holds.
+        try std.testing.expectError(error.NoKeyUpdate, duo.server.keyUpdate(false));
+        try duo.server.finish();
+        try serverControl(duo, &socket);
+        try std.testing.expect(duo.server.phase() != .failed);
         return;
     }
+    try duo.server.keyUpdate(false);
     try serverControl(duo, &socket);
     try writeAll(tcp.server, "after");
     try std.testing.expectEqualSlices(u8, "after", try clientReads(duo, tcp.client, 5, &out));
@@ -320,7 +323,7 @@ test "C7 record_size_limit through the Linux kernel: the kernel seals within the
         try duo.handshake();
         const tcp = try Tcp.open();
         defer tcp.close();
-        var socket: ktls.Socket = .{ .fd = tcp.server };
+        var socket: ktls.Socket = .{ .fd = tcp.server, .capabilities = capabilities() };
         // A kernel before 6.18 has no payload limit: the keys stay in software.
         duo.server.offload(.write, socket.installer()) catch |err| switch (err) {
             error.Unsupported => return error.SkipZigTest,

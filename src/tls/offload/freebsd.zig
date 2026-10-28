@@ -80,7 +80,12 @@ pub const Socket = struct {
 
     /// What `Connection.offload` installs through.
     pub fn installer(self: *Socket) Keys.Installer {
-        return .{ .context = self, .installFn = installOpaque };
+        return .{ .context = self, .installFn = installOpaque, .rekeysFn = never };
+    }
+
+    /// FreeBSD takes a direction's keys once.
+    fn never(_: *anyopaque, _: Keys.Direction) bool {
+        return false;
     }
 
     fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
