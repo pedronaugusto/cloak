@@ -3,12 +3,14 @@
 //! and RSA share, and s2n-bignum's for RSA's moduli (`bignum`).
 pub const Montgomery = @import("field/Montgomery.zig");
 pub const bignum = @import("field/bignum.zig");
+pub const curve25519 = @import("field/curve25519.zig");
 pub const nist = @import("field/nist.zig");
 pub const p521 = @import("field/p521.zig");
 pub const s2n = @import("field/s2n.zig");
 test {
     _ = Montgomery;
     _ = bignum;
+    _ = curve25519;
     _ = nist;
     _ = p521;
     _ = s2n;

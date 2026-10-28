@@ -5,6 +5,7 @@ const roca = @import("../crypto/roca.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
+const edwards25519 = @import("../crypto/edwards25519.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
@@ -217,10 +218,9 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
     }
     if (eql(id, ed_oid)) {
         if (param != null or bytes.len != 32) return error.InvalidPublicKey;
-        _ = std.crypto.sign.Ed25519.PublicKey.fromBytes(bytes[0..32].*) catch return error.InvalidPublicKey;
-        const point = std.crypto.ecc.Edwards25519.fromBytes(bytes[0..32].*) catch return error.InvalidPublicKey;
-        point.rejectLowOrder() catch return error.InvalidPublicKey;
-        point.rejectUnexpectedSubgroup() catch return error.InvalidPublicKey;
+        // On the curve, not the identity, and of order L: no small-order component.
+        const point = edwards25519.decode(bytes[0..32]) orelse return error.InvalidPublicKey;
+        if (point.xIsZero() or !edwards25519.inPrimeOrderSubgroup(&point)) return error.InvalidPublicKey;
         return .{ .ed25519 = bytes };
     }
     if (eql(id, x25519_oid)) {

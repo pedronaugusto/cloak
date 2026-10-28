@@ -13,7 +13,6 @@ const x25519 = @import("../crypto/x25519.zig");
 const Cbc = @import("Cbc.zig");
 const Des3 = @import("Des3.zig");
 const Pbe = @import("Pbe.zig");
-const Curve = @import("Curve.zig");
 const EdKey = @import("EdKey.zig");
 const mldsa = @import("../crypto/mldsa.zig");
 pub const Material = union(enum) { rsa: Rsa.Key, p256: Ec(p256), p384: Ec(p384), p521: Ec(p521), ed25519: Ed25519Key, mldsa: MlDsa, x25519: X25519Key };
@@ -317,7 +316,7 @@ pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseEr
     @setRuntimeSafety(true);
     if (seed.len != 32) return error.InvalidKey;
     out.* = .{ .ed25519 = undefined };
-    EdKey.create(seed[0..32], &out.ed25519.secret) catch return error.InvalidKey;
+    EdKey.create(seed[0..32], &out.ed25519.secret);
     if (public) |p| if (!std.mem.eql(u8, p, out.ed25519.public())) return error.InvalidKey;
 }
 
@@ -427,6 +426,5 @@ test {
     _ = @import("Rsa.zig");
     _ = @import("Kdf.zig");
     _ = @import("EdKey.zig");
-    _ = Curve;
     _ = Des3;
 }

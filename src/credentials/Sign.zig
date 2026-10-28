@@ -11,7 +11,7 @@
 //! public key before it is written.
 const std = @import("std");
 const Secret = @import("aegis").secret.Secret;
-const Curve = @import("Curve.zig");
+const edwards25519 = @import("../crypto/edwards25519.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
@@ -181,9 +181,7 @@ pub const P384 = Ecdsa(p384, std.crypto.hash.sha2.Sha384);
 pub const P521 = Ecdsa(p521, std.crypto.hash.sha2.Sha512);
 
 pub const ed25519 = struct {
-    const Edwards = std.crypto.ecc.Edwards25519;
     const Sha512 = std.crypto.hash.sha2.Sha512;
-    const scalars = Edwards.scalar;
 
     /// The secret key as stored: the 32-byte seed, then the public key.
     pub const key_length = 64;
@@ -203,7 +201,8 @@ pub const ed25519 = struct {
         var scalar_owner: Secret([32]u8) = .init(expanded[0..32].*);
         defer scalar_owner.deinit();
         const scalar = scalar_owner.exposeMut();
-        scalars.clamp(scalar);
+        scalar[0] &= 248;
+        scalar[31] = (scalar[31] & 127) | 64;
         var wide_owner: Secret([64]u8) = .init(undefined);
         defer wide_owner.deinit();
         const wide = wide_owner.exposeMut();
@@ -211,26 +210,22 @@ pub const ed25519 = struct {
         hash.update(expanded[32..64]);
         hash.update(message);
         hash.final(wide);
-        var nonce_owner: Secret([32]u8) = .init(scalars.reduce64(wide.*));
+        var nonce_owner: Secret([32]u8) = .init(edwards25519.reduce64(wide));
         defer nonce_owner.deinit();
         const nonce = nonce_owner.exposeMut();
-        var point_owner: Secret(Edwards) = .init(Curve.base(Edwards, .little, nonce) catch return error.SigningFailed);
-        defer point_owner.deinit();
-        const point = point_owner.exposeMut();
-        const commitment = point.toBytes();
+        // A nonce of zero gives the identity as R: a valid signature that verifiers refuse.
+        var commitment: [32]u8 = undefined;
+        edwards25519.base(&commitment, nonce);
+        if (std.mem.eql(u8, &commitment, &edwards25519.Affine.identity_encoding)) return error.SigningFailed;
+        // The challenge hashes public values alone: R, A and the message.
         hash.* = Sha512.init(.{});
         hash.update(&commitment);
         hash.update(key[32..64]);
         hash.update(message);
         hash.final(wide);
-        var challenge_owner: Secret([32]u8) = .init(scalars.reduce64(wide.*));
-        defer challenge_owner.deinit();
-        const challenge = challenge_owner.exposeMut();
-        var s_owner: Secret([32]u8) = .init(scalars.mulAdd(challenge.*, scalar.*, nonce.*));
-        defer s_owner.deinit();
-        const s = s_owner.exposeMut();
+        const challenge = edwards25519.reduce64(wide);
         out[0..32].* = commitment;
-        out[32..64].* = s.*;
+        out[32..64].* = edwards25519.mulAdd(&challenge, scalar, nonce);
     }
 };
 

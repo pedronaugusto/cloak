@@ -38,7 +38,7 @@ test "credential review owned Ed expansion matches RFC8032 public key" {
     var seed: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&seed, "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
     var key: [64]u8 = undefined;
-    try EdKey.create(&seed, &key);
+    EdKey.create(&seed, &key);
     var expected: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&expected, "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
     try std.testing.expectEqualSlices(u8, &seed, key[0..32]);
