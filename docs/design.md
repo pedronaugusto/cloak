@@ -1746,30 +1746,40 @@ sys/kern/uipc_ktls.c, sys/kern/uipc_socket.c), not its version, where it differs
   (ENOPROTOOPT on get), and no sysctl exports a session's record number, so `Socket.records`
   does not exist here. Reads are counted exactly (above). Writes are not: sosend frames each
   pass by the socket buffer's free space, so a write of n bytes can become more records than
-  ceil(n / 16384), down to one byte each. What the write direction reports is open (decision
-  below).
+  ceil(n / 16384), down to one byte each. The write direction reports a bound instead (below).
 
-**Decision for Tycho: how the write direction is counted.** cloak's limit is 2^24 records a key
-(below RFC 8446's 2^24.5 full-size records for GCM), and the connection acts at a quarter of it
-left. Three ways for FreeBSD:
+**The write direction's count: full-record equivalents.** A kernel that cannot count reports,
+for the n plaintext bytes the caller has handed it under the current keys, ceil(2n / 1025)
+records. `offloadRecords` takes that as the count, and its contract says so in one line. The
+bound holds whatever framing the kernel picks, and here is its check:
 
-1. **Records bounded by bytes** (a record carries at least one byte). This is sound, but TLS 1.2
-   ends, and TLS 1.3 ends too (no key update), after about 12 MB sent. That defeats sendfile.
-2. **Full-record equivalents from the AEAD bound** (recommended). RFC 8446's limit is a bound on
-   the blocks a key encrypts. GCM's confidentiality margin counts the plaintext blocks plus one
-   per record (σ + q), and a record of len bytes costs at most ceil(len / 16) + 1 ≤ 2·len of
-   them. So n bytes cost at most 2n, and a full record costs 1025. The caller reports
-   ceil(2n / 1025) records for n bytes handed to the kernel. That is sound for any framing and
-   keeps RFC 8446's margin. The report depends on bytes alone, so the connection ends after
-   about 6.4 GB a key whatever the framing. It needs one
-   line in `offloadRecords`' contract (a kernel that cannot count reports this bound), and the
-   same arithmetic holds for ChaCha20-Poly1305, whose bound is looser.
-3. **Read direction only.** Writes stay in software. This is sound and simple, but loses
-   sendfile, the reason to offload.
+- RFC 8446's limit (2^24.5 full-size records for AES-GCM; cloak keeps 2^24) is a bound on what a
+  key encrypts. GCM's confidentiality advantage grows with σ + q: σ is the 16-byte blocks of
+  plaintext and q the records, one block each for the tag's mask (the AEAD limits of
+  draft-irtf-cfrg-aead-limits, after Iwata, Ohashi and Minematsu).
+- A record of k plaintext bytes (TLS 1.3 adds the inner content type, k + 1) costs
+  ceil(len / 16) + 1 of σ + q. For k ≥ 1 that is at most 2k: ceil((k + 1) / 16) ≤ k. The worst
+  case is the one-byte record, which costs 2.
+- A full-size record of 2^14 bytes costs at least 1024 + 1 = 1025 (TLS 1.3's inner type makes it
+  1026). The limit of L records therefore allows at least 1025·L of σ + q.
+- n bytes in records of any sizes cost at most 2n. Reporting r = ceil(2n / 1025) gives
+  σ + q ≤ 2n ≤ 1025·r, so while r is within the limit L, σ + q ≤ 1025·L: within what L
+  full-size records allow. ChaCha20-Poly1305's bound is looser (RFC 8446 §5.5), so the same report is
+  sound there.
 
-Proof is the nightly's FreeBSD VM job: the real kernel's `probe`, installs, both directions on
-loopback with sendfile, a key update ending the connection, and the read direction's counts
-against the peer's. The Mac cross-compiles the backend for x86_64-freebsd; the tests that
+The report depends on bytes alone, so a key ends after about 6.4 GB (3/4 of 2^24 times 1025 / 2)
+whatever the framing. FreeBSD has no key update, so a TLS 1.3 connection there ends as one on
+Linux before 6.14 does in cloak: it closes, with close_notify, before the bound. A TLS 1.2
+connection ends at the same point, as it does on every kernel. The tests are Linux's limit
+test, played with the bytes-based report.
+
+Proof is the nightly's FreeBSD VM leg, which preflight's workflow generator gives every
+package and only the nightly runs (never the gate, never a VM on the Mac). It covers the real
+kernel's `probe`, installs, both directions on loopback with sendfile, a key update ending the
+connection, and the read direction's counts against the peer's. The action it runs on is
+pinned by full commit SHA, and the FreeBSD release by version, with Zig installed as the other
+legs install it (the ziglang tarball and its digest). Which action, which SHA and why are
+recorded here once the leg exists. The Mac cross-compiles the backend for x86_64-freebsd; the tests that
 play a kernel run everywhere.
 
 ## ML-DSA (C10)
