@@ -21,6 +21,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
   var lines: Lines = .{ .writer = out };
   // options: .key_log = &lines.key_log
   ```
+- `tls.offload.Installer` has `rekeysFn`: an installer says whether its kernel takes a direction's keys again, so a connection under one that does not never sends a KeyUpdate it could not follow. `tls.offload.linux.Socket` carries the kernel's `Capabilities` (from `probe`) beside its descriptor, which its installer answers from.
 - `PrivateKey.Components` gains `mldsa` (an ML-DSA key from its seed): a switch over it that names every case needs one more.
 
 ### Added
@@ -33,6 +34,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Changed
 
+- Under a kernel that takes a direction's keys once (Linux before 6.14, FreeBSD), a TLS 1.3 connection no longer sends a KeyUpdate the kernel cannot follow, which left the peer reading a truncated stream. `keyUpdate` refuses (`NoKeyUpdate`, as under TLS 1.2); where one is due (a quarter of the record budget left, or the peer's request) the write side closes with close_notify, and the read side ends at its limit as TLS 1.2's does. A peer's KeyUpdate still ends the connection.
 - RSA's private operation multiplies and squares with s2n-bignum's formally verified routines on x86_64 and AArch64: Karatsuba and `bignum_emontredc_8n` for moduli of a multiple of 8 limbs (the halves of RSA-2048, -3072 and -4096) on AArch64 and on x86_64 with BMI2 and ADX, its generic Montgomery routines at other widths and without them. Squarings now have their own routine. The exponentiation stays constant time with base blinding, fixed windows and the public check of every result.
 - Ed25519 runs on formally verified arithmetic too: s2n-bignum's base and double-base multiplications and point decoding (x86_64 and AArch64), elsewhere cloak's extended-coordinate formulas over fiat-crypto's field, and its scalars on cloak's constant-time Montgomery field. Key creation, signing, verification and the certificate key check no longer use std's Edwards25519. Verification is the cofactorless equation as before (std's `verifyStrict`): S below L, A and R on the curve and not of x = 0; a key whose y is not below p is still `InvalidPublicKey`. Signatures are unchanged byte for byte.
 - An RSA private key keeps its private exponent d (validated as before), so it can be written back.

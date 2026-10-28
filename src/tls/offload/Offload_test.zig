@@ -9,6 +9,7 @@ const Kernel = @import("../../testing/Kernel.zig");
 const Connection = @import("../Connection.zig");
 const Suite = @import("../crypto/Suite.zig").Suite;
 const Psk = @import("../handshake/Psk.zig");
+const equivalentRecords = @import("Keys.zig").equivalentRecords;
 
 const gpa = std.testing.allocator;
 
@@ -296,25 +297,42 @@ test "F84 catalogue_ktls_rekey_failure_and_sendfile_immutability: a kernel witho
         try std.testing.expect(setup.server().control() == null);
         try std.testing.expectError(error.PeerAlert, setup.client().receive(wire));
     }
-    // Its own KeyUpdate sent: the peer reads under the next keys, the kernel keeps the old ones,
-    // so nothing more goes out, the close behind it included.
+    // Its own KeyUpdate under a kernel that says it takes the write keys once: refused before
+    // anything goes out (the peer would read on under keys the kernel never gets), and the close
+    // goes out under the keys the kernel holds. So does asking the peer for one under a read
+    // kernel that takes its keys once.
+    {
+        var setup = try Setup.init(.aes_128_gcm_sha256, .{});
+        defer setup.deinit();
+        setup.kernel.rekeys = false;
+        try setup.server().offload(.read, &setup.kernel.installer);
+        try setup.server().offload(.write, &setup.kernel.installer);
+        try std.testing.expectError(error.NoKeyUpdate, setup.server().keyUpdate(false));
+        try std.testing.expectError(error.NoKeyUpdate, setup.server().keyUpdate(true));
+        try std.testing.expectEqual(Connection.Phase.connected, setup.server().phase());
+        try std.testing.expect(setup.server().control() == null);
+        try setup.server().finish();
+        var types: [2]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, &.{21}, try setup.controlToClient(&types));
+        try std.testing.expect(setup.client().diagnostics().alert_received.? == .close_notify);
+    }
+    // A peer asking for this end's KeyUpdate under such a write kernel: the write side closes
+    // cleanly instead of answering with one it cannot follow.
     {
         var setup = try Setup.init(.aes_128_gcm_sha256, .{});
         defer setup.deinit();
         setup.kernel.rekeys = false;
         try setup.server().offload(.write, &setup.kernel.installer);
-        try setup.server().keyUpdate(false);
-        try setup.server().finish();
-        const update = setup.server().control().?;
-        try std.testing.expectEqual(@as(u8, 22), update.record_type);
-        const wire = try setup.kernel.seal(gpa, update.record_type, update.bytes);
-        defer gpa.free(wire);
-        setup.server().acknowledgeControl();
-        try setup.deliver(wire);
-        try std.testing.expect(setup.server().offloadPending(.write));
-        try std.testing.expectError(error.RekeyUnsupported, setup.server().offload(.write, &setup.kernel.installer));
-        try std.testing.expectEqual(Connection.Phase.failed, setup.server().phase());
-        try std.testing.expect(setup.server().control() == null);
+        try setup.client().keyUpdate(true);
+        const update = setup.client().output();
+        var at: usize = 0;
+        while (at < update.len) at += try setup.server().receive(update[at..]);
+        setup.client().acknowledge(update.len);
+        try setup.duo.serveServer();
+        var types: [2]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, &.{21}, try setup.controlToClient(&types));
+        try std.testing.expect(setup.client().diagnostics().alert_received.? == .close_notify);
+        try std.testing.expect(setup.server().phase() != .failed);
     }
     // A KeyUpdate must be a record of its own: Linux stops reading after a record that starts
     // with one, and only there. Not alone, or a record that starts with its type but is
@@ -382,6 +400,22 @@ test "C9 the record budget follows the kernel's counts" {
         try setup.server().offloadRecords(.read, 48);
         const ask = setup.server().control().?;
         try std.testing.expectEqual(@as(u8, 1), ask.bytes[4]);
+    }
+    // TLS 1.3 under a kernel that takes its keys once: the write side closes with
+    // close_notify where it would have updated, and the read side ends as TLS 1.2's does.
+    {
+        var setup = try Setup.init(.aes_128_gcm_sha256, .{ .records = 64 });
+        defer setup.deinit();
+        setup.kernel.rekeys = false;
+        try setup.server().offload(.read, &setup.kernel.installer);
+        try setup.server().offload(.write, &setup.kernel.installer);
+        try setup.server().offloadRecords(.write, 48);
+        var types: [2]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, &.{21}, try setup.controlToClient(&types));
+        try std.testing.expect(setup.client().diagnostics().alert_received.? == .close_notify);
+        try std.testing.expectError(error.WriteClosed, setup.server().keyUpdate(false));
+        try std.testing.expectError(error.RecordLimit, setup.server().offloadRecords(.read, 48));
+        try std.testing.expectEqual(Connection.Phase.failed, setup.server().phase());
     }
     // TLS 1.2 has no key update: the connection ends there.
     {
@@ -466,5 +500,33 @@ test "C7 max_fragment under a kernel: the write direction takes the lower of it 
         defer kernel.deinit();
         try duo.server.offload(.write, &kernel.installer);
         try std.testing.expectEqual(@as(?u16, case.payload), kernel.last.?.max_payload);
+    }
+}
+
+test "C9.1 a kernel that cannot count its records: the write budget from bytes, ceil(2n / 1025), closes before the limit" {
+    // FreeBSD's shape: keys once a direction, no count read back. 64 records a key, so the
+    // connection acts at 48: ceil(2n / 1025) reaches 48 at n = 24600.
+    for ([_]Suite{ .aes_128_gcm_sha256, .chacha20_poly1305_sha256 }) |suite| {
+        var setup = try Setup.init(suite, .{ .records = 64 });
+        defer setup.deinit();
+        setup.kernel.rekeys = false;
+        try setup.server().offload(.write, &setup.kernel.installer);
+        try std.testing.expectEqual(@as(u64, 47), equivalentRecords(24087));
+        try setup.server().offloadRecords(.write, equivalentRecords(24087));
+        try std.testing.expect(setup.server().control() == null);
+        try setup.server().offloadRecords(.write, equivalentRecords(24600));
+        var types: [2]u8 = undefined;
+        try std.testing.expectEqualSlices(u8, &.{21}, try setup.controlToClient(&types));
+        try std.testing.expect(setup.client().diagnostics().alert_received.? == .close_notify);
+        try std.testing.expect(setup.server().phase() != .failed);
+    }
+    // TLS 1.2 ends at the same count, as it does under every kernel.
+    {
+        var setup = try Setup.init(.ecdhe_ecdsa_aes_128_gcm_sha256, .{ .records = 64 });
+        defer setup.deinit();
+        setup.kernel.rekeys = false;
+        try setup.server().offload(.write, &setup.kernel.installer);
+        try setup.server().offloadRecords(.write, equivalentRecords(24087));
+        try std.testing.expectError(error.RecordLimit, setup.server().offloadRecords(.write, equivalentRecords(24600)));
     }
 }

@@ -84,13 +84,21 @@ pub fn deinit(self: *Keys) void {
 }
 
 /// What carries keys to a kernel: `install` gives the kernel a direction's keys, the first time
-/// or as a key update. On an error the kernel holds none of them, and on success all. It is a
-/// field of the kernel's own type, which `installFn` recovers with `@fieldParentPtr`.
+/// or as a key update. On an error the kernel holds none of them, and on success all. `rekeys`
+/// says whether the kernel takes a direction's keys again, as a TLS 1.3 key update: the
+/// kernel's own answer (its probe), never a caller's guess, since a connection that sends a
+/// KeyUpdate its kernel cannot follow ends in a truncated stream. It is a field of the kernel's
+/// own type, which `installFn` and `rekeysFn` recover with `@fieldParentPtr`.
 pub const Installer = struct {
     installFn: *const fn (installer: *Installer, direction: Direction, keys: *const Keys) InstallError!void,
+    rekeysFn: *const fn (installer: *Installer, direction: Direction) bool,
 
     pub fn install(self: *Installer, direction: Direction, keys: *const Keys) InstallError!void {
         return self.installFn(self, direction, keys);
+    }
+
+    pub fn rekeys(self: *Installer, direction: Direction) bool {
+        return self.rekeysFn(self, direction);
     }
 };
 

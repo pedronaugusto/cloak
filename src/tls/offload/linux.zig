@@ -104,11 +104,18 @@ fn optionOf(direction: Keys.Direction) u32 {
     };
 }
 
-/// A connected TCP socket a connection's directions move to.
+/// A connected TCP socket a connection's directions move to, and what the running kernel's
+/// record layer takes (`probe`), which says whether a direction's keys can be replaced.
 pub const Socket = struct {
     fd: linux.fd_t,
+    capabilities: Capabilities,
     /// What `Connection.offload` installs through.
-    installer: Keys.Installer = .{ .installFn = installKeys },
+    installer: Keys.Installer = .{ .installFn = installKeys, .rekeysFn = rekeysOf },
+
+    fn rekeysOf(installer: *Keys.Installer, direction: Keys.Direction) bool {
+        const self: *Socket = @fieldParentPtr("installer", installer);
+        return self.capabilities.rekeys(direction);
+    }
 
     fn installKeys(installer: *Keys.Installer, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
         const self: *Socket = @fieldParentPtr("installer", installer);
@@ -228,7 +235,7 @@ pub fn probe() Capabilities {
         for (std.enums.values(Keys.Cipher)) |cipher| {
             var pair = listener.pair() catch return result;
             defer pair.close();
-            var socket: Socket = .{ .fd = pair.client };
+            var socket: Socket = .{ .fd = pair.client, .capabilities = .{} };
             for ([_]Keys.Direction{ .read, .write }) |direction| {
                 var keys: Keys = .{ .version = version, .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
                 defer keys.deinit();

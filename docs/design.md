@@ -1678,16 +1678,23 @@ A key update in a kernel direction turns the epoch here at once, as in software:
 received, or one sent once `control` has handed it out and it is acknowledged (records queued
 behind it wait). The epoch's owner is then `next` (`offloadPending`), and `offload` gives the
 kernel the next keys. Linux took TLS 1.3 key updates in 6.14: before it a second install of a
-direction is EBUSY (`RekeyUnsupported`). The old keys are gone by then and the peer reads and
-writes under the next ones, so the connection ends (NoKeyUpdate; a fatal alert still goes out
-when the write keys are untouched) rather than going back to them (design 8.2). Linux stops its
+direction is EBUSY (`RekeyUnsupported`). The installer says which kernel it is
+(`Installer.rekeys`, from the kernel's probe, never the caller's word), and under one that
+takes a direction's keys once this end sends no KeyUpdate it could not follow: `keyUpdate`
+refuses (`NoKeyUpdate`), and where one is due (a quarter of the record budget left, or the
+peer's request) the write side closes with close_notify, before the limit, and the read side
+ends as TLS 1.2's does. A KeyUpdate from the peer still ends the connection. The old read keys
+are gone by then and the peer writes under the next ones, so it ends (NoKeyUpdate; a fatal
+alert still goes out when the write keys are untouched) rather than going back to them
+(design 8.2). Linux stops its
 receive path after a handshake record whose first byte is KeyUpdate's type, and only there, so
 under a kernel a KeyUpdate must be its record's only message: one later in a record would leave
 the kernel opening under dropped keys, and a record that starts with the type without being a
 whole KeyUpdate would stop it with nothing to give it. Both end the connection. A record the
 kernel opened after a KeyUpdate, before the next keys, is refused.
 
-The Linux backend is `tls.offload.linux`: `Socket.install` attaches the "tls" upper-layer
+The Linux backend is `tls.offload.linux`: a `Socket` is its descriptor and the running
+kernel's `Capabilities` (what `probe` found, which its installer answers `rekeys` from); `Socket.install` attaches the "tls" upper-layer
 protocol and installs `CryptoInfo`, the cipher's uAPI struct (the IV's first four bytes are
 the salt, its last eight the IV, ChaCha20-Poly1305 taking all twelve); `Socket.records` reads
 the record number back (the kernel answers only a buffer of its struct's exact size, keys
@@ -1773,14 +1780,15 @@ Linux before 6.14 does in cloak: it closes, with close_notify, before the bound.
 connection ends at the same point, as it does on every kernel. The tests are Linux's limit
 test, played with the bytes-based report.
 
-Proof is the nightly's FreeBSD VM leg, which preflight's workflow generator gives every
-package and only the nightly runs (never the gate, never a VM on the Mac). It covers the real
+Proof is the nightly's FreeBSD leg, run as preflight runs riscv64 Linux: on the hosted Linux
+runner, a FreeBSD machine under QEMU (`-Dci-vm`), booted from FreeBSD's own release image,
+pinned by hash in preflight's manifest and fetched only by that job. No third-party action
+runs it; preflight drives the machine's console (log in, unpack the tests from a second disk,
+run, read the exit code), each wait with a deadline and a named failure, the console log kept
+with the job. Only the nightly runs it, never the gate, never on the Mac. It covers the real
 kernel's `probe`, installs, both directions on loopback with sendfile, a key update ending the
-connection, and the read direction's counts against the peer's. The action it runs on is
-pinned by full commit SHA, and the FreeBSD release by version, with Zig installed as the other
-legs install it (the ziglang tarball and its digest). Which action, which SHA and why are
-recorded here once the leg exists. The Mac cross-compiles the backend for x86_64-freebsd; the tests that
-play a kernel run everywhere.
+connection, and the read direction's counts against the peer's. The Mac cross-compiles the
+backend for x86_64-freebsd; the tests that play a kernel run everywhere.
 
 ## ML-DSA (C10)
 
