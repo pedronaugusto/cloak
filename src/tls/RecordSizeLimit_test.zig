@@ -289,7 +289,7 @@ test "C7 max_fragment: each end seals no record past its own bound, handshake re
         const sent_by = [2]?u16{ case.client, case.server };
         const limit_of = [2]?u16{ case.server_limit, case.client_limit };
         for (longest, sent_by, limit_of) |got, own, peer| {
-            const bound = @min(own orelse 1 << 14, if (peer) |p| p - inner else 1 << 14);
+            const bound = @min(own orelse (1 << 14), if (peer) |p| p - inner else 1 << 14);
             // Within the bound, and filled to it when it is below the 5000 bytes sent.
             try std.testing.expect(got <= expansion + bound);
             if (bound < 4000) try std.testing.expectEqual(expansion + bound, got);

@@ -93,7 +93,7 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             var state: Absorb = .{ .ctx = ctx, .chain = mac };
             var b0: [block_length]u8 = undefined;
             const adata: u8 = if (ad.len != 0) 0x40 else 0;
-            b0[0] = adata | ((tag_length - 2) / 2) << 3 | (length_bytes - 1);
+            b0[0] = adata | (((tag_length - 2) / 2) << 3) | (length_bytes - 1);
             b0[1..][0..nonce_length].* = npub;
             // safe: callers bound the message at max_message, the `length_bytes`-byte length's range.
             std.mem.writeInt(u24, b0[1 + nonce_length ..][0..length_bytes], @intCast(m.len), .big);

@@ -110,8 +110,8 @@ pub const Grease = struct {
     }
 
     fn value(byte: u8) u16 {
-        const half: u16 = (byte & 0x0f) << 4 | 0x0a;
-        return half << 8 | half;
+        const half: u16 = ((byte & 0x0f) << 4) | 0x0a;
+        return (half << 8) | half;
     }
 };
 

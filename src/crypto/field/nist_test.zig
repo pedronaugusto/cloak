@@ -37,8 +37,8 @@ fn Check(comptime curve: nist.Curve) type {
                 const x = try F.fromBytes(&encode(a));
                 const y = try F.fromBytes(&encode(b));
                 try std.testing.expectEqual(a, decode(x.toBytes()));
-                try std.testing.expectEqual(@as(V, @intCast(@as(W, a) * b % p)), decode(x.mul(&y).toBytes()));
-                try std.testing.expectEqual(@as(V, @intCast(@as(W, a) * a % p)), decode(x.sqr().toBytes()));
+                try std.testing.expectEqual(@as(V, @intCast((@as(W, a) * b) % p)), decode(x.mul(&y).toBytes()));
+                try std.testing.expectEqual(@as(V, @intCast((@as(W, a) * a) % p)), decode(x.sqr().toBytes()));
                 try std.testing.expectEqual(@as(V, @intCast((@as(W, a) + b) % p)), decode(x.add(&y).toBytes()));
                 try std.testing.expectEqual(@as(V, @intCast((@as(W, a) + p - b) % p)), decode(x.sub(&y).toBytes()));
                 try std.testing.expectEqual(@as(V, @intCast((p - @as(W, a)) % p)), decode(x.neg().toBytes()));
