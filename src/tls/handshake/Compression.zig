@@ -15,12 +15,12 @@ pub const Error = error{Failed};
 /// other outcome (short, long, trailing data, a malformed stream); `compress` writes into `out`
 /// and returns the length, or fails when the result does not fit. Neither may keep the slices.
 /// Both run inside the handshake, so their work is the caller's to bound beyond the sizes cloak
-/// enforces (at most `max_uncompressed` bytes out).
+/// enforces (at most `max_uncompressed` bytes out). A codec is a field of the caller's own type,
+/// which the functions recover with `@fieldParentPtr`.
 pub const Codec = struct {
     algorithm: Algorithm,
-    context: ?*anyopaque = null,
-    decompress: ?*const fn (context: ?*anyopaque, input: []const u8, out: []u8) Error!void = null,
-    compress: ?*const fn (context: ?*anyopaque, input: []const u8, out: []u8) Error!usize = null,
+    decompress: ?*const fn (codec: *Codec, input: []const u8, out: []u8) Error!void = null,
+    compress: ?*const fn (codec: *Codec, input: []const u8, out: []u8) Error!usize = null,
 };
 
 /// Codecs one side may list.
@@ -33,7 +33,7 @@ pub const message_type: u8 = 25;
 pub const ValidateError = error{InvalidOptions};
 
 /// At most `max_codecs`, each algorithm once and with the direction this side uses.
-pub fn validate(codecs: []const Codec, direction: enum { decompress, compress }) ValidateError!void {
+pub fn validate(codecs: []const *Codec, direction: enum { decompress, compress }) ValidateError!void {
     @setRuntimeSafety(true);
     if (codecs.len > max_codecs) return error.InvalidOptions;
     for (codecs, 0..) |codec, i| {
@@ -48,7 +48,7 @@ pub fn validate(codecs: []const Codec, direction: enum { decompress, compress })
 }
 
 /// The compress_certificate extension body: the algorithms of `codecs`, in order.
-pub fn writeExtension(w: *Writer, codecs: []const Codec) Writer.WriteError!void {
+pub fn writeExtension(w: *Writer, codecs: []const *Codec) Writer.WriteError!void {
     @setRuntimeSafety(true);
     try w.int(u16, extension_id);
     try w.int(u16, @intCast(1 + 2 * codecs.len)); // safe: at most `max_codecs`
@@ -68,7 +68,7 @@ pub fn checkExtension(bytes: []const u8) ParseError!void {
 }
 
 /// The first of `codecs` (the server's order) with an encoder whose algorithm the peer listed.
-pub fn choose(codecs: []const Codec, offered: []const u8) ?Codec {
+pub fn choose(codecs: []const *Codec, offered: []const u8) ?*Codec {
     @setRuntimeSafety(true);
     var r: Reader = .{ .bytes = offered };
     const list = (r.vector(u8) catch return null).bytes;
@@ -102,7 +102,7 @@ pub fn parse(message: []const u8) ParseError!Compressed {
 /// allocated. The algorithm must be one this side offered; the declared length is bounded by
 /// `max_message` before anything is allocated; the codec must produce exactly that many bytes
 /// (RFC 8879 section 4: bad_certificate otherwise).
-pub fn decompress(gpa: std.mem.Allocator, codecs: []const Codec, compressed: Compressed, max_message: usize) (ParseError || std.mem.Allocator.Error)![]u8 {
+pub fn decompress(gpa: std.mem.Allocator, codecs: []const *Codec, compressed: Compressed, max_message: usize) (ParseError || std.mem.Allocator.Error)![]u8 {
     @setRuntimeSafety(true);
     const codec = for (codecs) |codec| {
         if (codec.algorithm == compressed.algorithm and codec.decompress != null) break codec;
@@ -113,21 +113,21 @@ pub fn decompress(gpa: std.mem.Allocator, codecs: []const Codec, compressed: Com
     @memset(out, 0);
     out[0] = 11;
     std.mem.writeInt(u24, out[1..4], compressed.length, .big);
-    codec.decompress.?(codec.context, compressed.data, out[4..]) catch return error.BadCertificate;
+    codec.decompress.?(codec, compressed.data, out[4..]) catch return error.BadCertificate;
     return out;
 }
 
 /// A CompressedCertificate carrying `certificate` (a whole Certificate message) compressed by
 /// `codec`, written into `out`; null when the codec fails or gains nothing, and the plain
 /// message goes instead.
-pub fn build(out: []u8, codec: Codec, certificate: []const u8) ?[]u8 {
+pub fn build(out: []u8, codec: *Codec, certificate: []const u8) ?[]u8 {
     @setRuntimeSafety(true);
     const body = certificate[4..];
     if (out.len <= 12 or body.len > std.math.maxInt(u24)) return null;
     // Only a message smaller than the plain one is worth sending.
     const room = @min(out.len - 12, certificate.len -| 13);
     if (room == 0) return null;
-    const n = codec.compress.?(codec.context, body, out[12..][0..room]) catch return null;
+    const n = codec.compress.?(codec, body, out[12..][0..room]) catch return null;
     if (n == 0 or n > room) return null;
     out[0] = message_type;
     std.mem.writeInt(u24, out[1..4], @intCast(8 + n), .big); // safe: smaller than the certificate

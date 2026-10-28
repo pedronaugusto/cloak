@@ -18,6 +18,8 @@ refuse: ?Keys.InstallError = null,
 installs: usize = 0,
 /// What the last install carried, for the tests that check the hand-over itself.
 last: ?struct { version: Keys.Version, cipher: Keys.Cipher, sequence: u64, iv: [12]u8, max_payload: ?u16 } = null,
+/// What `Connection.offload` installs through.
+installer: Keys.Installer = .{ .installFn = install },
 
 pub fn deinit(self: *Kernel) void {
     if (self.rx) |*p| p.deinit();
@@ -25,12 +27,8 @@ pub fn deinit(self: *Kernel) void {
     self.* = undefined;
 }
 
-pub fn installer(self: *Kernel) Keys.Installer {
-    return .{ .context = self, .installFn = installOpaque };
-}
-
-fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
-    const self: *Kernel = @ptrCast(@alignCast(context)); // safe: `installer` passes this Kernel as the context
+fn install(installer: *Keys.Installer, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
+    const self: *Kernel = @fieldParentPtr("installer", installer);
     if (self.refuse) |err| {
         self.refuse = null;
         return err;

@@ -714,14 +714,15 @@ test "C2 key log lines carry each traffic secret" {
     const Sink = struct {
         const Self = @This();
         lines: std.ArrayList(u8) = .empty,
-        fn write(context: ?*anyopaque, line: []const u8) void {
-            const self: *Self = @ptrCast(@alignCast(context.?));
+        key_log: Connection.KeyLog = .{ .write = write },
+        fn write(log: *Connection.KeyLog, line: []const u8) void {
+            const self: *Self = @fieldParentPtr("key_log", log);
             self.lines.appendSlice(std.testing.allocator, line) catch unreachable;
         }
     };
     var sink: Sink = .{};
     defer sink.lines.deinit(std.testing.allocator);
-    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = .{ .context = &sink, .write = Sink.write } });
+    const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = &sink.key_log });
     defer pair.deinit();
     try pair.handshake();
     const log = sink.lines.items;

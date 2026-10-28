@@ -107,14 +107,11 @@ fn optionOf(direction: Keys.Direction) u32 {
 /// A connected TCP socket a connection's directions move to.
 pub const Socket = struct {
     fd: linux.fd_t,
-
     /// What `Connection.offload` installs through.
-    pub fn installer(self: *Socket) Keys.Installer {
-        return .{ .context = self, .installFn = installOpaque };
-    }
+    installer: Keys.Installer = .{ .installFn = installKeys },
 
-    fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
-        const self: *Socket = @ptrCast(@alignCast(context)); // aegis: no-danger: `installer` passes this Socket as the context
+    fn installKeys(installer: *Keys.Installer, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
+        const self: *Socket = @fieldParentPtr("installer", installer);
         return self.install(direction, keys);
     }
 

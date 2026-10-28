@@ -128,7 +128,7 @@ fn serverControl(duo: *Duo, socket: *ktls.Socket) !void {
             try sendRecord(socket.fd, record.record_type, record.bytes);
             duo.server.acknowledgeControl();
         } else if (duo.server.offloadPending(.write)) {
-            try duo.server.offload(.write, socket.installer());
+            try duo.server.offload(.write, &socket.installer);
         } else return;
     }
 }
@@ -188,8 +188,8 @@ fn run(suite: Suite) !void {
         try std.testing.expectEqualSlices(u8, "soft", duo.server.readable());
         duo.server.consume(4);
     }
-    try duo.server.offload(.read, socket.installer());
-    try duo.server.offload(.write, socket.installer());
+    try duo.server.offload(.read, &socket.installer);
+    try duo.server.offload(.write, &socket.installer);
     try std.testing.expectEqual(@as(u64, if (version == .tls12) 2 else 1), try socket.records(.read));
     // Data both ways through the kernel.
     _ = try duo.client.send("hello kernel");
@@ -225,14 +225,14 @@ fn run(suite: Suite) !void {
         _ = try serverReads(duo, tcp.server, 1, &out);
         try std.testing.expect(duo.server.offloadPending(.read));
         if (!caps.rekeys(.read)) {
-            try std.testing.expectError(error.RekeyUnsupported, duo.server.offload(.read, socket.installer()));
+            try std.testing.expectError(error.RekeyUnsupported, duo.server.offload(.read, &socket.installer));
             try std.testing.expectEqual(error.NoKeyUpdate, duo.server.diagnostics().reason.?);
             // The fatal alert still goes out under the write keys the kernel holds.
             try serverControl(duo, &socket);
             try std.testing.expectError(error.PeerAlert, clientReads(duo, tcp.client, 1, &out));
             return;
         }
-        try duo.server.offload(.read, socket.installer());
+        try duo.server.offload(.read, &socket.installer);
         try std.testing.expectEqual(@as(u64, 0), try socket.records(.read));
         try serverControl(duo, &socket);
         try std.testing.expectEqual(@as(u64, 0), try socket.records(.write));
@@ -263,7 +263,7 @@ test "C9 a key update of the server's own through the Linux kernel: the next key
     defer tcp.close();
     var socket: ktls.Socket = .{ .fd = tcp.server };
     var out: [64]u8 = undefined;
-    try duo.server.offload(.write, socket.installer());
+    try duo.server.offload(.write, &socket.installer);
     try writeAll(tcp.server, "before");
     try std.testing.expectEqualSlices(u8, "before", try clientReads(duo, tcp.client, 6, &out));
     try duo.server.keyUpdate(false);
@@ -322,7 +322,7 @@ test "C7 record_size_limit through the Linux kernel: the kernel seals within the
         defer tcp.close();
         var socket: ktls.Socket = .{ .fd = tcp.server };
         // A kernel before 6.18 has no payload limit: the keys stay in software.
-        duo.server.offload(.write, socket.installer()) catch |err| switch (err) {
+        duo.server.offload(.write, &socket.installer) catch |err| switch (err) {
             error.Unsupported => return error.SkipZigTest,
             else => return err,
         };

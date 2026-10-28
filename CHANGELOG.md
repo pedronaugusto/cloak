@@ -6,6 +6,21 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Breaking
 
+- The interfaces a caller supplies carry no `context: ?*anyopaque`: `Connection.KeyLog`, `certificate_compression.Codec`, `Session.Custom`, `Session.Signer`, `Psk.Lookup` (`external_psk`), `services.Job.Executor` and `offload.Installer`. Each is now a field of the caller's own type; its functions take a pointer to it and recover the owner with `@fieldParentPtr`, and the options take that pointer (`key_log: ?*KeyLog`, `certificate_compression: []const *Codec`, `trust = .{ .custom = *Custom }`, `signer: ?*Signer`, `external_psk: ?*Lookup`, `executor: ?*Executor`, `Connection.offload(direction, *Installer)`). `linux.Socket` and the test kernel hold their `installer`; `Socket.installer()` is gone. A key log, for one:
+
+  ```zig
+  const Lines = struct {
+      writer: *std.Io.Writer,
+      key_log: cloak.tls.Connection.KeyLog = .{ .write = write },
+
+      fn write(log: *cloak.tls.Connection.KeyLog, line: []const u8) void {
+          const self: *Lines = @fieldParentPtr("key_log", log);
+          self.writer.writeAll(line) catch {};
+      }
+  };
+  var lines: Lines = .{ .writer = out };
+  // options: .key_log = &lines.key_log
+  ```
 - `PrivateKey.Components` gains `mldsa` (an ML-DSA key from its seed): a switch over it that names every case needs one more.
 
 ### Added

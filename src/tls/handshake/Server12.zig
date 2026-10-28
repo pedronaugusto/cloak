@@ -544,7 +544,7 @@ fn knownKey(self: anytype, identity: []const u8) ?[]const u8 {
     const scratch = self.scratch.?;
     const lookup = self.options.external_psk.?;
     const query: Psk.Query = .{ .identity = identity, .server_name = scratch.server_name[0..scratch.server_name_len], .alpn = self.alpn, .transport = self.options.transport, .version = .tls12 };
-    const found = lookup.find(lookup.context, query) orelse return null;
+    const found = lookup.find(lookup, query) orelse return null;
     if (!query.takes(found)) return null;
     self.psk_identity = self.gpa.dupe(u8, identity) catch return null;
     return found.secret;

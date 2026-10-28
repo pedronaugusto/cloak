@@ -155,12 +155,12 @@ pub const Options = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879), in the server's order of preference: the first whose
     /// algorithm the client lists compresses the Certificate, when that makes it smaller.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys, looked up by the identity a client offers, for the version negotiated:
     /// TLS 1.3 PSK-DHE, tried before tickets; TLS 1.2 plain PSK when a PSK suite is listed and
     /// chosen. A client that proves one is authenticated by it, with no certificate either way,
     /// and is issued no tickets.
-    external_psk: ?Psk.Lookup = null,
+    external_psk: ?*Psk.Lookup = null,
     /// DTLS: connection_id (RFC 9146), answered when a client offers it. Null answers none;
     /// otherwise the connection ID this server receives records with, borrowed; empty: it sends
     /// with the client's but takes none.
@@ -172,7 +172,7 @@ pub const Options = struct {
     /// record sent to this server may carry (64 to 2^14 + 1). Null names the version's maximum.
     record_size_limit: ?u16 = null,
     limits: Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
     /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
     /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
@@ -772,7 +772,7 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink.context, line[0 .. at + 1]);
+    sink.write(sink, line[0 .. at + 1]);
 }
 
 // ---------------------------------------------------------------- input
@@ -1099,14 +1099,14 @@ fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Cli
         query.identity = offer.identity;
         var kind: Schedule.BinderKind = .external;
         const found: Psk.External = plain: {
-            if (offer.identity.len <= Psk.max_identity) if (lookup.find(lookup.context, query)) |answer| {
+            if (offer.identity.len <= Psk.max_identity) if (lookup.find(lookup, query)) |answer| {
                 if (query.takes(answer) and answer.hash == hash) break :plain answer;
             };
             const imported = Psk.ImportedIdentity.parse(offer.identity) orelse continue;
             if (imported.protocol != Psk.targetProtocol(self.options.transport) or imported.kdf != Psk.targetKdf(hash) or imported.identity.len > Psk.max_identity or imported.context.len > Psk.max_context) continue;
             query.identity = imported.identity;
             query.imported = .{ .context = imported.context };
-            const answer = lookup.find(lookup.context, query) orelse continue;
+            const answer = lookup.find(lookup, query) orelse continue;
             if (!query.takes(answer)) continue;
             kind = .imported;
             break :plain answer;

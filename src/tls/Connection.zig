@@ -120,7 +120,7 @@ pub const ClientOptions = struct {
     /// that depends on one order is found now rather than when a new extension moves it.
     permute_extensions: bool = false,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
     /// TLS 1.2 plain PSK key with its suites listed (no forward secrecy).
     external_psks: []const Psk.External = &.{},
@@ -137,7 +137,7 @@ pub const ClientOptions = struct {
     limits: Limits = .{},
     /// Send a random legacy session id and one change_cipher_spec for middleboxes.
     compat: bool = true,
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
     /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
     /// connection keeps none and `peerLeaf` is null.
@@ -369,10 +369,10 @@ pub const ServerOptions = struct {
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the connection.
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
     /// when its suites are listed. With them a server needs no credential.
-    external_psk: ?Psk.Lookup = null,
+    external_psk: ?*Psk.Lookup = null,
     /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
     /// protected record sent to this server may carry, as the extension counts it (64 to
     /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
@@ -384,7 +384,7 @@ pub const ServerOptions = struct {
     /// it; null is 2^14.
     max_fragment: ?u16 = null,
     limits: Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
     /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
     /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
@@ -1072,7 +1072,7 @@ pub const OffloadError = Keys.InstallError || error{
 /// record_size_limit (RFC 8449): the write direction hands the kernel the peer's limit, which it
 /// must take before the keys; a read direction under a limit of this end's own below the version's
 /// maximum stays here (`Unsupported`): the kernel opens records of any size the protocol allows.
-pub fn offload(self: *Connection, direction: Direction, installer: Keys.Installer) OffloadError!void {
+pub fn offload(self: *Connection, direction: Direction, installer: *Keys.Installer) OffloadError!void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();

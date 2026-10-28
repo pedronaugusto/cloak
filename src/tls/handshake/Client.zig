@@ -39,10 +39,10 @@ pub const Direction = Flight.Direction;
 pub const Limits = Terms.Limits;
 pub const Verify = Terms.Verify;
 
-/// Receives NSS key-log lines. The sink is outside the confidentiality guarantee.
+/// Receives NSS key-log lines. The sink is outside the confidentiality guarantee. It is a field
+/// of the sink's own type, which `write` recovers with `@fieldParentPtr`.
 pub const KeyLog = struct {
-    context: ?*anyopaque = null,
-    write: *const fn (context: ?*anyopaque, line: []const u8) void,
+    write: *const fn (log: *KeyLog, line: []const u8) void,
 };
 
 /// Resumption from a cache of tickets: TLS 1.3 PSK-DHE, a fresh key exchange every time.
@@ -94,7 +94,7 @@ pub const Options = struct {
     limits: Limits = .{},
     /// A random legacy session id and one change_cipher_spec, for middleboxes (stream only).
     compat: bool = true,
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
     /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
     /// connection keeps none and `peerLeaf` is null.
@@ -1658,7 +1658,7 @@ pub fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink.context, line[0 .. at + 1]);
+    sink.write(sink, line[0 .. at + 1]);
 }
 
 /// A DTLS 1.2 server asks the hello again with its cookie (RFC 6347 section 4.2.1): the same

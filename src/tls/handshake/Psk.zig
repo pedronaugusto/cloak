@@ -167,10 +167,10 @@ pub const Query = struct {
 };
 
 /// A server's provisioned keys: `find` returns the key for a query, or null. Its result is
-/// copied before `find` is called again; it must name the queried identity exactly.
+/// copied before `find` is called again; it must name the queried identity exactly. It is a field
+/// of the caller's own type, which `find` recovers with `@fieldParentPtr`.
 pub const Lookup = struct {
-    context: ?*anyopaque = null,
-    find: *const fn (context: ?*anyopaque, query: Query) ?External,
+    find: *const fn (lookup: *Lookup, query: Query) ?External,
 };
 
 pub fn validate(psk: External) error{InvalidOptions}!void {

@@ -104,7 +104,7 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
 const Server = @import("handshake/Server.zig");
 const client_module = @import("../testing/ClientPeer.zig");
 
-fn signWithFixtures(_: ?*anyopaque, request: Session.SignRequest, out: []u8) error{SigningFailed}!usize {
+fn signWithFixtures(_: *Session.Signer, request: Session.SignRequest, out: []u8) error{SigningFailed}!usize {
     if (request.scheme != .ecdsa_p256_sha256 or request.prehashed) return error.SigningFailed;
     const content = request.content;
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
@@ -202,9 +202,10 @@ test "C3 session accept needs a signer for an identity without a key, and uses i
         .credentials = &credentials,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
+    var signer: Session.Signer = .{ .sign = signWithFixtures };
     try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
-        .signer = .{ .sign = signWithFixtures },
+        .signer = &signer,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     });
     defer session.deinit();
@@ -269,13 +270,14 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     const failing = struct {
-        fn sign(_: ?*anyopaque, _: Session.SignRequest, _: []u8) error{SigningFailed}!usize {
+        fn sign(_: *Session.Signer, _: Session.SignRequest, _: []u8) error{SigningFailed}!usize {
             return error.SigningFailed;
         }
     };
+    var signer: Session.Signer = .{ .sign = failing.sign };
     try std.testing.expectError(error.SigningFailed, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
         .credentials = &credentials,
-        .signer = .{ .sign = failing.sign },
+        .signer = &signer,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
     try std.testing.expect(!peer.server_finished_ok);
@@ -346,9 +348,10 @@ test "C2 session reports a rejected server chain as the alert it sent" {
 const Custom = struct {
     refusal: ?Session.VerifyError = null,
     calls: usize = 0,
+    custom: Session.Custom = .{ .generation = .fromRaw(1), .verify = verify },
 
-    fn verify(context: ?*anyopaque, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
-        const self: *Custom = @ptrCast(@alignCast(context.?));
+    fn verify(custom: *Session.Custom, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
+        const self: *Custom = @fieldParentPtr("custom", custom);
         self.calls += 1;
         if (self.refusal) |err| return err;
         return certificates.types.Verification.init(gpa, request, request.chain, true, .{ .nanoseconds = request.time.nanoseconds + std.time.ns_per_s });
@@ -379,7 +382,7 @@ test "C2 session takes a custom verifier's verdict, and reports a refusal by the
         var read_buffer: [256]u8 = undefined;
         var write_buffer: [256]u8 = undefined;
         var report: Session.Diagnostics = .{};
-        const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = .{ .context = &verifier, .generation = .fromRaw(1), .verify = Custom.verify } }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
+        const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
         if (accept) {
             try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
             defer session.deinit();

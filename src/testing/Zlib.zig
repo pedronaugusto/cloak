@@ -4,10 +4,11 @@ const std = @import("std");
 const flate = std.compress.flate;
 const Compression = @import("../tls/handshake/Compression.zig");
 
+/// The codec's value; a test keeps its own copy and lists that.
 pub const codec: Compression.Codec = .{ .algorithm = .zlib, .decompress = decompress, .compress = compress };
 
 /// Fills exactly `out` from all of `input`: a short or long stream, or bytes after it, fail.
-pub fn decompress(_: ?*anyopaque, input: []const u8, out: []u8) Compression.Error!void {
+pub fn decompress(_: *Compression.Codec, input: []const u8, out: []u8) Compression.Error!void {
     var reader: std.Io.Reader = .fixed(input);
     var window: [flate.max_window_len]u8 = undefined;
     var d: flate.Decompress = .init(&reader, .zlib, &window);
@@ -17,7 +18,7 @@ pub fn decompress(_: ?*anyopaque, input: []const u8, out: []u8) Compression.Erro
     if (reader.seek != reader.end) return error.Failed;
 }
 
-pub fn compress(_: ?*anyopaque, input: []const u8, out: []u8) Compression.Error!usize {
+pub fn compress(_: *Compression.Codec, input: []const u8, out: []u8) Compression.Error!usize {
     // std's encoder needs room for at least its header and a little more.
     if (out.len <= 8) return error.Failed;
     var writer: std.Io.Writer = .fixed(out);

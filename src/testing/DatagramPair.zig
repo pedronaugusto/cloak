@@ -65,11 +65,11 @@ pub const Options = struct {
     /// Provisioned keys: the client's and the server's lookup; with `psk_only` the server holds
     /// no credential and the client verifies nothing but the key.
     client_psks: []const Psk.External = &.{},
-    server_psk: ?Psk.Lookup = null,
+    server_psk: ?*Psk.Lookup = null,
     psk_only: bool = false,
     /// Each end's key log (NSS key log lines), to know its secrets in a test.
-    client_key_log: ?Datagram.KeyLog = null,
-    server_key_log: ?Datagram.KeyLog = null,
+    client_key_log: ?*Datagram.KeyLog = null,
+    server_key_log: ?*Datagram.KeyLog = null,
     /// Encrypted Client Hello: the client's mode and the server's keys.
     client_ech: @import("../tls/handshake/Ech.zig").Mode = .off,
     server_ech: []const @import("../tls/handshake/Ech.zig").Key = &.{},

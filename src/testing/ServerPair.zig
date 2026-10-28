@@ -38,7 +38,7 @@ pub const Options = struct {
     external: bool = false,
     /// Answer signing requests with a bad signature; implies `external`.
     bad_signature: bool = false,
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// The allocator the connection uses, to measure it; the harness uses `gpa` otherwise.
     conn_gpa: ?std.mem.Allocator = null,
     /// Trust no root, so any client chain fails to verify.

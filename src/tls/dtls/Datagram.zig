@@ -121,7 +121,7 @@ pub const Options = struct {
     /// that depends on one order is found now rather than when a new extension moves it.
     permute_extensions: bool = false,
     limits: Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
     /// Connection IDs (RFC 9146; RFC 9147 section 9): null offers none; otherwise the connection
     /// ID this end receives records with, borrowed for the association's life, at most 255
@@ -165,7 +165,7 @@ pub const ServerOptions = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Provisioned keys, looked up by the offered identity: DTLS 1.3 PSK-DHE, DTLS 1.2 plain PSK
     /// when its suites are listed. With them a server needs no credential.
-    external_psk: ?Psk.Lookup = null,
+    external_psk: ?*Psk.Lookup = null,
     mtu: u16 = 1200,
     timing: Timing = .{},
     /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
@@ -174,7 +174,7 @@ pub const ServerOptions = struct {
     /// this server seals for it.
     record_size_limit: ?u16 = null,
     limits: Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
     /// Connection IDs: null answers none; otherwise the connection ID this server receives
     /// records with when the client offers connection IDs, borrowed for the association's life,

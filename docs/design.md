@@ -19,6 +19,15 @@ snapshot. Atomic reference counts control lifetime. Mutable admission and
 native completion payloads each have one owner behind one `aegis.Guarded`
 lock. There is no hidden root store, background network fetch or thread owner.
 
+What a caller supplies to be called back is an interface of function pointers only: a key log
+(`Connection.KeyLog`), a certificate codec (`certificate_compression.Codec`), a verifier
+(`Session.Custom`), a signer (`Session.Signer`), a PSK lookup (`Psk.Lookup`), a service executor
+(`services.Job.Executor`) and a kernel's installer (`offload.Installer`). Each is a field of the
+caller's own type; cloak holds a pointer to it and passes that pointer back, and the function
+recovers its owner with `@fieldParentPtr`. No context is erased to `*anyopaque` and cast back.
+The pointer is mutable, as std's `Io.Reader` and `Io.Writer` are: what the owner keeps is its own,
+and an interface a server shares across connections is called from each of them.
+
 `wire` validates hostile DER before `certificate` interprets it. `verify`
 searches bounded candidate paths, rechecks every selected path, enforces
 identity/constraints/policy/revocation and returns owned accepted-path evidence.
@@ -34,7 +43,7 @@ charged until its last handle is reaped. Phase/result mutations occur under one
 lease; path cleanup and allocator callbacks occur after that lease is released.
 Ready request hashing borrows immutable inputs outside the lock and reacquires
 and rechecks readiness before transferring the result. The caller must keep the
-allocator, budget and executor context alive through reaping. OS-private memory
+allocator, budget and executor alive through reaping. OS-private memory
 is outside the cloak allocator and is bounded separately by job admission.
 
 ## Parsing and private material

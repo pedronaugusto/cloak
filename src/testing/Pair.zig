@@ -37,7 +37,7 @@ pub const Options = struct {
     /// Suites the client offers; the peer always selects the pair's suite.
     offer: ?[]const SuiteAll = null,
     trusted_root: ?[]const u8 = null,
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// Leave signing requests open so a test can answer them itself.
     hold_sign: bool = false,
     /// The allocator behind the connection alone, to measure what it holds.

@@ -166,7 +166,7 @@ pub const Options = struct {
     transport: suites.Transport = .stream,
     parameters: []const u8 = "",
     /// Certificate decoders a client offers (RFC 8879), TLS 1.3 only.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// The client takes a server's delegated credential (RFC 9345), TLS 1.3 only: the hello's
     /// delegated_credential lists the schemes a credential's key may use.
     accept_delegated: bool = false,
