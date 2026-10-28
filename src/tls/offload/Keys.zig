@@ -62,6 +62,16 @@ sequence: u64,
 /// 2^14 bytes. The kernel must take it before the keys, or the keys stay here.
 max_payload: ?u16 = null,
 
+/// What a kernel that cannot count the records it seals reports to `offloadRecords` for the
+/// `bytes` of plaintext it has been handed under the current keys, whatever its framing:
+/// ceil(2n / 1025) full-size records. A record of k ≥ 1 bytes costs at most 2k of the AEAD
+/// bound's blocks and records (σ + q), a full-size record at least 1025 (design C9.1).
+pub fn equivalentRecords(bytes: u64) u64 {
+    const cost = 2 * @as(u128, bytes);
+    // safe: (2^65 + 1024) / 1025 is below 2^64.
+    return @intCast((cost + 1024) / 1025);
+}
+
 pub fn keyBytes(self: *const Keys) []const u8 {
     return self.key.expose()[0..self.cipher.keyLength()];
 }

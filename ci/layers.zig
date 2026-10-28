@@ -15,7 +15,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "TLS resumption", .patterns = &.{ "src/tls/resumption.zig", "src/tls/resumption/**" } },
     .{ .name = "TLS handshake", .patterns = &.{ "src/tls/handshake.zig", "src/tls/handshake/**" } },
     .{ .name = "TLS connection", .patterns = &.{ "src/tls/Connection.zig", "src/tls/connection/**", "src/tls/quic.zig", "src/tls/quic/**", "src/tls/dtls.zig", "src/tls/dtls/**" } },
-    .{ .name = "TLS kernel record layers", .patterns = &.{ "src/tls/offload.zig", "src/tls/offload/linux.zig" } },
+    .{ .name = "TLS kernel record layers", .patterns = &.{ "src/tls/offload.zig", "src/tls/offload/linux.zig", "src/tls/offload/freebsd.zig" } },
     .{ .name = "TLS stream", .patterns = &.{ "src/tls/Session.zig", "src/tls/session/**" } },
     .{ .name = "TLS module", .patterns = &.{"src/tls.zig"} },
     .{ .name = "portable probes", .patterns = &.{ "src/portable.zig", "src/portable/**" } },

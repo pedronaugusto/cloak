@@ -104,6 +104,9 @@ pub const offload = struct {
     pub const InstallError = Keys.InstallError;
     /// Linux's: keys installed on a TCP socket, record counts read back, the kernel probed.
     pub const linux = if (@import("builtin").os.tag == .linux) @import("tls/offload/linux.zig") else struct {};
+    /// FreeBSD's: keys installed once per direction on a TCP socket, the kernel probed. It
+    /// counts no records back (`Keys.equivalentRecords`).
+    pub const freebsd = if (@import("builtin").os.tag == .freebsd) @import("tls/offload/freebsd.zig") else struct {};
 };
 /// A client stream over `std.Io` readers and writers.
 pub const Session = @import("tls/Session.zig");
