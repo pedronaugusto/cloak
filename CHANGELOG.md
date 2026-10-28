@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-28
+
 ### Breaking
 
 - `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it.
