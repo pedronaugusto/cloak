@@ -1668,6 +1668,79 @@ family). TLS_TX_ZEROCOPY_RO is never set, so a file sent is sealed as it was whe
 record_size_limit is TLS_TX_MAX_PAYLOAD_LEN ("Record size limit"). Tests
 play a kernel in software (every OS) and run the real one in Linux VMs on 6.8 and 7.0.
 
+### FreeBSD (C9.1)
+
+FreeBSD 13 and later have a kernel record layer too (ktls(4)); `tls.offload.freebsd` is its
+backend, behind the same `Keys.Installer`, `offload`, `receiveControl`, `control` and
+`offloadRecords`. Read from FreeBSD's sources (sys/sys/ktls.h, sys/netinet/tcp.h,
+sys/kern/uipc_ktls.c, sys/kern/uipc_socket.c), not its version, where it differs from Linux:
+
+- **Install.** `setsockopt(IPPROTO_TCP, TCP_TXTLS_ENABLE or TCP_RXTLS_ENABLE)` with a `struct
+  tls_enable`: pointers to the key and the IV with their lengths, the cipher
+  (`CRYPTO_AES_NIST_GCM_16`, 25, or `CRYPTO_CHACHA20_POLY1305`, 41; no auth algorithm), the
+  version's two bytes and `rec_seq`, the next record's number. There is no upper-layer protocol
+  to attach. The IV is TLS 1.2 GCM's four-byte salt, or all twelve bytes (TLS 1.3, and
+  ChaCha20-Poly1305 in either version). FreeBSD has no CCM, so CCM suites stay in software;
+  its AES-CBC suites are none of cloak's. `probe` installs throwaway keys on loopback, as on
+  Linux, and the sysctls that turn it off (`kern.ipc.tls.enable`, `kern.ipc.tls.rx_enable`)
+  are its verdict, not something cloak reads.
+- **Keys once per direction.** A second install is EALREADY (`RekeyUnsupported`): FreeBSD has no
+  TLS 1.3 key update in either direction, and ktls(4) tells applications to disable rekeying.
+  A key update, sent or received, therefore ends the connection the way a Linux kernel before
+  6.14 does (8.2's NoKeyUpdate). Unlike Linux, FreeBSD's receive path does not stop at a
+  KeyUpdate: records after it are opened under the old keys and fail (EBADMSG), which the
+  connection has already ended on by then.
+- **TLS 1.2 GCM's explicit nonce.** FreeBSD seeds it at random and counts it up per record,
+  where cloak and Linux use the record's number. Both are unique per key (RFC 5288 asks only
+  that); the records differ from cloak's own, not their security. The record number in the
+  AAD starts at `rec_seq` as on Linux.
+- **Receive.** Every record, application data included, is one `recvmsg` with a
+  `TLS_GET_RECORD` control message (`struct tls_get_record`: the type, for TLS 1.3 the inner one
+  with its padding gone, the version and the plaintext length). The caller gives a record that
+  is not application data to `receiveControl`, as on Linux. It also counts the read direction's
+  records itself, exactly: one per `recvmsg`, for `offloadRecords`. EBADMSG (a tag that fails),
+  EMSGSIZE (a length out of range, or the connection closed inside a record) and EINVAL (a
+  record of another version) end the connection with the alert software would send.
+- **Send.** A record that is not application data goes out as `sendmsg` with a
+  `TLS_SET_RECORD_TYPE` control message at IPPROTO_TCP, carrying the type's one byte.
+  FreeBSD frames at most `kern.ipc.tls.maxlen` bytes a record (16384, a boot tunable), with no
+  per-connection limit. A peer's record_size_limit below 2^14 therefore keeps the write
+  direction in software (`max_payload` is refused before the keys, as Linux before 6.18 does).
+- **sendfile is not sealed when sent.** FreeBSD encrypts a file's pages later, in a ktls worker
+  thread, into new pages, as its sendfile always has, so a file changed before then goes out
+  changed. That is the opposite of Linux without TLS_TX_ZEROCOPY_RO. On FreeBSD the caller
+  must not change a file it has sent until the bytes have been acknowledged; cloak cannot see
+  it. Data written with send is copied when sent, as on Linux.
+- **No record count to read back.** TCP_TXTLS_ENABLE and TCP_RXTLS_ENABLE are write-only
+  (ENOPROTOOPT on get), and no sysctl exports a session's record number, so `Socket.records`
+  does not exist here. Reads are counted exactly (above). Writes are not: sosend frames each
+  pass by the socket buffer's free space, so a write of n bytes can become more records than
+  ceil(n / 16384), down to one byte each. What the write direction reports is open (decision
+  below).
+
+**Decision for Tycho: how the write direction is counted.** cloak's limit is 2^24 records a key
+(below RFC 8446's 2^24.5 full-size records for GCM), and the connection acts at a quarter of it
+left. Three ways for FreeBSD:
+
+1. **Records bounded by bytes** (a record carries at least one byte). This is sound, but TLS 1.2
+   ends, and TLS 1.3 ends too (no key update), after about 12 MB sent. That defeats sendfile.
+2. **Full-record equivalents from the AEAD bound** (recommended). RFC 8446's limit is a bound on
+   the blocks a key encrypts. GCM's confidentiality margin counts the plaintext blocks plus one
+   per record (σ + q), and a record of len bytes costs at most ceil(len / 16) + 1 ≤ 2·len of
+   them. So n bytes cost at most 2n, and a full record costs 1025. The caller reports
+   ceil(2n / 1025) records for n bytes handed to the kernel. That is sound for any framing and
+   keeps RFC 8446's margin. The report depends on bytes alone, so the connection ends after
+   about 6.4 GB a key whatever the framing. It needs one
+   line in `offloadRecords`' contract (a kernel that cannot count reports this bound), and the
+   same arithmetic holds for ChaCha20-Poly1305, whose bound is looser.
+3. **Read direction only.** Writes stay in software. This is sound and simple, but loses
+   sendfile, the reason to offload.
+
+Proof is the nightly's FreeBSD VM job: the real kernel's `probe`, installs, both directions on
+loopback with sendfile, a key update ending the connection, and the read direction's counts
+against the peer's. The Mac cross-compiles the backend for x86_64-freebsd; the tests that
+play a kernel run everywhere.
+
 ## ML-DSA (C10)
 
 ML-DSA-44, -65 and -87 (FIPS 204) sign certificates and TLS 1.3 CertificateVerify messages:
