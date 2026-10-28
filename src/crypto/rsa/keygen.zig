@@ -17,8 +17,8 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const Secret = aegis.secret.Secret;
-const rsa = @import("rsa.zig");
-const ct = @import("field.zig").Montgomery;
+const rsa = @import("../rsa.zig");
+const ct = @import("../field.zig").Montgomery;
 
 const addc = ct.addc;
 const subb = ct.subb;
@@ -514,5 +514,5 @@ test "a generation reaches less stack than the depth that scrubs it" {
 }
 
 test {
-    _ = @import("rsa_keygen_test.zig");
+    _ = @import("keygen_test.zig");
 }

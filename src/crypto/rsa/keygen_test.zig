@@ -1,7 +1,7 @@
 const std = @import("std");
-const keygen = @import("rsa_keygen.zig");
-const rsa = @import("rsa.zig");
-const Rsa = @import("../credentials/Rsa.zig");
+const keygen = @import("keygen.zig");
+const rsa = @import("../rsa.zig");
+const Rsa = @import("../../credentials/Rsa.zig");
 const Secret = @import("aegis").secret.Secret;
 const Managed = std.math.big.int.Managed;
 

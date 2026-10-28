@@ -28,6 +28,8 @@ const builtin = @import("builtin");
 const ct = @import("field.zig").Montgomery;
 const bignum = @import("field.zig").bignum;
 const Secret = aegis.secret.Secret;
+/// RSA key generation (FIPS 186-5 A.1.3), on these moduli.
+pub const keygen = @import("rsa/keygen.zig");
 
 const addc = ct.addc;
 const subb = ct.subb;
@@ -47,7 +49,7 @@ pub const Error = error{SigningFailed};
 const Limbs = [max_limbs]u64;
 
 /// An odd modulus with its Montgomery constants, R = 2^(64 * len). Key generation
-/// (`rsa_keygen.zig`) tests its candidates and inverts with it.
+/// (`rsa/keygen.zig`) tests its candidates and inverts with it.
 pub const Modulus = struct {
     m: Limbs = @splat(0),
     /// R^2 and R^3 mod m.
@@ -526,6 +528,7 @@ pub fn blindingForTest(key: *const PrivateKey, m: []const u8, seed: *const [seed
 
 test {
     _ = @import("rsa_test.zig");
+    _ = keygen;
 }
 
 test "F05 catalogue_kernel_carries_lengths_and_dispatch (RSA: s2n-bignum's Montgomery multiplication and squaring equal the CIOS loop, every width)" {

@@ -101,3 +101,5 @@ const sibling_references = [_]gantry.rules.ReferenceRule{
 };
 const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{ "std", "builtin", "shakedown", "aegis" } }};
 pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ sibling_references);
+// A namespace publishing a part of its own directory: the part imports the namespace back.
+pub const reexports = [_]struct { from: []const u8, to: []const u8 }{.{ .from = "src/crypto/rsa.zig", .to = "src/crypto/rsa/keygen.zig" }};

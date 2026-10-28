@@ -10,7 +10,7 @@ const Pbe = @import("credentials/Pbe.zig");
 const pkcs1 = @import("crypto/pkcs1.zig");
 const Ecdh = @import("credentials/Ecdh.zig");
 const Rsa = @import("credentials/Rsa.zig");
-const rsa_keygen = @import("crypto/rsa_keygen.zig");
+const rsa_keygen = @import("crypto/rsa.zig").keygen;
 const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
@@ -125,7 +125,7 @@ pub const GenerateError = std.mem.Allocator.Error || error{ EntropyUnavailable, 
 /// A new key of `kind` from `io.randomSecure`, built by the constructor a parsed key of its kind
 /// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed, an X25519
 /// private key (clamped where it is used, RFC 7748), an RSA
-/// key's numbers (FIPS 186-5 A.1.3, `crypto/rsa_keygen.zig`) checked as a parsed key's are.
+/// key's numbers (FIPS 186-5 A.1.3, `crypto/rsa/keygen.zig`) checked as a parsed key's are.
 pub fn generate(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
     return aegis.secret.scrubbed(parse_stack, generateKey, .{ gpa, io, kind });
 }
