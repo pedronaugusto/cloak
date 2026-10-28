@@ -4,10 +4,12 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-28
+
 ### Breaking
 
 - `certificate.PublicKey` gains `x25519` (RFC 8410's id-X25519, read and written); an exhaustive switch over it needs the case. No signature verifies under it and TLS picks no scheme for it.
-- Pins aegis 0.2 (0.2.2): the aegis types in cloak's API (`types.Seconds`, `types.Nanoseconds` and the other units, `Trust.AddFileError`'s `aegis.own.ReadFileError`) are aegis 0.2's, so a package on cloak and aegis 0.1 moves to aegis 0.2 with it.
+- Pins aegis 0.2 (0.2.3): the aegis types in cloak's API (`types.Seconds`, `types.Nanoseconds` and the other units, `Trust.AddFileError`'s `aegis.own.ReadFileError`) are aegis 0.2's, so a package on cloak and aegis 0.1 moves to aegis 0.2 with it.
 - `certificate.Algorithm.Curve` gains `p521`, and TLS's `Group` and `SignatureScheme` name secp521r1 and ecdsa_secp521r1_sha512; an exhaustive switch over `Curve` needs the case.
 
 ### Added

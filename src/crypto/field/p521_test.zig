@@ -37,8 +37,8 @@ fn checkAgainstIntegers(comptime F: type, random: std.Random) !void {
         const x = try F.fromBytes(&encode(a));
         const y = try F.fromBytes(&encode(b));
         try std.testing.expectEqual(@as(u528, a), decode(x.toBytes()));
-        try std.testing.expectEqual(@as(u528, @intCast(@as(u1042, a) * b % p)), decode(x.mul(&y).toBytes()));
-        try std.testing.expectEqual(@as(u528, @intCast(@as(u1042, a) * a % p)), decode(x.sqr().toBytes()));
+        try std.testing.expectEqual(@as(u528, @intCast((@as(u1042, a) * b) % p)), decode(x.mul(&y).toBytes()));
+        try std.testing.expectEqual(@as(u528, @intCast((@as(u1042, a) * a) % p)), decode(x.sqr().toBytes()));
         try std.testing.expectEqual(@as(u528, @intCast((@as(u522, a) + b) % p)), decode(x.add(&y).toBytes()));
         try std.testing.expectEqual(@as(u528, @intCast((@as(u522, a) + p - b) % p)), decode(x.sub(&y).toBytes()));
         try std.testing.expectEqual(@as(u528, @intCast((p - @as(u522, a)) % p)), decode(x.neg().toBytes()));

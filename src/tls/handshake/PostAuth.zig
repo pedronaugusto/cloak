@@ -179,7 +179,7 @@ const Packed = enum(u64) {
     _,
 
     fn pack(outcome: Outcome) Packed {
-        return @fromBackingInt(outcome.generation << 1 | @intFromBool(outcome.authenticated));
+        return @fromBackingInt((outcome.generation << 1) | @intFromBool(outcome.authenticated));
     }
 
     fn unpack(self: Packed) Outcome {

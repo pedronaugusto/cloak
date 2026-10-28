@@ -80,6 +80,6 @@ test "F101 catalogue_extension_count_unbounded_unique (any number of extensions 
         try std.testing.expectError(error.DuplicateExtension, count(b));
     }
     const spread = block(&bytes, 100, 0);
-    for (0..100) |i| std.mem.writeInt(u16, spread[i * 4 ..][0..2], @intCast((i % 16) << 12 | 0x123 + i / 16), .big);
+    for (0..100) |i| std.mem.writeInt(u16, spread[i * 4 ..][0..2], @intCast(((i % 16) << 12) | (0x123 + i / 16)), .big);
     try std.testing.expectEqual(@as(usize, 100), try count(spread));
 }

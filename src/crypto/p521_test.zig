@@ -24,7 +24,7 @@ const Reference = struct {
     const J = struct { x: u521, y: u521, z: u521 };
 
     fn mulmod(a: u521, c: u521) u521 {
-        return @intCast(@as(u1042, a) * c % prime);
+        return @intCast((@as(u1042, a) * c) % prime);
     }
     fn addmod(a: u521, c: u521) u521 {
         return @intCast((@as(u522, a) + c) % prime);

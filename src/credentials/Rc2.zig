@@ -92,7 +92,7 @@ fn expand(key: []const u8, effective: u10, k: *[64]u16) void {
         i -= 1;
         l[i] = pi(l[i + 1] ^ l[i + bytes]);
     }
-    for (k, 0..) |*w, j| w.* = @as(u16, l[2 * j]) | @as(u16, l[2 * j + 1]) << 8;
+    for (k, 0..) |*w, j| w.* = @as(u16, l[2 * j]) | (@as(u16, l[2 * j + 1]) << 8);
 }
 
 fn decryptBlock(k: *const [64]u16, block: [8]u8) [8]u8 {

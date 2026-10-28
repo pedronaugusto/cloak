@@ -195,8 +195,8 @@ pub fn Scheme(comptime level: Level) type {
             if (eta == 2) {
                 var i: usize = 0;
                 while (i < bytes.len) : (i += 3) {
-                    const v = @as(u32, bytes[i]) | @as(u32, bytes[i + 1]) << 8 | @as(u32, bytes[i + 2]) << 16;
-                    for (0..8) |c| bad |= over(v >> @intCast(3 * c) & 7, 2 * eta);
+                    const v = @as(u32, bytes[i]) | (@as(u32, bytes[i + 1]) << 8) | (@as(u32, bytes[i + 2]) << 16);
+                    for (0..8) |c| bad |= over((v >> @intCast(3 * c)) & 7, 2 * eta);
                 }
             } else {
                 for (bytes) |b| bad |= over(b & 15, 2 * eta) | over(b >> 4, 2 * eta);
@@ -398,7 +398,7 @@ pub fn Scheme(comptime level: Level) type {
             var index: usize = 0;
             for (hints, 0..) |row, i| {
                 for (0..n) |m| {
-                    if (row[m / 64] >> @intCast(m % 64) & 1 != 0) {
+                    if ((row[m / 64] >> @intCast(m % 64)) & 1 != 0) {
                         out[index] = @intCast(m);
                         index += 1;
                     }
@@ -437,10 +437,10 @@ pub fn Scheme(comptime level: Level) type {
             if (level == .mldsa44) {
                 // Six bits each, four coefficients in three bytes.
                 const at = m / 4 * 3;
-                const v = @as(u32, row[at]) | @as(u32, row[at + 1]) << 8 | @as(u32, row[at + 2]) << 16;
-                return v >> @intCast(6 * (m % 4)) & 63;
+                const v = @as(u32, row[at]) | (@as(u32, row[at + 1]) << 8) | (@as(u32, row[at + 2]) << 16);
+                return (v >> @intCast(6 * (m % 4))) & 63;
             }
-            return row[m / 2] >> @intCast(4 * (m % 2)) & 15;
+            return (row[m / 2] >> @intCast(4 * (m % 2))) & 15;
         }
 
         fn expandMask(p: *Poly, seed: *const [64]u8, nonce: u16) void {
@@ -470,7 +470,7 @@ pub fn Scheme(comptime level: Level) type {
                     inline for (.{ b & 15, b >> 4 }) |t| {
                         // RejBoundedPoly: a nibble is kept below 15 (eta 2, then mod 5) or 9.
                         if (i < n and t < (if (eta == 2) 15 else 9)) {
-                            const r: u32 = if (eta == 2) t - (@as(u32, t) * 205 >> 10) * 5 else t;
+                            const r: u32 = if (eta == 2) t - ((@as(u32, t) * 205) >> 10) * 5 else t;
                             p[i] = q + eta - r;
                             i += 1;
                         }
@@ -517,11 +517,11 @@ pub fn Scheme(comptime level: Level) type {
                     const p3 = centered(p[j + 3]);
                     out[i] = @truncate(p0);
                     out[i + 1] = @truncate(p0 >> 8);
-                    out[i + 2] = @truncate(p0 >> 16 | p1 << 2);
+                    out[i + 2] = @truncate((p0 >> 16) | (p1 << 2));
                     out[i + 3] = @truncate(p1 >> 6);
-                    out[i + 4] = @truncate(p1 >> 14 | p2 << 4);
+                    out[i + 4] = @truncate((p1 >> 14) | (p2 << 4));
                     out[i + 5] = @truncate(p2 >> 4);
-                    out[i + 6] = @truncate(p2 >> 12 | p3 << 6);
+                    out[i + 6] = @truncate((p2 >> 12) | (p3 << 6));
                     out[i + 7] = @truncate(p3 >> 2);
                     out[i + 8] = @truncate(p3 >> 10);
                     j += 4;
@@ -534,7 +534,7 @@ pub fn Scheme(comptime level: Level) type {
                     const p1 = centered(p[j + 1]);
                     out[i] = @truncate(p0);
                     out[i + 1] = @truncate(p0 >> 8);
-                    out[i + 2] = @truncate(p0 >> 16 | p1 << 4);
+                    out[i + 2] = @truncate((p0 >> 16) | (p1 << 4));
                     out[i + 3] = @truncate(p1 >> 4);
                     out[i + 4] = @truncate(p1 >> 12);
                     j += 2;
@@ -548,10 +548,10 @@ pub fn Scheme(comptime level: Level) type {
                 var i: usize = 0;
                 while (i < bytes.len) : (i += 9) {
                     const b = bytes[i..][0..9];
-                    p[j] = centered(@as(u32, b[0]) | @as(u32, b[1]) << 8 | (@as(u32, b[2]) & 0x3) << 16);
-                    p[j + 1] = centered(@as(u32, b[2]) >> 2 | @as(u32, b[3]) << 6 | (@as(u32, b[4]) & 0xf) << 14);
-                    p[j + 2] = centered(@as(u32, b[4]) >> 4 | @as(u32, b[5]) << 4 | (@as(u32, b[6]) & 0x3f) << 12);
-                    p[j + 3] = centered(@as(u32, b[6]) >> 6 | @as(u32, b[7]) << 2 | @as(u32, b[8]) << 10);
+                    p[j] = centered(@as(u32, b[0]) | (@as(u32, b[1]) << 8) | ((@as(u32, b[2]) & 0x3) << 16));
+                    p[j + 1] = centered((@as(u32, b[2]) >> 2) | (@as(u32, b[3]) << 6) | ((@as(u32, b[4]) & 0xf) << 14));
+                    p[j + 2] = centered((@as(u32, b[4]) >> 4) | (@as(u32, b[5]) << 4) | ((@as(u32, b[6]) & 0x3f) << 12));
+                    p[j + 3] = centered((@as(u32, b[6]) >> 6) | (@as(u32, b[7]) << 2) | (@as(u32, b[8]) << 10));
                     j += 4;
                 }
             } else {
@@ -559,8 +559,8 @@ pub fn Scheme(comptime level: Level) type {
                 var i: usize = 0;
                 while (i < bytes.len) : (i += 5) {
                     const b = bytes[i..][0..5];
-                    p[j] = centered(@as(u32, b[0]) | @as(u32, b[1]) << 8 | (@as(u32, b[2]) & 0xf) << 16);
-                    p[j + 1] = centered(@as(u32, b[2]) >> 4 | @as(u32, b[3]) << 4 | @as(u32, b[4]) << 12);
+                    p[j] = centered(@as(u32, b[0]) | (@as(u32, b[1]) << 8) | ((@as(u32, b[2]) & 0xf) << 16));
+                    p[j + 1] = centered((@as(u32, b[2]) >> 4) | (@as(u32, b[3]) << 4) | (@as(u32, b[4]) << 12));
                     j += 2;
                 }
             }
@@ -577,13 +577,13 @@ pub fn Scheme(comptime level: Level) type {
                 var j: usize = 0;
                 var i: usize = 0;
                 while (i < out.len) : (i += 3) {
-                    out[i] = @truncate(p[j] | p[j + 1] << 6);
-                    out[i + 1] = @truncate(p[j + 1] >> 2 | p[j + 2] << 4);
-                    out[i + 2] = @truncate(p[j + 2] >> 4 | p[j + 3] << 2);
+                    out[i] = @truncate(p[j] | (p[j + 1] << 6));
+                    out[i + 1] = @truncate((p[j + 1] >> 2) | (p[j + 2] << 4));
+                    out[i + 2] = @truncate((p[j + 2] >> 4) | (p[j + 3] << 2));
                     j += 4;
                 }
             } else {
-                for (out, 0..) |*b, i| b.* = @truncate(p[2 * i] | p[2 * i + 1] << 4);
+                for (out, 0..) |*b, i| b.* = @truncate(p[2 * i] | (p[2 * i + 1] << 4));
             }
         }
 
@@ -594,13 +594,13 @@ pub fn Scheme(comptime level: Level) type {
                 while (i < out.len) : (i += 3) {
                     var c: [8]u32 = undefined;
                     for (&c, 0..) |*v, m| v.* = q + eta -% p[j + m];
-                    out[i] = @truncate(c[0] | c[1] << 3 | c[2] << 6);
-                    out[i + 1] = @truncate(c[2] >> 2 | c[3] << 1 | c[4] << 4 | c[5] << 7);
-                    out[i + 2] = @truncate(c[5] >> 1 | c[6] << 2 | c[7] << 5);
+                    out[i] = @truncate(c[0] | (c[1] << 3) | (c[2] << 6));
+                    out[i + 1] = @truncate((c[2] >> 2) | (c[3] << 1) | (c[4] << 4) | (c[5] << 7));
+                    out[i + 2] = @truncate((c[5] >> 1) | (c[6] << 2) | (c[7] << 5));
                     j += 8;
                 }
             } else {
-                for (out, 0..) |*b, i| b.* = @truncate((q + eta -% p[2 * i]) | (q + eta -% p[2 * i + 1]) << 4);
+                for (out, 0..) |*b, i| b.* = @truncate((q + eta -% p[2 * i]) | ((q + eta -% p[2 * i + 1]) << 4));
             }
         }
 
@@ -609,8 +609,8 @@ pub fn Scheme(comptime level: Level) type {
                 var j: usize = 0;
                 var i: usize = 0;
                 while (i < bytes.len) : (i += 3) {
-                    const v = @as(u32, bytes[i]) | @as(u32, bytes[i + 1]) << 8 | @as(u32, bytes[i + 2]) << 16;
-                    for (0..8) |m| p[j + m] = q + eta - (v >> @intCast(3 * m) & 7);
+                    const v = @as(u32, bytes[i]) | (@as(u32, bytes[i + 1]) << 8) | (@as(u32, bytes[i + 2]) << 16);
+                    for (0..8) |m| p[j + m] = q + eta - ((v >> @intCast(3 * m)) & 7);
                     j += 8;
                 }
             } else {
@@ -644,7 +644,7 @@ fn expandA(p: *Poly, rho: *const [32]u8, row: usize, column: usize) void {
         h.squeeze(&buf);
         var j: usize = 0;
         while (j < buf.len and i < n) : (j += 3) {
-            const t = (@as(u32, buf[j]) | @as(u32, buf[j + 1]) << 8 | @as(u32, buf[j + 2]) << 16) & 0x7fffff;
+            const t = (@as(u32, buf[j]) | (@as(u32, buf[j + 1]) << 8) | (@as(u32, buf[j + 2]) << 16)) & 0x7fffff;
             if (t < q) {
                 p[i] = t;
                 i += 1;
@@ -658,9 +658,9 @@ fn packT1(p: *const Poly, out: *[320]u8) void {
     var i: usize = 0;
     while (i < out.len) : (i += 5) {
         out[i] = @truncate(p[j]);
-        out[i + 1] = @truncate(p[j] >> 8 | p[j + 1] << 2);
-        out[i + 2] = @truncate(p[j + 1] >> 6 | p[j + 2] << 4);
-        out[i + 3] = @truncate(p[j + 2] >> 4 | p[j + 3] << 6);
+        out[i + 1] = @truncate((p[j] >> 8) | (p[j + 1] << 2));
+        out[i + 2] = @truncate((p[j + 1] >> 6) | (p[j + 2] << 4));
+        out[i + 3] = @truncate((p[j + 2] >> 4) | (p[j + 3] << 6));
         out[i + 4] = @truncate(p[j + 3] >> 2);
         j += 4;
     }
@@ -671,10 +671,10 @@ fn unpackT1(bytes: *const [320]u8, p: *Poly) void {
     var i: usize = 0;
     while (i < bytes.len) : (i += 5) {
         const b = bytes[i..][0..5];
-        p[j] = (@as(u32, b[0]) | @as(u32, b[1]) << 8) & 0x3ff;
-        p[j + 1] = (@as(u32, b[1]) >> 2 | @as(u32, b[2]) << 6) & 0x3ff;
-        p[j + 2] = (@as(u32, b[2]) >> 4 | @as(u32, b[3]) << 4) & 0x3ff;
-        p[j + 3] = (@as(u32, b[3]) >> 6 | @as(u32, b[4]) << 2) & 0x3ff;
+        p[j] = (@as(u32, b[0]) | (@as(u32, b[1]) << 8)) & 0x3ff;
+        p[j + 1] = ((@as(u32, b[1]) >> 2) | (@as(u32, b[2]) << 6)) & 0x3ff;
+        p[j + 2] = ((@as(u32, b[2]) >> 4) | (@as(u32, b[3]) << 4)) & 0x3ff;
+        p[j + 3] = ((@as(u32, b[3]) >> 6) | (@as(u32, b[4]) << 2)) & 0x3ff;
         j += 4;
     }
 }
@@ -688,17 +688,17 @@ fn packT0(p: *const Poly, out: *[416]u8) void {
         var c: [8]u32 = undefined;
         for (&c, 0..) |*v, m| v.* = q + bound -% p[j + m];
         out[i] = @truncate(c[0]);
-        out[i + 1] = @truncate(c[0] >> 8 | c[1] << 5);
+        out[i + 1] = @truncate((c[0] >> 8) | (c[1] << 5));
         out[i + 2] = @truncate(c[1] >> 3);
-        out[i + 3] = @truncate(c[1] >> 11 | c[2] << 2);
-        out[i + 4] = @truncate(c[2] >> 6 | c[3] << 7);
+        out[i + 3] = @truncate((c[1] >> 11) | (c[2] << 2));
+        out[i + 4] = @truncate((c[2] >> 6) | (c[3] << 7));
         out[i + 5] = @truncate(c[3] >> 1);
-        out[i + 6] = @truncate(c[3] >> 9 | c[4] << 4);
+        out[i + 6] = @truncate((c[3] >> 9) | (c[4] << 4));
         out[i + 7] = @truncate(c[4] >> 4);
-        out[i + 8] = @truncate(c[4] >> 12 | c[5] << 1);
-        out[i + 9] = @truncate(c[5] >> 7 | c[6] << 6);
+        out[i + 8] = @truncate((c[4] >> 12) | (c[5] << 1));
+        out[i + 9] = @truncate((c[5] >> 7) | (c[6] << 6));
         out[i + 10] = @truncate(c[6] >> 2);
-        out[i + 11] = @truncate(c[6] >> 10 | c[7] << 3);
+        out[i + 11] = @truncate((c[6] >> 10) | (c[7] << 3));
         out[i + 12] = @truncate(c[7] >> 5);
         j += 8;
     }
@@ -710,14 +710,14 @@ fn unpackT0(bytes: *const [416]u8, p: *Poly) void {
     var i: usize = 0;
     while (i < bytes.len) : (i += 13) {
         const b = bytes[i..][0..13];
-        p[j] = q + bound - ((@as(u32, b[0]) | @as(u32, b[1]) << 8) & 0x1fff);
-        p[j + 1] = q + bound - ((@as(u32, b[1]) >> 5 | @as(u32, b[2]) << 3 | @as(u32, b[3]) << 11) & 0x1fff);
-        p[j + 2] = q + bound - ((@as(u32, b[3]) >> 2 | @as(u32, b[4]) << 6) & 0x1fff);
-        p[j + 3] = q + bound - ((@as(u32, b[4]) >> 7 | @as(u32, b[5]) << 1 | @as(u32, b[6]) << 9) & 0x1fff);
-        p[j + 4] = q + bound - ((@as(u32, b[6]) >> 4 | @as(u32, b[7]) << 4 | @as(u32, b[8]) << 12) & 0x1fff);
-        p[j + 5] = q + bound - ((@as(u32, b[8]) >> 1 | @as(u32, b[9]) << 7) & 0x1fff);
-        p[j + 6] = q + bound - ((@as(u32, b[9]) >> 6 | @as(u32, b[10]) << 2 | @as(u32, b[11]) << 10) & 0x1fff);
-        p[j + 7] = q + bound - ((@as(u32, b[11]) >> 3 | @as(u32, b[12]) << 5) & 0x1fff);
+        p[j] = q + bound - ((@as(u32, b[0]) | (@as(u32, b[1]) << 8)) & 0x1fff);
+        p[j + 1] = q + bound - (((@as(u32, b[1]) >> 5) | (@as(u32, b[2]) << 3) | (@as(u32, b[3]) << 11)) & 0x1fff);
+        p[j + 2] = q + bound - (((@as(u32, b[3]) >> 2) | (@as(u32, b[4]) << 6)) & 0x1fff);
+        p[j + 3] = q + bound - (((@as(u32, b[4]) >> 7) | (@as(u32, b[5]) << 1) | (@as(u32, b[6]) << 9)) & 0x1fff);
+        p[j + 4] = q + bound - (((@as(u32, b[6]) >> 4) | (@as(u32, b[7]) << 4) | (@as(u32, b[8]) << 12)) & 0x1fff);
+        p[j + 5] = q + bound - (((@as(u32, b[8]) >> 1) | (@as(u32, b[9]) << 7)) & 0x1fff);
+        p[j + 6] = q + bound - (((@as(u32, b[9]) >> 6) | (@as(u32, b[10]) << 2) | (@as(u32, b[11]) << 10)) & 0x1fff);
+        p[j + 7] = q + bound - (((@as(u32, b[11]) >> 3) | (@as(u32, b[12]) << 5)) & 0x1fff);
         j += 8;
     }
 }
@@ -794,7 +794,7 @@ fn computeZetas(comptime inverse: bool) [n]u32 {
     const inv_zeta = powMod(zeta, q - 2);
     for (0..n) |i| {
         const power = if (inverse) powMod(inv_zeta, 256 - @as(u64, @bitReverse(@as(u8, @intCast(255 - i))))) else powMod(zeta, @bitReverse(@as(u8, @intCast(i))));
-        out[i] = @intCast(power * r_mod_q % q);
+        out[i] = @intCast((power * r_mod_q) % q);
     }
     return out;
 }
@@ -804,8 +804,8 @@ fn powMod(base: u64, exponent: u64) u64 {
     var b = base % q;
     var e = exponent;
     while (e != 0) : (e >>= 1) {
-        if (e & 1 != 0) result = result * b % q;
-        b = b * b % q;
+        if (e & 1 != 0) result = (result * b) % q;
+        b = (b * b) % q;
     }
     return result;
 }
