@@ -41,10 +41,13 @@ pub const Ed25519Key = struct {
 pub const X25519Key = struct { secret: [32]u8, public: [32]u8 };
 /// An ML-DSA key: the expanded private key (FIPS 204 skEncode), checked against itself, and
 /// the public key it belongs to. The first `secretLength`/`publicLength` bytes are the key's.
+/// `seed` is the 32-byte seed the key expands from (FIPS 204's xi) when it is known: a key
+/// generated here, or read in a form that carries it; RFC 9881's PKCS#8 form is written from it.
 pub const MlDsa = struct {
     level: mldsa.Level,
     secret: [mldsa.Scheme(.mldsa87).secret_key_length]u8,
     public: [mldsa.Scheme(.mldsa87).public_key_length]u8,
+    seed: ?[mldsa.Scheme(.mldsa87).seed_length]u8,
 
     pub fn publicKey(self: *const MlDsa) []const u8 {
         return switch (self.level) {
@@ -190,11 +193,12 @@ fn pkcs8(r: *Der.Reader, options: Options, out: *Material) ParseError!void {
 }
 /// An ML-DSA private key (RFC 9881 section 6): the seed ([0], 32 bytes), the expanded key, or
 /// both, whose expanded key must be the seed's. An expanded key without its seed is checked
-/// against itself (`Scheme.publicKey`). The key is written into `out` in place.
+/// against itself (`Scheme.publicKey`). The key is written into `out` in place, its seed kept
+/// when the form carries one.
 fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     const M = mldsa.Scheme(level);
-    out.* = .{ .mldsa = .{ .level = level, .secret = @splat(0), .public = @splat(0) } };
+    out.* = .{ .mldsa = .{ .level = level, .secret = @splat(0), .public = @splat(0), .seed = null } };
     const key = &out.mldsa;
     const sk = key.secret[0..M.secret_key_length];
     const pk = key.public[0..M.public_key_length];
@@ -204,6 +208,7 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
         0x80 => {
             if (element.value.len != M.seed_length) return error.InvalidKey;
             M.keyFromSeed(element.value[0..M.seed_length], pk, sk);
+            key.seed = element.value[0..M.seed_length].*;
         },
         0x04 => {
             if (element.value.len != M.secret_key_length) return error.InvalidKey;
@@ -218,9 +223,28 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
             if (seed.len != M.seed_length or expanded.len != M.secret_key_length) return error.InvalidKey;
             M.keyFromSeed(seed[0..M.seed_length], pk, sk);
             if (!aegis.secret.equal(M.secret_key_length, sk, expanded[0..M.secret_key_length]).declassify("a seed whose key differs from the one beside it is refused")) return error.InvalidKey;
+            key.seed = seed[0..M.seed_length].*;
         },
         else => return error.InvalidKey,
     }
+}
+
+/// An ML-DSA key from its 32-byte seed (FIPS 204 ML-DSA.KeyGen_internal; RFC 9881's seed form,
+/// RFC 9964's AKP `priv`), into `out`, its public key compared with `public` when one is given.
+/// The one path every seed outside DER takes.
+pub fn mldsaFromSeed(level: mldsa.Level, seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
+    @setRuntimeSafety(true);
+    if (seed.len != 32) return error.InvalidKey;
+    var encoded_owner: Secret([34]u8) = .init(undefined);
+    defer encoded_owner.deinit();
+    const encoded = encoded_owner.exposeMut();
+    encoded[0] = 0x80;
+    encoded[1] = 32;
+    encoded[2..].* = seed[0..32].*;
+    switch (level) {
+        inline else => |tag| try mldsaKey(tag, encoded, out),
+    }
+    if (public) |p| if (!std.mem.eql(u8, p, out.mldsa.publicKey())) return error.InvalidKey;
 }
 
 fn attributes(bytes: []const u8) ParseError!void {

@@ -6,6 +6,7 @@ pub const x25519 = @import("crypto/x25519.zig");
 pub const p521 = @import("crypto/p521.zig");
 pub const field = @import("crypto/field.zig");
 pub const rsa = @import("crypto/rsa.zig");
+pub const rsa_keygen = @import("crypto/rsa_keygen.zig");
 pub const mldsa = @import("crypto/mldsa.zig");
 pub const roca = @import("crypto/roca.zig");
 pub const sha1 = @import("crypto/sha1.zig");
@@ -20,6 +21,7 @@ test {
     _ = p521;
     _ = field;
     _ = rsa;
+    _ = rsa_keygen;
     _ = pkcs1;
     _ = @import("crypto/mldsa_test.zig");
 }

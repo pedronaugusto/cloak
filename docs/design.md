@@ -150,6 +150,46 @@ on the ARMv8 SHA-1 instructions (`crypto/sha1.zig`; std's SHA-1 has no accelerat
 on the AES instructions where the target has them, the fixed-arithmetic AES elsewhere. x86_64's
 SHA extensions are not used yet: there SHA-1 is std's.
 
+## Issuing certificates
+
+`PrivateKey.generate(gpa, io, kind)` makes a key from `io.randomSecure` and builds it by the
+constructor a parsed key of its kind goes through, so a generated key gets every check a parsed
+one does: an EC scalar drawn at the order's width (P-521's top seven bits cleared) and redrawn
+when out of range, an Ed25519 or ML-DSA seed, and RSA's numbers through `Rsa.fromIntegers`.
+X25519 keys agree and sign nothing; they are not a kind.
+
+RSA generation (`crypto/rsa_keygen.zig`) is FIPS 186-5 A.1.3 for e = 65537, constant time on
+every value it keeps. Candidates of nlen/2 bits have their top two bits set (n is never a bit
+short) and are 7 mod 8, so (w - 1)/2 is odd and Miller-Rabin is one exponentiation and a
+comparison with +-1. Trial division by the odd primes below 2^12 and the check w mod e != 1
+reduce by a fixed multiply-and-correct over 32-bit chunks; Miller-Rabin takes Table B.1's rounds
+for p and q (5 at 1024 bits, 4 at 1536 and 2048: its security-strength column), bases drawn
+below the candidate's width, by the RSA modulus code's window on s2n-bignum. Only "rejected"
+leaves, about a candidate thrown away. lambda = 2 a' (b'/g) for a' = (p - 1)/2, b' = (q - 1)/2
+and g their gcd by a fixed-step binary gcd (g at or above 2^32 rejects the pair, as Go does);
+d = e^-1 mod lambda without a general inverse: t = lambda mod e, u = t^(e-2) mod e, and
+(1 + lambda (e - u))/e divided exactly limb by limb. FIPS's |p - q| and d > 2^(nlen/2) checks
+are masks. The whole runs as one scrubbed computation. Tests hold each piece against std's big
+integers, the prime verdicts against an independent Miller-Rabin on std, and generated keys of
+every size against `fromIntegers`, std's primality and std's m^d.
+
+`PrivateKey.pkcs8(gpa)` writes the key as a PrivateKeyInfo, which `parse` reads back: RSA's
+RSAPrivateKey from the numbers the key holds (d is kept for it), EC with its public point,
+Ed25519 and X25519 as RFC 8410, ML-DSA's expanded key. The DER builder (`wire/Builder.zig`)
+writes into an aegis `SecretBytes`, so a key's encoding leaves no unerased copy as it grows,
+and hands it over as one; a certificate's bytes, public, are copied out.
+
+`certificates.issue` writes and signs what a `Template` says about a subject key, self-signed
+or under an issuer's certificate (whose key must be the signing key's, a CA with keyCertSign
+when it states key usage): the issuer Name from that certificate, the AKI from its SKI (or RFC
+7093 method 1 over its key), a random 16-byte positive serial unless one is given, UTCTime
+through 2049 and GeneralizedTime from 2050, extensions in Go's order. A template a verifier would
+refuse (backwards validity, keyCertSign off a CA, a name cloak's verifier would not match, an
+extension the template owns given raw) is refused before anything is written. What `issue`
+returns it has parsed and verified under the issuer's key. `certificates.request` writes a
+PKCS#10 request; `Request.parse` reads one as hostile input and `verifyRequest` checks that its
+requester holds the key.
+
 ## Verified field arithmetic and P-521
 
 P-521's field runs formally verified code behind one interface, `crypto/field/p521.zig`:

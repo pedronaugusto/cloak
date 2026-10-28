@@ -9,6 +9,8 @@ const mldsa = @import("crypto/mldsa.zig");
 const Pbe = @import("credentials/Pbe.zig");
 const pkcs1 = @import("crypto/pkcs1.zig");
 const Ecdh = @import("credentials/Ecdh.zig");
+const Rsa = @import("credentials/Rsa.zig");
+const rsa_keygen = @import("crypto/rsa_keygen.zig");
 const aegis = @import("aegis");
 const Secret = aegis.Secret;
 const PrivateKey = @This();
@@ -79,6 +81,9 @@ pub const Components = union(enum) {
     /// An X25519 key (RFC 7748, a JWK's OKP `d` and `x`, RFC 8037): the 32-byte private key and
     /// optionally the 32-byte public key. It agrees (`agree`) and signs nothing.
     x25519: struct { d: []const u8, public: ?[]const u8 = null },
+    /// An ML-DSA key by its 32-byte seed (RFC 9964's AKP `priv`, the only private form it
+    /// defines) and optionally its encoded public key (the AKP's `pub`).
+    mldsa: struct { level: certificate.Algorithm.MlDsa, seed: []const u8, public: ?[]const u8 = null },
 };
 
 pub const ComponentsError = std.mem.Allocator.Error || error{ InvalidKey, UnsupportedKey };
@@ -99,6 +104,7 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
                 .ed25519 => |ed| parser.ed25519Key(ed.seed, ed.public, out),
                 .rsa => |rsa| parser.rsaFromIntegers(&.{ rsa.n, rsa.e, rsa.d, rsa.p, rsa.q, rsa.dp, rsa.dq, rsa.qi }, out),
                 .x25519 => |x| parser.x25519Key(x.d, x.public, out),
+                .mldsa => |m| parser.mldsaFromSeed(m.level, m.seed, m.public, out),
             }) catch |err| return switch (err) {
                 error.UnsupportedKey => error.UnsupportedKey,
                 else => error.InvalidKey,
@@ -106,6 +112,175 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
         }
     };
     return .{ .state = try .createWith(gpa, .{ gpa, components }, Build.run) };
+}
+
+/// The kinds of key `generate` makes. An X25519 key only agrees (`agree`): an ephemeral key for
+/// ECDH, as JWE's ECDH-ES draws one per message.
+pub const Kind = union(enum) { p256, p384, p521, ed25519, x25519, mldsa44, mldsa65, mldsa87, rsa: RsaSize };
+/// An RSA key's modulus, in bits: FIPS 186-5's sizes, e = 65537.
+pub const RsaSize = rsa_keygen.Size;
+/// `GenerationFailed`: the source gave no prime in 2^16 candidates, which a working one never does.
+pub const GenerateError = std.mem.Allocator.Error || error{ EntropyUnavailable, GenerationFailed };
+
+/// A new key of `kind` from `io.randomSecure`, built by the constructor a parsed key of its kind
+/// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed, an X25519
+/// private key (clamped where it is used, RFC 7748), an RSA
+/// key's numbers (FIPS 186-5 A.1.3, `crypto/rsa_keygen.zig`) checked as a parsed key's are.
+pub fn generate(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
+    return aegis.secret.scrubbed(parse_stack, generateKey, .{ gpa, io, kind });
+}
+
+fn generateKey(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!PrivateKey {
+    @setRuntimeSafety(true);
+    const Build = struct {
+        fn run(c: struct { std.mem.Allocator, std.Io, Kind }, state: *State) GenerateError!void {
+            state.* = .{ .gpa = c[0], .material = .init(undefined) };
+            errdefer state.material.deinit();
+            try generateInto(c[1], c[2], state.material.exposeMut());
+        }
+    };
+    return .{ .state = try .createWith(gpa, .{ gpa, io, kind }, Build.run) };
+}
+
+/// A new key of `kind` into `out`: the draws and the RSA integers in this frame, which `scrubbed`
+/// erases, the key in its shared block.
+fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!void {
+    @setRuntimeSafety(true);
+    var draw_owner: Secret([66]u8) = .init(undefined);
+    defer draw_owner.deinit();
+    const draw = draw_owner.exposeMut();
+    switch (kind) {
+        .p256, .p384, .p521 => {
+            const curve: parser.EcCurve, const width: usize = switch (kind) {
+                .p256 => .{ .p256, 32 },
+                .p384 => .{ .p384, 48 },
+                else => .{ .p521, 66 },
+            };
+            // A draw as wide as the order (P-521's top seven bits cleared), out of range one
+            // time in 2^32 (P-256) or far less: a retry, never a bias.
+            var attempts: usize = 0;
+            while (true) : (attempts += 1) {
+                if (attempts == 64) return error.EntropyUnavailable;
+                io.randomSecure(draw[0..width]) catch return error.EntropyUnavailable;
+                if (curve == .p521) draw[0] &= 0x01;
+                if (parser.ecKey(curve, draw[0..width], null, out)) break else |_| {}
+            }
+        },
+        .ed25519 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            // unreachable: every 32-byte seed is a key.
+            parser.ed25519Key(draw[0..32], null, out) catch unreachable;
+        },
+        .x25519 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            // unreachable: every 32 bytes are an X25519 private key.
+            parser.x25519Key(draw[0..32], null, out) catch unreachable;
+        },
+        .mldsa44, .mldsa65, .mldsa87 => {
+            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            const level: mldsa.Level = switch (kind) {
+                .mldsa44 => .mldsa44,
+                .mldsa65 => .mldsa65,
+                else => .mldsa87,
+            };
+            // unreachable: every 32-byte seed is a key.
+            parser.mldsaFromSeed(level, draw[0..32], null, out) catch unreachable;
+        },
+        .rsa => |size| {
+            var integers_owner: Secret(rsa_keygen.Integers) = .init(undefined);
+            defer integers_owner.deinit();
+            const integers = integers_owner.exposeMut();
+            const entropy: rsa_keygen.IoSource = .{ .io = io };
+            try rsa_keygen.generate(size, &entropy, integers);
+            // The validator a parsed key's numbers take; a generated key it refuses is the
+            // generator's fault, never the caller's.
+            parser.rsaFromIntegers(&integers.slices(), out) catch return error.GenerationFailed;
+        },
+    }
+}
+
+pub const Pkcs8Error = std.mem.Allocator.Error;
+
+/// The key as a DER PrivateKeyInfo (RFC 5958), what `parse` reads back, in a secret owner the
+/// caller releases (`deinit(gpa)`): RSA's RSAPrivateKey (RFC 8017), an EC key with its public
+/// point (RFC 5915), Ed25519's and X25519's private key (RFC 8410), ML-DSA's seed, or its
+/// expanded key when the seed is not known (RFC 9881).
+pub fn pkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBytes {
+    return aegis.secret.scrubbed(sign_stack, writePkcs8, .{ key, gpa });
+}
+
+fn writePkcs8(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!aegis.SecretBytes {
+    @setRuntimeSafety(true);
+    const Builder = @import("wire/Builder.zig");
+    var b = Builder.init(gpa);
+    defer b.deinit();
+    const outer = try b.open(0x30);
+    try b.small(0);
+    switch (key.state.get().material.expose().*) {
+        .rsa => |*rsa| {
+            try b.raw("\x30\x0d\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01\x05\x00");
+            const wrapped = try b.open(0x04);
+            const sequence = try b.open(0x30);
+            try b.small(0);
+            var numbers_owner: Secret(Rsa.Numbers) = .init(undefined);
+            defer numbers_owner.deinit();
+            const numbers = numbers_owner.exposeMut();
+            numbers.of(rsa);
+            for (numbers.slices()) |number| try b.unsigned(number);
+            try b.close(sequence);
+            try b.close(wrapped);
+        },
+        inline .p256, .p384, .p521 => |*pair, tag| {
+            const algorithm = try b.open(0x30);
+            try b.element(0x06, "\x2a\x86\x48\xce\x3d\x02\x01");
+            try b.element(0x06, switch (tag) {
+                .p256 => "\x2a\x86\x48\xce\x3d\x03\x01\x07",
+                .p384 => "\x2b\x81\x04\x00\x22",
+                else => "\x2b\x81\x04\x00\x23",
+            });
+            try b.close(algorithm);
+            const wrapped = try b.open(0x04);
+            const ec = try b.open(0x30);
+            try b.small(1);
+            try b.element(0x04, &pair.secret);
+            const point = try b.open(0xa1);
+            try b.bits(&pair.public);
+            try b.close(point);
+            try b.close(ec);
+            try b.close(wrapped);
+        },
+        .ed25519 => |*pair| {
+            try b.raw("\x30\x05\x06\x03\x2b\x65\x70");
+            const wrapped = try b.open(0x04);
+            try b.element(0x04, pair.secret[0..32]);
+            try b.close(wrapped);
+        },
+        .x25519 => |*pair| {
+            try b.raw("\x30\x05\x06\x03\x2b\x65\x6e");
+            const wrapped = try b.open(0x04);
+            try b.element(0x04, &pair.secret);
+            try b.close(wrapped);
+        },
+        .mldsa => |*k| {
+            const algorithm = try b.open(0x30);
+            try b.element(0x06, "\x60\x86\x48\x01\x65\x03\x04\x03" ++ switch (k.level) {
+                .mldsa44 => "\x11",
+                .mldsa65 => "\x12",
+                .mldsa87 => "\x13",
+            });
+            try b.close(algorithm);
+            // RFC 9881's seed form when the seed is known, the expanded key when it is not.
+            const wrapped = try b.open(0x04);
+            if (k.seed) |*seed| {
+                try b.element(0x80, seed);
+            } else switch (k.level) {
+                inline else => |level| try b.element(0x04, k.secret[0..mldsa.Scheme(level).secret_key_length]),
+            }
+            try b.close(wrapped);
+        },
+    }
+    try b.close(outer);
+    return b.take();
 }
 
 pub fn isEncrypted(bytes: []const u8) bool {
@@ -403,6 +578,7 @@ fn release(state: *State) void {
 test {
     @setRuntimeSafety(true);
     _ = @import("credentials/Key_test.zig");
+    _ = @import("credentials/Generate_test.zig");
     _ = @import("credentials/Agree_test.zig");
 }
 
@@ -411,7 +587,17 @@ fn parseReleased(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOption
     key.deinit();
 }
 
-test "a parse, a signature and a decryption reach less stack than the depths that erase it" {
+fn generateReleased(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!void {
+    const key = try generateKey(gpa, io, kind);
+    key.deinit();
+}
+
+fn pkcs8Released(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!void {
+    var der = try writePkcs8(key, gpa);
+    der.deinit(gpa);
+}
+
+test "a parse, a generation, a signature, a decryption and a PKCS#8 reach less stack than the depths that erase it" {
     const gpa = std.testing.allocator;
     const keys = [_][]const u8{
         @embedFile("crypto/testdata/rsa4096.der"),
@@ -470,7 +656,11 @@ test "a parse, a signature and a decryption reach less stack than the depths tha
             };
             signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, signPrehashed, .{ key, algorithm, digest[0..length], noise[0..key.noiseLength()], &out }));
         }
+        signing = @max(signing, aegis.secret.stackReach(4 * sign_stack, pkcs8Released, .{ key, gpa }));
     }
+    // A generation of each kind, RSA's at its widest, builds its key in the parse's depth.
+    const kinds = [_]Kind{ .p256, .p384, .p521, .ed25519, .mldsa44, .mldsa87, .{ .rsa = .@"4096" } };
+    for (kinds) |kind| parsing = @max(parsing, aegis.secret.stackReach(4 * parse_stack, generateReleased, .{ gpa, std.testing.io, kind }));
     if (parsing >= parse_stack or signing >= sign_stack or decrypting >= sign_stack or decrypting == 0) {
         std.debug.print("stack reached: parsing {d} of {d}, signing {d} and decrypting {d} of {d}\n", .{ parsing, parse_stack, signing, decrypting, sign_stack });
         return error.TestUnexpectedResult;
