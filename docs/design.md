@@ -1167,7 +1167,8 @@ certificate is compliant by its embedded SCTs (over the precertificate: the TBS 
 extension removed and re-encoded, and the issuer key's hash, the issuer being the path's next
 certificate) from `embedded` distinct logs, `embedded_long` when it is valid longer than
 `long_lifetime`, one of them not retired; or by SCTs delivered beside it (over the certificate
-itself: the TLS extension, a caller's list) from `delivered` distinct logs none retired; either
+itself: the TLS extension, a caller's list, the leaf's OCSP response) from `delivered` distinct
+logs none retired; either
 way from `operators` distinct operators. The defaults are the counts Chrome's and Apple's policies
 ask of public certificates. Log lists, their distribution and freshness, inclusion proofs and
 gossip are upstream: cloak checks what it is given.
@@ -1186,7 +1187,15 @@ both versions; the server's list comes in the leaf's CertificateEntry (TLS 1.3; 
 illegal_parameter, unasked unsupported_extension, empty decode_error) or in the ServerHello
 (TLS 1.2), and joins the request after the caller's lists. A server's `Credential.scts` is a
 list for its certificate as it is, checked for framing when the server is made, sent only to a
-client that asks, never with a raw key. SCTs inside a stapled OCSP response are not read.
+client that asks, never with a raw key.
+
+An OCSP response for the leaf may carry its SCT list too (RFC 6962 section 3.3, the
+singleExtension 1.3.6.1.4.1.11129.2.4.5 in an OCTET STRING, as in a certificate): revocation
+reads it from the first response that validates for the leaf, the issuer's or a delegated
+responder's, and hands it to the transparency check beside the delivered lists, outside
+`max_lists` (one per path). It counts only when revocation reads the response: with revocation
+`.off` (when a TLS client asks for no staple either) it is never read, and a response that fails
+is no evidence of either kind. The request digest covers the OCSP evidence, so a receipt binds it.
 
 ## OCSP stapling
 

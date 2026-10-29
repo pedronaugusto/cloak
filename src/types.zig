@@ -70,8 +70,9 @@ pub const Evidence = struct {
     crls: []const []const u8 = &.{},
     ocsp: []const []const u8 = &.{},
     /// SignedCertificateTimestampLists delivered beside the certificate (RFC 6962 section 3.3: a
-    /// TLS extension, an OCSP response's), each over the leaf itself; at most
-    /// `TransparencyPolicy.max_lists`. A TLS client adds the one its peer sent.
+    /// TLS extension, or one the caller took from elsewhere), each over the leaf itself; at most
+    /// `TransparencyPolicy.max_lists`. A TLS client adds the one its peer sent. The list an OCSP
+    /// response in `ocsp` carries for the leaf is read from it, whenever revocation reads it.
     scts: []const []const u8 = &.{},
 };
 pub const TransparencyStatus = enum { unchecked, compliant };

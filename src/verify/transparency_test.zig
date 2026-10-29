@@ -30,6 +30,10 @@ const pki = struct {
     const log_b = @embedFile("../testing/pki/ct_log_b.spki.der");
     const log_c = @embedFile("../testing/pki/ct_log_c.spki.der");
     const log_d = @embedFile("../testing/pki/ct_log_d.spki.der");
+    const ocsp_ca = @embedFile("../testing/pki/ct_ocsp_ca.der");
+    const ocsp_leaf = @embedFile("../testing/pki/ct_ocsp_leaf.der");
+    const ocsp_stapled = @embedFile("../testing/pki/ct_ocsp_leaf.ocsp");
+    const ocsp_bare = @embedFile("../testing/pki/ct_ocsp_leaf_bare.ocsp");
     /// The SCTs were issued an hour after 2026-12-01T00:00:00Z, when the certificates start.
     const issued_ms: i64 = 1_796_086_800_000;
     const now_ms: i64 = 1_800_000_000_000;
@@ -122,18 +126,18 @@ test "F88 a public certificate's SCTs from two production logs meet the default 
     // 2026-10-17T00:00:00Z, within the certificate's validity.
     const now_ms: i64 = 1_792_195_200_000;
     var budget: usize = 16;
-    const result = try ct.check(gpa, &.{ leaf, issuer }, now_ms, &.{ .logs = &production }, &.{}, &budget);
+    const result = try ct.check(gpa, &.{ leaf, issuer }, now_ms, &.{ .logs = &production }, &.{}, null, &budget);
     try std.testing.expectEqual(.compliant, result.status);
     try std.testing.expectEqual(14, budget);
     // One operator is not two.
     budget = 16;
-    try std.testing.expectError(error.MissingTransparency, ct.check(gpa, &.{ leaf, issuer }, now_ms, &.{ .logs = production[0..1], .operators = 2 }, &.{}, &budget));
+    try std.testing.expectError(error.MissingTransparency, ct.check(gpa, &.{ leaf, issuer }, now_ms, &.{ .logs = production[0..1], .operators = 2 }, &.{}, null, &budget));
 }
 
 fn checkLeaf(der: []const u8, policy: T.TransparencyPolicy, scts: []const []const u8, now_ms: i64) ct.Error!ct.Result {
     const path = [_]C.Certificate{ C.parse(der, .{}) catch unreachable, C.parse(pki.ca, .{}) catch unreachable };
     var budget: usize = 64;
-    return ct.check(gpa, &path, now_ms, &policy, scts, &budget);
+    return ct.check(gpa, &path, now_ms, &policy, scts, null, &budget);
 }
 
 const required: T.TransparencyPolicy = .{ .logs = &logs };
@@ -231,7 +235,7 @@ test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (retired logs 
     try std.testing.expectError(error.InvalidTransparencyPolicy, checkLeaf(pki.leaf, .{ .logs = &bad_key }, &.{}, pki.now_ms));
     var budget: usize = 1;
     const path = [_]C.Certificate{ try C.parse(pki.leaf, .{}), try C.parse(pki.ca, .{}) };
-    try std.testing.expectEqual(.unchecked, (try ct.check(gpa, &path, pki.now_ms, null, &.{"garbage"}, &budget)).status);
+    try std.testing.expectEqual(.unchecked, (try ct.check(gpa, &path, pki.now_ms, null, &.{"garbage"}, null, &budget)).status);
 }
 
 test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (lengths: truncated lists, empty SCTs, other versions, no read past the end)" {
@@ -280,7 +284,7 @@ test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (lengths: trun
     try std.testing.expectError(error.VerificationLimit, checkLeaf(pki.plain, required, &too_many, pki.now_ms));
     const path = [_]C.Certificate{ try C.parse(pki.plain, .{}), try C.parse(pki.ca, .{}) };
     var budget: usize = 1;
-    try std.testing.expectError(error.VerificationLimit, ct.check(gpa, &path, pki.now_ms, &required, &.{list}, &budget));
+    try std.testing.expectError(error.VerificationLimit, ct.check(gpa, &path, pki.now_ms, &required, &.{list}, null, &budget));
 }
 
 test "the precertificate is the certificate's TBS without the SCT list, re-encoded" {
@@ -336,4 +340,27 @@ test "F88 catalogue_ct_sct_lengths_wrong_entry_and_log_generation (the verifier:
     var unchecked = try Verifier.verify(gpa, off, &.{pki.ca});
     defer unchecked.deinit();
     try std.testing.expectEqual(.unchecked, unchecked.transparency);
+}
+
+test "F88 SCTs in the leaf's stapled OCSP response count, read only with a response revocation validated" {
+    const Verifier = @import("Verifier.zig");
+    const now: std.Io.Timestamp = .fromNanoseconds(@as(i96, pki.now_ms) * std.time.ns_per_ms);
+    const base: T.Request = .{ .chain = &.{pki.ocsp_leaf}, .identity = .{ .dns = "example.com" }, .time = now, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .policy = .{ .transparency = &required }, .evidence = .{ .ocsp = &.{pki.ocsp_stapled} } };
+    var receipt = try Verifier.verify(gpa, base, &.{pki.ocsp_ca});
+    defer receipt.deinit();
+    try std.testing.expectEqual(.compliant, receipt.transparency);
+    try std.testing.expectEqual(.good, receipt.revocation);
+    // The same response without the list, or with revocation off (the response unread), counts none.
+    var bare = base;
+    bare.evidence = .{ .ocsp = &.{pki.ocsp_bare} };
+    try std.testing.expectError(error.MissingTransparency, Verifier.verify(gpa, bare, &.{pki.ocsp_ca}));
+    var unread = base;
+    unread.policy.revocation = .{ .mode = .off };
+    try std.testing.expectError(error.MissingTransparency, Verifier.verify(gpa, unread, &.{pki.ocsp_ca}));
+    // A response whose signature fails is no evidence, of revocation or of transparency.
+    var forged: [pki.ocsp_stapled.len]u8 = pki.ocsp_stapled.*;
+    forged[forged.len - 1] ^= 1;
+    var invalid = base;
+    invalid.evidence = .{ .ocsp = &.{&forged} };
+    try std.testing.expectError(error.InvalidRevocation, Verifier.verify(gpa, invalid, &.{pki.ocsp_ca}));
 }

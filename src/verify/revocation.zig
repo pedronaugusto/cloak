@@ -6,8 +6,18 @@ const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
 const signatures = @import("signature.zig");
 pub const Error = C.ParseError || signatures.Error || error{ Revoked, MissingRevocation, UnknownRevocation, InvalidRevocation, StaleRevocation, UnsupportedRevocation, VerificationLimit, NotApplicableRevocation };
-pub const Result = struct { status: T.RevocationStatus, expires: ?i64 = null };
-const EvidenceResult = struct { covered: usize, mask: u16 = 0, expires: i64 };
+pub const Result = struct {
+    status: T.RevocationStatus,
+    expires: ?i64 = null,
+    /// The SignedCertificateTimestampList the first OCSP response for the leaf carries (RFC 6962
+    /// section 3.3, a singleExtension), borrowed from the evidence: read with the response, so
+    /// only when the response is (any mode but `.off`), and only from one that validated.
+    scts: ?[]const u8 = null,
+};
+const EvidenceResult = struct { covered: usize, mask: u16 = 0, expires: i64, scts: ?[]const u8 = null };
+/// An OCSP singleExtension carrying the SCTs of the certificate it answers for
+/// (1.3.6.1.4.1.11129.2.4.5, RFC 6962 section 3.3).
+const sct_list_oid = "\x2b\x06\x01\x04\x01\xd6\x79\x02\x04\x05";
 pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, evidence: T.Evidence) Error!Result {
     @setRuntimeSafety(true);
     if (policy.mode == .off) return .{ .status = .unchecked };
@@ -15,6 +25,7 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
     var covered: [16]bool = @splat(false);
     var stapled = false;
     var expires: ?i64 = null;
+    var scts: ?[]const u8 = null;
     var bytes: usize = 0;
     for (evidence.crls) |der| {
         bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.VerificationLimit).raw();
@@ -34,6 +45,7 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
         const result = try ocsp(path, now, policy, evidence, der);
         covered[result.covered] = true;
         stapled = stapled or result.covered == 0;
+        if (scts == null) scts = result.scts;
         expires = if (expires) |e| @min(e, result.expires) else result.expires;
     }
     if (path[0].extension("\x2b\x06\x01\x05\x05\x07\x01\x18")) |feature| {
@@ -47,7 +59,7 @@ pub fn check(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, 
     if (policy.mode == .required) for (covered[0..count]) |ok| {
         if (!ok) return error.MissingRevocation;
     };
-    return .{ .status = if (expires != null) .good else .not_present, .expires = expires };
+    return .{ .status = if (expires != null) .good else .not_present, .expires = expires, .scts = scts };
 }
 fn fresh(this: i64, next: ?i64, now: i64, policy: T.RevocationPolicy) Error!i64 {
     @setRuntimeSafety(true);
@@ -253,7 +265,7 @@ fn ocsp(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, evide
     const produced = try C.Certificate.evidenceTime(try data.expect(0x18));
     if (produced > now +| skewSeconds(policy)) return error.StaleRevocation;
     const responses = (try data.expect(0x30)).value;
-    if (data.peek() == 0xa1) try ocspExtensions((try data.next()).value);
+    if (data.peek() == 0xa1) _ = try ocspExtensions((try data.next()).value);
     try data.finish();
     var selected = try responsesFor(path, responses, now, policy, produced);
     const issuer = &path[selected.covered + 1];
@@ -289,7 +301,7 @@ fn responsesFor(path: []const C.Certificate, responses: []const u8, now: i64, po
         if ((status.tag == 0x80 or status.tag == 0x82) and status.value.len != 0) return error.InvalidRevocation;
         const this = try C.Certificate.evidenceTime(try single.expect(0x18));
         const next: ?i64 = if (single.peek() == 0xa0) try C.Certificate.evidenceTime(try Der.single((try single.next()).value, 0x18)) else null;
-        if (single.peek() == 0xa1) try ocspExtensions((try single.next()).value);
+        const scts = if (single.peek() == 0xa1) try ocspExtensions((try single.next()).value) else null;
         try single.finish();
         const expires = try fresh(this, next, now, policy);
         if (produced < this -| skewSeconds(policy) or produced > expires +| skewSeconds(policy)) return error.StaleRevocation;
@@ -298,7 +310,7 @@ fn responsesFor(path: []const C.Certificate, responses: []const u8, now: i64, po
             if (status.tag == 0xa1) return error.Revoked;
             if (status.tag == 0x82) return error.UnknownRevocation;
             if (selected != null) return error.InvalidRevocation;
-            selected = .{ .covered = index, .expires = deadline(expires, policy) };
+            selected = .{ .covered = index, .expires = deadline(expires, policy), .scts = if (index == 0) scts else null };
         }
     }
     return selected orelse error.InvalidRevocation;
@@ -379,16 +391,21 @@ fn responderCrl(cert: *const C.Certificate, issuer: *const C.Certificate, now: i
     }
     return expiry orelse error.MissingRevocation;
 }
-fn ocspExtensions(encoded: []const u8) Error!void {
+/// Checks OCSP extensions (none critical, none twice) and returns the SCT list one carries.
+fn ocspExtensions(encoded: []const u8) Error!?[]const u8 {
     @setRuntimeSafety(true);
     var r = try C.Extensions.sequence(encoded);
     var ids: [64][]const u8 = undefined;
     var count: usize = 0;
+    var scts: ?[]const u8 = null;
     while (!r.empty()) {
         const e = try extension(try r.expect(0x30));
         try unique(&ids, &count, e.oid);
         if (e.critical) return error.UnsupportedRevocation;
+        // The list, a TLS structure, inside an OCTET STRING, as in a certificate.
+        if (std.mem.eql(u8, e.oid, sct_list_oid)) scts = (try Der.single(e.value, 4)).value;
     }
+    return scts;
 }
 test {
     _ = @import("revocation_test.zig");

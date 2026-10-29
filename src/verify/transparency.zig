@@ -85,7 +85,9 @@ pub const List = struct {
 
 /// Checks `path`'s SCTs, those embedded in its leaf and those delivered beside it (`scts`),
 /// against `policy` at `now_ms`. Each signature verified spends one of `signatures`.
-pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, required: ?*const T.TransparencyPolicy, scts: []const []const u8, signatures_left: *usize) Error!Result {
+/// `scts` are the lists delivered beside the certificate (`Evidence.scts`); `stapled` is the one a
+/// validated OCSP response for the leaf carries (`revocation.Result.scts`). Both sign the leaf.
+pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, required: ?*const T.TransparencyPolicy, scts: []const []const u8, stapled: ?[]const u8, signatures_left: *usize) Error!Result {
     @setRuntimeSafety(true);
     const policy = (required orelse return .{ .status = .unchecked }).*;
     try validate(policy);
@@ -121,13 +123,14 @@ pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, r
     };
     // Delivered SCTs sign the certificate as it is, and count only from logs not retired.
     var tally: Tally = .{};
-    for (scts) |bytes| {
+    const from_ocsp: []const []const u8 = if (stapled) |*bytes| bytes[0..1] else &.{};
+    for ([_][]const []const u8{ scts, from_ocsp }) |lists| for (lists) |bytes| {
         var list = try List.init(bytes);
         while (list.next()) |sct| {
             try context.count(&tally, sct, .{ .x509 = leaf.der }, false);
             if (tally.meets(policy, policy.delivered)) return compliant(expires);
         }
-    }
+    };
     return error.MissingTransparency;
 }
 
