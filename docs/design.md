@@ -60,9 +60,9 @@ and DER buffers clear before release. The published aegis SecretBytes owner
 retains full allocation capacity and calls rawFree after erasure, so the
 allocator hook observes zeros in every mode.
 
-Private P-256/P-384 base multiplication uses a local subset of Zig 0.17.0's
-complete a=-3 point formulas and fixed-width Montgomery arithmetic (Zig contributors'
-MIT notice in LICENSE). Each arithmetic truncation retains a low word or carry. Products
+Private P-256/P-384/P-521 multiplication is cloak's own Jacobian a=-3 arithmetic in
+`crypto/weierstrass.zig`, over s2n-bignum's or fiat-crypto's verified field code, with
+the scalars on fixed-width Montgomery arithmetic. Each arithmetic truncation retains a low word or carry. Products
 use double-width arithmetic with a documented overflow bound; REDC needs
 one masked subtraction because canonical inputs produce a result below 2p.
 Runtime safety remains enabled; fixed public limb indices and proven
