@@ -95,3 +95,51 @@ test "a request truncated anywhere is refused" {
     _ = try Request.parse(der, .{});
     for (0..der.len) |len| try std.testing.expect(std.meta.isError(Request.parse(der[0..len], .{})));
 }
+
+const dir = "testdata/";
+const written_elsewhere = [_][]const u8{
+    @embedFile(dir ++ "openssl.p256.csr.der"),
+    @embedFile(dir ++ "openssl.ed25519.csr.der"),
+    @embedFile(dir ++ "openssl.rsa2048-pss.csr.der"),
+    @embedFile(dir ++ "openssl.mldsa44.csr.der"),
+    @embedFile(dir ++ "go.p521.csr.der"),
+    @embedFile(dir ++ "go.ed25519.csr.der"),
+    @embedFile(dir ++ "go.rsa2048.csr.der"),
+    @embedFile(dir ++ "go.mldsa65.csr.der"),
+};
+
+test "requests OpenSSL and Go wrote are read, their signatures verified and their names read back" {
+    const Issue = @import("../Issue.zig");
+    for (written_elsewhere) |der| {
+        const request = try Request.parse(der, .{});
+        try Issue.verifyRequest(&request);
+        // OpenSSL writes the common name as a UTF8String, Go as a PrintableString.
+        try std.testing.expect(std.mem.endsWith(u8, request.subject, "api.example.com"));
+        try std.testing.expectEqualSlices(u8, "\x30\x11\x82\x0fapi.example.com", request.extension(san).?.value);
+        // A signature byte changed is a request its key did not sign.
+        const flipped = try gpa.dupe(u8, der);
+        defer gpa.free(flipped);
+        flipped[flipped.len - 1] ^= 1;
+        try std.testing.expect(std.meta.isError(Issue.verifyRequest(&try Request.parse(flipped, .{}))));
+    }
+}
+
+test "fuzz certification request parsing and signature checks" {
+    const shakedown = @import("shakedown");
+    try shakedown.check(gpa, {}, struct {
+        fn run(_: void, case: *shakedown.Case) !void {
+            const inputs = @import("../testing/inputs.zig");
+            var buffer: [8192]u8 = undefined;
+            const input = inputs.draw(case, &buffer, &written_elsewhere, 64);
+            const request = Request.parse(input, .{}) catch return;
+            // What it read lies in the input, and every part is the request's own.
+            for ([_][]const u8{ request.der, request.info, request.subject, request.spki, request.signature }) |part| {
+                try std.testing.expect(@intFromPtr(part.ptr) >= @intFromPtr(input.ptr));
+                try std.testing.expect(@intFromPtr(part.ptr) + part.len <= @intFromPtr(input.ptr) + input.len);
+            }
+            try std.testing.expect(request.extension_count <= Request.max_extensions);
+            // A mutated request still parses or not, and its signature holds or not; neither crashes.
+            if (@import("../Issue.zig").verifyRequest(&request)) |_| {} else |_| {}
+        }
+    }.run, .{ .cases = 256 });
+}
