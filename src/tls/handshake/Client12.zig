@@ -229,7 +229,7 @@ fn onServerKeyExchange(self: anytype, msg: []const u8, epoch: Epoch, boundary: b
     if (self.options.keep_peer_leaf) try Possession.keepLeaf(self.gpa, &self.peer_leaf, scratch.chain[0], scratch.peer_raw);
     self.group = ske.group;
     @memcpy(scratch.server_public[0..ske.public.len], ske.public);
-    // safe: a classical public value is at most 133 bytes (P-521's), checked by the parser.
+    // A classical public value is at most 133 bytes (P-521's), checked by the parser.
     scratch.server_public_len = @intCast(ske.public.len);
 }
 
@@ -258,7 +258,7 @@ fn onCertificateRequest(self: anytype, msg: []const u8, epoch: Epoch, boundary: 
     scratch.cr_named = self.namedCredentials(parsed.authorities);
     const keep = @min(parsed.schemes.len, scratch.cr_schemes.len) & ~@as(usize, 1);
     @memcpy(scratch.cr_schemes[0..keep], parsed.schemes[0..keep]);
-    // safe: at most 1024 bytes are kept.
+    // At most 1024 bytes are kept.
     scratch.cr_len = @intCast(keep);
 }
 
@@ -296,7 +296,7 @@ fn chooseCredential(self: anytype) ?Hello.SignatureScheme {
         if (pick.offer(i, scheme, Authorities.marked(scratch.cr_named, i))) break;
     }
     const chosen = pick.chosen() orelse return null;
-    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
+    self.credential = @intCast(chosen.index); // at most 32 credentials
     return chosen.value;
 }
 
@@ -367,7 +367,7 @@ fn sendFlight(self: anytype) Error!void {
         var digest_buf: [Transcripts.max_digest]u8 = undefined;
         const digest = scratch.transcripts.digestOf(&digest_buf, Possession.transcriptHash12(chosen).?);
         @memcpy(scratch.sign_content.exposeMut()[0..digest.len], digest);
-        // safe: a transcript digest is at most 48 bytes.
+        // A transcript digest is at most 48 bytes.
         scratch.sign_content_len = @intCast(digest.len);
         const identity = self.kept.credentials[self.credential.?].auth.identity;
         // Cloak signs for a key it holds; a key held elsewhere signs the digest for the caller.

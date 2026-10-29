@@ -502,7 +502,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     const offered = peerSchemes(options.peer_schemes, if (!tls12) verifySchemes(options) else if (tls13) &schemes_both else &schemes12, &taken);
     var signature_bytes: [4 + schemes_both.len * 2]u8 = undefined;
     var s: Writer = .{ .bytes = &signature_bytes };
-    // safe: at most fifteen two-byte schemes, and GREASE one more.
+    // At most fifteen two-byte schemes, and GREASE one more.
     try s.int(u16, @intCast((offered.len + @intFromBool(options.grease != null)) * 2));
     if (options.grease) |grease| try s.int(u16, grease.scheme);
     for (offered) |scheme| try s.int(u16, @backingInt(scheme));
@@ -521,7 +521,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
         var a: Writer = .{ .bytes = &alpn };
         try a.int(u16, 0);
         for (options.alpn) |protocol| try a.vector(u8, protocol);
-        // safe: 32 entries of at most 256 bytes each fit u16.
+        // 32 entries of at most 256 bytes each fit u16.
         std.mem.writeInt(u16, alpn[0..2], @intCast(a.pos - 2), .big);
         try extension(&w, 16, alpn[0..a.pos]);
     }
@@ -537,9 +537,9 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
             try w.int(u16, @backingInt(share.group));
             try w.vector(u16, share.bytes);
         }
-        // safe: two shares, the largest 1216 bytes, are below the u16 extension bound.
+        // Two shares, the largest 1216 bytes, are below the u16 extension bound.
         std.mem.writeInt(u16, out[share_at + 2 ..][0..2], @intCast(w.pos - share_at - 4), .big);
-        // safe: the key_share vector is two bytes shorter than the bounded extension.
+        // The key_share vector is two bytes shorter than the bounded extension.
         std.mem.writeInt(u16, out[share_at + 4 ..][0..2], @intCast(w.pos - share_at - 6), .big);
     }
     if (options.transport == .quic) try extension(&w, 57, options.parameters);
@@ -557,9 +557,9 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
     } else if (tls13 and resumption.offers.len != 0) try offeredPsk(&w, resumption);
     if (options.permutation) |p| try permute(out[ext_at + 2 .. w.pos], p, options.grease, datagram and cookie.len != 0, form);
     if (w.pos - ext_at - 2 > 65535 or w.pos - 4 > 128 * 1024) return error.InvalidOptions;
-    // safe: total extension and handshake lengths have just been bounded.
+    // Total extension and handshake lengths have just been bounded.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
-    // safe: bounded to 128 KiB, below the u24 handshake length limit.
+    // Bounded to 128 KiB, below the u24 handshake length limit.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
@@ -567,7 +567,7 @@ pub fn clientForm(out: []u8, random: *const [32]u8, session_in: []const u8, lega
 fn cipherSuites(w: *Writer, options: Options, tls12: bool, tls13: bool) EncodeError!void {
     var offered: usize = @intFromBool(options.grease != null);
     for (options.suites) |suite| offered += @intFromBool(if (suite.version() == .tls13) tls13 else tls12);
-    // safe: the allowlist has at most nine two-byte suite identifiers, and GREASE one more.
+    // The allowlist has at most nine two-byte suite identifiers, and GREASE one more.
     try w.int(u16, @intCast(offered * 2));
     if (options.grease) |grease| try w.int(u16, grease.suite);
     for (options.suites) |suite| if (if (suite.version() == .tls13) tls13 else tls12) try w.int(u16, @backingInt(suite));
@@ -611,7 +611,7 @@ fn evidenceExtensions(w: *Writer, options: Options, tls13: bool) EncodeError!voi
 fn delegatedExtension(w: *Writer, require_pq_auth: bool) EncodeError!void {
     const list = credentialSchemes(require_pq_auth);
     try w.int(u16, Messages.delegated_credential);
-    // safe: bounded by the scheme table.
+    // Bounded by the scheme table.
     try w.int(u16, @intCast(2 + list.len * 2));
     try w.int(u16, @intCast(list.len * 2));
     for (list) |scheme| try w.int(u16, @backingInt(scheme));
@@ -624,7 +624,7 @@ fn certificateTypes(w: *Writer, options: Options) EncodeError!void {
     const offered = options.client_types.list();
     if (offered.len != 0) {
         var body: [3]u8 = undefined;
-        body[0] = @intCast(offered.len); // safe: at most two types
+        body[0] = @intCast(offered.len); // at most two types
         @memcpy(body[1..][0..offered.len], offered);
         try extension(w, client_certificate_type, body[0 .. 1 + offered.len]);
     }
@@ -637,7 +637,7 @@ fn authoritiesExtension(w: *Writer, names: []const []const u8) EncodeError!void 
     @setRuntimeSafety(true);
     const length = Authorities.wireLength(names);
     try w.int(u16, Authorities.extension);
-    // safe: `Authorities.validate` bounds the names to `max_bytes`.
+    // `Authorities.validate` bounds the names to `max_bytes`.
     try w.int(u16, @intCast(2 + length));
     try w.int(u16, @intCast(length));
     try Authorities.write(w, names);
@@ -648,7 +648,7 @@ fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
     @setRuntimeSafety(true);
     if (options.connection_id) |cid| {
         try w.int(u16, connection_id_extension);
-        // safe: validate bounds a connection ID at 255 bytes.
+        // Validate bounds a connection ID at 255 bytes.
         try w.int(u16, @intCast(cid.len + 1));
         try w.vector(u8, cid);
     }
@@ -656,7 +656,7 @@ fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
         // UseSRTPData: the profiles in preference order and an empty srtp_mki: cloak keys no MKI
         // (RFC 5764 section 4.1.1).
         try w.int(u16, srtp_extension);
-        // safe: at most four distinct profiles.
+        // At most four distinct profiles.
         try w.int(u16, @intCast(2 + 2 * options.srtp.len + 1));
         try w.int(u16, @intCast(2 * options.srtp.len));
         for (options.srtp) |profile| try w.int(u16, @backingInt(profile));
@@ -666,7 +666,7 @@ fn datagramOffer(w: *Writer, options: Options) EncodeError!void {
 
 fn cookieExtension(w: *Writer, cookie: []const u8) EncodeError!void {
     try w.int(u16, 44);
-    // safe: cookie is bounded at 4096 bytes plus its two-byte vector length.
+    // Cookie is bounded at 4096 bytes plus its two-byte vector length.
     try w.int(u16, @intCast(cookie.len + 2));
     try w.vector(u16, cookie);
 }
@@ -676,7 +676,7 @@ fn serverName(w: *Writer, sni: []const u8) EncodeError!void {
     if (sni.len > 253) return error.InvalidOptions;
     var sni_bytes: [258]u8 = undefined;
     var x: Writer = .{ .bytes = &sni_bytes };
-    // safe: DNS SNI length is at most 253, plus its three-byte entry header.
+    // DNS SNI length is at most 253, plus its three-byte entry header.
     try x.int(u16, @intCast(sni.len + 3));
     try x.int(u8, 0);
     try x.vector(u16, sni);
@@ -703,7 +703,7 @@ fn outerExtensions(w: *Writer, options: Options, cookie: []const u8) EncodeError
     var l: Writer = .{ .bytes = &list };
     try l.int(u8, 0);
     for (ids[0..count]) |id| try l.int(u16, id);
-    list[0] = @intCast(l.pos - 1); // safe: at most twelve bytes
+    list[0] = @intCast(l.pos - 1); // at most twelve bytes
     try extension(w, Ech.outer_extensions_id, list[0..l.pos]);
 }
 
@@ -720,15 +720,15 @@ fn offeredPsk(w: *Writer, resumption: Resume) EncodeError!void {
     const binders = resumption.bindersLength();
     if (identities > 65535 or 2 + identities + binders > 65535) return error.InvalidOptions;
     try w.int(u16, 41);
-    try w.int(u16, @intCast(2 + identities + binders)); // safe: bounded just above
-    try w.int(u16, @intCast(identities)); // safe: bounded above
+    try w.int(u16, @intCast(2 + identities + binders)); // bounded just above
+    try w.int(u16, @intCast(identities)); // bounded above
     for (resumption.offers) |offer| {
         try w.vector(u16, offer.identity);
         try w.int(u32, offer.age);
     }
-    try w.int(u16, @intCast(binders - 2)); // safe: at most eight binders of 256 bytes
+    try w.int(u16, @intCast(binders - 2)); // at most eight binders of 256 bytes
     for (resumption.offers) |offer| {
-        try w.int(u8, @intCast(offer.binder_len)); // safe: at most 255
+        try w.int(u8, @intCast(offer.binder_len)); // at most 255
         if (w.bytes.len - w.pos < offer.binder_len) return error.BufferTooSmall;
         @memset(w.bytes[w.pos..][0..offer.binder_len], 0);
         w.pos += offer.binder_len;
@@ -747,13 +747,13 @@ fn greasePsk(w: *Writer, offers: []const GreasePsk) EncodeError!void {
     }
     if (identities > 65535 or 4 + identities + binders > 65535) return error.InvalidOptions;
     try w.int(u16, 41);
-    try w.int(u16, @intCast(4 + identities + binders)); // safe: bounded just above
-    try w.int(u16, @intCast(identities)); // safe: bounded above
+    try w.int(u16, @intCast(4 + identities + binders)); // bounded just above
+    try w.int(u16, @intCast(identities)); // bounded above
     for (offers) |psk| {
         try w.vector(u16, psk.identity);
         try w.int(u32, psk.age);
     }
-    try w.int(u16, @intCast(binders)); // safe: bounded above
+    try w.int(u16, @intCast(binders)); // bounded above
     for (offers) |psk| try w.vector(u8, psk.binder);
 }
 
@@ -1201,7 +1201,7 @@ pub fn buildHelloVerify(out: []u8, cookie: []const u8) Writer.WriteError![]u8 {
     var w: Writer = .{ .bytes = out };
     try w.put(&.{ 3, 0, 0, 0, 0xfe, 0xff });
     try w.vector(u8, cookie);
-    // safe: at most 258 bytes.
+    // At most 258 bytes.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
@@ -1214,7 +1214,7 @@ fn supportedGroups(w: *Writer, options: Options, tls13: bool) Writer.WriteError!
     var g: Writer = .{ .bytes = &group_bytes };
     var listed: usize = @intFromBool(options.grease != null);
     for (options.groups) |group| listed += @intFromBool(tls13 or group.classical());
-    // safe: at most every group once, each two bytes.
+    // At most every group once, each two bytes.
     try g.int(u16, @intCast(listed * 2));
     if (options.grease) |grease| try g.int(u16, grease.group);
     for (options.groups) |group| if (tls13 or group.classical()) try g.int(u16, @backingInt(group));
@@ -1316,7 +1316,7 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
     try w.put(&.{ 0, 43, 0, 2 });
     try w.int(u16, transport.wire(.tls13));
     try w.int(u16, 51);
-    // safe: a key_exchange entry is at most 1,120 bytes.
+    // A key_exchange entry is at most 1,120 bytes.
     try w.int(u16, @intCast(4 + share.len));
     try w.int(u16, @backingInt(group));
     try w.vector(u16, share);
@@ -1325,9 +1325,9 @@ pub fn buildServer(out: []u8, transport: suites.Transport, random: *const [32]u8
         try w.int(u16, index);
     }
     if (connection_id) |cid| try connectionIdAnswer(&w, cid);
-    // safe: the extension block holds four short extensions.
+    // The extension block holds four short extensions.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
-    // safe: the whole message is bounded by the caller's buffer, far below 2^24.
+    // The whole message is bounded by the caller's buffer, far below 2^24.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
@@ -1374,15 +1374,15 @@ pub fn buildServer12(out: []u8, transport: suites.Transport, random: *const [32]
     if (echo.ocsp) try extension(&w, Messages.status_request, "");
     if (alpn.len != 0) {
         try w.int(u16, 16);
-        // safe: a protocol name is at most 255 bytes.
+        // A protocol name is at most 255 bytes.
         try w.int(u16, @intCast(alpn.len + 3));
         try w.int(u16, @intCast(alpn.len + 1));
         try w.vector(u8, alpn);
     }
-    // safe: the extension block holds short fixed extensions, an SCT list bounded by the
+    // The extension block holds short fixed extensions, an SCT list bounded by the
     // server's options and one protocol name.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
-    // safe: bounded by the caller's buffer.
+    // Bounded by the caller's buffer.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
@@ -1411,7 +1411,7 @@ pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, s
     }
     if (cookie.len != 0) {
         try w.int(u16, 44);
-        // safe: bounded at 4096 above.
+        // Bounded at 4096 above.
         try w.int(u16, @intCast(cookie.len + 2));
         try w.vector(u16, cookie);
     }
@@ -1420,9 +1420,9 @@ pub fn buildRetry(out: []u8, transport: suites.Transport, session: []const u8, s
         try w.int(u16, 8);
         try w.put(&@as([8]u8, @splat(0)));
     }
-    // safe: four short extensions and a bounded cookie.
+    // Four short extensions and a bounded cookie.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
-    // safe: bounded by the cookie's limit.
+    // Bounded by the cookie's limit.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }
@@ -1453,7 +1453,7 @@ fn recordSizeExtension(w: *Writer, limit: u16) Writer.WriteError!void {
 fn connectionIdAnswer(w: *Writer, cid: []const u8) Writer.WriteError!void {
     if (cid.len > 255) return error.BufferTooSmall;
     try w.int(u16, connection_id_extension);
-    try w.int(u16, @intCast(cid.len + 1)); // safe: at most 256
+    try w.int(u16, @intCast(cid.len + 1)); // at most 256
     try w.vector(u8, cid);
 }
 
@@ -1473,7 +1473,7 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
     if (parts.server_name) try w.put(&.{ 0, 0, 0, 0 });
     if (parts.alpn.len != 0) {
         try w.int(u16, 16);
-        // safe: a protocol name is at most 255 bytes.
+        // A protocol name is at most 255 bytes.
         try w.int(u16, @intCast(parts.alpn.len + 3));
         try w.int(u16, @intCast(parts.alpn.len + 1));
         try w.vector(u8, parts.alpn);
@@ -1495,13 +1495,13 @@ pub fn buildEncrypted(out: []u8, parts: EncryptedParts) Writer.WriteError![]u8 {
         // a few hundred bytes each stay far below the u16 bounds.
         if (retry_len > 65533) return error.BufferTooSmall;
         try w.int(u16, Ech.extension_id);
-        try w.int(u16, @intCast(retry_len + 2)); // safe: checked above
-        try w.int(u16, @intCast(retry_len)); // safe: checked above
+        try w.int(u16, @intCast(retry_len + 2)); // checked above
+        try w.int(u16, @intCast(retry_len)); // checked above
         for (parts.ech_retry) |key| if (key.retry) try w.put(key.config);
     }
-    // safe: parameters are bounded at 64 KiB by the options.
+    // Parameters are bounded at 64 KiB by the options.
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(w.pos - ext_at - 2), .big);
-    // safe: bounded by the caller's buffer.
+    // Bounded by the caller's buffer.
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big);
     return out[0..w.pos];
 }

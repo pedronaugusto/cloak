@@ -92,7 +92,7 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     const d = integers[2];
     if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0 or e.len > 4 or d.len > n.len) return error.InvalidKey;
     // At least 2048 bits, any length up to 4096: the bounds a public key has.
-    // safe: clz on u8 is at most eight and widens to usize.
+    // Clz on u8 is at most eight and widens to usize.
     if (n.len * 8 - @as(usize, @clz(n[0])) < 2048) return error.InvalidKey;
     const exponent = try Der.number(e);
     if (exponent < 3 or exponent & 1 == 0) return error.InvalidKey;
@@ -170,14 +170,14 @@ fn remainder(x: *const Uint, x_bytes: usize, modulus: *const Uint, modulus_bytes
         const start = bit - (width - 1);
         for (0..width - 1) |i| {
             const from = start + i;
-            const value: usize = (x.limbs_buffer[from / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(from % limb_bits))) & 1; // safe: public bit offsets modulo the radix
-            result.limbs_buffer[i / limb_bits] |= value << @as(std.math.Log2Int(usize), @intCast(i % limb_bits)); // safe: as above
+            const value: usize = (x.limbs_buffer[from / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(from % limb_bits))) & 1; // public bit offsets modulo the radix
+            result.limbs_buffer[i / limb_bits] |= value << @as(std.math.Log2Int(usize), @intCast(i % limb_bits)); // as above
         }
         bit = start;
     }
     while (bit > 0) {
         bit -= 1;
-        const input: usize = (x.limbs_buffer[bit / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(bit % limb_bits))) & 1; // safe: public bit offset modulo machine radix fits Log2Int(usize)
+        const input: usize = (x.limbs_buffer[bit / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(bit % limb_bits))) & 1; // public bit offset modulo machine radix fits Log2Int(usize)
         var carry = input;
         for (result.limbs_buffer[0..limbs]) |*limb| {
             const next = limb.* >> (limb_bits - 1);

@@ -173,7 +173,7 @@ pub fn checkEc(curve: Curve, point: []const u8) error{InvalidPublicKey}!void {
 pub fn checkRsa(n: []const u8, exponent: []const u8) error{InvalidPublicKey}!void {
     @setRuntimeSafety(true);
     if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0) return error.InvalidPublicKey;
-    // safe: clz on u8 is at most eight and widens to usize.
+    // Clz on u8 is at most eight and widens to usize.
     const bits = n.len * 8 - @as(usize, @clz(n[0]));
     if (bits < 2048 or exponent.len == 0 or exponent.len > 4 or exponent[0] == 0) return error.InvalidPublicKey;
     var ev: u32 = 0;

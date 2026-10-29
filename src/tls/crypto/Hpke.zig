@@ -245,7 +245,7 @@ fn labeledExpand(out: []u8, prk: *const [32]u8, suite_id: []const u8, label: []c
     @setRuntimeSafety(true);
     aegis.assert.invariant(out.len <= 32, "a labeled expansion is one block");
     var length: [2]u8 = undefined;
-    std.mem.writeInt(u16, &length, @intCast(out.len), .big); // safe: at most 32
+    std.mem.writeInt(u16, &length, @intCast(out.len), .big); // at most 32
     var h_owner: aegis.Secret(Hmac) = .init(Hmac.init(prk));
     defer h_owner.deinit();
     const h = h_owner.exposeMut();

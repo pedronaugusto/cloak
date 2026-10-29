@@ -566,7 +566,7 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     @setRuntimeSafety(true);
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update(self.random);
-    h.update(&.{@intCast(self.session.len)}); // safe: parsing bounds the session id at 32 bytes
+    h.update(&.{@intCast(self.session.len)}); // parsing bounds the session id at 32 bytes
     h.update(self.session);
     h.update(self.suites);
     // The block was validated when parsed; a malformed entry cannot occur and would end a pass.
@@ -589,7 +589,7 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
             _ = pass.vector(u16) catch break;
             if (id >> 12 != nibble or exempt(id)) continue;
             present.set(id & 0xfff);
-            starts[id & 0xfff] = @intCast(start); // safe: a block is at most 65,535 bytes
+            starts[id & 0xfff] = @intCast(start); // a block is at most 65,535 bytes
         }
         var ids = present.iterator(.{});
         while (ids.next()) |low| {
@@ -598,7 +598,7 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
             const bytes = (entry.vector(u16) catch break).bytes;
             var head: [6]u8 = undefined;
             std.mem.writeInt(u16, head[0..2], id, .big);
-            std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // safe: an extension is at most 65,535 bytes
+            std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // an extension is at most 65,535 bytes
             h.update(&head);
             h.update(bytes);
         }

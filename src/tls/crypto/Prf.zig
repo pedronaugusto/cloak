@@ -96,7 +96,7 @@ pub fn exporter(comptime Hash: type, out: []u8, master: *const [master_length]u8
     if (context) |bytes| {
         if (bytes.len > 65535) return error.InvalidLabel;
         var length: [2]u8 = undefined;
-        // safe: the context was just bounded by the u16 maximum.
+        // The context was just bounded by the u16 maximum.
         std.mem.writeInt(u16, &length, @intCast(bytes.len), .big);
         prf(Hash, out, master, label, &.{ client_random, server_random, &length, bytes });
     } else prf(Hash, out, master, label, &.{ client_random, server_random });

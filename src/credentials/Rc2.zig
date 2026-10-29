@@ -27,8 +27,8 @@ pub fn decrypt(key: []const u8, effective: u10, iv: [8]u8, encrypted: []const u8
     }
     const padding: usize = out[out.len - 1];
     var bad: u8 = @intFromBool(padding == 0) | @intFromBool(padding > 8);
-    for (0..8) |i| bad |= (0 -% @as(u8, @intFromBool(i < padding))) & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // safe: padding is one u8 from the final plaintext byte
-    // safe: expose only the completed padding verdict required by the offline parser API.
+    for (0..8) |i| bad |= (0 -% @as(u8, @intFromBool(i < padding))) & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // padding is one u8 from the final plaintext byte
+    // Expose only the completed padding verdict required by the offline parser API.
     if (bad != 0) return error.BadPassword;
     return out[0 .. out.len - padding];
 }
@@ -84,7 +84,7 @@ fn expand(key: []const u8, effective: u10, k: *[64]u16) void {
     @memcpy(l[0..key.len], key);
     for (key.len..128) |i| l[i] = pi(l[i - 1] +% l[i - key.len]);
     const bytes: usize = (@as(usize, effective) + 7) / 8;
-    // safe: 8 + effective - 8 * bytes is in 1..8.
+    // 8 + effective - 8 * bytes is in 1..8.
     const mask: u8 = @truncate((@as(u16, 1) << @intCast(8 + @as(usize, effective) - 8 * bytes)) - 1);
     l[128 - bytes] = pi(l[128 - bytes] & mask);
     var i: usize = 128 - bytes;

@@ -63,7 +63,7 @@ pub fn close(self: *Builder, mark: Mark) Error!void {
     const end = self.bytes.len();
     const len = end - mark.at;
     if (len < 0x80) {
-        self.bytes.exposeMut()[mark.at - 1] = @intCast(len); // safe: below 0x80
+        self.bytes.exposeMut()[mark.at - 1] = @intCast(len); // below 0x80
         return;
     }
     // The long form: the contents move up by the length's bytes.
@@ -75,7 +75,7 @@ pub fn close(self: *Builder, mark: Mark) Error!void {
     self.bytes.resizeWithinCapacity(end + count) catch unreachable;
     const items = self.bytes.exposeMut();
     @memmove(items[mark.at + count .. end + count], items[mark.at..end]);
-    items[mark.at - 1] = 0x80 | @as(u8, @intCast(count)); // safe: a usize has at most eight bytes
+    items[mark.at - 1] = 0x80 | @as(u8, @intCast(count)); // a usize has at most eight bytes
     for (0..count) |i| items[mark.at + i] = @truncate(len >> @intCast(8 * (count - 1 - i)));
 }
 
@@ -86,10 +86,10 @@ pub fn element(self: *Builder, tag: u8, value: []const u8) Error!void {
     header[0] = tag;
     var n: usize = 2;
     if (value.len < 0x80) {
-        header[1] = @intCast(value.len); // safe: below 0x80.
+        header[1] = @intCast(value.len); // below 0x80.
     } else {
         const count = @sizeOf(usize) - @clz(value.len) / 8;
-        header[1] = 0x80 | @as(u8, @intCast(count)); // safe: at most eight.
+        header[1] = 0x80 | @as(u8, @intCast(count)); // at most eight.
         for (0..count) |i| header[2 + i] = @truncate(value.len >> @intCast(8 * (count - 1 - i)));
         n += count;
     }
@@ -148,7 +148,7 @@ pub fn namedBits(self: *Builder, set: u16) Error!void {
     const bytes: [2]u8 = .{ @truncate(value >> 8), @truncate(value) };
     const used: usize = if (bytes[1] != 0) 2 else 1;
     const last = bytes[used - 1];
-    // safe: the trailing zero count of a nonzero byte is at most seven.
+    // The trailing zero count of a nonzero byte is at most seven.
     const unused: u8 = @ctz(last);
     const encoded: [3]u8 = .{ unused, bytes[0], bytes[1] };
     try self.element(0x03, encoded[0 .. used + 1]);

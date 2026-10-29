@@ -105,7 +105,7 @@ pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
                         const pad: usize = @intFromBool(value[start] & 0x80 != 0);
                         const length = width - start + pad;
                         out[at] = 2;
-                        out[at + 1] = @intCast(length); // safe: at most 67
+                        out[at + 1] = @intCast(length); // at most 67
                         out[at + 2] = 0;
                         @memcpy(out[at + 2 + pad ..][0 .. width - start], value[start..]);
                         at += 2 + length;
@@ -115,12 +115,12 @@ pub fn Ecdsa(comptime curve: type, comptime Hash: type) type {
                         // Short form: move the body up one byte.
                         @memmove(out[2 .. 2 + body], out[3 .. 3 + body]);
                         out[0] = 0x30;
-                        out[1] = @intCast(body); // safe: below 0x80
+                        out[1] = @intCast(body); // below 0x80
                         return out[0 .. 2 + body];
                     }
                     out[0] = 0x30;
                     out[1] = 0x81;
-                    out[2] = @intCast(body); // safe: at most 138
+                    out[2] = @intCast(body); // at most 138
                     return out[0..at];
                 },
             }
@@ -278,7 +278,7 @@ pub const rsa = struct {
         db[db_len - h_len - 1] = 1;
         @memcpy(db[db_len - h_len ..], salt);
         rfc8017.mgf1(comptime .of(Hash), h_out, db);
-        db[0] &= @as(u8, 0xff) >> @intCast(8 * em_len - em_bits); // safe: emLen is ceil(emBits / 8), so the shift is below eight
+        db[0] &= @as(u8, 0xff) >> @intCast(8 * em_len - em_bits); // emLen is ceil(emBits / 8), so the shift is below eight
         em[em_len - 1] = 0xbc;
         return private(key, input[0..key.size], noise[0..seed_length], out);
     }

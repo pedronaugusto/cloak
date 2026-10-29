@@ -531,7 +531,7 @@ pub fn server(gpa: std.mem.Allocator, options: ServerOptions, admission: ?Admiss
 fn keepOwnCid(self: *Datagram, cid: ?[]const u8) void {
     const own = cid orelse return;
     @memcpy(self.own_cid[0..own.len], own);
-    self.own_cid_len = @intCast(own.len); // safe: validated at 255 bytes
+    self.own_cid_len = @intCast(own.len); // validated at 255 bytes
 }
 
 /// A wait at std's resolution, for the timers' arithmetic: checked, the unit carried.
@@ -855,7 +855,7 @@ fn learnCids(self: *Datagram) void {
     self.cids_known = true;
     const peer = self.hs.peerConnectionId() orelse return;
     @memcpy(self.peer_cid[0..peer.len], peer);
-    self.peer_cid_len = @intCast(peer.len); // safe: a vector<0..255>
+    self.peer_cid_len = @intCast(peer.len); // a vector<0..255>
     self.cids_agreed = true;
 }
 
@@ -1635,8 +1635,8 @@ pub fn newConnectionIds(self: *Datagram, cids: []const []const u8, usage: Usage)
     var buffer: [4 + 2 + max_new_cids * (1 + Record.max_cid) + 1]u8 = undefined;
     const body_len = 2 + cids.len * (1 + @as(usize, self.own_cid_len)) + 1;
     buffer[0] = new_connection_id;
-    std.mem.writeInt(u24, buffer[1..4], @intCast(body_len), .big); // safe: at most 2,051 bytes
-    std.mem.writeInt(u16, buffer[4..6], @intCast(body_len - 3), .big); // safe: as above
+    std.mem.writeInt(u24, buffer[1..4], @intCast(body_len), .big); // at most 2,051 bytes
+    std.mem.writeInt(u16, buffer[4..6], @intCast(body_len - 3), .big); // as above
     var at: usize = 6;
     for (cids) |cid| {
         buffer[at] = self.own_cid_len;
@@ -1645,7 +1645,7 @@ pub fn newConnectionIds(self: *Datagram, cids: []const []const u8, usage: Usage)
     }
     buffer[at] = @backingInt(usage);
     try self.queueOwn(.new_cid, self.write_current, buffer[0 .. at + 1]);
-    self.cids_requested -|= @intCast(@min(cids.len, 255)); // safe: bounded just above
+    self.cids_requested -|= @intCast(@min(cids.len, 255)); // bounded just above
 }
 
 /// DTLS 1.3: asks the peer for `count` connection IDs to send with (RFC 9147 section 9); they
@@ -1778,7 +1778,7 @@ pub fn send(self: *Datagram, out: []u8, now: std.Io.Timestamp) Error!?[]u8 {
     var later: [max_flights]u8 = undefined;
     var count: usize = 0;
     for (self.flights, 0..) |slot, i| if (slot) |flight| if (flight.category != .handshake) {
-        later[count] = @intCast(i); // safe: max_flights slots
+        later[count] = @intCast(i); // max_flights slots
         count += 1;
     };
     std.mem.sort(u8, later[0..count], &self.flights, madeEarlier);
@@ -1917,12 +1917,12 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filli
                     fragment[0] = entry.bytes.view()[0];
                     fragment[1..4].* = entry.bytes.view()[1..4].*;
                     std.mem.writeInt(u16, fragment[4..6], entry.sequence, .big);
-                    // safe: offsets and lengths are below the 24-bit message length.
+                    // Offsets and lengths are below the 24-bit message length.
                     std.mem.writeInt(u24, fragment[6..9], @intCast(entry.cursor), .big);
                     std.mem.writeInt(u24, fragment[9..12], @intCast(n), .big);
                     @memcpy(out[start + 12 ..][0..n], body[entry.cursor..][0..n]);
                     f.len += 12 + n;
-                    // safe: a flight holds at most a few dozen entries and 256 KiB.
+                    // A flight holds at most a few dozen entries and 256 KiB.
                     f.logs[f.count] = .{ .epoch = entry.epoch, .sequence = f.number, .slot = slot, .generation = flight.generation, .entry = @intCast(index), .offset = @intCast(entry.cursor), .len = @intCast(n) };
                     f.count += 1;
                     entry.cursor += n;
@@ -2033,7 +2033,7 @@ fn writeAck(self: *Datagram, out: []u8) Error!usize {
     const count = @min(self.acks.items.len, (out.len - overhead - 2) / 16, (self.sealLimit(self.write_current) - 2) / 16);
     const listed = self.acks.items[self.acks.items.len - count ..];
     var body: [2 + 16 * 64]u8 = undefined;
-    // safe: at most 64 records.
+    // At most 64 records.
     std.mem.writeInt(u16, body[0..2], @intCast(count * 16), .big);
     // In numerically increasing order (RFC 9147 section 7).
     var sorted: [64][2]u64 = undefined;

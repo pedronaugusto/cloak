@@ -40,7 +40,7 @@ pub const Armv8 = struct {
         }
         while (off + 64 <= b.len) : (off += 64) compress(&d.s, b[off..][0..64]);
         @memcpy(d.buf[d.buf_len..][0 .. b.len - off], b[off..]);
-        d.buf_len += @intCast(b[off..].len); // safe: below 64
+        d.buf_len += @intCast(b[off..].len); // below 64
         d.total_len += b.len;
     }
 

@@ -437,7 +437,6 @@ fn advance(self: *Handshake) void {
     var emit: Emit = undefined;
     while (self.hs.pop(&emit)) switch (emit) {
         .message => |m| {
-            // safe: the flight buffer is bounded by the handshake limit, below 4 GiB.
             self.current = .{ .data = .{ .level = levelOf(m.epoch), .start = m.start, .len = m.len, .acked = 0, .flight_end = !self.hs.pending() } };
             return;
         },
@@ -478,7 +477,7 @@ pub fn ack(self: *Handshake, consumed: usize) void {
     switch (current.*) {
         .data => |*d| {
             aegis.assert.pre(consumed <= d.len - d.acked, "the caller acknowledges at most the event's data");
-            // safe: the remainder of a message is at most its u32 length.
+            // The remainder of a message is at most its u32 length.
             d.acked += @intCast(consumed);
             if (d.acked < d.len) return;
             self.current = null;

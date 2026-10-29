@@ -1,4 +1,5 @@
 const std = @import("std");
+const tasks = @import("../testing/tasks.zig");
 const builtin = @import("builtin");
 const Job = @import("Job.zig");
 const Budget = @import("Budget.zig");
@@ -101,7 +102,7 @@ const Cleanup = struct {
     }
     fn context(raw: *anyopaque) *Cleanup {
         @setRuntimeSafety(true);
-        return @ptrCast(@alignCast(raw)); // safe: allocator context is a live aligned Cleanup owned by this test
+        return @ptrCast(@alignCast(raw)); // allocator context is a live aligned Cleanup owned by this test
     }
     fn alloc(raw: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
         @setRuntimeSafety(true);
@@ -231,7 +232,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
     // Reap before the borrowed allocator, pause or backend can expire, on errors too.
     defer {
         pause.proceed.set(io);
-        _ = worker.cancel(io) catch {}; // glint-ignore: Z026 -- reaping on exit; the success path awaits the worker and checks its result, so only a test that is already failing drops it here
+        tasks.reap(anyerror!void, io, &worker);
     }
     try pause.entered.wait(io);
     caller.?.abandon();

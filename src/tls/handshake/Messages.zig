@@ -174,7 +174,7 @@ pub fn certificateStatus(message: []const u8) ParseError![]const u8 {
 fn putStatus(w: *Writer, response: []const u8) BuildError!void {
     if (response.len == 0 or response.len > 0xffffff) return error.BufferTooSmall;
     try w.int(u8, status_ocsp);
-    // safe: bounded by the u24 maximum just above.
+    // Bounded by the u24 maximum just above.
     try w.int(u24, @intCast(response.len));
     try w.put(response);
 }
@@ -316,7 +316,7 @@ pub fn header(w: *Writer, kind: Type) BuildError!void {
 
 pub fn seal(w: *Writer) []u8 {
     @setRuntimeSafety(true);
-    // safe: every builder bounds its body below 2^24 before this length is written.
+    // Every builder bounds its body below 2^24 before this length is written.
     std.mem.writeInt(u24, w.bytes[1..4], @intCast(w.pos - 4), .big);
     return w.bytes[0..w.pos];
 }
@@ -348,7 +348,7 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
     try w.int(u24, 0);
     for (chain, 0..) |der, i| {
         if (der.len > 0xffffff) return error.BufferTooSmall;
-        // safe: certificate length was just bounded by the u24 maximum.
+        // Certificate length was just bounded by the u24 maximum.
         try w.int(u24, @intCast(der.len));
         try w.put(der);
         const extensions: Leaf = if (i == 0) leaf else .{};
@@ -356,7 +356,7 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
         const scts_len = if (extensions.scts) |bytes| bytes.len + 4 else 0;
         const ocsp_len = if (extensions.ocsp) |bytes| bytes.len + 8 else 0;
         if (delegated_len + scts_len + ocsp_len > 0xffff) return error.BufferTooSmall;
-        // safe: the extensions were just bounded below the u16 maximum.
+        // The extensions were just bounded below the u16 maximum.
         try w.int(u16, @intCast(delegated_len + scts_len + ocsp_len));
         if (extensions.delegated) |credential| {
             try w.int(u16, delegated_credential);
@@ -368,14 +368,14 @@ pub fn buildCertificate(out: []u8, context: []const u8, chain: []const []const u
         }
         if (extensions.ocsp) |response| {
             try w.int(u16, status_request);
-            // safe: the extension's length was bounded below the u16 maximum above.
+            // The extension's length was bounded below the u16 maximum above.
             try w.int(u16, @intCast(response.len + 4));
             try putStatus(&w, response);
         }
     }
     const list_len = w.pos - list_at - 3;
     if (list_len > 0xffffff) return error.BufferTooSmall;
-    // safe: the list length was checked against the u24 maximum above.
+    // The list length was checked against the u24 maximum above.
     std.mem.writeInt(u24, out[list_at..][0..3], @intCast(list_len), .big);
     return seal(&w);
 }
@@ -392,7 +392,7 @@ pub fn buildCertificateRequest(out: []u8, context: []const u8, schemes: []const 
     const delegated_len: usize = if (delegated.len != 0) 6 + delegated.len * 2 else 0;
     const names_len = Authorities.wireLength(authorities);
     const authorities_len: usize = if (authorities.len != 0) 6 + names_len else 0;
-    // safe: each extension is six bytes of header and its list, bounded by the scheme table and
+    // Each extension is six bytes of header and its list, bounded by the scheme table and
     // `Authorities.max_bytes`.
     try w.int(u16, @intCast(6 + schemes.len * 2 + delegated_len + authorities_len));
     try schemeList(&w, 13, schemes);
@@ -409,7 +409,7 @@ pub fn buildCertificateRequest(out: []u8, context: []const u8, schemes: []const 
 /// An extension whose body is a SignatureSchemeList.
 fn schemeList(w: *Writer, id: u16, schemes: []const u16) BuildError!void {
     try w.int(u16, id);
-    // safe: bounded by the scheme table.
+    // Bounded by the scheme table.
     try w.int(u16, @intCast(2 + schemes.len * 2));
     try w.int(u16, @intCast(schemes.len * 2));
     for (schemes) |scheme| try w.int(u16, scheme);

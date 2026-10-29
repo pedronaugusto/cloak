@@ -36,7 +36,7 @@ pub fn close(self: *Pipe) void {
 }
 
 fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
-    const self: *Pipe = @alignCast(@fieldParentPtr("reader", r)); // safe: the interface is a field of a Pipe
+    const self: *Pipe = @alignCast(@fieldParentPtr("reader", r)); // the interface is a field of a Pipe
     self.mutex.lock(self.io) catch return error.ReadFailed;
     defer self.mutex.unlock(self.io);
     while (self.len == 0) {
@@ -71,7 +71,7 @@ fn put(self: *Pipe, bytes: []const u8) std.Io.Writer.Error!void {
 }
 
 fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-    const self: *Pipe = @alignCast(@fieldParentPtr("writer", w)); // safe: the interface is a field of a Pipe
+    const self: *Pipe = @alignCast(@fieldParentPtr("writer", w)); // the interface is a field of a Pipe
     try self.put(w.buffer[0..w.end]);
     w.end = 0;
     var consumed: usize = 0;

@@ -146,7 +146,7 @@ fn ladder(out: *[length]u8, scalar: *const [length]u8, u: *const [length]u8) voi
     var t: usize = 255;
     while (t > 0) {
         t -= 1;
-        const k_t: u1 = @truncate(s.k[t / 8] >> @intCast(t % 8)); // safe: one bit of the scalar
+        const k_t: u1 = @truncate(s.k[t / 8] >> @intCast(t % 8)); // one bit of the scalar
         swap ^= k_t;
         Fe.cswap(swap, &s.x2, &s.x3);
         Fe.cswap(swap, &s.z2, &s.z3);

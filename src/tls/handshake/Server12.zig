@@ -46,7 +46,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     if (self.tls12 == null) self.tls12 = try @import("Flight.zig").Secrets12.create(self.gpa);
     scratch.client_random.exposeMut().* = hello.random[0..32].*;
     @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
-    // safe: parsing bounds a host name at 253 bytes.
+    // Parsing bounds a host name at 253 bytes.
     scratch.server_name_len = @intCast(hello.server_name.len);
     self.suite12 = try chooseSuite(self, hello);
     if (self.suite12.?.authentication() == .psk) {
@@ -73,7 +73,7 @@ pub fn onClientHello(self: anytype, msg: []const u8, hello: *const ClientHello, 
     _ = boundary;
     // The client's session id: echoed when its ticket resumes.
     @memcpy(scratch.session[0..hello.session.len], hello.session);
-    // safe: parsing bounds the session id at 32 bytes.
+    // Parsing bounds the session id at 32 bytes.
     scratch.session_len = @intCast(hello.session.len);
     // Tickets are opened and issued by the clock: the hello waits for it.
     if (takesTickets(self, hello) and self.now == null) return self.holdHello(msg);
@@ -286,7 +286,7 @@ pub fn onEntropy(self: anytype, entropy: []const u8) Error!void {
     var params_buffer: [4 + Messages12.max_public]u8 = undefined;
     const params = try Messages12.buildParams(&params_buffer, group, share.wire());
     const content = Messages12.signedParams(&scratch.params12, scratch.client_random.expose(), &random, params);
-    // safe: the signed content is at most `Messages12.max_signed`, 201 bytes.
+    // The signed content is at most `Messages12.max_signed`, 201 bytes.
     scratch.params12_len = @intCast(content.len);
     // Cloak signs for a key it holds; a key held elsewhere is the caller's to sign with.
     if (identity.noiseLength()) |noise_length| {
@@ -375,11 +375,11 @@ fn sendTicket(self: anytype) Error!void {
             defer state.deinit();
             @memcpy(state.secret.exposeMut(), self.tls12.?.master.expose());
             @memcpy(state.alpn[0..self.alpn.len], self.alpn);
-            state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
+            state.alpn_len = @intCast(self.alpn.len); // a protocol name is at most 255 bytes
             @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
             state.server_name_len = scratch.server_name_len;
             sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
-            hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
+            hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // positive and at most seven days
         }
     };
     const message = try Messages12.buildNewSessionTicket(try self.reserve(4 + 4 + 2 + sealed.len), hint, sealed);

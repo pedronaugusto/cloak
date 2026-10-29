@@ -248,11 +248,11 @@ pub fn signedInput(gpa: std.mem.Allocator, sct: Sct, entry: Entry) Error![]u8 {
     std.mem.writeInt(u16, out[at..][0..2], @intFromBool(entry == .precert), .big);
     at += 2;
     if (entry == .precert) put(out, &at, entry.precert.issuer_key_hash);
-    // safe: bounded by the u24 maximum above.
+    // Bounded by the u24 maximum above.
     std.mem.writeInt(u24, out[at..][0..3], @intCast(der.len), .big);
     at += 3;
     put(out, &at, der);
-    // safe: a vector of a u16-framed list.
+    // A vector of a u16-framed list.
     std.mem.writeInt(u16, out[at..][0..2], @intCast(sct.extensions.len), .big);
     at += 2;
     put(out, &at, sct.extensions);

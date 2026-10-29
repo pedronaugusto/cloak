@@ -33,14 +33,14 @@ fn expandKernel(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [
     @setRuntimeSafety(true);
     const Hmac = std.crypto.auth.hmac.Hmac(Hash);
     var info: [514]u8 = undefined;
-    // safe: HKDF output is bounded by 255 * Hash.digest_length, below u16 max.
+    // HKDF output is bounded by 255 * Hash.digest_length, below u16 max.
     std.mem.writeInt(u16, info[0..2], @intCast(out.len), .big);
-    // safe: label plus six-byte prefix was checked against the u8 wire bound.
+    // Label plus six-byte prefix was checked against the u8 wire bound.
     info[2] = @intCast(label.len + 6);
     @memcpy(info[3..9], prefix.bytes());
     @memcpy(info[9..][0..label.len], label);
     const ctx_at = 9 + label.len;
-    // safe: context was checked against the u8 wire bound.
+    // Context was checked against the u8 wire bound.
     info[ctx_at] = @intCast(context.len);
     @memcpy(info[ctx_at + 1 ..][0..context.len], context);
     var block = aegis.Secret([Hash.digest_length]u8).init(@splat(0));

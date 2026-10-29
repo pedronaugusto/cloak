@@ -184,12 +184,12 @@ fn addSerial(entries: []const u8, serial: []const u8, offsets: []u32, count: *us
         }
     }
     @memmove(offsets[start + 1 .. count.* + 1], offsets[start..count.*]);
-    offsets[start] = @intCast(offset); // safe: the public byte offset is bounded above by maxInt(u32).
+    offsets[start] = @intCast(offset); // the public byte offset is bounded above by maxInt(u32).
     count.* += 1;
 }
 fn bit(index: usize) u16 {
     @setRuntimeSafety(true);
-    return @as(u16, 1) << @intCast(index); // safe: all path indices are bounded below 16.
+    return @as(u16, 1) << @intCast(index); // all path indices are bounded below 16.
 }
 /// A policy span in whole seconds, refused when negative or above `max` seconds.
 fn span(d: std.Io.Duration, comptime max: i64) Error!i64 {
@@ -251,7 +251,6 @@ fn ocsp(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, evide
     const responder = try data.next();
     if (responder.tag != 0xa1 and responder.tag != 0xa2) return error.InvalidRevocation;
     const produced = try C.Certificate.evidenceTime(try data.expect(0x18));
-    // safe: the skew is clamped to 86400 before conversion.
     if (produced > now +| skewSeconds(policy)) return error.StaleRevocation;
     const responses = (try data.expect(0x30)).value;
     if (data.peek() == 0xa1) try ocspExtensions((try data.next()).value);
@@ -293,7 +292,6 @@ fn responsesFor(path: []const C.Certificate, responses: []const u8, now: i64, po
         if (single.peek() == 0xa1) try ocspExtensions((try single.next()).value);
         try single.finish();
         const expires = try fresh(this, next, now, policy);
-        // safe: the skew is clamped to 86400 before conversion.
         if (produced < this -| skewSeconds(policy) or produced > expires +| skewSeconds(policy)) return error.StaleRevocation;
         for (path[0..path.len -| 1], 0..) |*cert, index| {
             if (!try certId(cert_id, cert, &path[index + 1])) continue;

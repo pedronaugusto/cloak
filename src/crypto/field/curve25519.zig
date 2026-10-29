@@ -116,7 +116,7 @@ pub const Fe = struct {
 
     /// Whether the canonical value is odd: RFC 8032's sign of x.
     pub fn isNegative(a: *const Fe) u1 {
-        return @truncate(a.toBytes()[0]); // safe: the low bit of the canonical value
+        return @truncate(a.toBytes()[0]); // the low bit of the canonical value
     }
 
     pub fn eql(a: *const Fe, b: *const Fe) bool {

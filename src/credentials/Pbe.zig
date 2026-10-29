@@ -45,11 +45,11 @@ pub const Password = struct {
             while (view.nextCodepoint()) |point| {
                 if (point >= 0x10000) {
                     const v = point - 0x10000;
-                    std.mem.writeInt(u16, out[at..][0..2], @intCast(0xd800 + (v >> 10)), .big); // safe: v < 2^20
-                    std.mem.writeInt(u16, out[at + 2 ..][0..2], @intCast(0xdc00 + (v & 0x3ff)), .big); // safe: masked to ten bits
+                    std.mem.writeInt(u16, out[at..][0..2], @intCast(0xd800 + (v >> 10)), .big); // v < 2^20
+                    std.mem.writeInt(u16, out[at + 2 ..][0..2], @intCast(0xdc00 + (v & 0x3ff)), .big); // masked to ten bits
                     at += 4;
                 } else {
-                    std.mem.writeInt(u16, out[at..][0..2], @intCast(point), .big); // safe: below 0x10000
+                    std.mem.writeInt(u16, out[at..][0..2], @intCast(point), .big); // below 0x10000
                     at += 2;
                 }
             }
@@ -117,7 +117,7 @@ fn pbes2(gpa: std.mem.Allocator, parameters: Der.Element, data: []const u8, pass
     var key_owner = aegis.Secret([32]u8).init(undefined);
     defer key_owner.deinit();
     const key = key_owner.exposeMut();
-    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
+    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     try pbkdf2(hash, key[0..key_len], password, salt, rounds);
     var plain = try SecretBytes.init(gpa, data.len);
     errdefer plain.deinit(gpa);
@@ -192,7 +192,7 @@ fn pkcs12Pbe(gpa: std.mem.Allocator, which: u8, parameters: Der.Element, data: [
     const iterations = try Der.number((try p.expect(2)).value);
     try p.finish();
     if (salt.len > limits.salt_bytes or iterations == 0 or iterations > limits.iterations or iterations > std.math.maxInt(u32)) return error.KdfLimit;
-    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
+    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     const key_len: usize = switch (cipher) {
         .des3 => 24,
         .des2, .rc2_128 => 16,

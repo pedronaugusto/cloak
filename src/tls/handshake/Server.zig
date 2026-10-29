@@ -833,7 +833,7 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
         if (pick.offer(i, found, Authorities.prefers(credential.identity, hello.authorities))) break;
     }
     const chosen = pick.chosen() orelse return refusal;
-    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
+    self.credential = @intCast(chosen.index); // at most 32 credentials
     self.scheme = chosen.value.scheme;
     return chosen.value;
 }
@@ -923,12 +923,12 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (!second or self.stateless_retry) {
         scratch.client_random.exposeMut().* = hello.random[0..32].*;
         @memcpy(scratch.session[0..hello.session.len], hello.session);
-        // safe: parsing bounds the session id at 32 bytes.
+        // Parsing bounds the session id at 32 bytes.
         scratch.session_len = @intCast(hello.session.len);
         if (self.options.transport == .quic and hello.session.len != 0) return error.IllegalParameter;
         scratch.first = hello.fingerprint();
         @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
-        // safe: parsing bounds a host name at 253 bytes.
+        // Parsing bounds a host name at 253 bytes.
         scratch.server_name_len = @intCast(hello.server_name.len);
     }
     if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
@@ -948,7 +948,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (hello.compress_certificate) |list| {
         // checkExtension bounded it: one length byte and at most 254 bytes of algorithms.
         @memcpy(self.scratch.?.compression[0..list.len], list);
-        self.scratch.?.compression_len = @intCast(list.len); // safe: at most 255 bytes
+        self.scratch.?.compression_len = @intCast(list.len); // at most 255 bytes
     } else self.scratch.?.compression_len = 0;
     try self.negotiate(&hello, second);
     const group = self.group.?;
@@ -1260,7 +1260,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     }
     const keep = @min(hello.schemes.len, scratch.schemes.len) & ~@as(usize, 1);
     @memcpy(scratch.schemes[0..keep], hello.schemes[0..keep]);
-    // safe: at most 256 bytes are kept.
+    // At most 256 bytes are kept.
     scratch.schemes_len = @intCast(keep);
 }
 
@@ -1309,7 +1309,7 @@ pub fn negotiateDatagram(self: *Server, hello: *const ClientHello) void {
     if (self.options.transport != .datagram) return;
     if (self.options.connection_id != null) if (hello.connection_id) |cid| {
         @memcpy(scratch.peer_cid[0..cid.len], cid);
-        scratch.peer_cid_len = @intCast(cid.len); // safe: a vector<0..255>
+        scratch.peer_cid_len = @intCast(cid.len); // a vector<0..255>
         scratch.cid_agreed = true;
     };
     const offered = hello.srtp orelse return;
@@ -1518,7 +1518,7 @@ fn signCertificate(self: *Server, identity: certificates.Identity) Client.Error!
     const scratch = self.scratch.?;
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const content = Messages.signedContent(scratch.sign_content.exposeMut(), true, scratch.transcripts.digest(&digest_buf));
-    // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
+    // Signed content is at most 64 + 33 + 1 + 48 bytes.
     scratch.sign_content_len = @intCast(content.len);
     scratch.signing = true;
     if (self.delegating) {
@@ -1779,11 +1779,11 @@ fn issueTickets(self: *Server) Client.Error!void {
         };
         defer state.deinit();
         @memcpy(state.alpn[0..self.alpn.len], self.alpn);
-        state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
+        state.alpn_len = @intCast(self.alpn.len); // a protocol name is at most 255 bytes
         @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
         state.server_name_len = scratch.server_name_len;
         // Each ticket of the connection has its own nonce, so its own PSK (RFC 8446 section 4.6.1).
-        const nonce = [1]u8{@intCast(i)}; // safe: two tickets
+        const nonce = [1]u8{@intCast(i)}; // two tickets
         switch (keys.*) {
             inline else => |*k, tag| {
                 const K = Schedule.Schedule(tag);
@@ -1796,7 +1796,7 @@ fn issueTickets(self: *Server) Client.Error!void {
         // The sealed ticket is ciphertext: it goes to the client as it is.
         var sealed_buf: [Ticket.max_length]u8 = undefined;
         const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
-        const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
+        const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // positive and at most seven days
         const dst = try self.reserve(4 + 4 + 4 + 2 + 2 + sealed.len + 2);
         const message = try Messages.buildNewSessionTicket(dst, lifetime, state.age_add, &nonce, sealed);
         // Post-handshake: sent, never part of the transcript.

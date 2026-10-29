@@ -95,18 +95,18 @@ fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
             const adata: u8 = if (ad.len != 0) 0x40 else 0;
             b0[0] = adata | (((tag_length - 2) / 2) << 3) | (length_bytes - 1);
             b0[1..][0..nonce_length].* = npub;
-            // safe: callers bound the message at max_message, the `length_bytes`-byte length's range.
+            // Callers bound the message at max_message, the `length_bytes`-byte length's range.
             std.mem.writeInt(u24, b0[1 + nonce_length ..][0..length_bytes], @intCast(m.len), .big);
             state.update(&b0);
             if (ad.len != 0) {
                 var encoded: [6]u8 = undefined;
                 const prefix: []const u8 = if (ad.len < 0xff00) prefix: {
-                    // safe: below 0xff00.
+                    // Below 0xff00.
                     std.mem.writeInt(u16, encoded[0..2], @intCast(ad.len), .big);
                     break :prefix encoded[0..2];
                 } else prefix: {
                     encoded[0..2].* = .{ 0xff, 0xfe };
-                    // safe: TLS additional data is a few bytes; a 4 GiB one cannot reach here.
+                    // TLS additional data is a few bytes; a 4 GiB one cannot reach here.
                     std.mem.writeInt(u32, encoded[2..6], @intCast(ad.len), .big);
                     break :prefix encoded[0..6];
                 };

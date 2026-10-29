@@ -75,7 +75,7 @@ pub const Modulus = struct {
         // public, as every RSA implementation takes it), which is below m.
         const rr = out.rr[0..len];
         const width = bitLength(out.m[0..len]);
-        rr[(width - 1) / 64] = @as(u64, 1) << @intCast((width - 1) % 64); // safe: the remainder of a division by 64
+        rr[(width - 1) / 64] = @as(u64, 1) << @intCast((width - 1) % 64); // the remainder of a division by 64
         for (0..65 * len - (width - 1)) |_| {
             var carry: u64 = 0;
             for (rr) |*limb| {
@@ -152,22 +152,22 @@ pub const Modulus = struct {
             var carry: u64 = 0;
             for (0..len) |j| {
                 const p = @as(u128, a[j]) * b[i] + t[j] + carry;
-                t[j] = @truncate(p); // safe: the low word; the high word carries
-                carry = @truncate(p >> 64); // safe: (2^64-1)^2 + 2(2^64-1) fits 128 bits
+                t[j] = @truncate(p); // the low word; the high word carries
+                carry = @truncate(p >> 64); // (2^64-1)^2 + 2(2^64-1) fits 128 bits
             }
             var s = @as(u128, t[len]) + carry;
-            t[len] = @truncate(s); // safe: the low word
-            t[len + 1] = @truncate(s >> 64); // safe: a single carry bit
+            t[len] = @truncate(s);
+            t[len + 1] = @truncate(s >> 64); // a single carry bit
             const u = t[0] *% self.inv;
-            var c: u64 = @truncate((@as(u128, u) * self.m[0] + t[0]) >> 64); // safe: the low word cancels by the choice of u
+            var c: u64 = @truncate((@as(u128, u) * self.m[0] + t[0]) >> 64); // the low word cancels by the choice of u
             for (1..len) |j| {
                 const p = @as(u128, u) * self.m[j] + t[j] + c;
-                t[j - 1] = @truncate(p); // safe: the low word, shifted down one limb
-                c = @truncate(p >> 64); // safe: the high word
+                t[j - 1] = @truncate(p); // the low word, shifted down one limb
+                c = @truncate(p >> 64);
             }
             s = @as(u128, t[len]) + c;
-            t[len - 1] = @truncate(s); // safe: the low word
-            t[len] = t[len + 1] + @as(u64, @truncate(s >> 64)); // safe: the sum stays below 2m < 2R
+            t[len - 1] = @truncate(s);
+            t[len] = t[len + 1] + @as(u64, @truncate(s >> 64)); // the sum stays below 2m < 2R
         }
         self.reduceOnce(out, t[0..len], t[len]);
     }
@@ -186,8 +186,8 @@ pub const Modulus = struct {
             var carry: u64 = 0;
             for (0..len) |j| {
                 const p = @as(u128, u) * self.m[j] + t[i + j] + carry;
-                t[i + j] = @truncate(p); // safe: the low word
-                carry = @truncate(p >> 64); // safe: the high word
+                t[i + j] = @truncate(p);
+                carry = @truncate(p >> 64);
             }
             // The carry runs to the top on every iteration: no early stop on a zero carry.
             var c: u1 = 0;
@@ -224,7 +224,7 @@ pub const Modulus = struct {
         const acc = owner.exposeMut();
         const len = self.len;
         @memcpy(acc[0..len], base);
-        var bit: u6 = @intCast(63 - @as(u32, @clz(e))); // safe: e is nonzero, so its top bit index is below 64
+        var bit: u6 = @intCast(63 - @as(u32, @clz(e))); // e is nonzero, so its top bit index is below 64
         while (bit > 0) {
             bit -= 1;
             self.sqr(acc[0..len], acc[0..len]);
@@ -273,7 +273,7 @@ fn select(out: []u64, table: *const [16][max_half]u64, index: u64) void {
     for (table, 0..) |*entry, i| {
         const x = @as(u64, i) ^ index;
         // All ones exactly when x is zero.
-        const keep = maskOf(@as(u1, @truncate((x | (0 -% x)) >> 63)) ^ 1); // safe: the top bit is set exactly when x != 0
+        const keep = maskOf(@as(u1, @truncate((x | (0 -% x)) >> 63)) ^ 1); // the top bit is set exactly when x != 0
         for (out, entry[0..out.len]) |*o, v| o.* |= v & keep;
     }
 }
@@ -285,7 +285,7 @@ fn decode(out: []u64, bytes: []const u8) InitError!void {
     if (bytes.len > out.len * 8) return error.InvalidKey;
     for (0..bytes.len) |k| {
         const byte = bytes[bytes.len - 1 - k];
-        out[k / 8] |= @as(u64, byte) << @as(u6, @intCast(8 * (k % 8))); // safe: a public byte offset below 64 bits
+        out[k / 8] |= @as(u64, byte) << @as(u6, @intCast(8 * (k % 8))); // a public byte offset below 64 bits
     }
 }
 
@@ -294,7 +294,7 @@ fn encode(out: []u8, x: []const u64) void {
     @setRuntimeSafety(true);
     for (0..out.len) |k| {
         const limb = if (k / 8 < x.len) x[k / 8] else 0;
-        out[out.len - 1 - k] = @truncate(limb >> @as(u6, @intCast(8 * (k % 8)))); // safe: one byte of a limb at a public offset
+        out[out.len - 1 - k] = @truncate(limb >> @as(u6, @intCast(8 * (k % 8)))); // one byte of a limb at a public offset
     }
 }
 
@@ -411,8 +411,8 @@ pub const PrivateKey = struct {
             var carry: u64 = 0;
             for (0..h) |j| {
                 const p = @as(u128, key.q.m[j]) * s.u[i] + s.wide[i + j] + carry;
-                s.wide[i + j] = @truncate(p); // safe: the low word
-                carry = @truncate(p >> 64); // safe: the high word
+                s.wide[i + j] = @truncate(p);
+                carry = @truncate(p >> 64);
             }
             var c: u1 = 0;
             s.wide[i + h], c = addc(s.wide[i + h], carry, 0);

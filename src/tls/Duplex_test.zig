@@ -2,6 +2,7 @@
 //! order while key updates (asked for, answered and forced by low record limits) and a close in
 //! one direction happen mid-stream. The hardened tier runs it under ThreadSanitizer.
 const std = @import("std");
+const tasks = @import("../testing/tasks.zig");
 const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
 const Server = @import("handshake/Server.zig");
@@ -71,7 +72,7 @@ fn acceptAndRun(end: *End, io: std.Io, input: *std.Io.Reader, output: *std.Io.Wr
 /// Reads `in_direction` on a task of its own while this task writes `out_direction`.
 fn run(end: *End, io: std.Io, out_direction: u8, in_direction: u8, update_every: usize) !void {
     var reading = try io.concurrent(readAll, .{ &end.session, in_direction });
-    errdefer _ = reading.cancel(io) catch {}; // glint-ignore: Z026 -- a test already failing reaps its reader
+    errdefer tasks.reap(tasks.Result(readAll), io, &reading);
     try writeAll(&end.session, out_direction, update_every);
     try reading.await(io);
 }
@@ -116,7 +117,7 @@ fn duplex(suites: []const Suite, update_every: usize, records: u64) !void {
         opened = false;
         up.close();
         down.close();
-        _ = serving.cancel(io) catch {}; // glint-ignore: Z026 -- the handshake already failed; the server's end of it is reaped
+        tasks.reap(tasks.Result(acceptAndRun), io, &serving);
         return err;
     };
     defer client.session.deinit();
@@ -201,7 +202,7 @@ test "C5 sessions over std.Io resume: the client keeps the server's tickets as i
         }) catch |err| {
             up.close();
             down.close();
-            _ = serving.cancel(io) catch {}; // glint-ignore: Z026 -- the handshake already failed; the server's end of it is reaped
+            tasks.reap(tasks.Result(serveOnce), io, &serving);
             return err;
         };
         const resumed = client.session.info().?.resumed;
@@ -209,13 +210,13 @@ test "C5 sessions over std.Io resume: the client keeps the server's tickets as i
         const n = client.session.reader().readSliceShort(&buffer) catch |err| {
             client.session.deinit();
             up.close();
-            _ = serving.cancel(io) catch {}; // glint-ignore: Z026 -- a failed read; the server's end is reaped
+            tasks.reap(tasks.Result(serveOnce), io, &serving);
             return err;
         };
         client.session.finish() catch |err| {
             client.session.deinit();
             up.close();
-            _ = serving.cancel(io) catch {}; // glint-ignore: Z026 -- a failed close; the server's end is reaped
+            tasks.reap(tasks.Result(serveOnce), io, &serving);
             return err;
         };
         client.session.deinit();

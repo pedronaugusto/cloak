@@ -51,8 +51,8 @@ pub fn validate(codecs: []const *Codec, direction: enum { decompress, compress }
 pub fn writeExtension(w: *Writer, codecs: []const *Codec) Writer.WriteError!void {
     @setRuntimeSafety(true);
     try w.int(u16, extension_id);
-    try w.int(u16, @intCast(1 + 2 * codecs.len)); // safe: at most `max_codecs`
-    try w.int(u8, @intCast(2 * codecs.len)); // safe: at most `max_codecs`
+    try w.int(u16, @intCast(1 + 2 * codecs.len)); // at most `max_codecs`
+    try w.int(u8, @intCast(2 * codecs.len)); // at most `max_codecs`
     for (codecs) |codec| try w.int(u16, @backingInt(codec.algorithm));
 }
 
@@ -130,10 +130,10 @@ pub fn build(out: []u8, codec: *Codec, certificate: []const u8) ?[]u8 {
     const n = codec.compress.?(codec, body, out[12..][0..room]) catch return null;
     if (n == 0 or n > room) return null;
     out[0] = message_type;
-    std.mem.writeInt(u24, out[1..4], @intCast(8 + n), .big); // safe: smaller than the certificate
+    std.mem.writeInt(u24, out[1..4], @intCast(8 + n), .big); // smaller than the certificate
     std.mem.writeInt(u16, out[4..6], @backingInt(codec.algorithm), .big);
-    std.mem.writeInt(u24, out[6..9], @intCast(body.len), .big); // safe: checked above
-    std.mem.writeInt(u24, out[9..12], @intCast(n), .big); // safe: below the certificate's length
+    std.mem.writeInt(u24, out[6..9], @intCast(body.len), .big); // checked above
+    std.mem.writeInt(u24, out[9..12], @intCast(n), .big); // below the certificate's length
     return out[0 .. 12 + n];
 }
 

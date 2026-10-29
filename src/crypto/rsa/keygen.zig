@@ -151,7 +151,7 @@ fn derive(size: Size, s: *State, k: usize) Error!bool {
     var high: u64 = s.g[0] >> 32;
     for (s.g[1..k]) |limb| high |= limb;
     if (ct.barrier(high) != 0) return false;
-    const g: u32 = @truncate(s.g[0]); // safe: checked below 2^32 above
+    const g: u32 = @truncate(s.g[0]); // checked below 2^32 above
     // lambda = 2 a' (b' / g); b' is a multiple of g.
     divideSmall(s.b[0..k], s.b[0..k], g);
     multiply(s.lambda[0 .. 2 * k], s.a[0..k], s.b[0..k]);
@@ -299,15 +299,15 @@ pub fn remainder(x: []const u64, comptime q: u32) u32 {
         r = reduceWord((r << 32) | (x[i] >> 32), q, m);
         r = reduceWord((r << 32) | (x[i] & 0xffff_ffff), q, m);
     }
-    return @intCast(r); // safe: below q
+    return @intCast(r); // below q
 }
 
 fn reduceWord(x: u64, comptime q: u32, m: u64) u64 {
-    const estimate: u64 = @truncate((@as(u128, x) * m) >> 64); // safe: the high word of the product
+    const estimate: u64 = @truncate((@as(u128, x) * m) >> 64);
     const r = x - estimate * q;
     // r is below 2q: subtract q when it is at least q.
     const d = r -% q;
-    return d +% (q & maskOf(@truncate(d >> 63))); // safe: the sign bit of a value below 2^34
+    return d +% (q & maskOf(@truncate(d >> 63))); // the sign bit of a value below 2^34
 }
 
 /// All ones when `x` is zero.
@@ -328,8 +328,8 @@ pub fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) boo
     var carry: u64 = 0;
     for (x, 0..) |limb, i| {
         const p = @as(u128, limb) * factor + carry;
-        wide[i] = @truncate(p); // safe: the low word
-        carry = @truncate(p >> 64); // safe: the high word
+        wide[i] = @truncate(p);
+        carry = @truncate(p >> 64);
     }
     wide[x.len] = carry;
     var c: u1 = 1;
@@ -345,7 +345,7 @@ pub fn inverseOfE(out: []u64, x: []const u64, wide: *[rsa.max_limbs + 1]u64) boo
         const t_i, const b1 = subb(wide[i], borrow, 0);
         const q_i = t_i *% inverse;
         if (i < out.len) out[i] = q_i;
-        borrow = @as(u64, @truncate((@as(u128, q_i) * e) >> 64)) + b1; // safe: the high word of q_i * e
+        borrow = @as(u64, @truncate((@as(u128, q_i) * e) >> 64)) + b1;
     }
     return true;
 }
@@ -360,7 +360,7 @@ fn powModE(base: u32, comptime exponent: u32) u32 {
         if ((exponent >> bit) & 1 == 1) acc = reduceWord(acc * base, e, m);
         if (bit == 0) break;
     }
-    return @intCast(acc); // safe: below e
+    return @intCast(acc); // below e
 }
 
 /// gcd(a, b) of two odd values into `out`, by a binary gcd of a fixed 2 * 64 * k steps: each
@@ -374,7 +374,7 @@ pub fn gcdOdd(out: []u64, a_in: []const u64, b_in: []const u64) void {
     @memcpy(a[0..k], a_in);
     @memcpy(b[0..k], b_in);
     for (0..2 * 64 * k) |_| {
-        const both = maskOf(@truncate(a[0] & b[0] & 1)); // safe: the low bits
+        const both = maskOf(@truncate(a[0] & b[0] & 1));
         var borrow: u1 = 0;
         for (0..k) |i| _, borrow = subb(a[i], b[i], borrow);
         // Swap when both are odd and a < b, so a >= b, then a -= b when both are odd.
@@ -390,8 +390,8 @@ pub fn gcdOdd(out: []u64, a_in: []const u64, b_in: []const u64) void {
             a[i] = d;
         }
         // Halve a when even, else b when even.
-        const a_even = maskOf(@truncate(~a[0] & 1)); // safe: the low bit
-        const b_even = ~a_even & maskOf(@truncate(~b[0] & 1)); // safe: the low bit
+        const a_even = maskOf(@truncate(~a[0] & 1));
+        const b_even = ~a_even & maskOf(@truncate(~b[0] & 1));
         halveIf(a[0..k], a_even);
         halveIf(b[0..k], b_even);
     }
@@ -417,12 +417,12 @@ pub fn divideSmall(out: []u64, x: []const u64, g: u32) void {
         const limb = x[i];
         while (bit > 0) {
             bit -= 1;
-            r = (r << 1) | ((limb >> @intCast(bit)) & 1); // safe: bit below 64
+            r = (r << 1) | ((limb >> @intCast(bit)) & 1); // bit below 64
             const d = r -% g;
             // r < 2g < 2^33, so the sign bit says r < g.
-            const take = ~maskOf(@truncate(d >> 63)); // safe: the sign bit
+            const take = ~maskOf(@truncate(d >> 63));
             r = (r & ~take) | (d & take);
-            word |= (take & 1) << @intCast(bit); // safe: bit below 64
+            word |= (take & 1) << @intCast(bit); // bit below 64
         }
         out[i] = word;
     }
@@ -435,8 +435,8 @@ fn multiply(out: []u64, a: []const u64, b: []const u64) void {
         var carry: u64 = 0;
         for (a, 0..) |al, j| {
             const p = @as(u128, al) * bl + out[i + j] + carry;
-            out[i + j] = @truncate(p); // safe: the low word
-            carry = @truncate(p >> 64); // safe: the high word
+            out[i + j] = @truncate(p);
+            carry = @truncate(p >> 64);
         }
         out[i + a.len] = carry;
     }
@@ -471,7 +471,7 @@ pub fn greaterThanPowerOfTwo(x: []const u64, power: usize) bool {
     for (x, 0..) |limb, i| {
         const low = 64 * i;
         for (0..64) |j| {
-            const bit = (limb >> @intCast(j)) & 1; // safe: j below 64
+            const bit = (limb >> @intCast(j)) & 1; // j below 64
             const position = low + j;
             if (position > power) above |= bit else if (position == power) at |= bit else below |= bit;
         }

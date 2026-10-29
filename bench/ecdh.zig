@@ -9,7 +9,7 @@ const ecdh = harness.ecdh;
 fn time(io: std.Io, comptime body: anytype, args: anytype, iterations: usize) u64 {
     const start = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..iterations) |_| @call(.auto, body, args);
-    // safe: elapsed monotonic nanoseconds are positive and far below 2^64.
+    // Elapsed monotonic nanoseconds are positive and far below 2^64.
     return @intCast(@divTrunc(std.Io.Clock.awake.now(io).nanoseconds - start, @as(i96, @intCast(iterations))));
 }
 

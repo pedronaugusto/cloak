@@ -295,6 +295,28 @@ in a scrubbed frame ("Parsing and private material"; F93 searches the stack and
 released memory); none of this reaches registers, the entry frame, OS paging or
 process abort, nor proves hardware constant-time behavior.
 
+Fifteen sites stand where aegis's rules cannot follow, each an escape that names it a
+`boundary`, judged by hand (review of 2026-10-28) and listed here with the rule each covers.
+They are the machine, the OS and std, never cloak's own code:
+- A019, inline asm: `crypto/field/Montgomery.zig`'s empty asm that ties a value to a register
+  so the optimizer cannot see through a mask; `crypto/field/s2n.zig`'s cpuid and MIDR_EL1
+  reads; `crypto/sha1.zig`'s six ARMv8 SHA-1 instructions, on registers alone.
+- A019, CryptoAPI: `services/windows.zig`'s chain context cast and its three calls, declared
+  as the SDK declares them.
+- A019, the Linux socket ABI: `tls/offload/linux.zig`'s `sockaddr.in` passed as the `sockaddr`
+  it begins as.
+- A008, std: `tls/crypto/Exchange.zig`'s ML-KEM key pair, which std returns by value; the copy
+  lies in the frame `scrubbed` erases.
+The escape form does not name its rule yet (`boundary(A019)`); it does once glint reads that
+spelling, at the re-pin onto it.
+
+Six more stand only for glint: methods that hand back their own owner's borrow, with
+`SecretBytes.expose`'s lifetime (`tls/wire/Buffer.zig`'s `bytes`, `view` and `ensure`,
+`wire/Builder.zig`'s `written`, `tls/handshake/Transcripts.zig`'s `keptBytes` and the server's
+ECH inner hello). A002 flags every returned expose; a method forwarding its own field's is an
+expose method, whose callers A002 should judge instead (sent to aegis for glint). They come
+off with nothing in their place when glint reads that shape.
+
 ## TLS 1.3 foundations
 
 Certificates and keys are the `certificates` namespace of the one `cloak` module,

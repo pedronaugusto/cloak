@@ -43,7 +43,7 @@ pub const Affine = struct {
     pub fn encode(a: *const Affine) [encoded_length]u8 {
         var out: [encoded_length]u8 = undefined;
         for (0..4) |i| std.mem.writeInt(u64, out[8 * i ..][0..8], a.words[4 + i], .little);
-        out[31] |= @as(u8, @truncate(a.words[0] & 1)) << 7; // safe: x's low bit
+        out[31] |= @as(u8, @truncate(a.words[0] & 1)) << 7; // x's low bit
         return out;
     }
 
@@ -274,7 +274,7 @@ const portable = struct {
 
     /// The 4-bit digit `i` of a little-endian scalar, counted from the bottom.
     fn digit(scalar: *const [32]u8, i: usize) u4 {
-        return @truncate(scalar[i / 2] >> @intCast(4 * (i % 2))); // safe: one nibble
+        return @truncate(scalar[i / 2] >> @intCast(4 * (i % 2))); // one nibble
     }
 
     const BaseState = struct { q: Point, selected: Point, digit: u8 };
@@ -294,7 +294,7 @@ const portable = struct {
             s.selected = Point.identity;
             inline for (1..16) |j| {
                 // One when the digit is j: (digit ^ j) - 1 borrows only from zero.
-                const hit: u1 = @truncate(((@as(u32, s.digit) ^ j) -% 1) >> 31); // safe: the borrow bit
+                const hit: u1 = @truncate(((@as(u32, s.digit) ^ j) -% 1) >> 31); // the borrow bit
                 s.selected = Point.select(hit, &s.selected, &base_table[j]);
             }
             s.q = s.q.add(&s.selected);
@@ -317,7 +317,7 @@ const portable = struct {
             if (!vxx.eql(&u.neg())) return null;
             x = x.mul(&sqrtm1);
         }
-        const sign: u1 = @truncate(bytes[31] >> 7); // safe: the top bit
+        const sign: u1 = @truncate(bytes[31] >> 7);
         if (x.isZero() and sign == 1) return null;
         if (x.isNegative() != sign) x = x.neg();
         return toAffine(&x, &y);

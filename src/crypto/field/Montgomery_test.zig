@@ -17,7 +17,7 @@ fn toInt(comptime T: type, l: anytype) T {
 }
 fn fromInt(comptime count: usize, v: anytype) [count]u64 {
     var l: [count]u64 = undefined;
-    for (&l, 0..) |*limb, i| limb.* = @truncate(v >> @intCast(64 * i)); // safe: each limb keeps its own 64 bits
+    for (&l, 0..) |*limb, i| limb.* = @truncate(v >> @intCast(64 * i)); // each limb keeps its own 64 bits
     return l;
 }
 

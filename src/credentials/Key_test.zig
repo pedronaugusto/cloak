@@ -85,7 +85,7 @@ test "credential PKCS8 attributes require Attribute grammar and implicit SET ord
         defer std.testing.allocator.free(encoded);
         @memcpy(encoded[0..block.der.len], block.der);
         @memcpy(encoded[block.der.len..], attributes);
-        encoded[1] += @intCast(attributes.len); // safe: this fixed dummy sequence and each short attribute fit one DER length octet
+        encoded[1] += @intCast(attributes.len); // this fixed dummy sequence and each short attribute fit one DER length octet
         try rejectKey(error.InvalidKey, PrivateKey.parse(std.testing.allocator, encoded, .{}));
     }
 }

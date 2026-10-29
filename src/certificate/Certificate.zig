@@ -48,7 +48,7 @@ pub fn parse(bytes: []const u8, limits: Limits) ParseError!Certificate {
     if (r.peek() == 0xa0) {
         const v = try Der.number((try Der.single((try r.next()).value, 2)).value);
         if (v == 0 or v > 2) return error.InvalidCertificate;
-        // safe: the version was checked to be one or two.
+        // The version was checked to be one or two.
         version = @intCast(v);
     }
     const serial = try Der.integer((try r.expect(2)).value);
@@ -156,7 +156,7 @@ fn parseTime(e: Der.Element, profile: bool) ParseError!i64 {
     const second = try digits(s[cursor + 8 ..][0..2]);
     const leap = @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0);
     const days = [_]i64{ 31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-    // safe: month bounds short-circuit before month - 1 is cast or indexed.
+    // Month bounds short-circuit before month - 1 is cast or indexed.
     if (month < 1 or month > 12 or day < 1 or day > days[@intCast(month - 1)] or hour > 23 or minute > 59 or second > 59) return error.InvalidTime;
     var total: i64 = 0;
     var y: i64 = 1970;
@@ -165,7 +165,7 @@ fn parseTime(e: Der.Element, profile: bool) ParseError!i64 {
         y -= 1;
         total -= if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 366) else 365;
     }
-    // safe: the validated month is in 1..12.
+    // The validated month is in 1..12.
     for (days[0..@intCast(month - 1)]) |d| total += d;
     return (total + day - 1) * 86400 + hour * 3600 + minute * 60 + second;
 }

@@ -109,7 +109,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!TicketKeys {
     const lifetime = types.spanSeconds(options.lifetime);
     const rotation = types.spanSeconds(options.rotation);
     if (lifetime <= 0 or lifetime > max_lifetime or rotation <= 0 or rotation > max_lifetime) return error.InvalidOptions;
-    // safe: both were just bounded by seven days.
+    // Both were just bounded by seven days.
     return .{ .gpa = gpa, .lifetime = @intCast(lifetime), .rotation = @intCast(rotation) };
 }
 

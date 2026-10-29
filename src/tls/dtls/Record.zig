@@ -222,11 +222,11 @@ pub const Epoch = struct {
         const total = head + inner + tag_length;
         if (out.len < total) return error.BufferTooSmall;
         const record = out[0..total];
-        // safe: two low bits of the epoch, and flags fixed by this encoder.
+        // Two low bits of the epoch, and flags fixed by this encoder.
         record[0] = 0b0010_0000 | @as(u8, if (cid.len != 0) 0x10 else 0) | 0x08 | 0x04 | @as(u8, @truncate(self.number & 3));
         @memcpy(record[1..][0..cid.len], cid);
         std.mem.writeInt(u16, record[1 + cid.len ..][0..2], @truncate(self.sequence), .big);
-        // safe: at most 2^14 + 17 bytes.
+        // At most 2^14 + 17 bytes.
         std.mem.writeInt(u16, record[3 + cid.len ..][0..2], @intCast(inner + tag_length), .big);
         const body = record[head..][0..inner];
         if (plain.ptr != body.ptr) @memmove(body[0..plain.len], plain);
@@ -289,7 +289,7 @@ pub const Epoch = struct {
         record[1..3].* = .{ 0xfe, 0xfd };
         std.mem.writeInt(u64, record[3..11], number, .big);
         @memcpy(record[11..][0..cid.len], cid);
-        // safe: at most 2^14 + 25 bytes.
+        // At most 2^14 + 25 bytes.
         std.mem.writeInt(u16, record[11 + cid.len ..][0..2], @intCast(explicit + inner + tag_len), .big);
         if (explicit != 0) std.mem.writeInt(u64, record[head..][0..8], number, .big);
         const body = record[head + explicit ..][0..inner];
@@ -343,7 +343,7 @@ fn additional12(out: *[23 + max_cid]u8, content: u8, version: [2]u8, number: u64
         std.mem.writeInt(u64, out[0..8], number, .big);
         out[8] = content;
         out[9..11].* = version;
-        // safe: callers bound the plaintext at 2^14.
+        // Callers bound the plaintext at 2^14.
         std.mem.writeInt(u16, out[11..13], @intCast(len), .big);
         return out[0..13];
     }
@@ -351,13 +351,13 @@ fn additional12(out: *[23 + max_cid]u8, content: u8, version: [2]u8, number: u64
     // length_of_DTLSInnerPlaintext (RFC 9146 section 5.3).
     @memset(out[0..8], 0xff);
     out[8] = tls12_cid;
-    // safe: a CID is at most 255 bytes.
+    // A CID is at most 255 bytes.
     out[9] = @intCast(cid.len);
     out[10] = tls12_cid;
     out[11..13].* = version;
     std.mem.writeInt(u64, out[13..21], number, .big);
     @memcpy(out[21..][0..cid.len], cid);
-    // safe: callers bound the inner plaintext at 2^14 + 1.
+    // Callers bound the inner plaintext at 2^14 + 1.
     std.mem.writeInt(u16, out[21 + cid.len ..][0..2], @intCast(len), .big);
     return out[0 .. 23 + cid.len];
 }
@@ -446,7 +446,7 @@ pub fn plaintext(content: Content, sequence: u64, body: []const u8, out: []u8) S
     out[0] = @backingInt(content);
     out[1..3].* = .{ 0xfe, 0xfd };
     std.mem.writeInt(u64, out[3..11], sequence, .big);
-    // safe: bounded at 2^14 above.
+    // Bounded at 2^14 above.
     std.mem.writeInt(u16, out[11..13], @intCast(body.len), .big);
     if (body.ptr != out[header12..].ptr) @memmove(out[header12..][0..body.len], body);
     return out[0 .. header12 + body.len];

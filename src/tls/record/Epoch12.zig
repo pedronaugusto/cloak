@@ -86,7 +86,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             std.mem.writeInt(u64, ad[0..8], self.sequence.raw(), .big);
             ad[8] = @backingInt(content);
             ad[9..11].* = .{ 3, 3 };
-            // safe: callers bound the plaintext at 2^14 bytes.
+            // Callers bound the plaintext at 2^14 bytes.
             std.mem.writeInt(u16, ad[11..13], @intCast(len), .big);
             return ad;
         }
@@ -116,7 +116,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             try self.admit(input.len);
             wire[0] = @backingInt(content);
             wire[1..3].* = .{ 3, 3 };
-            // safe: bounded by 2^14 plus the record overhead.
+            // Bounded by 2^14 plus the record overhead.
             std.mem.writeInt(u16, wire[3..5], @intCast(wire_len - 5), .big);
             // GCM and CCM carry the record number as the explicit nonce.
             if (explicit != 0) std.mem.writeInt(u64, wire[5..][0..8], self.sequence.raw(), .big);

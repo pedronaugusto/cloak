@@ -18,7 +18,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     const hostname: ?Cf = switch (request.identity) {
         .dns => |name| blk: {
             if (name.len > 253 or std.mem.findScalar(u8, name, 0) != null) return error.InvalidReferenceIdentity;
-            break :blk sec.CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), 0x08000100, 0) orelse return error.OutOfMemory; // safe: DNS length is bounded to 253 before signed CFIndex conversion
+            break :blk sec.CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), 0x08000100, 0) orelse return error.OutOfMemory; // DNS length is bounded to 253 before signed CFIndex conversion
         },
         else => null,
     };
@@ -32,7 +32,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     if (sec.SecTrustSetNetworkFetchAllowed(owner, 0) != 0) return error.NativePolicyFailure;
     var network: u8 = 1;
     if (sec.SecTrustGetNetworkFetchAllowed(owner, &network) != 0 or network != 0) return error.NativePolicyFailure;
-    const date = sec.CFDateCreate(null, @as(f64, @floatFromInt(now)) - 978307200.0) orelse return error.OutOfMemory; // safe: validated integer seconds in year 1..9999 are exactly representable by f64
+    const date = sec.CFDateCreate(null, @as(f64, @floatFromInt(now)) - 978307200.0) orelse return error.OutOfMemory; // validated integer seconds in year 1..9999 are exactly representable by f64
     defer sec.CFRelease(date);
     if (sec.SecTrustSetVerifyDate(owner, date) != 0) return error.NativePolicyFailure;
     if (anchors.len != 0) {
@@ -48,20 +48,20 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     defer sec.CFRelease(chain);
     const count = sec.CFArrayGetCount(chain);
     if (count <= 0 or count > request.limits.depth) return error.NativeEvidenceUnavailable;
-    const ders = try gpa.alloc([]const u8, @intCast(count)); // safe: positive OS chain count is bounded before usize conversion
+    const ders = try gpa.alloc([]const u8, @intCast(count)); // positive OS chain count is bounded before usize conversion
     defer gpa.free(ders);
     const buffers = try gpa.alloc(Cf, ders.len);
     defer gpa.free(buffers);
     var populated: usize = 0;
     defer for (buffers[0..populated]) |buffer| sec.CFRelease(buffer);
     for (ders, buffers, 0..) |*der, *buffer, index| {
-        const cert = sec.CFArrayGetValueAtIndex(chain, @intCast(index)) orelse return error.NativeEvidenceUnavailable; // safe: index is below the validated CFArray count
+        const cert = sec.CFArrayGetValueAtIndex(chain, @intCast(index)) orelse return error.NativeEvidenceUnavailable; // index is below the validated CFArray count
         buffer.* = sec.SecCertificateCopyData(cert) orelse return error.NativeEvidenceUnavailable;
         populated += 1;
         const len = sec.CFDataGetLength(buffer.*);
         if (len <= 0 or len > request.limits.receipt_bytes) return error.ServiceLimit;
         const ptr = sec.CFDataGetBytePtr(buffer.*) orelse return error.NativeEvidenceUnavailable;
-        der.* = ptr[0..@intCast(len)]; // safe: positive CFData length is bounded by receipt_bytes
+        der.* = ptr[0..@intCast(len)]; // positive CFData length is bounded by receipt_bytes
     }
     return Path.init(gpa, request, ders);
 }
@@ -74,12 +74,12 @@ fn array(sec: *const Security, gpa: std.mem.Allocator, certificates: []const []c
     defer for (refs[0..count]) |ref| sec.CFRelease(ref);
     for (certificates, refs) |der, *ref| {
         if (der.len > std.math.maxInt(isize)) return error.ServiceLimit;
-        const data = sec.CFDataCreate(null, der.ptr, @intCast(der.len)) orelse return error.OutOfMemory; // safe: DER length was checked to fit signed CFIndex
+        const data = sec.CFDataCreate(null, der.ptr, @intCast(der.len)) orelse return error.OutOfMemory; // DER length was checked to fit signed CFIndex
         defer sec.CFRelease(data);
         ref.* = sec.SecCertificateCreateWithData(null, data) orelse return error.NativePolicyFailure;
         count += 1;
     }
-    return sec.CFArrayCreate(null, refs.ptr, @intCast(refs.len), sec.kCFTypeArrayCallBacks) orelse return error.OutOfMemory; // safe: array count was checked to fit signed CFIndex
+    return sec.CFArrayCreate(null, refs.ptr, @intCast(refs.len), sec.kCFTypeArrayCallBacks) orelse return error.OutOfMemory; // array count was checked to fit signed CFIndex
 }
 const ArrayCallbacks = extern struct { version: isize, retain: ?*const anyopaque, release: ?*const anyopaque, description: ?*const anyopaque, equal: ?*const anyopaque };
 /// The Security and CoreFoundation symbols cloak calls, opened from the system's Security framework on

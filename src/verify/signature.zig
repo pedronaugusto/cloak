@@ -219,7 +219,7 @@ fn rsaPss(comptime H: type, comptime M: type, key: rsa_key, salt_length: usize, 
     if (salt_length > em_len or em_len < H.digest_length + salt_length + 2 or em[em.len - 1] != 0xbc) return error.InvalidSignature;
     const db_len = em.len - H.digest_length - 1;
     const h = em[db_len..][0..H.digest_length];
-    const unused: u3 = @intCast(em.len * 8 - em_bits); // safe: emLen is ceil(emBits/8), so the difference is below eight.
+    const unused: u3 = @intCast(em.len * 8 - em_bits); // emLen is ceil(emBits/8), so the difference is below eight.
     const mask: u8 = @as(u8, 255) >> unused;
     if (em[0] & ~mask != 0) return error.InvalidSignature;
     var db: [512]u8 = undefined;

@@ -207,7 +207,7 @@ pub fn ServerPair(comptime suite: Suite13) type {
 
         fn now(self: *const Self) u64 {
             const io = self.clock orelse return 0;
-            // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+            // Monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
             return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         }
 

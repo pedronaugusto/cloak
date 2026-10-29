@@ -194,7 +194,7 @@ pub fn FieldWith(comptime curve: Curve, comptime backend: Backend, comptime vari
                         while (shift > 0) {
                             shift -= 4;
                             r = r.sqrn(4);
-                            const digit: u4 = @truncate(exponent[limb] >> @as(u6, @intCast(shift))); // safe: a nibble of the public exponent
+                            const digit: u4 = @truncate(exponent[limb] >> @as(u6, @intCast(shift))); // a nibble of the public exponent
                             r = r.mul(&table[digit]);
                         }
                     }

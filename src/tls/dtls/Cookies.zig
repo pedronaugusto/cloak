@@ -111,7 +111,7 @@ pub fn check(self: *const Cookies, gpa: std.mem.Allocator, options: *const Datag
     // The hello in its TLS form: type and length, then the body.
     const message = out[0 .. 4 + length];
     message[0] = 1;
-    // safe: bounded at 64 KiB above.
+    // Bounded at 64 KiB above.
     std.mem.writeInt(u24, message[1..4], @intCast(length), .big);
     @memcpy(message[4..], fragment);
     const hello = ClientHello.parse(message, .datagram) catch return .drop;
@@ -150,7 +150,7 @@ fn macKernel(key: *const Key, label: []const u8, address: []const u8, parts: []c
     h.update(address);
     for (parts) |part| {
         var len: [2]u8 = undefined;
-        // safe: every part is a field of a bounded hello.
+        // Every part is a field of a bounded hello.
         std.mem.writeInt(u16, &len, @intCast(part.len), .big);
         h.update(&len);
         h.update(part);
@@ -209,7 +209,7 @@ fn retry13(self: *const Cookies, gpa: std.mem.Allocator, policy: Hello.Options, 
     std.mem.writeInt(u16, cookie[10..12], @backingInt(suite), .big);
     std.mem.writeInt(u16, cookie[12..14], @backingInt(group), .big);
     const hash_len = suites.digestLength(suite);
-    // safe: a digest length, 32 or 48.
+    // A digest length, 32 or 48.
     cookie[14] = @as(u8, @intCast(hash_len)) | @as(u8, if (asked) 0x80 else 0);
     cookie[15..47].* = hello.fingerprint();
     const hello_hash = cookie[47..][0..hash_len];
@@ -285,11 +285,11 @@ fn admit13(self: *const Cookies, address: []const u8, seconds: u64, cookie: []co
         .group = group,
         .asked = cookie[14] & 0x80 != 0,
         .hello_hash = @splat(0),
-        // safe: 32 or 48.
+        // 32 or 48.
         .hash_len = @intCast(hash_len),
         .fingerprint = cookie[15..47].*,
         .cookie = undefined,
-        // safe: bounded at max_cookie above.
+        // Bounded at max_cookie above.
         .cookie_len = @intCast(cookie.len),
         .ech = ech,
     };

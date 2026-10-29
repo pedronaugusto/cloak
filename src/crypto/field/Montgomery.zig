@@ -22,7 +22,7 @@ pub inline fn subb(a: u64, b: u64, c: u1) struct { u64, u1 } {
 
 inline fn wide(a: u64, b: u64) struct { u64, u64 } {
     const w = @as(u128, a) * b;
-    return .{ @truncate(w), @truncate(w >> 64) }; // safe: low and high product words
+    return .{ @truncate(w), @truncate(w >> 64) }; // low and high product words
 }
 
 /// `a * b` as n + 1 limbs, in one carry chain.
@@ -66,7 +66,7 @@ pub inline fn maskOf(bit: u1) u64 {
 
 /// All ones when `x` is zero.
 pub inline fn zeroMask(x: u64) u64 {
-    const nonzero: u1 = @truncate((x | (0 -% x)) >> 63); // safe: the top bit is set exactly when x != 0
+    const nonzero: u1 = @truncate((x | (0 -% x)) >> 63); // the top bit is set exactly when x != 0
     return maskOf(nonzero ^ 1);
 }
 
@@ -303,7 +303,7 @@ pub fn Field(comptime modulus: comptime_int) type {
                 while (shift > 0) {
                     shift -= 4;
                     if (!first) r = r.sqrn(4);
-                    const digit: u4 = @truncate(exponent[limb] >> @as(u6, @intCast(shift))); // safe: public exponent nibble
+                    const digit: u4 = @truncate(exponent[limb] >> @as(u6, @intCast(shift))); // public exponent nibble
                     if (digit != 0) r = if (first) table[digit] else r.mul(table[digit]);
                     if (digit != 0) first = false;
                 }
