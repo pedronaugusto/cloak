@@ -215,7 +215,7 @@ const Search = struct {
         // Certificate Transparency: the leaf's SCTs over this path's issuer key. Each signature
         // it verifies is charged like the path's.
         var left = self.request.limits.signatures - self.work.signatures;
-        const transparent = transparency.check(self.gpa, self.path[0..self.count], T.milliseconds(self.request.time), self.request.policy.transparency, self.request.evidence.scts, &left) catch |err| switch (err) {
+        const transparent = transparency.check(self.gpa, self.path[0..self.count], T.milliseconds(self.request.time), self.request.policy.transparency, self.request.evidence.scts, evidence.scts, &left) catch |err| switch (err) {
             error.MissingTransparency, error.InvalidTransparency => {
                 self.work.signatures = self.request.limits.signatures - left;
                 self.transparency_failure = err;
