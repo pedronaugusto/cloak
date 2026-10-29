@@ -160,7 +160,14 @@ CI plans come from `bay plan`. Benchmarks compile in CI; measurements run by han
 
 ## Licence
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE). Code cloak takes from elsewhere keeps its own licence
+beside it: the fixed-window loops `src/credentials/Curve.zig` adapts from Zig's standard
+library carry the Zig contributors' MIT notice in that file's header; the vendored
+s2n-bignum assembly is Apache-2.0 OR ISC OR MIT-0 (`src/crypto/vendor/s2n-bignum/LICENSE`
+and `NOTICE`), and the vendored fiat-crypto code is MIT OR Apache-2.0 OR BSD-1-Clause,
+taken under MIT (`src/crypto/vendor/fiat/COPYRIGHT` and `LICENSE-MIT`); their sources and
+hashes are in `src/crypto/vendor/PROVENANCE.md`. Test fixtures keep their licences in
+their own directories.
 
 ## Security
 
