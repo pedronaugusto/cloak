@@ -2,6 +2,7 @@
 //! against the caller's logs and policy. Offline: log lists, their states and freshness are the
 //! caller's; inclusion proofs and gossip are not checked.
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
@@ -134,10 +135,13 @@ pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, r
     return error.MissingTransparency;
 }
 
+/// SCT timestamps and log list expiries: milliseconds since the epoch.
+const RealMilliseconds = aegis.units.Instant(.real, .millisecond, i64);
+
 /// A compliant verdict, holding through the last whole second before the list expires (a
 /// receipt's `expires` is the start of the last second it holds for).
 fn compliant(expires_ms: ?i64) Result {
-    return .{ .status = .compliant, .expires = if (expires_ms) |ms| @divFloor(ms - 1, std.time.ms_per_s) else null };
+    return .{ .status = .compliant, .expires = if (expires_ms) |ms| RealMilliseconds.fromRaw(ms - 1).convert(.second, i64, .down).raw() else null };
 }
 
 /// The policy's shape: one to `max_logs` logs, each count one to `max_count`.
