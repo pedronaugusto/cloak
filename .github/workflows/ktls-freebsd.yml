@@ -11,10 +11,10 @@ permissions:
   actions: read
 jobs:
   gate:
-    uses: pedronaugusto/preflight/.github/workflows/zig.yml@b9ae5b81fa1cb316ce1eab094f2645c704431c0a
+    uses: pedronaugusto/preflight/.github/workflows/zig.yml@8f09d7eb60b9240b1b8441de108442a5649b678a
     with:
       tier: merge
       working-directory: "."
-      preflight-ref: b9ae5b81fa1cb316ce1eab094f2645c704431c0a
+      preflight-ref: 8f09d7eb60b9240b1b8441de108442a5649b678a
       merge-matrix: >-
         {"include":[{"os":"ubuntu-latest","name":"KTLS tests (x86_64-freebsd on its kernel under KVM, Debug)","step":"ci","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm -Dtest-filter=C9.1 -Dtest-filter=F83 -Dtest-filter=F84","shard":"","setup":true,"job_timeout":45,"cache_key":"ktls-freebsd-filtered","artifact":"","operation":"execute","targets":"","directory":"","prepare":"","declared":false,"machine":"freebsd"},{"os":"ubuntu-latest","name":"test (x86_64-freebsd on its kernel under KVM, Debug)","step":"ci","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm","shard":"","setup":true,"job_timeout":45,"cache_key":"ktls-freebsd-suite","artifact":"","operation":"execute","targets":"","directory":"","prepare":"","declared":false,"machine":"freebsd"}]}
