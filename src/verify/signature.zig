@@ -40,7 +40,7 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
         },
         else => {
             var buffer: [max_digest]u8 = undefined;
-            return verifyDigest(key, algorithm, digestOf(algorithm, message, &buffer), signature);
+            return verifyDigest(key, algorithm, try digestOf(algorithm, message, &buffer), signature);
         },
     }
 }
@@ -66,13 +66,14 @@ fn ed25519(key: *const [32]u8, message: []const u8, signature: *const [64]u8) Er
     if (!std.mem.eql(u8, &check, signature[0..32])) return error.InvalidSignature;
 }
 
-/// The message hash a hashing algorithm signs; Ed25519 has none.
-pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u8) []const u8 {
+/// The message hash a hashing algorithm signs. Ed25519 and ML-DSA sign the message itself, and
+/// have none: UnsupportedAlgorithm, as `verifyDigest` refuses them.
+pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u8) error{UnsupportedAlgorithm}![]const u8 {
     @setRuntimeSafety(true);
     const hash: A.Hash = switch (algorithm) {
         .rsa, .ecdsa, .ecdsa_p1363 => |h| h,
         .pss => |p| p.hash,
-        .ed25519, .mldsa, .unsupported => unreachable, // callers route these elsewhere
+        .ed25519, .mldsa, .unsupported => return error.UnsupportedAlgorithm,
     };
     return switch (hash) {
         inline else => |h| {

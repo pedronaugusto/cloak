@@ -45,3 +45,11 @@ test "F08 catalogue_signature_workspace_and_rsa_size (oversized and resized sign
     }
     try std.testing.expectError(error.InvalidSignature, S.verify(p256.public_key, p256.signature_algorithm, p256.tbs, huge[0 .. 4 + 2 * (half + 4)]));
 }
+
+test "a message's digest is refused for the algorithms that sign the message itself" {
+    var out: [S.max_digest]u8 = undefined;
+    try std.testing.expectError(error.UnsupportedAlgorithm, S.digestOf(.ed25519, "message", &out));
+    try std.testing.expectError(error.UnsupportedAlgorithm, S.digestOf(.{ .mldsa = .mldsa65 }, "message", &out));
+    try std.testing.expectError(error.UnsupportedAlgorithm, S.digestOf(.{ .unsupported = "\x2a\x03" }, "message", &out));
+    try std.testing.expectEqual(@as(usize, 48), (try S.digestOf(.{ .ecdsa = .sha384 }, "message", &out)).len);
+}

@@ -373,4 +373,10 @@ test "C10 a private key writes its public half as the SubjectPublicKeyInfo its c
     // A key restricted to RSASSA-PSS carries its parameters in its certificate: not written.
     const rsa = try certificate.Algorithm.publicKey((try certificate.parse(pki.rsa, .{})).spki);
     try std.testing.expectError(error.UnsupportedAlgorithm, certificate.Algorithm.encodePublicKey(.{ .rsa = .{ .modulus = rsa.rsa.modulus, .exponent = rsa.rsa.exponent, .pss_only = true } }, &out));
+    // A key a caller builds that no encoding fits, or with no RSA modulus, is refused, not
+    // written past `out`.
+    const long: [out.len]u8 = @splat(4);
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .ec = .{ .curve = .p256, .bytes = &long } }, &out));
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .mldsa = .{ .level = .mldsa87, .bytes = &long } }, &out));
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .rsa = .{ .modulus = "", .exponent = "\x01\x00\x01" } }, &out));
 }

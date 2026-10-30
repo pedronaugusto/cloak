@@ -23,6 +23,9 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
   ```
 - `PrivateKey.Components` gains `mldsa` (an ML-DSA key from its seed): a switch over it that names every case needs one more.
 
+- `certificates.signature.digestOf` returns `error{UnsupportedAlgorithm}![]const u8`: Ed25519, ML-DSA and an unsupported algorithm, which have no message digest, are refused as `verifyDigest` refuses them, where they reached `unreachable` (a panic for a caller passing an algorithm a certificate named). Callers add a `try`.
+- `certificate.Algorithm.encodePublicKey`'s error set gains `InvalidPublicKey`: a key a caller builds whose encoding does not fit `out`, or an RSA key with an empty modulus or exponent, is refused, where it failed an assertion (undefined behaviour in ReleaseFast).
+
 ### Added
 
 - ML-DSA keys from their seed: `fromComponents(.mldsa)` takes the 32-byte seed and optionally the public key, compared with the seed's, as RFC 9964's JOSE keys (`AKP`) carry them; the same constructor RFC 9881's seed form is read through.

@@ -335,7 +335,8 @@ pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 
         .mldsa => |*k| .{ .mldsa = .{ .level = k.level, .bytes = k.publicKey() } },
         .x25519 => |*k| .{ .x25519 = &k.public },
     };
-    // unreachable: a private key is never restricted to RSASSA-PSS.
+    // unreachable: a private key is never restricted to RSASSA-PSS, and its parts are its
+    // material's fixed arrays, each within the longest key `out` holds.
     return certificate.Algorithm.encodePublicKey(public, out) catch unreachable;
 }
 /// The most noise bytes one signature draws: RSA's blinding seed and salt.

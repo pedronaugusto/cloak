@@ -240,8 +240,9 @@ pub const max_public_key_info = 22 + mldsa.Scheme(.mldsa87).public_key_length;
 /// rsaEncryption with NULL parameters (RFC 3279), id-ecPublicKey with the named curve and the
 /// uncompressed point (RFC 5480), id-Ed25519 (RFC 8410) and id-ML-DSA-* (RFC 9881), with no
 /// parameters. A key restricted to RSASSA-PSS is UnsupportedAlgorithm: its parameters are its
-/// certificate's to carry.
-pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{UnsupportedAlgorithm}![]const u8 {
+/// certificate's to carry. A key built by a caller whose encoding does not fit `out` (longer than
+/// any key cloak reads), or an RSA key with an empty modulus or exponent, is InvalidPublicKey.
+pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{ UnsupportedAlgorithm, InvalidPublicKey }![]const u8 {
     @setRuntimeSafety(true);
     // The AlgorithmIdentifier, and the subjectPublicKey's bytes (for RSA, their length).
     const identifier: []const u8, const raw: []const u8 = switch (key) {
@@ -259,11 +260,12 @@ pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{Unsu
             .mldsa87 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x13",
         }, m.bytes },
     };
+    if (key == .rsa and (key.rsa.modulus.len == 0 or key.rsa.exponent.len == 0)) return error.InvalidPublicKey;
     const rsa_body = if (key == .rsa) integerLength(key.rsa.modulus) + integerLength(key.rsa.exponent) else 0;
     const subject = if (key == .rsa) Der.headerLength(rsa_body) + rsa_body else raw.len;
     const bit_string = 1 + subject;
     const body = identifier.len + Der.headerLength(bit_string) + bit_string;
-    std.debug.assert(Der.headerLength(body) + body <= out.len);
+    if (Der.headerLength(body) + body > out.len) return error.InvalidPublicKey;
     var at = Der.header(out, 0, 0x30, body);
     @memcpy(out[at..][0..identifier.len], identifier);
     at += identifier.len;
