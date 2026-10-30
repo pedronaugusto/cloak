@@ -25,7 +25,10 @@ pub const ParseOptions = parser.Options;
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
 /// A test measures every key type and scheme against them in each build mode. A key is built
 /// straight into its shared block (aegis `Shared.createWith`), never in a frame first.
-const parse_stack: usize = if (builtin.mode == .debug) 96 * 1024 else 64 * 1024;
+/// Debug's parsing depth is Zig's own x86_64 backend's, the one a Debug build for x86_64 Linux
+/// compiles with: its frames are larger than LLVM's (an encrypted RSA key's parse reaches 108 KiB
+/// there, 90 KiB under LLVM).
+const parse_stack: usize = if (builtin.mode == .debug) 128 * 1024 else 64 * 1024;
 /// Debug's signing depth is P-521's: its nine-limb scalar arithmetic unrolls without
 /// optimization into a frame per step (91 KiB measured); the optimized builds stay below 24 KiB.
 const sign_stack: usize = if (builtin.mode == .debug) 128 * 1024 else 24 * 1024;

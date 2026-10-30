@@ -4,6 +4,11 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. The label now takes the same name (`src/crypto/vendor/shim`; the vendored files are unchanged).
+- Debug builds erase 128 KiB below a private key's parse, not 96 KiB: Zig's own x86_64 backend, which compiles Debug for x86_64 Linux, has larger frames than LLVM, and an encrypted RSA key's parse reached 108 KiB there, past what was erased.
+
 ## [0.23.0] - 2026-10-28
 
 ### Breaking
