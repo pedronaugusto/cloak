@@ -431,7 +431,12 @@ test "a parse, a signature and a decryption reach less stack than the depths tha
     var decrypting: usize = 0;
     for (keys) |bytes| {
         const options: ParseOptions = .{ .passphrase = if (isEncrypted(bytes)) "correct-horse" else null };
-        parsing = @max(parsing, aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ gpa, bytes, options }));
+        const reach = aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ gpa, bytes, options });
+        var untraced: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+        const bare = aegis.secret.stackReach(4 * parse_stack, parseReleased, .{ untraced.allocator(), bytes, options });
+        _ = untraced.deinit();
+        std.debug.print("PROBE parse {d} traced {d} untraced {d}\n", .{ bytes.len, reach, bare });
+        parsing = @max(parsing, reach);
         const key = try parse(gpa, bytes, options);
         defer key.deinit();
         var noise: [max_noise]u8 = @splat(0x4e);
