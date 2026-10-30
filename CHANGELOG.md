@@ -39,6 +39,10 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - RSA's private operation multiplies and squares with s2n-bignum's formally verified routines on x86_64 and AArch64: Karatsuba and `bignum_emontredc_8n` for moduli of a multiple of 8 limbs (the halves of RSA-2048, -3072 and -4096) on AArch64 and on x86_64 with BMI2 and ADX, its generic Montgomery routines at other widths and without them. Squarings now have their own routine. The exponentiation stays constant time with base blinding, fixed windows and the public check of every result.
 - Ed25519 runs on formally verified arithmetic too: s2n-bignum's base and double-base multiplications and point decoding (x86_64 and AArch64), elsewhere cloak's extended-coordinate formulas over fiat-crypto's field, and its scalars on cloak's constant-time Montgomery field. Key creation, signing, verification and the certificate key check no longer use std's Edwards25519. Verification is the cofactorless equation as before (std's `verifyStrict`): S below L, A and R on the curve and not of x = 0; a key whose y is not below p is still `InvalidPublicKey`. Signatures are unchanged byte for byte.
 - An RSA private key keeps its private exponent d (validated as before), so it can be written back.
+### Fixed
+
+- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. The label now takes the same name (`src/crypto/vendor/shim`; the vendored files are unchanged).
+- Debug builds erase 128 KiB below a private key's parse, not 96 KiB: Zig's own x86_64 backend, which compiles Debug for x86_64 Linux, has larger frames than LLVM, and an encrypted RSA key's parse reached 108 KiB there, past what was erased.
 
 ## [0.23.0] - 2026-10-28
 
