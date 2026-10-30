@@ -1787,8 +1787,12 @@ as on any host. Only the nightly runs it, never the gate, never on the Mac. It c
 kernel's `probe` and installs, and a connection on loopback whose server has both directions
 in the kernel and whose client is cloak in software, each checking the other's bytes: for
 every cipher on TLS 1.2 and 1.3, records of 1, 1200, 2^14 and 2^14 + 1 bytes each way (the
-kernel opens one record a `recvmsg` and seals a 2^14 + 1-byte write as two), close_notify
-each way, and a TLS 1.3 KeyUpdate ending the connection. The Mac cross-compiles the backend
+kernel opens one record a `recvmsg` and seals a 2^14 + 1-byte write as two), a 40000-byte file
+by sendfile, opened by the client; the read direction's count, one a `recvmsg`, equal to the
+records the client sealed (under TLS 1.2 GCM, to the number its last record carries) and
+taken by `offloadRecords`; the write direction's report from bytes, with σ + q of the records
+the client opened within 1025 a reported record; close_notify each way; and a TLS 1.3
+KeyUpdate ending the connection. The Mac cross-compiles the backend
 and these tests for x86_64-freebsd; the tests that play a kernel run everywhere.
 
 ## ML-DSA (C10)
