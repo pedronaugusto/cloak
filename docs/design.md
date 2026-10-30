@@ -1781,14 +1781,15 @@ connection ends at the same point, as it does on every kernel. The tests are Lin
 test, played with the bytes-based report.
 
 Proof is the nightly's FreeBSD leg, run as preflight runs riscv64 Linux: on the hosted Linux
-runner, a FreeBSD machine under QEMU (`-Dci-vm`), booted from FreeBSD's own release image,
-pinned by hash in preflight's manifest and fetched only by that job. No third-party action
-runs it; preflight drives the machine's console (log in, unpack the tests from a second disk,
-run, read the exit code), each wait with a deadline and a named failure, the console log kept
-with the job. Only the nightly runs it, never the gate, never on the Mac. It covers the real
-kernel's `probe`, installs, both directions on loopback with sendfile, a key update ending the
-connection, and the read direction's counts against the peer's. The Mac cross-compiles the
-backend for x86_64-freebsd; the tests that play a kernel run everywhere.
+runner, FreeBSD's own kernel under KVM (`-Dci-vm`), booted from FreeBSD's release files,
+pinned by hash in preflight's manifest and fetched only by that job, the tests run through it
+as on any host. Only the nightly runs it, never the gate, never on the Mac. It covers the real
+kernel's `probe` and installs, and a connection on loopback whose server has both directions
+in the kernel and whose client is cloak in software, each checking the other's bytes: for
+every cipher on TLS 1.2 and 1.3, records of 1, 1200, 2^14 and 2^14 + 1 bytes each way (the
+kernel opens one record a `recvmsg` and seals a 2^14 + 1-byte write as two), close_notify
+each way, and a TLS 1.3 KeyUpdate ending the connection. The Mac cross-compiles the backend
+and these tests for x86_64-freebsd; the tests that play a kernel run everywhere.
 
 ## ML-DSA (C10)
 
