@@ -164,7 +164,11 @@ MIT; see [LICENSE](LICENSE). Code cloak takes from elsewhere keeps its own licen
 beside it: the vendored s2n-bignum assembly is Apache-2.0 OR ISC OR MIT-0 (`src/crypto/vendor/s2n-bignum/LICENSE`
 and `NOTICE`), and the vendored fiat-crypto code is MIT OR Apache-2.0 OR BSD-1-Clause,
 taken under MIT (`src/crypto/vendor/fiat/COPYRIGHT` and `LICENSE-MIT`); their sources and
-hashes are in `src/crypto/vendor/PROVENANCE.md`. Test fixtures keep their licences in
+hashes are in `src/crypto/vendor/PROVENANCE.md`. The fiat-crypto files are its committed
+`fiat-zig` output at 1e721c6f18c4, unedited: generated code, proven by fiat-crypto's
+machine-checked proofs (its Rocq-verified generator, which its CI reruns to regenerate the
+files, failing on any difference). They are outside cloak's lint, named with their hashes in
+`ci/preflight.json`'s `vendored` table; cloak's calls into them are linted. Test fixtures keep their licences in
 their own directories.
 
 ## Security
