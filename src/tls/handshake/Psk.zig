@@ -92,11 +92,12 @@ pub const ImportedIdentity = struct {
     pub fn parse(bytes: []const u8) ?ImportedIdentity {
         @setRuntimeSafety(true);
         if (bytes.len < 2) return null;
-        const id_len = std.mem.readInt(u16, bytes[0..2], .big);
+        // Read as usize: the sums below would overflow a u16 near the field's maximum.
+        const id_len: usize = std.mem.readInt(u16, bytes[0..2], .big);
         if (id_len == 0 or bytes.len < 2 + id_len + 2) return null;
         const identity = bytes[2..][0..id_len];
         const rest = bytes[2 + id_len ..];
-        const context_len = std.mem.readInt(u16, rest[0..2], .big);
+        const context_len: usize = std.mem.readInt(u16, rest[0..2], .big);
         if (rest.len != 2 + context_len + 4) return null;
         return .{ .identity = identity, .context = rest[2..][0..context_len], .protocol = std.mem.readInt(u16, rest[2 + context_len ..][0..2], .big), .kdf = std.mem.readInt(u16, rest[4 + context_len ..][0..2], .big) };
     }

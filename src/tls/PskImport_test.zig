@@ -132,6 +132,13 @@ test "C10 an ImportedIdentity reads back exactly, and other bytes read as a plai
     try std.testing.expectEqual(null, Psk.ImportedIdentity.parse("device-7"));
 }
 
+test "C10 an offered identity whose lengths are near their maximum reads as a plain identity" {
+    try std.testing.expectEqual(null, Psk.ImportedIdentity.parse("\xff\xff\x00\x00"));
+    try std.testing.expectEqual(null, Psk.ImportedIdentity.parse("\xff\xfe\x00\x00"));
+    try std.testing.expectEqual(null, Psk.ImportedIdentity.parse("\x00\x01i\xff\xff\x00\x00"));
+    try std.testing.expectEqual(null, Psk.ImportedIdentity.parse("\x00\x01i\xff\xfa\x00\x00"));
+}
+
 test "C10 the client's keys are checked: an imported key is TLS 1.3's and not a password, at most four keys, one TLS 1.2 key" {
     const bad = [_]Psk.External{
         .{ .identity = "x", .secret = &key, .version = .tls12, .imported = .{} },
