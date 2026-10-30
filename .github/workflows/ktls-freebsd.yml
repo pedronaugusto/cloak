@@ -1,0 +1,20 @@
+# Branch-only evidence: cloak's KTLS on FreeBSD's own kernel, through preflight's FreeBSD
+# machine at a commit of its freebsd-vm branch. The release pins preflight's tag, and
+# this workflow does not land.
+name: KTLS on FreeBSD
+on:
+  push:
+    branches: [ktls-ev-freebsd]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  gate:
+    uses: pedronaugusto/preflight/.github/workflows/zig.yml@b9ae5b81fa1cb316ce1eab094f2645c704431c0a
+    with:
+      tier: merge
+      working-directory: "."
+      preflight-ref: b9ae5b81fa1cb316ce1eab094f2645c704431c0a
+      merge-matrix: >-
+        {"include":[{"os":"ubuntu-latest","name":"KTLS tests (x86_64-freebsd on its kernel under KVM, Debug)","step":"ci","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm -Dtest-filter=C9.1 -Dtest-filter=F83 -Dtest-filter=F84","shard":"","setup":true,"job_timeout":45,"cache_key":"ktls-freebsd-filtered","artifact":"","operation":"execute","targets":"","directory":"","prepare":"","declared":false,"machine":"freebsd"},{"os":"ubuntu-latest","name":"test (x86_64-freebsd on its kernel under KVM, Debug)","step":"ci","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm","shard":"","setup":true,"job_timeout":45,"cache_key":"ktls-freebsd-suite","artifact":"","operation":"execute","targets":"","directory":"","prepare":"","declared":false,"machine":"freebsd"}]}
