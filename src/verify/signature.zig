@@ -38,11 +38,19 @@ pub fn verify(key: A.PublicKey, algorithm: A.Signature, message: []const u8, sig
             },
             else => return error.InvalidPublicKey,
         },
-        else => {
-            var buffer: [max_digest]u8 = undefined;
-            return verifyDigest(key, algorithm, digestOf(algorithm, message, &buffer), signature);
-        },
+        .rsa, .ecdsa, .ecdsa_p1363 => |hash| return verifyHashed(hash, key, algorithm, message, signature),
+        .pss => |p| return verifyHashed(p.hash, key, algorithm, message, signature),
     }
+}
+/// Verifies a signature over the digest of `message` under `hash`, the algorithm's own.
+fn verifyHashed(hash: A.Hash, key: A.PublicKey, algorithm: A.Signature, message: []const u8, signature: []const u8) Error!void {
+    return switch (hash) {
+        inline else => |h| {
+            var hasher = Hash(h).init(.{});
+            hasher.update(message);
+            return verifyDigest(key, algorithm, &hasher.finalResult(), signature);
+        },
+    };
 }
 /// RFC 8032 5.1.7, cofactorless (std's `verifyStrict`, RFC 8032's "[S]B = R + [k]A"): S below L,
 /// A and R decoded and neither of x = 0, and R's bytes the encoding of [S]B - [k]A. A key whose
@@ -54,13 +62,11 @@ fn ed25519(key: *const [32]u8, message: []const u8, signature: *const [64]u8) Er
     const a = edwards25519.decode(key) orelse return error.InvalidSignature;
     const r = edwards25519.decode(signature[0..32]) orelse return error.InvalidSignature;
     if (a.xIsZero() or r.xIsZero()) return error.InvalidSignature;
-    var wide: [64]u8 = undefined;
     var hash = std.crypto.hash.sha2.Sha512.init(.{});
     hash.update(signature[0..32]);
     hash.update(key);
     hash.update(message);
-    hash.final(&wide);
-    const k = edwards25519.reduce64(&wide);
+    const k = edwards25519.reduce64(&hash.finalResult());
     var check: [32]u8 = undefined;
     edwards25519.mulDoubleBasePublic(&check, &k, &a.neg(), s);
     if (!std.mem.eql(u8, &check, signature[0..32])) return error.InvalidSignature;
@@ -180,19 +186,24 @@ fn recover(key: rsa_key, signature: []const u8, out: *[512]u8) Error!struct { by
     const Modulus = std.crypto.ff.Modulus(4096);
     // A key built by a caller gets the checks a parsed one got.
     try A.checkRsa(key.modulus, key.exponent);
-    if (signature.len != key.modulus.len) return error.InvalidSignature;
+    // checkRsa's bounds, where the slices below are taken: 2048 to 4096 bits.
+    const len = key.modulus.len;
+    if (len < 256 or len > out.len) return error.InvalidPublicKey;
+    if (signature.len != len) return error.InvalidSignature;
     const n = Modulus.fromBytes(key.modulus, .big) catch return error.InvalidPublicKey;
     const m = Modulus.Fe.fromBytes(n, signature, .big) catch return error.InvalidSignature;
     const e = Modulus.Fe.fromBytes(n, key.exponent, .big) catch return error.InvalidPublicKey;
     const value = n.powPublic(m, e) catch return error.InvalidPublicKey;
-    const bytes = out[0..key.modulus.len];
+    const bytes = out[0..len];
     value.toBytes(bytes, .big) catch return error.InvalidSignature;
-    return .{ .bytes = bytes, .bits = n.bits() };
+    const bits = n.bits();
+    if (bits < 2048 or bits > 4096) return error.InvalidPublicKey;
+    return .{ .bytes = bytes, .bits = bits };
 }
 fn rsaPkcs1(comptime H: type, key: rsa_key, digest: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     if (digest.len != H.digest_length) return error.InvalidSignature;
-    var buf: [512]u8 = undefined;
+    var buf: [512]u8 = @splat(0);
     const em = (try recover(key, signature, &buf)).bytes;
     // Exact DigestInfo encoding, including NULL parameters, prevents BER ambiguity.
     const prefix = switch (H.digest_length) {
@@ -201,38 +212,51 @@ fn rsaPkcs1(comptime H: type, key: rsa_key, digest: []const u8, signature: []con
         64 => "\x30\x51\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x03\x05\x00\x04\x40",
         else => unreachable,
     };
-    const padding = em.len - prefix.len - H.digest_length - 3;
-    if (padding < 8 or em[0] != 0 or em[1] != 1 or em[2 + padding] != 0) return error.InvalidSignature;
-    for (em[2..][0..padding]) |b| if (b != 255) return error.InvalidSignature;
-    if (!std.mem.eql(u8, em[3 + padding ..][0..prefix.len], prefix)) return error.InvalidSignature;
-    if (!std.mem.eql(u8, em[em.len - H.digest_length ..], digest)) return error.InvalidSignature;
+    // EM = 0x00 0x01 PS 0x00 DigestInfo, PS at least eight 0xff bytes (RFC 8017 9.2), read
+    // from the end: DigestInfo, the separator before it, and PS between.
+    const info_len = prefix.len + H.digest_length;
+    if (em.len < info_len + 11) return error.InvalidSignature;
+    const info = em[em.len - info_len ..];
+    const separator = em.len - info_len - 1;
+    if (em[0] != 0 or em[1] != 1 or em[separator] != 0) return error.InvalidSignature;
+    for (em[2..separator]) |b| if (b != 255) return error.InvalidSignature;
+    if (!std.mem.eql(u8, info[0..prefix.len], prefix)) return error.InvalidSignature;
+    if (!std.mem.eql(u8, info[prefix.len..], digest)) return error.InvalidSignature;
 }
 fn rsaPss(comptime H: type, comptime M: type, key: rsa_key, salt_length: usize, digest: []const u8, signature: []const u8) Error!void {
     @setRuntimeSafety(true);
     if (digest.len != H.digest_length) return error.InvalidSignature;
-    var buf: [512]u8 = undefined;
+    var buf: [512]u8 = @splat(0);
     const result = try recover(key, signature, &buf);
+    const recovered = result.bytes;
+    // recover's bounds, where the positions below are taken: 2048 to 4096 bits in that many bytes.
+    if (result.bits < 2048 or result.bits > 4096 or recovered.len > buf.len) return error.InvalidSignature;
     const em_bits = result.bits - 1;
+    // emLen is ceil(emBits / 8), so the bits it does not use are fewer than eight.
     const em_len = (em_bits + 7) / 8;
-    for (result.bytes[0 .. result.bytes.len - em_len]) |b| if (b != 0) return error.InvalidSignature;
-    const em = result.bytes[result.bytes.len - em_len ..];
-    if (salt_length > em_len or em_len < H.digest_length + salt_length + 2 or em[em.len - 1] != 0xbc) return error.InvalidSignature;
+    const unused: u3 = @truncate(em_len * 8 - em_bits);
+    if (em_len > recovered.len) return error.InvalidSignature;
+    for (recovered[0 .. recovered.len - em_len]) |b| if (b != 0) return error.InvalidSignature;
+    const em = recovered[recovered.len - em_len ..];
+    // EM = DB || H || 0xbc, DB = PS || 0x01 || salt (RFC 8017 9.1.2).
+    if (salt_length > em.len or em.len < H.digest_length + salt_length + 2 or em[em.len - 1] != 0xbc) return error.InvalidSignature;
     const db_len = em.len - H.digest_length - 1;
     const h = em[db_len..][0..H.digest_length];
-    const unused: u3 = @intCast(em.len * 8 - em_bits); // emLen is ceil(emBits/8), so the difference is below eight.
     const mask: u8 = @as(u8, 255) >> unused;
     if (em[0] & ~mask != 0) return error.InvalidSignature;
-    var db: [512]u8 = undefined;
-    @memcpy(db[0..db_len], em[0..db_len]);
-    pkcs1.mgf1(comptime .of(M), h, db[0..db_len]);
-    db[0] &= mask;
-    const pad_len = db_len - salt_length - 1;
-    for (db[0..pad_len]) |b| if (b != 0) return error.InvalidSignature;
-    if (db[pad_len] != 1) return error.InvalidSignature;
+    var db: [512]u8 = @splat(0);
+    const masked = db[0..db_len];
+    @memcpy(masked, em[0..db_len]);
+    pkcs1.mgf1(comptime .of(M), h, masked);
+    masked[0] &= mask;
+    if (salt_length + 1 > masked.len) return error.InvalidSignature;
+    const pad_len = masked.len - salt_length - 1;
+    for (masked[0..pad_len]) |b| if (b != 0) return error.InvalidSignature;
+    if (masked[pad_len] != 1) return error.InvalidSignature;
     var final = H.init(.{});
     final.update(&@as([8]u8, @splat(0)));
     final.update(digest);
-    final.update(db[db_len - salt_length ..][0..salt_length]);
+    final.update(masked[masked.len - salt_length ..]);
     if (!std.mem.eql(u8, h, &final.finalResult())) return error.InvalidSignature;
 }
 test {
