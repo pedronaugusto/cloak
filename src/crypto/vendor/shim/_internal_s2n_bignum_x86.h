@@ -13,17 +13,13 @@
 #   define S2N_BN_SYM_PRIVACY_DIRECTIVE(name) .private_extern S2N_BN_SYMBOL(name)
 #   define S2N_BN_SIZE_DIRECTIVE(name)
 #elif defined(_WIN32)
+// As on ELF below: COFF's function directive goes at the function's end, where `.ifdef` tells a
+// renamed routine from one of its local functions (`Lcurve25519_x25519base_standard`, which the
+// Windows forms call), and only the routine's name takes it.
 #   define S2N_BN_SYMBOL(name) cloak_##name
-#   define S2N_BN_FUNCTION_TYPE_DIRECTIVE(name) .def cloak_##name ; .scl 2 ; .type 32 ; .endef
+#   define S2N_BN_FUNCTION_TYPE_DIRECTIVE(name)
 #   define S2N_BN_SYM_PRIVACY_DIRECTIVE(name)
-#   define S2N_BN_SIZE_DIRECTIVE(name)
-// The Windows forms of X25519's base ladders call their System V body through a bare label and
-// give that label the function directive, which names it cloak_<label>: the label takes the same
-// name, so the directive's symbol is the one defined, not an undefined one the linker looks for.
-// The directive pastes its argument unexpanded (`cloak_##name`, not S2N_BN_SYMBOL's second
-// expansion), so the label is prefixed once.
-#   define Lcurve25519_x25519base_standard cloak_Lcurve25519_x25519base_standard
-#   define Lcurve25519_x25519base_alt_standard cloak_Lcurve25519_x25519base_alt_standard
+#   define S2N_BN_SIZE_DIRECTIVE(name) .ifdef S2N_BN_SYMBOL(name) ; .def S2N_BN_SYMBOL(name) ; .scl 2 ; .type 32 ; .endef ; .endif
 #else
 // A routine's own local functions (`Ledwards25519_decode_standard`) take these directives too, and
 // keep upstream's names. Both go at the function's end, where `.ifdef` tells a renamed routine

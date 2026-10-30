@@ -86,8 +86,10 @@ pub fn generate(size: Size, source: anytype, out: *Integers) Error!void {
 }
 
 /// The stack `generateKernel` reaches at most, which a test holds it to: its state, the
-/// window's table and the products' temporaries. Debug keeps more copies in its frames.
-pub const depth = if (@import("builtin").mode == .debug) 48 * 1024 else 32 * 1024;
+/// window's table and the products' temporaries. Debug keeps more copies in its frames, and Zig's
+/// own x86_64 backend, which compiles Debug for x86_64 Linux, larger ones than LLVM (37 KiB
+/// measured under LLVM, past 48 KiB there).
+pub const depth = if (@import("builtin").mode == .debug) 64 * 1024 else 32 * 1024;
 
 pub fn generateKernel(size: Size, source: anytype, out: *Integers) Error!void {
     var owner: Secret(State) = .init(undefined);
@@ -509,7 +511,11 @@ test "a generation reaches less stack than the depth that scrubs it" {
     var out: Secret(Integers) = .init(undefined);
     defer out.deinit();
     inline for (.{ Size.@"2048", .@"4096" }) |size| {
-        try std.testing.expect(aegis.secret.stackReach(4 * depth, generateKernel, .{ size, &source, out.exposeMut() }) < depth);
+        const reach = aegis.secret.stackReach(4 * depth, generateKernel, .{ size, &source, out.exposeMut() });
+        if (reach >= depth) {
+            std.debug.print("stack reached: generating {d} of {d}\n", .{ reach, depth });
+            return error.TestUnexpectedResult;
+        }
     }
 }
 
