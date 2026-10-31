@@ -4,6 +4,8 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-10-31
+
 ### Fixed
 
 - Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. The label now takes the same name (`src/crypto/vendor/shim`; the vendored files are unchanged).
