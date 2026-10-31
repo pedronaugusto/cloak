@@ -26,6 +26,23 @@ test "C5 session cache: newest first, used once, expired dropped, bounded per ke
     try std.testing.expectEqual(@as(usize, 0), cache.count());
 }
 
+test "C5 a session cache whose store sequence is spent keeps no more tickets" {
+    var cache = try SessionCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    const a: [32]u8 = @splat(1);
+    try cache.store(fields(&a, "one", 100));
+    {
+        var guard = cache.table.acquire();
+        defer guard.deinit();
+        guard.value().sequence = std.math.maxInt(u64);
+    }
+    try cache.store(fields(&a, "two", 100));
+    try std.testing.expectEqual(@as(usize, 1), cache.count());
+    var taken = cache.take(&a, .tls13, 50).?;
+    defer taken.release();
+    try std.testing.expectEqualSlices(u8, "one", taken.entry.ticket);
+}
+
 test "C5 session cache bounds entries and bytes and clears" {
     var cache = try SessionCache.init(std.testing.allocator, .{ .max_entries = 3, .per_key = 4 });
     defer cache.deinit();

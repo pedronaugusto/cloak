@@ -109,6 +109,26 @@ test "C6 HPKE matches the base-mode vectors of every supported AEAD over 1,000 m
     }
 }
 
+test "C6 HPKE seals and opens its last sequence number and none after (RFC 9180 section 5.2)" {
+    var r = Hpke.deriveKeyPair(&(@as([32]u8, @splat(7))));
+    defer r.deinit();
+    const suite: Hpke.Suite = .{ .kdf = .hkdf_sha256, .aead = .aes_128_gcm };
+    var enc: [Hpke.enc_length]u8 = undefined;
+    var sender = try Hpke.setupSender(suite, &r.public, "info", &(@as([32]u8, @splat(9))), &enc);
+    defer sender.deinit();
+    var recipient = try Hpke.setupRecipient(suite, &enc, r.secret.expose(), "info");
+    defer recipient.deinit();
+    sender.seq = std.math.maxInt(u64) - 1;
+    recipient.seq = std.math.maxInt(u64) - 1;
+    var ct: [5 + Hpke.tag_length]u8 = undefined;
+    try sender.seal(&ct, "aad", "hello");
+    var out: [5]u8 = undefined;
+    try recipient.open(&out, "aad", &ct);
+    try std.testing.expectEqualStrings("hello", &out);
+    try std.testing.expectError(error.MessageLimit, sender.seal(&ct, "aad", "hello"));
+    try std.testing.expectError(error.MessageLimit, recipient.open(&out, "aad", &ct));
+}
+
 test "C6 HPKE refuses what it must: a forged ciphertext, a wrong AAD, an odd suite, the zero point" {
     var r = Hpke.deriveKeyPair(&(@as([32]u8, @splat(7))));
     defer r.deinit();

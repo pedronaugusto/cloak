@@ -519,8 +519,8 @@ pub const State = struct {
         if (action == .hello_retry and (self.version != .tls13 or self.flags.retried or self.flags.verified != 0)) return error.UnexpectedMessage;
         // A HelloVerifyRequest is DTLS's alone, never after a retry request, at most three.
         if (action == .hello_verify) {
-            if (self.mode != .datagram or self.flags.retried or self.flags.verified == 3) return error.UnexpectedMessage;
-            self.flags.verified += 1;
+            if (self.mode != .datagram or self.flags.retried) return error.UnexpectedMessage;
+            self.flags.verified = std.math.add(u2, self.flags.verified, 1) catch return error.UnexpectedMessage;
         }
         if (self.role == .server and action == .certificate_request and self.auth == .none) return error.UnexpectedMessage;
         if (self.role == .server and action == .certificate and current == .certificate_request and self.auth != .none) return error.MissingProof;

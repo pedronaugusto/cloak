@@ -216,7 +216,8 @@ pub const Epoch = struct {
         aegis.assert.invariant(self.version == .dtls13, "a DTLS 1.3 record");
         if (plain.len > max_content or cid.len > max_cid) return error.InvalidLength;
         if (content != .application and plain.len == 0) return error.InvalidLength;
-        if (self.sequence >= self.record_limit) return error.RecordLimit;
+        const after = std.math.add(u64, self.sequence, 1) catch return error.RecordLimit;
+        if (after > self.record_limit) return error.RecordLimit;
         const head = 1 + cid.len + 2 + 2;
         const inner = plain.len + 1;
         const total = head + inner + tag_length;
@@ -235,7 +236,7 @@ pub const Epoch = struct {
         const masked = self.mask(record[head..][0..16]);
         record[1 + cid.len] ^= masked[0];
         record[2 + cid.len] ^= masked[1];
-        self.sequence += 1;
+        self.sequence = after;
         return record;
     }
 
@@ -275,7 +276,8 @@ pub const Epoch = struct {
         @setRuntimeSafety(true);
         aegis.assert.invariant(self.version == .dtls12, "a DTLS 1.2 record");
         if (plain.len > max_content or cid.len > max_cid) return error.InvalidLength;
-        if (self.sequence >= self.record_limit or self.sequence >= 1 << 48) return error.RecordLimit;
+        const after = std.math.add(u64, self.sequence, 1) catch return error.RecordLimit;
+        if (after > self.record_limit or after > 1 << 48) return error.RecordLimit;
         const explicit = self.cipher.explicitNonceLength12();
         const tag_len = self.cipher.tagLength();
         const with_cid = cid.len != 0;
@@ -298,7 +300,7 @@ pub const Epoch = struct {
         var ad: [23 + max_cid]u8 = undefined;
         const additional = additional12(&ad, @backingInt(content), .{ 0xfe, 0xfd }, number, cid, inner);
         self.encrypt(body, record[head + explicit + inner ..][0..tag_len], body, additional, number);
-        self.sequence += 1;
+        self.sequence = after;
         return record;
     }
 

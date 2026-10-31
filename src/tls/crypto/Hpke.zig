@@ -116,7 +116,8 @@ pub const Context = struct {
     pub fn seal(self: *Context, out: []u8, aad: []const u8, plaintext: []const u8) SealError!void {
         @setRuntimeSafety(true);
         aegis.assert.invariant(out.len == plaintext.len + tag_length, "the sealed output is the plaintext and its tag");
-        if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
+        // The last sequence number is never used (RFC 9180 section 5.2).
+        const next = std.math.add(u64, self.seq, 1) catch return error.MessageLimit;
         // The record kernels' AEAD: in a scrubbed frame, the nonce made there from the base nonce
         // and the sequence number (RFC 9180 section 5.2), as a record's from its IV and counter.
         switch (self.aead) {
@@ -127,7 +128,7 @@ pub const Context = struct {
             // unreachable: contexts are made only for supported AEADs
             _ => unreachable,
         }
-        self.seq += 1;
+        self.seq = next;
     }
 
     /// Opens `ciphertext` (with its tag) into `out` (`ciphertext.len - tag_length` bytes). A
@@ -137,7 +138,7 @@ pub const Context = struct {
         @setRuntimeSafety(true);
         if (ciphertext.len < tag_length) return error.AuthenticationFailed;
         aegis.assert.invariant(out.len == ciphertext.len - tag_length, "the opened output is the ciphertext without its tag");
-        if (self.seq == std.math.maxInt(u64)) return error.MessageLimit;
+        const next = std.math.add(u64, self.seq, 1) catch return error.MessageLimit;
         const body = ciphertext[0 .. ciphertext.len - tag_length];
         const tag = ciphertext[body.len..][0..tag_length];
         switch (self.aead) {
@@ -148,7 +149,7 @@ pub const Context = struct {
             // unreachable: contexts are made only for supported AEADs
             _ => unreachable,
         }
-        self.seq += 1;
+        self.seq = next;
     }
 };
 

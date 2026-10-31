@@ -238,11 +238,11 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
     var displaced: [16]?*Entry = @splat(null);
     var displaced_count: usize = 0;
     var placed = false;
-    {
+    placing: {
         var guard = self.table.acquire();
         defer guard.deinit();
         const table = guard.value();
-        table.sequence += 1;
+        table.sequence = std.math.add(u64, table.sequence, 1) catch break :placing;
         entry.sequence = table.sequence;
         // The key's oldest tickets beyond its share, then the cache's oldest beyond its bounds.
         while (true) {

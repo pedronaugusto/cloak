@@ -128,6 +128,31 @@ test "C8 DTLS 1.2 records seal and open under every cipher, with and without a c
     };
 }
 
+test "C8 an epoch seals its last sequence and none after: the cipher's record limit, and the counter never wraps" {
+    var ends: [2]Record.Epoch = undefined;
+    pair13(&ends, .aes_128_gcm_sha256);
+    defer for (&ends) |*e| e.deinit();
+    var out: [128]u8 = undefined;
+    ends[0].sequence = ends[0].record_limit - 1;
+    _ = try ends[0].seal13(.application, "x", "", &out);
+    try std.testing.expectError(error.RecordLimit, ends[0].seal13(.application, "x", "", &out));
+    // With the limit lifted, the last sequence number still stops it.
+    ends[0].record_limit = std.math.maxInt(u64);
+    ends[0].sequence = std.math.maxInt(u64);
+    try std.testing.expectError(error.RecordLimit, ends[0].seal13(.application, "x", "", &out));
+    var classic: [2]Record.Epoch = undefined;
+    pair12(&classic, .aes_128_gcm);
+    defer for (&classic) |*e| e.deinit();
+    classic[0].sequence = classic[0].record_limit - 1;
+    _ = try classic[0].seal12(.application, "x", "", &out);
+    try std.testing.expectError(error.RecordLimit, classic[0].seal12(.application, "x", "", &out));
+    // DTLS 1.2's sequence field holds 48 bits.
+    classic[0].record_limit = std.math.maxInt(u64);
+    classic[0].sequence = (1 << 48) - 1;
+    _ = try classic[0].seal12(.application, "x", "", &out);
+    try std.testing.expectError(error.RecordLimit, classic[0].seal12(.application, "x", "", &out));
+}
+
 test "C8 a DTLS 1.2 CCM_8 record carries an 8-byte tag, and its key tolerates 2^7 failed openings" {
     var ends: [2]Record.Epoch = undefined;
     pair12(&ends, .aes_128_ccm_8);

@@ -801,7 +801,7 @@ fn deliverNext(self: *Datagram) Error!bool {
     if (partial.epoch != 0 and partial.epoch < self.message_floor) return error.RecordAlignment;
     const taken = self.partials.orderedRemove(index);
     defer self.freePartial(taken);
-    self.receive_sequence += 1;
+    self.receive_sequence = @as(u32, taken.sequence) + 1;
     // The connection-ID messages are the carrier's: the engine never sees them.
     if (taken.kind == request_connection_id or taken.kind == new_connection_id) {
         try self.onCidMessage(taken.kind, taken.buf.view()[4..], taken.epoch);
@@ -973,7 +973,7 @@ fn queueOwn(self: *Datagram, category: Category, epoch: u64, message: []const u8
     @memcpy(try bytes.ensure(self.gpa, message.len), message);
     const sequence = std.math.cast(u16, self.send_sequence) orelse return error.MessageSequenceExhausted;
     try self.queue(.{ .kind = .message, .epoch = epoch, .bytes = bytes, .sequence = sequence }, category);
-    self.send_sequence += 1;
+    self.send_sequence = @as(u32, sequence) + 1;
 }
 
 fn queue(self: *Datagram, entry: Sent, category: Category) Error!void {
@@ -1871,7 +1871,7 @@ fn packFlight(self: *Datagram, flight: *Outgoing, out: []u8, used: *usize, filli
                 .ccs => {
                     used.* = try self.closeRecord(filling, out, used.*);
                     if (out.len - used.* < Record.header12 + 1) return;
-                    const record = try Record.plaintext(.change_cipher_spec, self.nextPlainSequence(), &.{1}, out[used.*..]);
+                    const record = try Record.plaintext(.change_cipher_spec, try self.nextPlainSequence(), &.{1}, out[used.*..]);
                     used.* += record.len;
                     entry.cursor = 1;
                     entry.pending = false;
@@ -1962,7 +1962,7 @@ fn closeRecord(self: *Datagram, filling: *?Filling, out: []u8, used: usize) Erro
     const f = filling.* orelse return used;
     filling.* = null;
     const content = out[f.content..][0..f.len];
-    const record = if (f.epoch == 0) try Record.plaintext(.handshake, self.nextPlainSequence(), content, out[f.at..]) else blk: {
+    const record = if (f.epoch == 0) try Record.plaintext(.handshake, try self.nextPlainSequence(), content, out[f.at..]) else blk: {
         const keys = find(&self.writers, f.epoch) orelse return error.UnexpectedMessage;
         break :blk switch (keys.version) {
             .dtls13 => try keys.seal13(.handshake, content, self.sendCid(), out[f.at..]),
@@ -2006,9 +2006,10 @@ fn logRecord(self: *Datagram, record: Sent_record) void {
     self.sent_records_len = @min(self.sent_records_len + 1, self.sent_records.len);
 }
 
-fn nextPlainSequence(self: *Datagram) u64 {
-    defer self.plain_sequence += 1;
-    return self.plain_sequence;
+fn nextPlainSequence(self: *Datagram) error{RecordLimit}!u64 {
+    const sequence = self.plain_sequence;
+    self.plain_sequence = std.math.add(u64, sequence, 1) catch return error.RecordLimit;
+    return sequence;
 }
 
 /// What a record of `epoch` adds around its content.
@@ -2043,7 +2044,7 @@ fn writeAck(self: *Datagram, out: []u8) Error!usize {
         std.mem.writeInt(u64, body[2 + 16 * i ..][0..8], number[0], .big);
         std.mem.writeInt(u64, body[2 + 16 * i + 8 ..][0..8], number[1], .big);
     }
-    const record = if (keys) |k| try k.seal13(.ack, body[0 .. 2 + 16 * count], self.sendCid(), out) else try Record.plaintext(.ack, self.nextPlainSequence(), body[0 .. 2 + 16 * count], out);
+    const record = if (keys) |k| try k.seal13(.ack, body[0 .. 2 + 16 * count], self.sendCid(), out) else try Record.plaintext(.ack, try self.nextPlainSequence(), body[0 .. 2 + 16 * count], out);
     return record.len;
 }
 
@@ -2061,14 +2062,14 @@ fn writeEmptyAck(self: *Datagram, out: []u8) Error!usize {
         return (try keys.seal13(.ack, &.{ 0, 0 }, self.sendCid(), out)).len;
     }
     if (out.len < Record.header12 + 2) return 0;
-    return (try Record.plaintext(.ack, self.nextPlainSequence(), &.{ 0, 0 }, out)).len;
+    return (try Record.plaintext(.ack, try self.nextPlainSequence(), &.{ 0, 0 }, out)).len;
 }
 
 fn alertDatagram(self: *Datagram, level: u8, alert: Alert, epoch: u64, out: []u8) Error!?[]u8 {
     @setRuntimeSafety(true);
     const body = [2]u8{ level, @backingInt(alert) };
     self.alert_sent = alert;
-    if (epoch == 0) return try Record.plaintext(.alert, self.nextPlainSequence(), &body, out);
+    if (epoch == 0) return try Record.plaintext(.alert, try self.nextPlainSequence(), &body, out);
     const keys = find(&self.writers, epoch) orelse return null;
     return switch (keys.version) {
         .dtls13 => try keys.seal13(.alert, &body, self.sendCid(), out),
