@@ -39,6 +39,15 @@ test "F06 catalogue_key_import_failure_and_kdf_budget (input and KDF bounds prec
     try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{}));
     try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
 }
+test "a legacy PEM key a wrong passphrase decrypts to valid padding is a bad password, not an invalid key" {
+    @setRuntimeSafety(true);
+    // Each passphrase was found to unpad its key's ciphertext: about one wrong passphrase in
+    // 256 does, and what it decrypts to is no key.
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong-613" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-aes256.pem"), .{ .passphrase = "wrong-77" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-des3.pem"), .{ .passphrase = "wrong-391" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong" }));
+}
 test "F06 catalogue_key_import_failure_and_kdf_budget (final ownership survives the original owner's release and allocation faults)" {
     @setRuntimeSafety(true);
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);

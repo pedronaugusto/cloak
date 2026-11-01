@@ -99,8 +99,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
                 if (!rsa_label and !ec_label) return error.InvalidKey;
                 var plain = try legacy(gpa, block, options);
                 defer plain.deinit(gpa);
-                try labelShape(plain.expose(), rsa_label, ec_label);
-                try parseDer(plain.expose(), options, out);
+                labelShape(plain.expose(), rsa_label, ec_label) catch |err| return openedError(err);
+                parseDer(plain.expose(), options, out) catch |err| return openedError(err);
             } else if (encrypted_label) {
                 try encrypted(gpa, block.der, options, out);
             } else {
@@ -356,8 +356,14 @@ pub fn encryptedWith(gpa: std.mem.Allocator, bytes: []const u8, password: *const
     try info.finish();
     var plain = Pbe.decrypt(gpa, algorithm.encoded, data, password, pbeLimits(options)) catch |err| return pbeError(err);
     defer plain.deinit(gpa);
-    return parseDer(plain.expose(), options, out) catch |err| switch (err) {
-        error.OutOfMemory => err,
+    return parseDer(plain.expose(), options, out) catch |err| openedError(err);
+}
+/// A key decrypted with a password that reads as no key: the password was wrong, as a wrong
+/// one unpads a legacy PEM key about one time in 256 and a PBE scheme's padding as often.
+/// A supported shape that is no supported key, or a bound, is still its own error.
+fn openedError(err: ParseError) ParseError {
+    return switch (err) {
+        error.OutOfMemory, error.InputLimit, error.UnsupportedKey => err,
         else => error.BadPassword,
     };
 }

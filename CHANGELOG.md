@@ -45,6 +45,9 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 ### Fixed
 
 - Windows on x86_64 links again for good: the COFF directive that gives s2n-bignum's X25519 base ladders their function entry now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged). 0.23.1's change to the label's name did not link.
+### Fixed
+
+- A legacy PEM key (`DEK-Info`) opened with a wrong passphrase is `BadPassword` every time, where about one wrong passphrase in 256 unpadded its ciphertext and the bytes it decrypted to were `InvalidDer` or `InvalidKey`. An encrypted PKCS#8 key decrypted to a supported shape that is no supported key is `UnsupportedKey`, and one past a bound `InputLimit`, where either was `BadPassword`.
 
 ## [0.23.1] - 2026-10-31
 
