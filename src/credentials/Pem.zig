@@ -1,6 +1,7 @@
 //! Bounded textual armor. Decoded buffers belong to the caller.
 const std = @import("std");
 const SecretBytes = @import("aegis").SecretBytes;
+const Secret = @import("aegis").secret.Secret;
 const Pem = @This();
 const Base64 = @import("Base64.zig");
 text: []const u8,
@@ -98,4 +99,21 @@ test {
     @setRuntimeSafety(true);
     _ = Base64;
     _ = @import("Pem_test.zig");
+}
+
+/// Writes `der` as one PEM block under `label` (RFC 7468): base64 in lines of 64.
+pub fn write(writer: *std.Io.Writer, label: []const u8, der: []const u8) std.Io.Writer.Error!void {
+    @setRuntimeSafety(true);
+    try writer.print("-----BEGIN {s}-----\n", .{label});
+    // A key's DER becomes key text: the line it passes through is a secret's.
+    var line_owner: Secret([64]u8) = .init(undefined);
+    defer line_owner.deinit();
+    const line = line_owner.exposeMut();
+    var at: usize = 0;
+    while (at < der.len) : (at += 48) {
+        const chunk = der[at..@min(at + 48, der.len)];
+        try writer.writeAll(std.base64.standard.Encoder.encode(line, chunk));
+        try writer.writeByte('\n');
+    }
+    try writer.print("-----END {s}-----\n", .{label});
 }

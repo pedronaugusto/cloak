@@ -248,7 +248,7 @@ pub fn writeOuter(out: []u8, suite: Hpke.Suite, config_id: u8, enc: []const u8, 
     try w.int(u8, config_id);
     try w.vector(u16, enc);
     if (payload_len > 65535) return error.BufferTooSmall;
-    try w.int(u16, @intCast(payload_len)); // safe: checked just above
+    try w.int(u16, @intCast(payload_len)); // checked just above
     if (out.len - w.pos < payload_len) return error.BufferTooSmall;
     @memset(out[w.pos..][0..payload_len], 0);
     w.pos += payload_len;
@@ -427,8 +427,8 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     }
     const ext_len = w.pos - ext_at - 2;
     if (ext_len > 65535 or w.pos - 4 > 0xffffff) return error.IllegalParameter;
-    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len), .big); // safe: checked above
-    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big); // safe: checked above
+    std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len), .big); // checked above
+    std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big); // checked above
     // unreachable: the hello is within the allocation it was written to.
     owner.resizeWithinCapacity(w.pos) catch unreachable;
     return owner;
@@ -496,7 +496,7 @@ pub fn writeConfig(out: []u8, spec: ConfigSpec) BuildError![]u8 {
     try w.int(u8, spec.id);
     try w.int(u16, @backingInt(Hpke.Kem.x25519_sha256));
     try w.vector(u16, &spec.public_key);
-    try w.int(u16, @intCast(spec.suites.len * 4)); // safe: at most sixteen suites
+    try w.int(u16, @intCast(spec.suites.len * 4)); // at most sixteen suites
     for (spec.suites) |s| {
         try w.int(u16, @backingInt(s.kdf));
         try w.int(u16, @backingInt(s.aead));
@@ -504,7 +504,7 @@ pub fn writeConfig(out: []u8, spec: ConfigSpec) BuildError![]u8 {
     try w.int(u8, spec.max_name_length);
     try w.vector(u8, spec.public_name);
     try w.int(u16, 0);
-    std.mem.writeInt(u16, out[len_at..][0..2], @intCast(w.pos - len_at - 2), .big); // safe: a few hundred bytes
+    std.mem.writeInt(u16, out[len_at..][0..2], @intCast(w.pos - len_at - 2), .big); // a few hundred bytes
     return out[0..w.pos];
 }
 
@@ -515,7 +515,7 @@ pub fn writeList(out: []u8, configs: []const []const u8) BuildError![]u8 {
     try w.int(u16, 0);
     for (configs) |config| try w.put(config);
     if (w.pos - 2 > 65535 or w.pos == 2) return error.InvalidConfig;
-    std.mem.writeInt(u16, out[0..2], @intCast(w.pos - 2), .big); // safe: checked above
+    std.mem.writeInt(u16, out[0..2], @intCast(w.pos - 2), .big); // checked above
     checkList(out[0..w.pos]) catch return error.InvalidConfig;
     return out[0..w.pos];
 }

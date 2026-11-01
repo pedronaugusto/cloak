@@ -59,9 +59,9 @@ fn unpad(out: []u8) Error![]u8 {
     var bad: u8 = @intFromBool(padding == 0) | @intFromBool(padding > 16);
     for (0..16) |i| {
         const mask: u8 = 0 -% @as(u8, @intFromBool(i < padding));
-        bad |= mask & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // safe: padding is one u8 from the final plaintext byte
+        bad |= mask & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // padding is one u8 from the final plaintext byte
     }
-    // safe: expose only the completed padding verdict required by the offline parser API.
+    // Expose only the completed padding verdict required by the offline parser API.
     if (bad != 0) return error.BadPassword;
     return out[0 .. out.len - padding];
 }

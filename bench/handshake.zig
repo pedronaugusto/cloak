@@ -84,7 +84,7 @@ fn measureResumption(name: []const u8, tls12: bool, resumed: bool, init: std.pro
         defer duo.deinit();
         const start = std.Io.Clock.awake.now(init.io).nanoseconds;
         try duo.handshake();
-        // safe: monotonic nanoseconds only grow.
+        // Monotonic nanoseconds only grow.
         slot.* = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds - start);
         if (duo.client.info().?.resumed != resumed) return error.UnexpectedResumption;
     }

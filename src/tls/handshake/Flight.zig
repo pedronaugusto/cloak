@@ -23,7 +23,7 @@ pub const Traffic = struct {
     /// Makes `self` a holder of `secret`, a digest of `suite`'s hash.
     pub fn init(self: *Traffic, suite: Suite13, secret: []const u8) void {
         @setRuntimeSafety(true);
-        // safe: the secret length is a digest length, at most 48.
+        // The secret length is a digest length, at most 48.
         self.* = .{ .suite = suite, .secret = .init(@splat(0)), .len = @intCast(secret.len) };
         @memcpy(self.secret.exposeMut()[0..secret.len], secret);
     }
@@ -268,7 +268,7 @@ pub fn reserve(self: *Flight, gpa: std.mem.Allocator, want: usize, cap: usize) E
 /// The `n` bytes just written at the end of the buffer are a message to send at `epoch`.
 pub fn queueMessage(self: *Flight, epoch: Epoch, n: usize) error{QueueFull}!void {
     @setRuntimeSafety(true);
-    // safe: the flight buffer is bounded by the handshake limit, well below 4 GiB.
+    // The flight buffer is bounded by the handshake limit, well below 4 GiB.
     try self.push(.{ .message = .{ .epoch = epoch, .start = @intCast(self.used), .len = @intCast(n) } });
     self.used += n;
 }

@@ -18,7 +18,7 @@ pub fn int(self: *Self, comptime T: type, value: T) WriteError!void {
 pub fn vector(self: *Self, comptime T: type, bytes: []const u8) WriteError!void {
     @setRuntimeSafety(true);
     if (bytes.len > std.math.maxInt(T)) return error.BufferTooSmall;
-    // safe: length was checked against the chosen wire integer's maximum.
+    // Length was checked against the chosen wire integer's maximum.
     try self.int(T, @intCast(bytes.len));
     try self.put(bytes);
 }

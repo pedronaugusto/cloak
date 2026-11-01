@@ -100,7 +100,7 @@ fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options:
     errdefer gpa.free(storage);
     const flight = try gpa.alloc(u8, 3 + spki.len);
     errdefer gpa.free(flight);
-    std.mem.writeInt(u24, flight[0..3], @intCast(spki.len), .big); // safe: bounded to u24 above
+    std.mem.writeInt(u24, flight[0..3], @intCast(spki.len), .big); // bounded to u24 above
     @memcpy(flight[3..], spki);
     const held = if (key) |owned| owned.retain() else null;
     errdefer if (held) |owned| owned.deinit();
@@ -150,7 +150,7 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         // The issuer moves with its certificate into the owned copy.
         issuer.* = entry.*[@intFromPtr(issuer.ptr) - @intFromPtr(der.ptr) ..][0..issuer.len]; // the issuer lies within its certificate's bytes
         at += der.len;
-        std.mem.writeInt(u24, flight[wire..][0..3], @intCast(der.len), .big); // safe: certificate length was checked against u24 above
+        std.mem.writeInt(u24, flight[wire..][0..3], @intCast(der.len), .big); // certificate length was checked against u24 above
         wire += 3;
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;

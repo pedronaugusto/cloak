@@ -562,14 +562,15 @@ test "C3 server key log carries each secret under the client random" {
     const Sink = struct {
         const Self = @This();
         lines: std.ArrayList(u8) = .empty,
-        fn write(context: ?*anyopaque, line: []const u8) void {
-            const self: *Self = @ptrCast(@alignCast(context.?));
+        key_log: Connection.KeyLog = .{ .write = write },
+        fn write(log: *Connection.KeyLog, line: []const u8) void {
+            const self: *Self = @fieldParentPtr("key_log", log);
             self.lines.appendSlice(std.testing.allocator, line) catch unreachable;
         }
     };
     var sink: Sink = .{};
     defer sink.lines.deinit(std.testing.allocator);
-    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = .{ .context = &sink, .write = Sink.write } });
+    const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = &sink.key_log });
     defer pair.deinit();
     try pair.run();
     var random_hex: [64]u8 = undefined;

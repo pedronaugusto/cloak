@@ -68,7 +68,7 @@ pub fn buildCertificate(out: []u8, chain: []const []const u8) BuildError![]u8 {
     for (chain) |der| try w.vector(u24, der);
     const list_len = w.pos - list_at - 3;
     if (list_len > 0xffffff) return error.BufferTooSmall;
-    // safe: the list length was checked against the u24 maximum above.
+    // The list length was checked against the u24 maximum above.
     std.mem.writeInt(u24, out[list_at..][0..3], @intCast(list_len), .big);
     return Messages.seal(&w);
 }
@@ -178,10 +178,10 @@ pub fn buildCertificateRequest(out: []u8, schemes: []const u16, authorities: []c
     try Messages.header(&w, .certificate_request);
     // rsa_sign (1) and ecdsa_sign (64).
     try w.put(&.{ 2, 1, 64 });
-    // safe: the scheme table holds a dozen entries.
+    // The scheme table holds a dozen entries.
     try w.int(u16, @intCast(schemes.len * 2));
     for (schemes) |scheme| try w.int(u16, scheme);
-    // safe: `Authorities.validate` bounds the names to `max_bytes`.
+    // `Authorities.validate` bounds the names to `max_bytes`.
     try w.int(u16, @intCast(Authorities.wireLength(authorities)));
     try Authorities.write(&w, authorities);
     return Messages.seal(&w);
@@ -266,7 +266,7 @@ pub const max_premaster = 2 + 64 + 2 + 64;
 pub fn pskPremaster(out: *[max_premaster]u8, secret: []const u8) []const u8 {
     @setRuntimeSafety(true);
     aegis.assert.invariant(secret.len <= 64, "a TLS 1.2 key is at most 64 bytes");
-    // safe: at most 64.
+    // At most 64.
     const n: u16 = @intCast(secret.len);
     std.mem.writeInt(u16, out[0..2], n, .big);
     @memset(out[2..][0..n], 0);

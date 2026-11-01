@@ -244,7 +244,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
 
 /// All ones when `x` is zero.
 inline fn zeroMask(x: u64) u64 {
-    const nonzero: u1 = @truncate((x | (0 -% x)) >> 63); // safe: the top bit is set exactly when x != 0
+    const nonzero: u1 = @truncate((x | (0 -% x)) >> 63); // the top bit is set exactly when x != 0
     return barrier(0 -% @as(u64, nonzero ^ 1));
 }
 

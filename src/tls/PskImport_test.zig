@@ -16,17 +16,14 @@ const Table = struct {
     entries: []const Psk.External,
     queries: usize = 0,
     imported_queries: usize = 0,
+    lookup: Psk.Lookup = .{ .find = find },
 
-    fn find(context: ?*anyopaque, query: Psk.Query) ?Psk.External {
-        const self: *Table = @ptrCast(@alignCast(context.?));
+    fn find(lookup: *Psk.Lookup, query: Psk.Query) ?Psk.External {
+        const self: *Table = @fieldParentPtr("lookup", lookup);
         self.queries += 1;
         if (query.imported != null) self.imported_queries += 1;
         for (self.entries) |entry| if (std.mem.eql(u8, entry.identity, query.identity)) return entry;
         return null;
-    }
-
-    fn lookup(self: *Table) Psk.Lookup {
-        return .{ .context = self, .find = find };
     }
 };
 
@@ -42,7 +39,7 @@ test "C10 an imported key authenticates both ends under either hash, whatever th
         for ([_][]const @import("crypto/Suite.zig").Suite{ &.{.aes_128_gcm_sha256}, &.{.aes_256_gcm_sha384} }) |server_suites| {
             const psk: Psk.External = .{ .identity = "device-7", .secret = &key, .hash = import_hash, .imported = .{ .context = "app" } };
             var table: Table = .{ .entries = &.{psk} };
-            const duo = try connect(.{ .client_psks = &.{psk}, .server_suites = server_suites, .server_psk = table.lookup() });
+            const duo = try connect(.{ .client_psks = &.{psk}, .server_suites = server_suites, .server_psk = &table.lookup });
             defer duo.deinit();
             const client = duo.client.info().?;
             const server = duo.server.info().?;
@@ -66,7 +63,7 @@ test "C10 an imported key is never taken as a plain one, a plain key never as im
         .{ .client = imported, .server = elsewhere },
     }) |case| {
         var table: Table = .{ .entries = &.{case.server} };
-        const duo = try connect(.{ .client_psks = &.{case.client}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_psks = &.{case.client}, .server_psk = &table.lookup });
         defer duo.deinit();
         // The certificate authenticates instead.
         try std.testing.expectEqual(null, duo.client.info().?.external_psk);
@@ -79,7 +76,7 @@ test "C10 a client offers its keys in order and the server takes the first it kn
     const first: Psk.External = .{ .identity = "old", .secret = &key };
     const second: Psk.External = .{ .identity = "new", .secret = &other, .imported = .{} };
     var table: Table = .{ .entries = &.{second} };
-    const duo = try connect(.{ .client_psks = &.{ first, second }, .server_psk = table.lookup() });
+    const duo = try connect(.{ .client_psks = &.{ first, second }, .server_psk = &table.lookup });
     defer duo.deinit();
     try std.testing.expectEqualStrings("new", duo.client.info().?.external_psk.?);
     try std.testing.expectEqualStrings("new", duo.server.info().?.external_psk.?);
@@ -92,7 +89,7 @@ test "C10 after a retry the client offers the chosen hash's identities alone" {
     const plain: Psk.External = .{ .identity = "plain", .secret = &key };
     const imported: Psk.External = .{ .identity = "imported", .secret = &other, .imported = .{} };
     var table: Table = .{ .entries = &.{ plain, imported } };
-    const duo = try connect(.{ .client_psks = &.{ plain, imported }, .server_groups = &.{.p384}, .server_suites = &.{.aes_256_gcm_sha384}, .server_psk = table.lookup() });
+    const duo = try connect(.{ .client_psks = &.{ plain, imported }, .server_groups = &.{.p384}, .server_suites = &.{.aes_256_gcm_sha384}, .server_psk = &table.lookup });
     defer duo.deinit();
     try std.testing.expectEqualStrings("imported", duo.client.info().?.external_psk.?);
     try std.testing.expectEqualStrings("imported", duo.server.info().?.external_psk.?);
@@ -104,7 +101,7 @@ test "C10 after a retry the client offers the chosen hash's identities alone" {
 test "C10 an imported key over DTLS 1.3 is derived for DTLS 1.3" {
     const psk: Psk.External = .{ .identity = "sensor", .secret = &key, .imported = .{} };
     var table: Table = .{ .entries = &.{psk} };
-    const pair = try DatagramPair.init(gpa, .{ .client_psks = &.{psk}, .server_psk = table.lookup(), .client_min = .tls13 });
+    const pair = try DatagramPair.init(gpa, .{ .client_psks = &.{psk}, .server_psk = &table.lookup, .client_min = .tls13 });
     defer pair.deinit();
     try pair.run();
     try std.testing.expectEqualStrings("sensor", pair.client.dtls.info().?.external_psk.?);

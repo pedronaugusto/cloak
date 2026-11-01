@@ -22,7 +22,7 @@ fn best(io: std.Io, comptime body: anytype, args: anytype, iterations: usize) f6
     for (0..5) |_| {
         const start = now(io);
         for (0..iterations) |_| @call(.auto, body, args);
-        // safe: elapsed monotonic nanoseconds are positive and far below 2^53.
+        // Elapsed monotonic nanoseconds are positive and far below 2^53.
         const elapsed: f64 = @floatFromInt(now(io) - start);
         fastest = @min(fastest, elapsed / @as(f64, @floatFromInt(iterations)));
     }
@@ -89,7 +89,7 @@ fn Chains(comptime F: type, comptime windows: usize) type {
 
 fn element(comptime F: type, seed: u8) !F {
     var bytes: [F.encoded_length]u8 = undefined;
-    for (&bytes, 0..) |*b, i| b.* = @truncate(i *% 37 +% seed); // safe: any byte will do
+    for (&bytes, 0..) |*b, i| b.* = @truncate(i *% 37 +% seed); // any byte will do
     bytes[0] = 1;
     return F.fromBytes(&bytes);
 }

@@ -200,7 +200,7 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
             const ctx = Aes.initEnc(key[half..].*);
             var previous = iv.*;
             const blocks = c.len / 16;
-            const pad: u8 = @intCast(c.len - m.len); // safe: 1..16, the PKCS#7 count
+            const pad: u8 = @intCast(c.len - m.len); // 1..16, the PKCS#7 count
             var owner: Secret([16]u8) = .init(undefined);
             defer owner.deinit();
             const block = owner.exposeMut();

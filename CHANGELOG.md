@@ -6,9 +6,44 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [0.23.1] - 2026-10-31
 
+### Breaking
+
+- The interfaces a caller supplies carry no `context: ?*anyopaque`: `Connection.KeyLog`, `certificate_compression.Codec`, `Session.Custom`, `Session.Signer`, `Psk.Lookup` (`external_psk`), `services.Job.Executor` and `offload.Installer`. Each is now a field of the caller's own type; its functions take a pointer to it and recover the owner with `@fieldParentPtr`, and the options take that pointer (`key_log: ?*KeyLog`, `certificate_compression: []const *Codec`, `trust = .{ .custom = *Custom }`, `signer: ?*Signer`, `external_psk: ?*Lookup`, `executor: ?*Executor`, `Connection.offload(direction, *Installer)`). `linux.Socket` and the test kernel hold their `installer`; `Socket.installer()` is gone. A key log, for one:
+
+  ```zig
+  const Lines = struct {
+      writer: *std.Io.Writer,
+      key_log: cloak.tls.Connection.KeyLog = .{ .write = write },
+
+      fn write(log: *cloak.tls.Connection.KeyLog, line: []const u8) void {
+          const self: *Lines = @fieldParentPtr("key_log", log);
+          self.writer.writeAll(line) catch {};
+      }
+  };
+  var lines: Lines = .{ .writer = out };
+  // options: .key_log = &lines.key_log
+  ```
+- `PrivateKey.Components` gains `mldsa` (an ML-DSA key from its seed): a switch over it that names every case needs one more.
+
+- `certificates.signature.digestOf` returns `error{UnsupportedAlgorithm}![]const u8`: Ed25519, ML-DSA and an unsupported algorithm, which have no message digest, are refused as `verifyDigest` refuses them, where they reached `unreachable` (a panic for a caller passing an algorithm a certificate named). Callers add a `try`.
+- `certificate.Algorithm.encodePublicKey`'s error set gains `InvalidPublicKey`: a key a caller builds whose encoding does not fit `out`, or an RSA key with an empty modulus or exponent, is refused, where it failed an assertion (undefined behaviour in ReleaseFast).
+
+### Added
+
+- ML-DSA keys from their seed: `fromComponents(.mldsa)` takes the 32-byte seed and optionally the public key, compared with the seed's, as RFC 9964's JOSE keys (`AKP`) carry them; the same constructor RFC 9881's seed form is read through.
+- Key generation: `PrivateKey.generate(gpa, io, kind)` for P-256, P-384, P-521, Ed25519, X25519 (agreement alone: an ephemeral key, as JWE's ECDH-ES draws), ML-DSA-44/65/87 and RSA (`.{ .rsa = .@"2048" | .@"3072" | .@"4096" }`, e = 65537), entropy from `io.randomSecure`, each key built by the constructor a parsed key of its kind goes through. RSA follows FIPS 186-5 A.1.3 in constant time on every value kept: probable primes 7 mod 8 with the top two bits set, trial division by the primes below 2^12, Miller-Rabin with Table B.1's rounds, d from lambda by the small-e inverse, the whole as one scrubbed computation; generated keys pass `fromIntegers`, their factors are prime by an independent test on std, and they sign (PKCS#1, PSS) and decrypt (OAEP).
+- `PrivateKey.pkcs8(gpa)`: the key as DER PrivateKeyInfo in a `SecretBytes`, what `parse` reads back (RSA's RSAPrivateKey, EC with its public point, Ed25519 and X25519 per RFC 8410, ML-DSA in RFC 9881's seed form when the seed is known, generated or read, and as its expanded key otherwise); `certificates.pem.write` armours it, or any DER.
+- Certificates and requests written: `certificates.issue(gpa, io, template, subject_key, issuer)` writes and signs what a `Template` says (subject, serial, validity, SubjectAltName, CA and path length, key usage, extended key usage, key identifiers, AIA, CRL distribution points, policies, name constraints, raw extensions), self-signed or under an issuer's certificate and key, and parses and verifies what it made before returning it; `certificates.request` writes a PKCS#10 request, `certificates.Request.parse` reads one as a CA reads hostile input and `verifyRequest` checks its proof of possession. Issued roots, intermediates and leaves on every key kind verify as paths through cloak's verifier, with name constraints enforced.
+- SCTs in the leaf's OCSP response (RFC 6962 section 3.3): the SignedCertificateTimestampList an OCSP response carries for the leaf (singleExtension 1.3.6.1.4.1.11129.2.4.5), stapled or in `Evidence.ocsp`, counts toward the transparency policy as a delivered list, read from the first response that validates for the leaf and only when revocation reads it (mode not `.off`).
+
+### Changed
+
+- RSA's private operation multiplies and squares with s2n-bignum's formally verified routines on x86_64 and AArch64: Karatsuba and `bignum_emontredc_8n` for moduli of a multiple of 8 limbs (the halves of RSA-2048, -3072 and -4096) on AArch64 and on x86_64 with BMI2 and ADX, its generic Montgomery routines at other widths and without them. Squarings now have their own routine. The exponentiation stays constant time with base blinding, fixed windows and the public check of every result.
+- Ed25519 runs on formally verified arithmetic too: s2n-bignum's base and double-base multiplications and point decoding (x86_64 and AArch64), elsewhere cloak's extended-coordinate formulas over fiat-crypto's field, and its scalars on cloak's constant-time Montgomery field. Key creation, signing, verification and the certificate key check no longer use std's Edwards25519. Verification is the cofactorless equation as before (std's `verifyStrict`): S below L, A and R on the curve and not of x = 0; a key whose y is not below p is still `InvalidPublicKey`. Signatures are unchanged byte for byte.
+- An RSA private key keeps its private exponent d (validated as before), so it can be written back.
 ### Fixed
 
-- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. The label now takes the same name (`src/crypto/vendor/shim`; the vendored files are unchanged).
+- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. COFF's directive now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged).
 - Debug builds erase 128 KiB below a private key's parse, not 96 KiB: Zig's own x86_64 backend, which compiles Debug for x86_64 Linux, has larger frames than LLVM, and an encrypted RSA key's parse reached 108 KiB there, past what was erased.
 - A server with `external_psk` set panicked on a crafted pre_shared_key identity: `Psk.ImportedIdentity.parse` added the identity's leading length, and then its context length, to small constants in 16 bits, which overflowed for an identity length of 0xfffe or 0xffff or a context length of 0xfffa or more (a panic in every build, the file running with runtime safety). The lengths are now read as usize, and such an identity reads as a plain one, as other bytes do. Affected: 0.21.0 to 0.23.0.
 

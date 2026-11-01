@@ -737,9 +737,10 @@ test "F69 TLS 1.2 tickets bind the same authority as TLS 1.3's" {
 const HandshakeLog = struct {
     secret: [48]u8 = undefined,
     len: usize = 0,
+    key_log: @import("Connection.zig").KeyLog = .{ .write = write },
 
-    fn write(context: ?*anyopaque, line: []const u8) void {
-        const self: *HandshakeLog = @ptrCast(@alignCast(context.?));
+    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
+        const self: *HandshakeLog = @fieldParentPtr("key_log", log);
         if (!std.mem.startsWith(u8, line, "SERVER_HANDSHAKE_TRAFFIC_SECRET ")) return;
         const hex = std.mem.trimEnd(u8, line[std.mem.findScalarLast(u8, line, ' ').? + 1 ..], "\n");
         self.len = (std.fmt.hexToBytes(&self.secret, hex) catch return).len;
@@ -800,7 +801,7 @@ test "F117 catalogue_no_server_name_ack_on_resumption (RFC 6066 section 3: a res
             var log: HandshakeLog = .{};
             var options = fixture.options(if (resuming) 2 else 1);
             options.client_suites = &.{.aes_128_gcm_sha256};
-            options.server_key_log = .{ .context = &log, .write = HandshakeLog.write };
+            options.server_key_log = &log.key_log;
             const duo = try Duo.init(gpa, options);
             defer duo.deinit();
             try duo.handshakeUntilServerFlight();

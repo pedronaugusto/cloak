@@ -1,4 +1,5 @@
 const std = @import("std");
+const tasks = @import("../testing/tasks.zig");
 const builtin = @import("builtin");
 const Job = @import("Job.zig");
 const Budget = @import("Budget.zig");
@@ -6,9 +7,10 @@ const types = @import("../types.zig");
 const shakedown = @import("shakedown");
 const Queue = struct {
     held: ?Job = null,
-    fn submit(context: *anyopaque, job: Job) Job.SubmitError!void {
-        @setRuntimeSafety(true); // Executor context is exactly this queue and remains alive until drain.
-        const q: *Queue = @ptrCast(@alignCast(context)); // safe: submit receives the aligned Queue context supplied by this test
+    executor: Job.Executor = .{ .submit = submit },
+    fn submit(executor: *Job.Executor, job: Job) Job.SubmitError!void {
+        @setRuntimeSafety(true);
+        const q: *Queue = @fieldParentPtr("executor", executor);
         if (q.held != null) return error.ServiceBusy;
         q.held = job;
     }
@@ -34,7 +36,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a late completion a
     @setRuntimeSafety(true);
     var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
-    const job = try Job.init(std.testing.allocator, &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
+    const job = try Job.init(std.testing.allocator, &budget, request(), .{ .executor = &q.executor });
     try std.testing.expectError(error.ServicePending, job.take(request()));
     job.abandon();
     try std.testing.expectError(error.ServiceAbandoned, job.take(request()));
@@ -55,7 +57,7 @@ fn allocations(gpa: std.mem.Allocator) !void {
     var budget: Budget = .init(.{});
     defer std.debug.assert(budget.counts().jobs == 0);
     var q: Queue = .{};
-    const job = try Job.init(gpa, &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
+    const job = try Job.init(gpa, &budget, request(), .{ .executor = &q.executor });
     job.abandon();
     job.deinit();
     q.drain();
@@ -77,7 +79,7 @@ test "service admission covers owned state and input allocation with a zero rece
     var q: Queue = .{};
     var req = request();
     req.limits.receipt_bytes = 0;
-    const job = try Job.init(counting.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit } });
+    const job = try Job.init(counting.allocator(), &budget, req, .{ .executor = &q.executor });
     try std.testing.expect(budget.counts().bytes >= counting.peak_bytes);
     job.abandon();
     job.deinit();
@@ -100,7 +102,7 @@ const Cleanup = struct {
     }
     fn context(raw: *anyopaque) *Cleanup {
         @setRuntimeSafety(true);
-        return @ptrCast(@alignCast(raw)); // safe: allocator context is a live aligned Cleanup owned by this test
+        return @ptrCast(@alignCast(raw)); // allocator context is a live aligned Cleanup owned by this test
     }
     fn alloc(raw: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
         @setRuntimeSafety(true);
@@ -148,7 +150,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
     inline for (.{ true, false }) |abandon| {
         var budget: Budget = .init(.{});
         var q: Queue = .{};
-        const job = try Job.init(cleanup.allocator(), &budget, request(), .{ .executor = .{ .context = &q, .submit = Queue.submit } });
+        const job = try Job.init(cleanup.allocator(), &budget, request(), .{ .executor = &q.executor });
         // Inject owned public native evidence, keeping the executor handle live.
         const path = try Path.init(cleanup.allocator(), request(), &.{"abc"});
         var guard = job.state.get().shared.acquire();
@@ -182,7 +184,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (abandoned during ev
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     var budget: Budget = .init(.{});
     var q: Queue = .{};
-    const job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{root} });
+    const job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = &q.executor, .anchors = &.{root} });
     defer job.deinit();
     cleanup.guard = &job.state.get().shared;
     cleanup.abandon_on_alloc = job;
@@ -212,7 +214,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
     var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
     const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
-    var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = .{ .context = &q, .submit = Queue.submit }, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
+    var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = &q.executor, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
     defer if (caller) |job| {
         job.abandon();
         job.deinit();
@@ -230,7 +232,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
     // Reap before the borrowed allocator, pause or backend can expire, on errors too.
     defer {
         pause.proceed.set(io);
-        _ = worker.cancel(io) catch {}; // glint-ignore: Z026 -- reaping on exit; the success path awaits the worker and checks its result, so only a test that is already failing drops it here
+        tasks.reap(anyerror!void, io, &worker);
     }
     try pause.entered.wait(io);
     caller.?.abandon();

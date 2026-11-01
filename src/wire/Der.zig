@@ -96,7 +96,7 @@ pub fn bits(bytes: []const u8) Error![]const u8 {
     @setRuntimeSafety(true);
     if (bytes.len == 0 or bytes[0] > 7) return error.InvalidDer;
     if (bytes.len == 1 and bytes[0] != 0) return error.InvalidDer;
-    // safe: the unused-bit count was checked to be at most seven above.
+    // The unused-bit count was checked to be at most seven above.
     if (bytes.len > 1 and bytes[0] != 0 and bytes[bytes.len - 1] & ((@as(u8, 1) << @intCast(bytes[0])) - 1) != 0) return error.InvalidDer;
     return bytes[1..];
 }
@@ -129,12 +129,12 @@ pub fn header(out: []u8, at: usize, tag: u8, len: usize) usize {
     @setRuntimeSafety(true);
     out[at] = tag;
     if (len < 0x80) {
-        // safe: below 0x80.
+        // Below 0x80.
         out[at + 1] = @intCast(len);
         return at + 2;
     }
     const bytes = headerLength(len) - 2;
-    // safe: a usize has at most eight bytes.
+    // A usize has at most eight bytes.
     out[at + 1] = 0x80 | @as(u8, @intCast(bytes));
     for (0..bytes) |i| out[at + 2 + i] = @truncate(len >> @intCast(8 * (bytes - 1 - i)));
     return at + 2 + bytes;

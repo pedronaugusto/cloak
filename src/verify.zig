@@ -21,6 +21,7 @@ test {
     _ = @import("verify/Verification_test.zig");
     _ = @import("verify/types_test.zig");
     _ = @import("verify/signature_test.zig");
+    _ = @import("verify/acvp_test.zig");
     _ = @import("verify/constraints_test.zig");
     _ = @import("verify/limbo_test.zig");
     _ = @import("verify/parser_property_test.zig");

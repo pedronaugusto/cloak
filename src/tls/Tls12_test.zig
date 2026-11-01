@@ -418,7 +418,7 @@ test "C4 an output popped from the queue leaves no key bytes behind" {
     // Searched for as whole sequences: a single byte can turn up by chance, and Debug fills an
     // emptied slot's payload with 0xaa, its pattern for undefined memory.
     var key: [32]u8 = undefined;
-    for (&key, 0..) |*byte, i| byte.* = @intCast(0x40 + i); // safe: i is below 32
+    for (&key, 0..) |*byte, i| byte.* = @intCast(0x40 + i); // i is below 32
     const iv: [12]u8 = .{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c };
     var keys: Flight.Keys12 = .{ .cipher = .aes_256_gcm, .key = .init(key), .iv = .init(iv) };
     try flight.push(.{ .keys12 = .{ .direction = .read, .keys = keys } });

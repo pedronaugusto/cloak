@@ -13,7 +13,7 @@ pub fn decode(out: *Uint, bytes: []const u8) error{InvalidKey}!void {
     if (bytes.len > capacity_bits / 8) return error.InvalidKey;
     out.* = zero;
     for (0..bytes.len * 8) |bit| {
-        out.limbs_buffer[bit / width] |= @as(usize, (bytes[bytes.len - 1 - bit / 8] >> @as(u3, @intCast(bit % 8))) & 1) << @as(std.math.Log2Int(usize), @intCast(bit % width)); // safe: public bit offsets modulo byte/machine radix fit their shift types
+        out.limbs_buffer[bit / width] |= @as(usize, (bytes[bytes.len - 1 - bit / 8] >> @as(u3, @intCast(bit % 8))) & 1) << @as(std.math.Log2Int(usize), @intCast(bit % width)); // public bit offsets modulo byte/machine radix fit their shift types
     }
 }
 pub fn encode(input: *const Uint, bytes: []u8) void {
@@ -21,7 +21,7 @@ pub fn encode(input: *const Uint, bytes: []u8) void {
     if (bytes.len > capacity_bits / 8) @panic("cloak integer output exceeds fixed capacity");
     @memset(bytes, 0);
     for (0..bytes.len * 8) |bit| {
-        bytes[bytes.len - 1 - bit / 8] |= @as(u8, @intCast((input.limbs_buffer[bit / width] >> @as(std.math.Log2Int(usize), @intCast(bit % width))) & 1)) << @as(u3, @intCast(bit % 8)); // safe: masked value is one bit; public bit offsets fit shift types
+        bytes[bytes.len - 1 - bit / 8] |= @as(u8, @intCast((input.limbs_buffer[bit / width] >> @as(std.math.Log2Int(usize), @intCast(bit % width))) & 1)) << @as(u3, @intCast(bit % 8)); // masked value is one bit; public bit offsets fit shift types
     }
 }
 pub fn eql(a: *const Uint, b: *const Uint) bool {

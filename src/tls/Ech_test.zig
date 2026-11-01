@@ -77,10 +77,11 @@ test "C6 ECH with certificate compression offered, used or not: the inner hello 
     try keys.init(4, 2, public_name);
     defer keys.deinit();
     const Zlib = @import("../testing/Zlib.zig");
-    const codec: @import("handshake/Compression.zig").Codec = .{ .algorithm = .zlib, .compress = Zlib.compress, .decompress = Zlib.decompress };
+    var zlib = Zlib.codec;
+    const codec = &zlib;
     // The client offers the codec; the server compresses with it, or has none. With a retry
     // request too, whose second inner hello is encoded again.
-    for ([_][]const @import("handshake/Compression.zig").Codec{ &.{codec}, &.{} }) |server_codecs| for ([_][]const @import("crypto/Group.zig").Group{ &.{ .x25519_mlkem768, .x25519 }, &.{.p256} }) |server_groups| {
+    for ([_][]const *@import("handshake/Compression.zig").Codec{ &.{codec}, &.{} }) |server_codecs| for ([_][]const @import("crypto/Group.zig").Group{ &.{ .x25519_mlkem768, .x25519 }, &.{.p256} }) |server_groups| {
         const duo = try connect(.{ .server_groups = server_groups, .client_codecs = &.{codec}, .server_codecs = server_codecs, .client_ech = .{ .config_list = keys.list }, .server_ech = &.{keys.key()} });
         defer duo.deinit();
         try std.testing.expect(duo.client.info().?.ech_accepted and duo.server.info().?.ech_accepted);

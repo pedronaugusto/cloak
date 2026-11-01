@@ -2,6 +2,7 @@
 //! against the caller's logs and policy. Offline: log lists, their states and freshness are the
 //! caller's; inclusion proofs and gossip are not checked.
 const std = @import("std");
+const aegis = @import("aegis");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
@@ -85,7 +86,9 @@ pub const List = struct {
 
 /// Checks `path`'s SCTs, those embedded in its leaf and those delivered beside it (`scts`),
 /// against `policy` at `now_ms`. Each signature verified spends one of `signatures`.
-pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, required: ?*const T.TransparencyPolicy, scts: []const []const u8, signatures_left: *usize) Error!Result {
+/// `scts` are the lists delivered beside the certificate (`Evidence.scts`); `stapled` is the one a
+/// validated OCSP response for the leaf carries (`revocation.Result.scts`). Both sign the leaf.
+pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, required: ?*const T.TransparencyPolicy, scts: []const []const u8, stapled: ?[]const u8, signatures_left: *usize) Error!Result {
     @setRuntimeSafety(true);
     const policy = (required orelse return .{ .status = .unchecked }).*;
     try validate(policy);
@@ -121,20 +124,24 @@ pub fn check(gpa: std.mem.Allocator, path: []const C.Certificate, now_ms: i64, r
     };
     // Delivered SCTs sign the certificate as it is, and count only from logs not retired.
     var tally: Tally = .{};
-    for (scts) |bytes| {
+    const from_ocsp: []const []const u8 = if (stapled) |*bytes| bytes[0..1] else &.{};
+    for ([_][]const []const u8{ scts, from_ocsp }) |lists| for (lists) |bytes| {
         var list = try List.init(bytes);
         while (list.next()) |sct| {
             try context.count(&tally, sct, .{ .x509 = leaf.der }, false);
             if (tally.meets(policy, policy.delivered)) return compliant(expires);
         }
-    }
+    };
     return error.MissingTransparency;
 }
+
+/// SCT timestamps and log list expiries: milliseconds since the epoch.
+const RealMilliseconds = aegis.units.Instant(.real, .millisecond, i64);
 
 /// A compliant verdict, holding through the last whole second before the list expires (a
 /// receipt's `expires` is the start of the last second it holds for).
 fn compliant(expires_ms: ?i64) Result {
-    return .{ .status = .compliant, .expires = if (expires_ms) |ms| @divFloor(ms - 1, std.time.ms_per_s) else null };
+    return .{ .status = .compliant, .expires = if (expires_ms) |ms| RealMilliseconds.fromRaw(ms - 1).convert(.second, i64, .down).raw() else null };
 }
 
 /// The policy's shape: one to `max_logs` logs, each count one to `max_count`.
@@ -248,11 +255,11 @@ pub fn signedInput(gpa: std.mem.Allocator, sct: Sct, entry: Entry) Error![]u8 {
     std.mem.writeInt(u16, out[at..][0..2], @intFromBool(entry == .precert), .big);
     at += 2;
     if (entry == .precert) put(out, &at, entry.precert.issuer_key_hash);
-    // safe: bounded by the u24 maximum above.
+    // Bounded by the u24 maximum above.
     std.mem.writeInt(u24, out[at..][0..3], @intCast(der.len), .big);
     at += 3;
     put(out, &at, der);
-    // safe: a vector of a u16-framed list.
+    // A vector of a u16-framed list.
     std.mem.writeInt(u16, out[at..][0..2], @intCast(sct.extensions.len), .big);
     at += 2;
     put(out, &at, sct.extensions);

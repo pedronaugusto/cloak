@@ -161,7 +161,7 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
     std.mem.writeInt(u16, out[at..][0..2], @backingInt(state.suite), .big);
     at += 2;
     const secret = state.secretBytes();
-    // safe: a secret is 32 or 48 bytes.
+    // A secret is 32 or 48 bytes.
     out[at] = @intCast(secret.len);
     @memcpy(out[at + 1 ..][0..secret.len], secret);
     at += 1 + secret.len;
@@ -174,7 +174,7 @@ fn encode(state: *const State, out: *[max_plain]u8) []const u8 {
     std.mem.writeInt(u32, out[at..][0..4], state.age_add, .big);
     at += 4;
     for ([_][]const u8{ state.alpnBytes(), state.serverName() }) |name| {
-        // safe: both names were bounded at 255 bytes where they were stored.
+        // Both names were bounded at 255 bytes where they were stored.
         out[at] = @intCast(name.len);
         @memcpy(out[at + 1 ..][0..name.len], name);
         at += 1 + name.len;

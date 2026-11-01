@@ -131,7 +131,7 @@ fn checkMac(gpa: std.mem.Allocator, mac_data: Der.Element, content: []const u8, 
     if (std.mem.eql(u8, id, oid_pbmac1)) return pbmac1(parameters orelse return error.InvalidPkcs12, content, expected, password.utf8, limits);
     if (parameters) |p| if (p.tag != 5 or p.value.len != 0) return error.InvalidPkcs12;
     if (salt.len > limits.salt_bytes or iterations == 0 or iterations > limits.iterations) return error.KdfLimit;
-    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
+    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     const bmp = try password.bmpForm();
     if (std.mem.eql(u8, id, oid_sha1)) return hmacMac(Sha1, gpa, bmp, salt, rounds, content, expected);
     if (id.len == oid_sha2_prefix.len + 1 and std.mem.eql(u8, id[0..oid_sha2_prefix.len], oid_sha2_prefix)) return switch (id[oid_sha2_prefix.len]) {
@@ -173,7 +173,7 @@ fn pbmac1(parameters: Der.Element, content: []const u8, expected: []const u8, pa
     try p.finish();
     if (salt.len > limits.salt_bytes or iterations == 0 or iterations > limits.iterations or iterations > std.math.maxInt(u32)) return error.KdfLimit;
     if (key_length == 0 or key_length > Kdf.max_key) return error.InvalidPkcs12;
-    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit; // safe: checked narrowing at the KDF boundary
+    const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     var key_owner = aegis.Secret([Kdf.max_key]u8).init(undefined);
     defer key_owner.deinit();
     const key = key_owner.exposeMut()[0..key_length];

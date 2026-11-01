@@ -48,6 +48,17 @@ the tests give one operator), `ct_leaf_long` (a and b), `ct_leaf_long_three` (a,
 SCTs, and `ct_plain.scts`, a SignedCertificateTimestampList from logs a and b over it as it is.
 The generator is not kept: the files are the fixture.
 
+SCTs in an OCSP response, made with Go 1.27.1 and golang.org/x/crypto v0.58.0's `ocsp` (2026-10-29;
+the SCTs built with Go's crypto/ecdsa over RFC 6962 section 3.2's input, OpenSSL 4.0.3's `ocsp
+-resp_text` reads them and verifies the responses): `ct_ocsp_ca.der`, a P-256 root (path length
+0; its key not kept); `ct_ocsp_leaf.der`, a server certificate it signs on the `p256` key for
+`example.com`, `*.example.org` and `192.0.2.7`, valid from 2026-12-01 for 89 days, without SCTs;
+`ct_ocsp_leaf.ocsp`, a good OCSP response the root signs for it (SHA-1 CertID, responder by name,
+produced and this update 2026-10-29, next update 2027-04-01) carrying, as the singleExtension
+1.3.6.1.4.1.11129.2.4.5, a SignedCertificateTimestampList from logs a and b over the leaf as it
+is, issued an hour after it starts; `ct_ocsp_leaf_bare.ocsp`, the same response without it. The
+generator is not kept.
+
 The P-521 set, made with OpenSSL 4.0.3 (2026-10-25): `p521_ca.der`, a P-521 root (path length 0,
 ecdsa-with-SHA512), and `p521.der`, a server certificate it signs on the `p521.key.pem` key for
 `example.com`, `*.example.org` and `192.0.2.7` with the leaves' extensions above (subject and

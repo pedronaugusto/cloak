@@ -85,7 +85,7 @@ test "credential PKCS8 attributes require Attribute grammar and implicit SET ord
         defer std.testing.allocator.free(encoded);
         @memcpy(encoded[0..block.der.len], block.der);
         @memcpy(encoded[block.der.len..], attributes);
-        encoded[1] += @intCast(attributes.len); // safe: this fixed dummy sequence and each short attribute fit one DER length octet
+        encoded[1] += @intCast(attributes.len); // this fixed dummy sequence and each short attribute fit one DER length octet
         try rejectKey(error.InvalidKey, PrivateKey.parse(std.testing.allocator, encoded, .{}));
     }
 }
@@ -373,4 +373,10 @@ test "C10 a private key writes its public half as the SubjectPublicKeyInfo its c
     // A key restricted to RSASSA-PSS carries its parameters in its certificate: not written.
     const rsa = try certificate.Algorithm.publicKey((try certificate.parse(pki.rsa, .{})).spki);
     try std.testing.expectError(error.UnsupportedAlgorithm, certificate.Algorithm.encodePublicKey(.{ .rsa = .{ .modulus = rsa.rsa.modulus, .exponent = rsa.rsa.exponent, .pss_only = true } }, &out));
+    // A key a caller builds that no encoding fits, or with no RSA modulus, is refused, not
+    // written past `out`.
+    const long: [out.len]u8 = @splat(4);
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .ec = .{ .curve = .p256, .bytes = &long } }, &out));
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .mldsa = .{ .level = .mldsa87, .bytes = &long } }, &out));
+    try std.testing.expectError(error.InvalidPublicKey, certificate.Algorithm.encodePublicKey(.{ .rsa = .{ .modulus = "", .exponent = "\x01\x00\x01" } }, &out));
 }

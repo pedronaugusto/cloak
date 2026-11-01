@@ -276,7 +276,7 @@ pub fn pinnedKey(entries: []const []const u8, pins: []const [32]u8) KeyError!u16
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(entries[0], &hash, .{});
     for (pins, 0..) |*pin, i| {
-        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
+        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // at most max_pins
     }
     return error.PinMismatch;
 }
@@ -289,7 +289,7 @@ pub fn pinnedLeaf(leaf: []const u8, pins: []const [32]u8) KeyError!u16 {
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(cert.spki, &hash, .{});
     for (pins, 0..) |*pin, i| {
-        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // safe: at most max_pins
+        if (aegis.secret.equal(32, &hash, pin).declassify("which pinned key the peer holds is reported")) return @intCast(i); // at most max_pins
     }
     return error.PinMismatch;
 }

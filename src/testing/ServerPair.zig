@@ -38,7 +38,7 @@ pub const Options = struct {
     external: bool = false,
     /// Answer signing requests with a bad signature; implies `external`.
     bad_signature: bool = false,
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// The allocator the connection uses, to measure it; the harness uses `gpa` otherwise.
     conn_gpa: ?std.mem.Allocator = null,
     /// Trust no root, so any client chain fails to verify.
@@ -207,7 +207,7 @@ pub fn ServerPair(comptime suite: Suite13) type {
 
         fn now(self: *const Self) u64 {
             const io = self.clock orelse return 0;
-            // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+            // Monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
             return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         }
 

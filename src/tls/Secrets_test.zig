@@ -106,14 +106,11 @@ const Graveyard = struct {
 /// An NSS key log sink: the caller's, holding what cloak hands it.
 const Lines = struct {
     text: std.ArrayList(u8) = .empty,
+    key_log: Connection.KeyLog = .{ .write = write },
 
-    fn write(context: ?*anyopaque, line: []const u8) void {
-        const self: *Lines = @ptrCast(@alignCast(context.?));
+    fn write(log: *Connection.KeyLog, line: []const u8) void {
+        const self: *Lines = @fieldParentPtr("key_log", log);
         self.text.appendSlice(std.testing.allocator, line) catch @panic("the key log is out of memory");
-    }
-
-    fn log(self: *Lines) Connection.KeyLog {
-        return .{ .context = self, .write = write };
     }
 };
 
@@ -241,8 +238,8 @@ fn releaseStream(options: Duo.Options, cut: Cut, key_len: usize) !void {
     var logs: [2]Lines = .{ .{}, .{} };
     defer for (&logs) |*lines| lines.text.deinit(std.testing.allocator);
     var with_logs = options;
-    with_logs.client_key_log = logs[0].log();
-    with_logs.server_key_log = logs[1].log();
+    with_logs.client_key_log = &logs[0].key_log;
+    with_logs.server_key_log = &logs[1].key_log;
     var server_random: ?[32]u8 = null;
     {
         const duo = try Duo.init(grave.allocator(), with_logs);
@@ -333,8 +330,8 @@ fn releaseDatagram(options: DatagramPair.Options, step: usize) !bool {
     defer for (&logs) |*lines| lines.text.deinit(std.testing.allocator);
     var with_logs = options;
     with_logs.mutual = true;
-    with_logs.client_key_log = logs[0].log();
-    with_logs.server_key_log = logs[1].log();
+    with_logs.client_key_log = &logs[0].key_log;
+    with_logs.server_key_log = &logs[1].key_log;
     var needles: Needles = .{};
     defer needles.deinit();
     var more = true;

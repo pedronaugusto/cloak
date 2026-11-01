@@ -19,6 +19,15 @@ snapshot. Atomic reference counts control lifetime. Mutable admission and
 native completion payloads each have one owner behind one `aegis.Guarded`
 lock. There is no hidden root store, background network fetch or thread owner.
 
+What a caller supplies to be called back is an interface of function pointers only: a key log
+(`Connection.KeyLog`), a certificate codec (`certificate_compression.Codec`), a verifier
+(`Session.Custom`), a signer (`Session.Signer`), a PSK lookup (`Psk.Lookup`), a service executor
+(`services.Job.Executor`) and a kernel's installer (`offload.Installer`). Each is a field of the
+caller's own type; cloak holds a pointer to it and passes that pointer back, and the function
+recovers its owner with `@fieldParentPtr`. No context is erased to `*anyopaque` and cast back.
+The pointer is mutable, as std's `Io.Reader` and `Io.Writer` are: what the owner keeps is its own,
+and an interface a server shares across connections is called from each of them.
+
 `wire` validates hostile DER before `certificate` interprets it. `verify`
 searches bounded candidate paths, rechecks every selected path, enforces
 identity/constraints/policy/revocation and returns owned accepted-path evidence.
@@ -34,7 +43,7 @@ charged until its last handle is reaped. Phase/result mutations occur under one
 lease; path cleanup and allocator callbacks occur after that lease is released.
 Ready request hashing borrows immutable inputs outside the lock and reacquires
 and rechecks readiness before transferring the result. The caller must keep the
-allocator, budget and executor context alive through reaping. OS-private memory
+allocator, budget and executor alive through reaping. OS-private memory
 is outside the cloak allocator and is bounded separately by job admission.
 
 ## Parsing and private material
@@ -51,9 +60,9 @@ and DER buffers clear before release. The published aegis SecretBytes owner
 retains full allocation capacity and calls rawFree after erasure, so the
 allocator hook observes zeros in every mode.
 
-Private P-256/P-384 base multiplication uses a local subset of Zig 0.17.0's
-complete a=-3 point formulas and fixed-width Montgomery arithmetic (Zig contributors'
-MIT notice in `credentials/Curve.zig`'s header). Each arithmetic truncation retains a low word or carry. Products
+Private P-256/P-384/P-521 multiplication is cloak's own Jacobian a=-3 arithmetic in
+`crypto/weierstrass.zig`, over s2n-bignum's or fiat-crypto's verified field code, with
+the scalars on fixed-width Montgomery arithmetic. Each arithmetic truncation retains a low word or carry. Products
 use double-width arithmetic with a documented overflow bound; REDC needs
 one masked subtraction because canonical inputs produce a result below 2p.
 Runtime safety remains enabled; fixed public limb indices and proven
@@ -150,6 +159,46 @@ on the ARMv8 SHA-1 instructions (`crypto/sha1.zig`; std's SHA-1 has no accelerat
 on the AES instructions where the target has them, the fixed-arithmetic AES elsewhere. x86_64's
 SHA extensions are not used yet: there SHA-1 is std's.
 
+## Issuing certificates
+
+`PrivateKey.generate(gpa, io, kind)` makes a key from `io.randomSecure` and builds it by the
+constructor a parsed key of its kind goes through, so a generated key gets every check a parsed
+one does: an EC scalar drawn at the order's width (P-521's top seven bits cleared) and redrawn
+when out of range, an Ed25519 or ML-DSA seed, and RSA's numbers through `Rsa.fromIntegers`.
+X25519 keys agree and sign nothing; they are not a kind.
+
+RSA generation (`crypto/rsa_keygen.zig`) is FIPS 186-5 A.1.3 for e = 65537, constant time on
+every value it keeps. Candidates of nlen/2 bits have their top two bits set (n is never a bit
+short) and are 7 mod 8, so (w - 1)/2 is odd and Miller-Rabin is one exponentiation and a
+comparison with +-1. Trial division by the odd primes below 2^12 and the check w mod e != 1
+reduce by a fixed multiply-and-correct over 32-bit chunks; Miller-Rabin takes Table B.1's rounds
+for p and q (5 at 1024 bits, 4 at 1536 and 2048: its security-strength column), bases drawn
+below the candidate's width, by the RSA modulus code's window on s2n-bignum. Only "rejected"
+leaves, about a candidate thrown away. lambda = 2 a' (b'/g) for a' = (p - 1)/2, b' = (q - 1)/2
+and g their gcd by a fixed-step binary gcd (g at or above 2^32 rejects the pair, as Go does);
+d = e^-1 mod lambda without a general inverse: t = lambda mod e, u = t^(e-2) mod e, and
+(1 + lambda (e - u))/e divided exactly limb by limb. FIPS's |p - q| and d > 2^(nlen/2) checks
+are masks. The whole runs as one scrubbed computation. Tests hold each piece against std's big
+integers, the prime verdicts against an independent Miller-Rabin on std, and generated keys of
+every size against `fromIntegers`, std's primality and std's m^d.
+
+`PrivateKey.pkcs8(gpa)` writes the key as a PrivateKeyInfo, which `parse` reads back: RSA's
+RSAPrivateKey from the numbers the key holds (d is kept for it), EC with its public point,
+Ed25519 and X25519 as RFC 8410, ML-DSA's expanded key. The DER builder (`wire/Builder.zig`)
+writes into an aegis `SecretBytes`, so a key's encoding leaves no unerased copy as it grows,
+and hands it over as one; a certificate's bytes, public, are copied out.
+
+`certificates.issue` writes and signs what a `Template` says about a subject key, self-signed
+or under an issuer's certificate (whose key must be the signing key's, a CA with keyCertSign
+when it states key usage): the issuer Name from that certificate, the AKI from its SKI (or RFC
+7093 method 1 over its key), a random 16-byte positive serial unless one is given, UTCTime
+through 2049 and GeneralizedTime from 2050, extensions in Go's order. A template a verifier would
+refuse (backwards validity, keyCertSign off a CA, a name cloak's verifier would not match, an
+extension the template owns given raw) is refused before anything is written. What `issue`
+returns it has parsed and verified under the issuer's key. `certificates.request` writes a
+PKCS#10 request; `Request.parse` reads one as hostile input and `verifyRequest` checks that its
+requester holds the key.
+
 ## Verified field arithmetic and P-521
 
 P-521's field runs formally verified code behind one interface, `crypto/field/p521.zig`:
@@ -245,6 +294,28 @@ are made where they are kept, and every std primitive that takes their bytes run
 in a scrubbed frame ("Parsing and private material"; F93 searches the stack and
 released memory); none of this reaches registers, the entry frame, OS paging or
 process abort, nor proves hardware constant-time behavior.
+
+Fifteen sites stand where aegis's rules cannot follow, each an escape that names it a
+`boundary`, judged by hand (review of 2026-10-28) and listed here with the rule each covers.
+They are the machine, the OS and std, never cloak's own code:
+- A019, inline asm: `crypto/field/Montgomery.zig`'s empty asm that ties a value to a register
+  so the optimizer cannot see through a mask; `crypto/field/s2n.zig`'s cpuid and MIDR_EL1
+  reads; `crypto/sha1.zig`'s six ARMv8 SHA-1 instructions, on registers alone.
+- A019, CryptoAPI: `services/windows.zig`'s chain context cast and its three calls, declared
+  as the SDK declares them.
+- A019, the Linux socket ABI: `tls/offload/linux.zig`'s `sockaddr.in` passed as the `sockaddr`
+  it begins as.
+- A008, std: `tls/crypto/Exchange.zig`'s ML-KEM key pair, which std returns by value; the copy
+  lies in the frame `scrubbed` erases.
+The escape form does not name its rule yet (`boundary(A019)`); it does once glint reads that
+spelling, at the re-pin onto it.
+
+Six more stand only for glint: methods that hand back their own owner's borrow, with
+`SecretBytes.expose`'s lifetime (`tls/wire/Buffer.zig`'s `bytes`, `view` and `ensure`,
+`wire/Builder.zig`'s `written`, `tls/handshake/Transcripts.zig`'s `keptBytes` and the server's
+ECH inner hello). A002 flags every returned expose; a method forwarding its own field's is an
+expose method, whose callers A002 should judge instead (sent to aegis for glint). They come
+off with nothing in their place when glint reads that shape.
 
 ## TLS 1.3 foundations
 
@@ -1096,7 +1167,8 @@ certificate is compliant by its embedded SCTs (over the precertificate: the TBS 
 extension removed and re-encoded, and the issuer key's hash, the issuer being the path's next
 certificate) from `embedded` distinct logs, `embedded_long` when it is valid longer than
 `long_lifetime`, one of them not retired; or by SCTs delivered beside it (over the certificate
-itself: the TLS extension, a caller's list) from `delivered` distinct logs none retired; either
+itself: the TLS extension, a caller's list, the leaf's OCSP response) from `delivered` distinct
+logs none retired; either
 way from `operators` distinct operators. The defaults are the counts Chrome's and Apple's policies
 ask of public certificates. Log lists, their distribution and freshness, inclusion proofs and
 gossip are upstream: cloak checks what it is given.
@@ -1115,7 +1187,15 @@ both versions; the server's list comes in the leaf's CertificateEntry (TLS 1.3; 
 illegal_parameter, unasked unsupported_extension, empty decode_error) or in the ServerHello
 (TLS 1.2), and joins the request after the caller's lists. A server's `Credential.scts` is a
 list for its certificate as it is, checked for framing when the server is made, sent only to a
-client that asks, never with a raw key. SCTs inside a stapled OCSP response are not read.
+client that asks, never with a raw key.
+
+An OCSP response for the leaf may carry its SCT list too (RFC 6962 section 3.3, the
+singleExtension 1.3.6.1.4.1.11129.2.4.5 in an OCTET STRING, as in a certificate): revocation
+reads it from the first response that validates for the leaf, the issuer's or a delegated
+responder's, and hands it to the transparency check beside the delivered lists, outside
+`max_lists` (one per path). It counts only when revocation reads the response: with revocation
+`.off` (when a TLS client asks for no staple either) it is never read, and a response that fails
+is no evidence of either kind. The request digest covers the OCSP evidence, so a receipt binds it.
 
 ## OCSP stapling
 

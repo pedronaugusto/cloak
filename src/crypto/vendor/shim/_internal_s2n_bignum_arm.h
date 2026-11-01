@@ -18,8 +18,11 @@
 #   define S2N_BN_SYM_PRIVACY_DIRECTIVE(name)
 #   define S2N_BN_SIZE_DIRECTIVE(name)
 #else
+// A routine's own local functions (`Ledwards25519_decode_standard`) take these directives too, and
+// keep upstream's names. Both go at the function's end, where `.ifdef` tells a renamed routine
+// from a local label: ELF's `.type` may follow the definition.
 #   define S2N_BN_SYMBOL(name) cloak_##name
-#   define S2N_BN_FUNCTION_TYPE_DIRECTIVE(name) .type S2N_BN_SYMBOL(name), %function
+#   define S2N_BN_FUNCTION_TYPE_DIRECTIVE(name)
 #   define S2N_BN_SYM_PRIVACY_DIRECTIVE(name) .hidden S2N_BN_SYMBOL(name)
-#   define S2N_BN_SIZE_DIRECTIVE(name) .size S2N_BN_SYMBOL(name), .-S2N_BN_SYMBOL(name)
+#   define S2N_BN_SIZE_DIRECTIVE(name) .ifdef S2N_BN_SYMBOL(name) ; .type S2N_BN_SYMBOL(name), %function ; .size S2N_BN_SYMBOL(name), .-S2N_BN_SYMBOL(name) ; .else ; .type name, %function ; .size name, .-name ; .endif
 #endif

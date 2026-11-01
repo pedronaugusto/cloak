@@ -65,7 +65,7 @@ const Erasure = struct {
     }
     fn context(raw: *anyopaque) *Erasure {
         @setRuntimeSafety(true);
-        return @ptrCast(@alignCast(raw)); // safe: this vtable receives the live aligned Erasure owned by the test
+        return @ptrCast(@alignCast(raw)); // this vtable receives the live aligned Erasure owned by the test
     }
     fn alloc(raw: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
         @setRuntimeSafety(true);

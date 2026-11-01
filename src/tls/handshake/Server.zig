@@ -155,12 +155,12 @@ pub const Options = struct {
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879), in the server's order of preference: the first whose
     /// algorithm the client lists compresses the Certificate, when that makes it smaller.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys, looked up by the identity a client offers, for the version negotiated:
     /// TLS 1.3 PSK-DHE, tried before tickets; TLS 1.2 plain PSK when a PSK suite is listed and
     /// chosen. A client that proves one is authenticated by it, with no certificate either way,
     /// and is issued no tickets.
-    external_psk: ?Psk.Lookup = null,
+    external_psk: ?*Psk.Lookup = null,
     /// DTLS: connection_id (RFC 9146), answered when a client offers it. Null answers none;
     /// otherwise the connection ID this server receives records with, borrowed; empty: it sends
     /// with the client's but takes none.
@@ -172,7 +172,7 @@ pub const Options = struct {
     /// record sent to this server may carry (64 to 2^14 + 1). Null names the version's maximum.
     record_size_limit: ?u16 = null,
     limits: Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
     /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
     /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
@@ -772,7 +772,7 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink.context, line[0 .. at + 1]);
+    sink.write(sink, line[0 .. at + 1]);
 }
 
 // ---------------------------------------------------------------- input
@@ -833,7 +833,7 @@ pub fn chooseCredential(self: *Server, hello: *const ClientHello, comptime fit: 
         if (pick.offer(i, found, Authorities.prefers(credential.identity, hello.authorities))) break;
     }
     const chosen = pick.chosen() orelse return refusal;
-    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
+    self.credential = @intCast(chosen.index); // at most 32 credentials
     self.scheme = chosen.value.scheme;
     return chosen.value;
 }
@@ -923,12 +923,12 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (!second or self.stateless_retry) {
         scratch.client_random.exposeMut().* = hello.random[0..32].*;
         @memcpy(scratch.session[0..hello.session.len], hello.session);
-        // safe: parsing bounds the session id at 32 bytes.
+        // Parsing bounds the session id at 32 bytes.
         scratch.session_len = @intCast(hello.session.len);
         if (self.options.transport == .quic and hello.session.len != 0) return error.IllegalParameter;
         scratch.first = hello.fingerprint();
         @memcpy(scratch.server_name[0..hello.server_name.len], hello.server_name);
-        // safe: parsing bounds a host name at 253 bytes.
+        // Parsing bounds a host name at 253 bytes.
         scratch.server_name_len = @intCast(hello.server_name.len);
     }
     if (hello.cookie.len != 0 and !self.stateless_retry) return error.UnexpectedCookie;
@@ -948,7 +948,7 @@ fn onClientHello(self: *Server, wire: []const u8, epoch: Epoch, boundary: bool) 
     if (hello.compress_certificate) |list| {
         // checkExtension bounded it: one length byte and at most 254 bytes of algorithms.
         @memcpy(self.scratch.?.compression[0..list.len], list);
-        self.scratch.?.compression_len = @intCast(list.len); // safe: at most 255 bytes
+        self.scratch.?.compression_len = @intCast(list.len); // at most 255 bytes
     } else self.scratch.?.compression_len = 0;
     try self.negotiate(&hello, second);
     const group = self.group.?;
@@ -1099,14 +1099,14 @@ fn chooseExternal(self: *Server, msg: []const u8, hello: *const ClientHello) Cli
         query.identity = offer.identity;
         var kind: Schedule.BinderKind = .external;
         const found: Psk.External = plain: {
-            if (offer.identity.len <= Psk.max_identity) if (lookup.find(lookup.context, query)) |answer| {
+            if (offer.identity.len <= Psk.max_identity) if (lookup.find(lookup, query)) |answer| {
                 if (query.takes(answer) and answer.hash == hash) break :plain answer;
             };
             const imported = Psk.ImportedIdentity.parse(offer.identity) orelse continue;
             if (imported.protocol != Psk.targetProtocol(self.options.transport) or imported.kdf != Psk.targetKdf(hash) or imported.identity.len > Psk.max_identity or imported.context.len > Psk.max_context) continue;
             query.identity = imported.identity;
             query.imported = .{ .context = imported.context };
-            const answer = lookup.find(lookup.context, query) orelse continue;
+            const answer = lookup.find(lookup, query) orelse continue;
             if (!query.takes(answer)) continue;
             kind = .imported;
             break :plain answer;
@@ -1260,7 +1260,7 @@ fn negotiate(self: *Server, hello: *const ClientHello, second: bool) Client.Erro
     }
     const keep = @min(hello.schemes.len, scratch.schemes.len) & ~@as(usize, 1);
     @memcpy(scratch.schemes[0..keep], hello.schemes[0..keep]);
-    // safe: at most 256 bytes are kept.
+    // At most 256 bytes are kept.
     scratch.schemes_len = @intCast(keep);
 }
 
@@ -1309,7 +1309,7 @@ pub fn negotiateDatagram(self: *Server, hello: *const ClientHello) void {
     if (self.options.transport != .datagram) return;
     if (self.options.connection_id != null) if (hello.connection_id) |cid| {
         @memcpy(scratch.peer_cid[0..cid.len], cid);
-        scratch.peer_cid_len = @intCast(cid.len); // safe: a vector<0..255>
+        scratch.peer_cid_len = @intCast(cid.len); // a vector<0..255>
         scratch.cid_agreed = true;
     };
     const offered = hello.srtp orelse return;
@@ -1518,7 +1518,7 @@ fn signCertificate(self: *Server, identity: certificates.Identity) Client.Error!
     const scratch = self.scratch.?;
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const content = Messages.signedContent(scratch.sign_content.exposeMut(), true, scratch.transcripts.digest(&digest_buf));
-    // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
+    // Signed content is at most 64 + 33 + 1 + 48 bytes.
     scratch.sign_content_len = @intCast(content.len);
     scratch.signing = true;
     if (self.delegating) {
@@ -1779,11 +1779,11 @@ fn issueTickets(self: *Server) Client.Error!void {
         };
         defer state.deinit();
         @memcpy(state.alpn[0..self.alpn.len], self.alpn);
-        state.alpn_len = @intCast(self.alpn.len); // safe: a protocol name is at most 255 bytes
+        state.alpn_len = @intCast(self.alpn.len); // a protocol name is at most 255 bytes
         @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
         state.server_name_len = scratch.server_name_len;
         // Each ticket of the connection has its own nonce, so its own PSK (RFC 8446 section 4.6.1).
-        const nonce = [1]u8{@intCast(i)}; // safe: two tickets
+        const nonce = [1]u8{@intCast(i)}; // two tickets
         switch (keys.*) {
             inline else => |*k, tag| {
                 const K = Schedule.Schedule(tag);
@@ -1796,7 +1796,7 @@ fn issueTickets(self: *Server) Client.Error!void {
         // The sealed ticket is ciphertext: it goes to the client as it is.
         var sealed_buf: [Ticket.max_length]u8 = undefined;
         const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
-        const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // safe: positive and at most seven days
+        const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // positive and at most seven days
         const dst = try self.reserve(4 + 4 + 4 + 2 + 2 + sealed.len + 2);
         const message = try Messages.buildNewSessionTicket(dst, lifetime, state.age_add, &nonce, sealed);
         // Post-handshake: sent, never part of the transcript.

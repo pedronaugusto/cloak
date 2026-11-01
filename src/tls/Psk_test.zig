@@ -19,11 +19,12 @@ const key384: [48]u8 = @splat(0x43);
 const Table = struct {
     entries: []const Entry,
     queries: usize = 0,
+    lookup: Psk.Lookup = .{ .find = find },
 
     const Entry = struct { psk: Psk.External, server_name: ?[]const u8 = null, alpn: ?[]const u8 = null };
 
-    fn find(context: ?*anyopaque, query: Psk.Query) ?Psk.External {
-        const self: *Table = @ptrCast(@alignCast(context.?));
+    fn find(lookup: *Psk.Lookup, query: Psk.Query) ?Psk.External {
+        const self: *Table = @fieldParentPtr("lookup", lookup);
         self.queries += 1;
         for (self.entries) |entry| {
             if (!std.mem.eql(u8, entry.psk.identity, query.identity)) continue;
@@ -32,10 +33,6 @@ const Table = struct {
             return entry.psk;
         }
         return null;
-    }
-
-    fn lookup(self: *Table) Psk.Lookup {
-        return .{ .context = self, .find = find };
     }
 };
 
@@ -62,7 +59,7 @@ test "C10 a provisioned key authenticates both ends with no certificate, each ha
     };
     for (cases) |case| {
         var table: Table = .{ .entries = &.{.{ .psk = case.psk }} };
-        const duo = try connect(.{ .client_suites = &.{case.suite}, .client_psks = &.{case.psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_suites = &.{case.suite}, .client_psks = &.{case.psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         const client = duo.client.info().?;
         const server = duo.server.info().?;
@@ -82,13 +79,13 @@ test "C10 a provisioned key across a retry request, with an unverifying client, 
     const psk: Psk.External = .{ .identity = "device-9", .secret = &key256 };
     var table: Table = .{ .entries = &.{.{ .psk = psk }} };
     {
-        const duo = try connect(.{ .server_groups = &.{.p256}, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .server_groups = &.{.p256}, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect((duo.client.info().?.external_psk != null) and duo.client.info().?.group == .p256);
     }
     // The key authenticates the server whatever the certificate policy.
     {
-        const duo = try connect(.{ .client_verify_none = true, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_verify_none = true, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect(duo.client.info().?.peer_authenticated);
     }
@@ -105,7 +102,7 @@ test "C10 a provisioned key across a retry request, with an unverifying client, 
     {
         const psk384: Psk.External = .{ .identity = "device-10", .secret = &key384, .hash = .sha384 };
         var table384: Table = .{ .entries = &.{.{ .psk = psk384 }} };
-        const duo = try connect(.{ .client_psks = &.{psk384}, .server_suites = &.{ .aes_128_gcm_sha256, .aes_256_gcm_sha384 }, .server_psk = table384.lookup() });
+        const duo = try connect(.{ .client_psks = &.{psk384}, .server_suites = &.{ .aes_128_gcm_sha256, .aes_256_gcm_sha384 }, .server_psk = &table384.lookup });
         defer duo.deinit();
         try std.testing.expect(duo.client.info().?.external_psk == null);
     }
@@ -115,7 +112,7 @@ test "C10 a wrong key is fatal (decrypt_error), and a session on a key gets no t
     const other: [32]u8 = @splat(0x24);
     var table: Table = .{ .entries = &.{.{ .psk = .{ .identity = "device-7", .secret = &other } }} };
     {
-        const duo = try Duo.init(gpa, .{ .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expectError(error.BadBinder, duo.handshake());
         try std.testing.expectEqual(.decrypt_error, duo.server.diagnostics().alert_sent.?);
@@ -126,7 +123,7 @@ test "C10 a wrong key is fatal (decrypt_error), and a session on a key gets no t
     defer keys.deinit();
     try keys.rotate(&@as([32]u8, @splat(0x55)), types.instant(Duo.pki.time));
     var right: Table = .{ .entries = &.{.{ .psk = .{ .identity = "device-7", .secret = &key256 } }} };
-    const duo = try connect(.{ .cache = &cache, .tickets = &keys, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = right.lookup() });
+    const duo = try connect(.{ .cache = &cache, .tickets = &keys, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = &right.lookup });
     defer duo.deinit();
     try std.testing.expect(duo.client.info().?.external_psk != null);
     try std.testing.expectEqual(0, cache.count());
@@ -141,22 +138,23 @@ test "F86 catalogue_external_psk_embedded_nul_identity" {
     // are other identities: no key, a full handshake, and never "user" authenticated.
     var table: Table = .{ .entries = &.{.{ .psk = .{ .identity = "user", .secret = &key256 } }} };
     for ([_][]const u8{ "user\x00admin", "user\x00", "use", "USER", "user " }) |identity| {
-        const duo = try connect(.{ .client_psks = &.{.{ .identity = identity, .secret = &key256 }}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_psks = &.{.{ .identity = identity, .secret = &key256 }}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect((duo.server.info().?.external_psk == null) and !duo.server.info().?.peer_authenticated);
     }
     // A lookup that answers with another identity than the one asked is not believed.
     const Lying = struct {
-        fn find(_: ?*anyopaque, _: Psk.Query) ?Psk.External {
+        var lookup: Psk.Lookup = .{ .find = find };
+        fn find(_: *Psk.Lookup, _: Psk.Query) ?Psk.External {
             return .{ .identity = "user", .secret = &key256 };
         }
     };
     {
-        const duo = try connect(.{ .client_psks = &.{.{ .identity = "user\x00admin", .secret = &key256 }}, .server_psk = .{ .find = Lying.find } });
+        const duo = try connect(.{ .client_psks = &.{.{ .identity = "user\x00admin", .secret = &key256 }}, .server_psk = &Lying.lookup });
         defer duo.deinit();
         try std.testing.expect(duo.server.info().?.external_psk == null);
     }
-    const duo = try connect(.{ .client_psks = &.{.{ .identity = "user", .secret = &key256 }}, .server_psk = table.lookup() });
+    const duo = try connect(.{ .client_psks = &.{.{ .identity = "user", .secret = &key256 }}, .server_psk = &table.lookup });
     defer duo.deinit();
     try std.testing.expect(duo.server.info().?.external_psk != null);
 }
@@ -167,12 +165,12 @@ test "F85 catalogue_selfie_psk_role_reflection_and_context" {
     const psk: Psk.External = .{ .identity = "svc", .secret = &key256 };
     var table: Table = .{ .entries = &.{.{ .psk = psk, .server_name = "example.com", .alpn = "h2" }} };
     {
-        const duo = try connect(.{ .client_alpn = &.{"h2"}, .server_alpn = &.{ "h2", "http/1.1" }, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_alpn = &.{"h2"}, .server_alpn = &.{ "h2", "http/1.1" }, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect(duo.server.info().?.external_psk != null);
     }
     {
-        const duo = try connect(.{ .client_alpn = &.{"http/1.1"}, .server_alpn = &.{ "h2", "http/1.1" }, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_alpn = &.{"http/1.1"}, .server_alpn = &.{ "h2", "http/1.1" }, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect(duo.server.info().?.external_psk == null);
     }
@@ -196,7 +194,7 @@ test "C10 a PSK-only server needs no credential, and a key decides before any cr
     const psk: Psk.External = .{ .identity = "device-11", .secret = &key256 };
     var table: Table = .{ .entries = &.{.{ .psk = psk }} };
     {
-        const duo = try connect(.{ .server_psk_only = true, .client_verify_none = true, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .server_psk_only = true, .client_verify_none = true, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect((duo.client.info().?.external_psk != null) and (duo.server.info().?.external_psk != null));
         try exportsMatch(duo);
@@ -205,13 +203,13 @@ test "C10 a PSK-only server needs no credential, and a key decides before any cr
     // offers authenticates both ends, so no credential form is ever asked of the server.
     {
         const pins = [_][32]u8{@splat(0x77)};
-        const duo = try connect(.{ .client_raw_pins = &pins, .client_psks = &.{psk}, .server_psk = table.lookup() });
+        const duo = try connect(.{ .client_raw_pins = &pins, .client_psks = &.{psk}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expect((duo.client.info().?.external_psk != null) and duo.client.info().?.peer_authenticated);
     }
     // Offered no key it knows, a server without credentials has nothing to authenticate with.
     {
-        const duo = try Duo.init(gpa, .{ .server_psk_only = true, .client_verify_none = true, .client_psks = &.{.{ .identity = "stranger", .secret = &key256 }}, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .server_psk_only = true, .client_verify_none = true, .client_psks = &.{.{ .identity = "stranger", .secret = &key256 }}, .server_psk = &table.lookup });
         defer duo.deinit();
         try std.testing.expectError(error.PskRequired, duo.handshake());
         try std.testing.expectEqual(.handshake_failure, duo.server.diagnostics().alert_sent.?);
@@ -246,7 +244,7 @@ test "F106 catalogue_psk_hello_without_signature_algorithms (a hello with a prov
     // missing_extension (tlsfuzzer's test-tls13-psk_dhe_ke sends none).
     var table: Table = .{ .entries = &.{.{ .psk = .{ .identity = "device-7", .secret = &key256 } }} };
     {
-        const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = &table.lookup });
         defer duo.deinit();
         try duo.deliverEdited(dropSchemes);
         try std.testing.expect(duo.server.output().len != 0);
@@ -254,7 +252,7 @@ test "F106 catalogue_psk_hello_without_signature_algorithms (a hello with a prov
     }
     // A key the server does not know leaves certificates, which need the schemes.
     var empty: Table = .{ .entries = &.{} };
-    const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = empty.lookup() });
+    const duo = try Duo.init(gpa, .{ .client_suites = &.{.aes_128_gcm_sha256}, .client_psks = &.{.{ .identity = "device-7", .secret = &key256 }}, .server_psk = &empty.lookup });
     defer duo.deinit();
     try std.testing.expectError(error.MissingExtension, duo.deliverEdited(dropSchemes));
     try std.testing.expectEqual(Alert.missing_extension, duo.server.diagnostics().alert_sent.?);

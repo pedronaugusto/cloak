@@ -61,7 +61,7 @@ fn agree(comptime X: type, random: std.Random) !void {
         if (i % 7 == 0) {
             // At or just above p: 2^255 - 19 + small.
             @memset(&u, 0xff);
-            u[0] = 0xed + @as(u8, @truncate(i % 18)); // safe: any low byte will do
+            u[0] = 0xed + @as(u8, @truncate(i % 18)); // any low byte will do
             u[31] = 0x7f;
         }
         if (i % 5 == 0) u[31] |= 0x80;

@@ -107,14 +107,11 @@ fn optionOf(direction: Keys.Direction) u32 {
 /// A connected TCP socket a connection's directions move to.
 pub const Socket = struct {
     fd: linux.fd_t,
-
     /// What `Connection.offload` installs through.
-    pub fn installer(self: *Socket) Keys.Installer {
-        return .{ .context = self, .installFn = installOpaque };
-    }
+    installer: Keys.Installer = .{ .installFn = installKeys },
 
-    fn installOpaque(context: *anyopaque, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
-        const self: *Socket = @ptrCast(@alignCast(context)); // aegis: no-danger: `installer` passes this Socket as the context
+    fn installKeys(installer: *Keys.Installer, direction: Keys.Direction, keys: *const Keys) Keys.InstallError!void {
+        const self: *Socket = @fieldParentPtr("installer", installer);
         return self.install(direction, keys);
     }
 
@@ -128,7 +125,7 @@ pub const Socket = struct {
         var info = CryptoInfo.encode(keys);
         defer info.deinit();
         const bytes = info.slice();
-        // safe: the struct is at most 56 bytes.
+        // The struct is at most 56 bytes.
         const rc = linux.setsockopt(self.fd, sol_tls, optionOf(direction), bytes.ptr, @intCast(bytes.len));
         return switch (linux.errno(rc)) {
             .SUCCESS => {},
@@ -186,7 +183,7 @@ pub const Socket = struct {
         const layout = Layout.of(cipher);
         var state = aegis.Secret([56]u8).init(@splat(0));
         defer state.deinit();
-        // safe: the struct is at most 56 bytes.
+        // The struct is at most 56 bytes.
         var len: linux.socklen_t = @intCast(layout.len);
         try sockopt(linux.getsockopt(self.fd, sol_tls, optionOf(direction), state.exposeMut(), &len));
         if (len != layout.len) return error.Unsupported;
@@ -296,7 +293,7 @@ fn openSocket() error{ProbeFailed}!linux.fd_t {
 fn descriptor(rc: anytype) error{ProbeFailed}!linux.fd_t {
     if (@TypeOf(rc) == usize) {
         try check(rc);
-        return @intCast(rc); // safe: a successful call returns a descriptor
+        return @intCast(rc); // a successful call returns a descriptor
     }
     if (rc < 0) return error.ProbeFailed;
     return rc;

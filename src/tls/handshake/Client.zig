@@ -39,10 +39,10 @@ pub const Direction = Flight.Direction;
 pub const Limits = Terms.Limits;
 pub const Verify = Terms.Verify;
 
-/// Receives NSS key-log lines. The sink is outside the confidentiality guarantee.
+/// Receives NSS key-log lines. The sink is outside the confidentiality guarantee. It is a field
+/// of the sink's own type, which `write` recovers with `@fieldParentPtr`.
 pub const KeyLog = struct {
-    context: ?*anyopaque = null,
-    write: *const fn (context: ?*anyopaque, line: []const u8) void,
+    write: *const fn (log: *KeyLog, line: []const u8) void,
 };
 
 /// Resumption from a cache of tickets: TLS 1.3 PSK-DHE, a fresh key exchange every time.
@@ -94,7 +94,7 @@ pub const Options = struct {
     limits: Limits = .{},
     /// A random legacy session id and one change_cipher_spec, for middleboxes (stream only).
     compat: bool = true,
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
     /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
     /// connection keeps none and `peerLeaf` is null.
@@ -557,7 +557,7 @@ fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
     for (options.external_psks, 0..) |psk, key| {
         if (psk.version != .tls13) continue;
         if (psk.imported == null) {
-            externals[n] = .{ .key = @intCast(key), .hash = psk.hash, .kind = .external, .identity = psk.identity }; // safe: at most Psk.max_keys keys
+            externals[n] = .{ .key = @intCast(key), .hash = psk.hash, .kind = .external, .identity = psk.identity }; // at most Psk.max_keys keys
             @memcpy(keys[n * 48 ..][0..psk.secret.len], psk.secret);
             n += 1;
             continue;
@@ -565,7 +565,7 @@ fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
         for (hashes) |hash| {
             const identity = Psk.importedIdentity(psk, options.hello.transport, hash).write(imported_bytes[at..]);
             at += identity.len;
-            externals[n] = .{ .key = @intCast(key), .hash = hash, .kind = .imported, .identity = identity }; // safe: at most Psk.max_keys keys
+            externals[n] = .{ .key = @intCast(key), .hash = hash, .kind = .imported, .identity = identity }; // at most Psk.max_keys keys
             Psk.derive(psk, options.hello.transport.prefix(), identity, keys[n * 48 ..][0..hash.length()]);
             n += 1;
         }
@@ -573,7 +573,7 @@ fn offerExternals(self: *Client) std.mem.Allocator.Error!void {
     scratch.externals = externals;
     scratch.external_keys = keys_owner;
     scratch.imported = imported_bytes;
-    self.external_live = @truncate((@as(u16, 1) << @intCast(n)) - 1); // safe: n is at most eight
+    self.external_live = @truncate((@as(u16, 1) << @intCast(n)) - 1); // n is at most eight
 }
 
 /// The TLS 1.2 key: the one of that version in `external_psks`.
@@ -997,7 +997,7 @@ fn pskOffers(self: *const Client, out: *[Hello.max_psk_offers]Offer) []const Off
     const scratch = self.scratch orelse return out[0..0];
     var n: usize = 0;
     for (scratch.externals, 0..) |external, slot| {
-        if (self.external_live & (@as(u8, 1) << @intCast(slot)) == 0) continue; // safe: at most eight slots
+        if (self.external_live & (@as(u8, 1) << @intCast(slot)) == 0) continue; // at most eight slots
         out[n] = .{ .identity = external.identity, .secret = scratch.external_keys.view()[slot * 48 ..][0..external.hash.length()], .binder_len = external.hash.length(), .kind = external.kind, .slot = @intCast(slot) };
         n += 1;
     }
@@ -1280,7 +1280,7 @@ fn resumeOffer(self: *const Client, offers: []const Offer, out: *[Hello.max_psk_
             const entry = self.offered.?.entry;
             // The obfuscated age: milliseconds since the ticket arrived, plus its obfuscator.
             const now_ms = types.milliseconds(self.now.?);
-            const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // safe: clamped to u32
+            const age: u64 = @intCast(std.math.clamp(now_ms - entry.received_ms, 0, std.math.maxInt(u32))); // clamped to u32
             identity.age = @truncate(age +% entry.age_add);
         }
     }
@@ -1658,7 +1658,7 @@ pub fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink.context, line[0 .. at + 1]);
+    sink.write(sink, line[0 .. at + 1]);
 }
 
 /// A DTLS 1.2 server asks the hello again with its cookie (RFC 6347 section 4.2.1): the same
@@ -1670,7 +1670,7 @@ fn onHelloVerify(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) E
     const cookie = try Hello.helloVerify(msg);
     const scratch = self.scratch.?;
     @memcpy(scratch.legacy_cookie[0..cookie.len], cookie);
-    // safe: the parser bounds the cookie at 255 bytes.
+    // The parser bounds the cookie at 255 bytes.
     scratch.legacy_cookie_len = @intCast(cookie.len);
     scratch.transcripts.restart();
     try self.sendHello();
@@ -1688,10 +1688,10 @@ fn onRetry(self: *Client, msg: []const u8, parsed: Hello.ServerHello, epoch: Epo
     if (self.offered) |taken| if (suites.digestLength(taken.entry.suite.tls13().?) != suites.digestLength(parsed.suite)) self.releaseOffer13();
     // So can no provisioned key's offer of another hash (RFC 8446 section 4.1.4).
     for (self.scratch.?.externals, 0..) |external, slot| {
-        if (external.hash.length() != suites.digestLength(parsed.suite)) self.external_live &= ~(@as(u8, 1) << @intCast(slot)); // safe: at most eight slots
+        if (external.hash.length() != suites.digestLength(parsed.suite)) self.external_live &= ~(@as(u8, 1) << @intCast(slot)); // at most eight slots
     }
     @memcpy(self.scratch.?.cookie[0..parsed.cookie.len], parsed.cookie);
-    // safe: Hello.server bounds the cookie at 4096 bytes.
+    // Hello.server bounds the cookie at 4096 bytes.
     self.scratch.?.cookie_len = @intCast(parsed.cookie.len);
     if (parsed.group) |group| {
         self.retry_group = group;
@@ -1750,7 +1750,7 @@ pub fn noteConnectionId(self: *Client, answer: ?[]const u8) void {
         return;
     };
     @memcpy(scratch.peer_cid[0..cid.len], cid);
-    scratch.peer_cid_len = @intCast(cid.len); // safe: a vector<0..255>
+    scratch.peer_cid_len = @intCast(cid.len); // a vector<0..255>
     scratch.cid_agreed = true;
 }
 
@@ -1795,12 +1795,12 @@ fn onCertificateRequest(self: *Client, msg: []const u8, epoch: Epoch, boundary: 
     self.requested_certificate = true;
     const keep = @min(parsed.schemes.len, self.scratch.?.cr_schemes.len) & ~@as(usize, 1);
     @memcpy(self.scratch.?.cr_schemes[0..keep], parsed.schemes[0..keep]);
-    // safe: at most 1024 bytes are kept.
+    // At most 1024 bytes are kept.
     self.scratch.?.cr_len = @intCast(keep);
     if (parsed.delegated) |list| {
         const kept = @min(list.len, self.scratch.?.cr_delegated.len) & ~@as(usize, 1);
         @memcpy(self.scratch.?.cr_delegated[0..kept], list[0..kept]);
-        // safe: at most 1024 bytes are kept.
+        // At most 1024 bytes are kept.
         self.scratch.?.cr_delegated_len = @intCast(kept);
     }
     self.scratch.?.cr_named = self.namedCredentials(parsed.authorities);
@@ -1958,7 +1958,7 @@ fn continueFlight(self: *Client) Error!void {
     if (!self.requested_certificate) return self.finishFlight();
     if (self.echRejected()) return self.sendEmptyCertificate();
     const chosen = self.chooseCredential() orelse return self.sendEmptyCertificate();
-    self.credential = @intCast(chosen.index); // safe: at most 32 credentials
+    self.credential = @intCast(chosen.index); // at most 32 credentials
     const auth = self.kept.credentials[chosen.index].auth;
     const delegated: ?Delegation.Credential = if (chosen.value.delegating) self.kept.credentials[chosen.index].delegated.? else null;
     const scheme = chosen.value.scheme;
@@ -1971,7 +1971,7 @@ fn continueFlight(self: *Client) Error!void {
     try self.queueMessage(.handshake, message_bytes);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const content = Messages.signedContent(self.scratch.?.sign_content.exposeMut(), false, self.scratch.?.transcripts.digest(&digest_buf));
-    // safe: signed content is at most 64 + 33 + 1 + 48 bytes.
+    // Signed content is at most 64 + 33 + 1 + 48 bytes.
     self.scratch.?.sign_content_len = @intCast(content.len);
     self.sign_scheme = scheme;
     if (delegated) |credential| {

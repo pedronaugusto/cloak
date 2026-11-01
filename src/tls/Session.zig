@@ -37,7 +37,7 @@ pub const Trust = union(enum) {
     /// portable one over the path it chose, with the snapshot's own roots trusted besides.
     snapshot: certificates.Trust.Snapshot,
     /// The caller's verifier, for native or custom policy.
-    custom: Custom,
+    custom: *Custom,
     /// A raw public key (RFC 7250, TLS 1.3 and 1.2) trusted by its pin, the SHA-256 of its
     /// SubjectPublicKeyInfo; no certificate is taken. `Info.pin` names the one proved.
     raw_keys: []const [32]u8,
@@ -48,22 +48,23 @@ pub const Trust = union(enum) {
     leaf_keys: []const [32]u8,
 };
 
+/// The caller's verifier: a field of the caller's own type, which `verify` recovers with
+/// `@fieldParentPtr`.
 pub const Custom = struct {
-    context: ?*anyopaque = null,
     generation: certificates.types.TrustGeneration,
-    verify: *const fn (context: ?*anyopaque, gpa: std.mem.Allocator, request: certificates.types.Request) VerifyError!certificates.types.Verification,
+    verify: *const fn (custom: *Custom, gpa: std.mem.Allocator, request: certificates.types.Request) VerifyError!certificates.types.Verification,
 };
 
 pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, Failed };
 
 /// Signs the CertificateVerify content for a certificate whose key cloak does not hold: an
-/// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA).
+/// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA). It is a
+/// field of the caller's own type, which `sign` recovers with `@fieldParentPtr`.
 pub const Signer = struct {
-    context: ?*anyopaque = null,
     /// Signs `request.content` under `request.scheme` into `out` and returns the length. Content
     /// marked `prehashed` is already the digest of the scheme's hash (a TLS 1.2
     /// CertificateVerify): sign it without hashing again.
-    sign: *const fn (context: ?*anyopaque, request: SignRequest, out: []u8) error{SigningFailed}!usize,
+    sign: *const fn (signer: *Signer, request: SignRequest, out: []u8) error{SigningFailed}!usize,
 };
 
 /// What a signer is asked to sign.
@@ -142,7 +143,7 @@ pub const Options = struct {
     accept_delegated: bool = false,
     /// Required when a credential is an identity cloak holds no signing key for; a request names
     /// the credential that signs (`SignRequest.credential`).
-    signer: ?Signer = null,
+    signer: ?*Signer = null,
     /// Answer CertificateRequests after the handshake (RFC 8446 section 4.6.2), TLS 1.3: with
     /// a credential when the request takes one, an empty Certificate otherwise. The reading task signs
     /// (through `signer` for a key held elsewhere) and the answer goes out under the write lock.
@@ -166,7 +167,7 @@ pub const Options = struct {
     /// frees it. Untouched for any other outcome.
     ech_retry: ?*[]u8 = null,
     /// Certificate decoders to offer (RFC 8879), TLS 1.3 only; borrowed.
-    certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
+    certificate_compression: []const *@import("handshake/Compression.zig").Codec = &.{},
     /// Provisioned keys to offer, borrowed: TLS 1.3 PSK-DHE, plain or imported (RFC 9258), or one
     /// TLS 1.2 plain PSK key with its suites listed (no forward secrecy). A server that selects
     /// one is authenticated by it, with no certificate.
@@ -183,7 +184,7 @@ pub const Options = struct {
     max_fragment: ?u16 = null,
     limits: Connection.Limits = .{},
     compat: bool = true,
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// Keep the server's leaf certificate for `peerLeaf` (RFC 8705's certificate binding, a
     /// pin checked after the handshake): a copy the connection holds until `deinit`. Off, a
     /// connection keeps none and `peerLeaf` is null.
@@ -210,7 +211,7 @@ gpa: std.mem.Allocator,
 io: std.Io,
 conn: Connection,
 trust: Trust,
-signer: ?Signer,
+signer: ?*Signer,
 eof: Eof,
 clock: Clock,
 /// The first failure behind a `ReadFailed` or `WriteFailed` from an adapter, as an error's
@@ -324,7 +325,7 @@ fn resumptionFor(options: Options) ?Connection.Resumption {
 pub const ServerOptions = struct {
     credentials: []const Server.Credential,
     /// Required when a credential is an identity cloak holds no signing key for.
-    signer: ?Signer = null,
+    signer: ?*Signer = null,
     unknown_name: @FieldType(Server.Options, "unknown_name") = .first,
     /// Suites of both versions in preference order; the version follows from the suite.
     suites: []const Suite = Suite.default,
@@ -365,10 +366,10 @@ pub const ServerOptions = struct {
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the session.
     ech_keys: []const @import("handshake/Ech.zig").Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
-    certificate_compression: []const @import("handshake/Compression.zig").Codec = &.{},
+    certificate_compression: []const *@import("handshake/Compression.zig").Codec = &.{},
     /// Provisioned keys, looked up by the offered identity: TLS 1.3 PSK-DHE, TLS 1.2 plain PSK
     /// when its suites are listed. With them `credentials` may be empty.
-    external_psk: ?@import("handshake/Psk.zig").Lookup = null,
+    external_psk: ?*@import("handshake/Psk.zig").Lookup = null,
     /// record_size_limit (RFC 8449), answered to a client that offers one: the most plaintext a
     /// protected record sent to this server may carry, as the extension counts it (64 to
     /// 2^14 + 1). Null names the version's maximum. The client's own limit bounds every record
@@ -380,7 +381,7 @@ pub const ServerOptions = struct {
     /// it; null is 2^14.
     max_fragment: ?u16 = null,
     limits: Connection.Limits = .{},
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// Keep the client's leaf certificate for `peerLeaf` (RFC 8705's certificate-bound access
     /// tokens): a copy the connection holds until `deinit`, replaced by a post-handshake answer
     /// that proves another. Off, a connection keeps none and `peerLeaf` is null.
@@ -618,7 +619,7 @@ fn serve(session: *Session) OpenError!bool {
                     continue;
                 };
                 var signature: [1024]u8 = undefined;
-                const len = signer.sign(signer.context, sign_request, &signature) catch {
+                const len = signer.sign(signer, sign_request, &signature) catch {
                     try session.conn.provide(request.token, .signing_failed);
                     continue;
                 };
@@ -638,7 +639,7 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
             .portable => certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
             .macos, .windows => session.verifyNative(request, snapshot),
         },
-        .custom => |custom| custom.verify(custom.context, session.gpa, request),
+        .custom => |custom| custom.verify(custom, session.gpa, request),
     };
     if (result) |verified| {
         var receipt = verified;

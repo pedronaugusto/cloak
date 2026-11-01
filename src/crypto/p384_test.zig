@@ -21,7 +21,7 @@ test "P-384 base and variable-point multiplication agree with the standard libra
     for (0..edges.len + 48 + 100) |i| {
         const value = if (i < edges.len) edges[i] else if (i < edges.len + 48) blk: {
             const zeros = i - edges.len;
-            const width: u9 = 8 * @as(u9, @intCast(48 - zeros)); // safe: zeros is below 48
+            const width: u9 = 8 * @as(u9, @intCast(48 - zeros)); // zeros is below 48
             const bound: u384 = if (width == 384) p384.order else @as(u384, 1) << @intCast(width);
             break :blk 1 + prng.random().int(u384) % (bound - 1);
         } else 1 + prng.random().int(u384) % (p384.order - 1);

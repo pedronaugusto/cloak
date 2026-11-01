@@ -10,15 +10,61 @@ const kernel = @import("../crypto/rsa.zig");
 const roca = @import("../crypto/roca.zig");
 /// `UnsupportedKey`: a valid key the private operation cannot hold, a factor above 2048 bits.
 pub const Error = Der.Error || error{ InvalidKey, UnsupportedKey };
-/// The public modulus and exponent as parsed, for matching a certificate, and the private key
+/// The public modulus and exponent as parsed, for matching a certificate, the private exponent
+/// d as given (validated; kept so the key can be written back, `Numbers`), and the private key
 /// as the CRT operation holds it: n, e, p, q, dp, dq and qinv with their Montgomery constants.
-/// The private exponent d is validated and not kept. The owner erases the whole value.
+/// The owner erases the whole value.
 pub const Key = struct {
     n: [512]u8 = @splat(0),
     e: [8]u8 = @splat(0),
+    d: [512]u8 = @splat(0),
     size: usize,
     exponent_size: usize,
+    d_size: usize,
     crt: kernel.PrivateKey,
+};
+
+/// A key's numbers back as unsigned big-endian bytes, as an RSAPrivateKey (RFC 8017) writes
+/// them: n, e, d, p, q, dp, dq and qinv. Holds secrets: the owner erases it.
+pub const Numbers = struct {
+    buffers: [8][512]u8,
+    lengths: [8]usize,
+
+    /// `key`'s numbers into this owner.
+    pub fn of(self: *Numbers, key: *const Key) void {
+        @setRuntimeSafety(true);
+        self.copy(0, key.n[0..key.size]);
+        self.copy(1, key.e[0..key.exponent_size]);
+        self.copy(2, key.d[0..key.d_size]);
+        const half = key.crt.p.len;
+        self.limbs(3, key.crt.p.m[0..half]);
+        self.limbs(4, key.crt.q.m[0..half]);
+        self.limbs(5, key.crt.dp[0..half]);
+        self.limbs(6, key.crt.dq[0..half]);
+        self.limbs(7, key.crt.qinv[0..half]);
+    }
+
+    pub fn slices(self: *const Numbers) [8][]const u8 {
+        var out: [8][]const u8 = undefined;
+        for (&out, &self.buffers, self.lengths) |*slice, *buffer, length| slice.* = buffer[0..length];
+        return out;
+    }
+
+    fn copy(self: *Numbers, index: usize, bytes: []const u8) void {
+        @memcpy(self.buffers[index][0..bytes.len], bytes);
+        self.lengths[index] = bytes.len;
+    }
+
+    /// Little-endian limbs as big-endian bytes, leading zero bytes dropped (the DER integer's
+    /// length, which the encoding shows).
+    fn limbs(self: *Numbers, index: usize, value: []const u64) void {
+        const bytes = self.buffers[index][0 .. 8 * value.len];
+        for (value, 0..) |limb, i| std.mem.writeInt(u64, bytes[bytes.len - 8 * (i + 1) ..][0..8], limb, .big);
+        var start: usize = 0;
+        while (start + 1 < bytes.len and bytes[start] == 0) start += 1;
+        @memmove(bytes[0 .. bytes.len - start], bytes[start..]);
+        self.lengths[index] = bytes.len - start;
+    }
 };
 const Uint = @import("Uint.zig");
 const limb_bits = @bitSizeOf(usize) - 1;
@@ -46,7 +92,7 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     const d = integers[2];
     if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0 or e.len > 4 or d.len > n.len) return error.InvalidKey;
     // At least 2048 bits, any length up to 4096: the bounds a public key has.
-    // safe: clz on u8 is at most eight and widens to usize.
+    // Clz on u8 is at most eight and widens to usize.
     if (n.len * 8 - @as(usize, @clz(n[0])) < 2048) return error.InvalidKey;
     const exponent = try Der.number(e);
     if (exponent < 3 or exponent & 1 == 0) return error.InvalidKey;
@@ -100,9 +146,10 @@ pub fn fromIntegers(integers: *const [8][]const u8, out: *Key) Error!void {
     if (!congruent(&values[2], d.len, pm, p_bytes, &values[5]) or !congruent(&values[2], d.len, qm, q_bytes, &values[6])) return error.InvalidKey;
     product.* = Uint.zero;
     if (multiply(product, q, &values[7]) != 0 or !congruent(product, q_bytes + integers[7].len, p, p_bytes, &one)) return error.InvalidKey;
-    out.* = .{ .size = n.len, .exponent_size = e.len, .crt = undefined };
+    out.* = .{ .size = n.len, .exponent_size = e.len, .d_size = d.len, .crt = undefined };
     @memcpy(out.n[0..n.len], n);
     @memcpy(out.e[0..e.len], e);
+    @memcpy(out.d[0..d.len], d);
     // Validated above; the kernel refuses only shapes it cannot hold, such as unbalanced factors.
     out.crt.init(n, e, integers[3], integers[4], integers[5], integers[6], integers[7]) catch return error.UnsupportedKey;
 }
@@ -123,14 +170,14 @@ fn remainder(x: *const Uint, x_bytes: usize, modulus: *const Uint, modulus_bytes
         const start = bit - (width - 1);
         for (0..width - 1) |i| {
             const from = start + i;
-            const value: usize = (x.limbs_buffer[from / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(from % limb_bits))) & 1; // safe: public bit offsets modulo the radix
-            result.limbs_buffer[i / limb_bits] |= value << @as(std.math.Log2Int(usize), @intCast(i % limb_bits)); // safe: as above
+            const value: usize = (x.limbs_buffer[from / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(from % limb_bits))) & 1; // public bit offsets modulo the radix
+            result.limbs_buffer[i / limb_bits] |= value << @as(std.math.Log2Int(usize), @intCast(i % limb_bits)); // as above
         }
         bit = start;
     }
     while (bit > 0) {
         bit -= 1;
-        const input: usize = (x.limbs_buffer[bit / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(bit % limb_bits))) & 1; // safe: public bit offset modulo machine radix fits Log2Int(usize)
+        const input: usize = (x.limbs_buffer[bit / limb_bits] >> @as(std.math.Log2Int(usize), @intCast(bit % limb_bits))) & 1; // public bit offset modulo machine radix fits Log2Int(usize)
         var carry = input;
         for (result.limbs_buffer[0..limbs]) |*limb| {
             const next = limb.* >> (limb_bits - 1);

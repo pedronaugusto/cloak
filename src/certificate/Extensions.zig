@@ -22,13 +22,13 @@ pub fn keyUsage(value: []const u8) Error!u16 {
     const b = (try Der.single(value, 3)).value;
     const bits = try Der.bits(b);
     if (bits.len == 0 or bits.len > 2 or bits[bits.len - 1] == 0) return error.InvalidCertificate;
-    // safe: the final byte is nonzero, so its trailing-zero count fits u3.
+    // The final byte is nonzero, so its trailing-zero count fits u3.
     if (@as(u3, @intCast(@ctz(bits[bits.len - 1]))) != b[0]) return error.InvalidDer;
     if (bits.len == 2 and (bits[1] != 128 or b[0] != 7)) return error.InvalidCertificate;
     var mask: u16 = 0;
     for (bits, 0..) |v, i| {
         for (0..8) |j| {
-            // safe: j is below eight and i * 8 + j is below sixteen.
+            // J is below eight and i * 8 + j is below sixteen.
             if (v & (@as(u8, 128) >> @intCast(j)) != 0) mask |= @as(u16, 1) << @intCast(i * 8 + j);
         }
     }

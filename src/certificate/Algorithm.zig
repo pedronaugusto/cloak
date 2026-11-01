@@ -5,6 +5,7 @@ const roca = @import("../crypto/roca.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");
+const edwards25519 = @import("../crypto/edwards25519.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 pub const Error = Der.Error || error{ UnsupportedAlgorithm, InvalidPublicKey };
 pub const Hash = enum { sha256, sha384, sha512 };
@@ -172,7 +173,7 @@ pub fn checkEc(curve: Curve, point: []const u8) error{InvalidPublicKey}!void {
 pub fn checkRsa(n: []const u8, exponent: []const u8) error{InvalidPublicKey}!void {
     @setRuntimeSafety(true);
     if (n.len < 256 or n.len > 512 or n[0] == 0 or n[n.len - 1] & 1 == 0) return error.InvalidPublicKey;
-    // safe: clz on u8 is at most eight and widens to usize.
+    // Clz on u8 is at most eight and widens to usize.
     const bits = n.len * 8 - @as(usize, @clz(n[0]));
     if (bits < 2048 or exponent.len == 0 or exponent.len > 4 or exponent[0] == 0) return error.InvalidPublicKey;
     var ev: u32 = 0;
@@ -217,10 +218,9 @@ pub fn publicKey(encoded: []const u8) Error!PublicKey {
     }
     if (eql(id, ed_oid)) {
         if (param != null or bytes.len != 32) return error.InvalidPublicKey;
-        _ = std.crypto.sign.Ed25519.PublicKey.fromBytes(bytes[0..32].*) catch return error.InvalidPublicKey;
-        const point = std.crypto.ecc.Edwards25519.fromBytes(bytes[0..32].*) catch return error.InvalidPublicKey;
-        point.rejectLowOrder() catch return error.InvalidPublicKey;
-        point.rejectUnexpectedSubgroup() catch return error.InvalidPublicKey;
+        // On the curve, not the identity, and of order L: no small-order component.
+        const point = edwards25519.decode(bytes[0..32]) orelse return error.InvalidPublicKey;
+        if (point.xIsZero() or !edwards25519.inPrimeOrderSubgroup(&point)) return error.InvalidPublicKey;
         return .{ .ed25519 = bytes };
     }
     if (eql(id, x25519_oid)) {
@@ -240,8 +240,9 @@ pub const max_public_key_info = 22 + mldsa.Scheme(.mldsa87).public_key_length;
 /// rsaEncryption with NULL parameters (RFC 3279), id-ecPublicKey with the named curve and the
 /// uncompressed point (RFC 5480), id-Ed25519 (RFC 8410) and id-ML-DSA-* (RFC 9881), with no
 /// parameters. A key restricted to RSASSA-PSS is UnsupportedAlgorithm: its parameters are its
-/// certificate's to carry.
-pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{UnsupportedAlgorithm}![]const u8 {
+/// certificate's to carry. A key built by a caller whose encoding does not fit `out` (longer than
+/// any key cloak reads), or an RSA key with an empty modulus or exponent, is InvalidPublicKey.
+pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{ UnsupportedAlgorithm, InvalidPublicKey }![]const u8 {
     @setRuntimeSafety(true);
     // The AlgorithmIdentifier, and the subjectPublicKey's bytes (for RSA, their length).
     const identifier: []const u8, const raw: []const u8 = switch (key) {
@@ -259,11 +260,12 @@ pub fn encodePublicKey(key: PublicKey, out: *[max_public_key_info]u8) error{Unsu
             .mldsa87 => "\x30\x0b\x06\x09" ++ mldsa_prefix ++ "\x13",
         }, m.bytes },
     };
+    if (key == .rsa and (key.rsa.modulus.len == 0 or key.rsa.exponent.len == 0)) return error.InvalidPublicKey;
     const rsa_body = if (key == .rsa) integerLength(key.rsa.modulus) + integerLength(key.rsa.exponent) else 0;
     const subject = if (key == .rsa) Der.headerLength(rsa_body) + rsa_body else raw.len;
     const bit_string = 1 + subject;
     const body = identifier.len + Der.headerLength(bit_string) + bit_string;
-    std.debug.assert(Der.headerLength(body) + body <= out.len);
+    if (Der.headerLength(body) + body > out.len) return error.InvalidPublicKey;
     var at = Der.header(out, 0, 0x30, body);
     @memcpy(out[at..][0..identifier.len], identifier);
     at += identifier.len;

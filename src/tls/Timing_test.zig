@@ -10,9 +10,10 @@ const ServerPair = @import("../testing/ServerPair.zig").ServerPair;
 const Seen = struct {
     lines: usize = 0,
     outside: usize = 0,
-    fn write(context: ?*anyopaque, line: []const u8) void {
+    key_log: @import("Connection.zig").KeyLog = .{ .write = write },
+    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
         _ = line;
-        const self: *Seen = @ptrCast(@alignCast(context.?)); // safe: the test hands its own Seen
+        const self: *Seen = @fieldParentPtr("key_log", log);
         self.lines += 1;
         if (aegis.secret.Timing.supported() and !aegis.secret.Timing.active()) self.outside += 1;
     }
@@ -22,7 +23,7 @@ test "F03 catalogue_compiler_preserves_secret_operations (a handshake's secret c
     const before = aegis.secret.Timing.active();
     {
         var seen: Seen = .{};
-        const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = .{ .context = &seen, .write = Seen.write } });
+        const pair = try Pair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = &seen.key_log });
         defer pair.deinit();
         try pair.handshake();
         try std.testing.expect(seen.lines >= 5);
@@ -31,7 +32,7 @@ test "F03 catalogue_compiler_preserves_secret_operations (a handshake's secret c
     }
     {
         var seen: Seen = .{};
-        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = .{ .context = &seen, .write = Seen.write } });
+        const pair = try ServerPair(.aes_128_gcm_sha256).init(std.testing.allocator, .{}, .{ .key_log = &seen.key_log });
         defer pair.deinit();
         try pair.run();
         try std.testing.expect(seen.lines >= 5);

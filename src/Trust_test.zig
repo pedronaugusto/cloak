@@ -1,4 +1,5 @@
 const std = @import("std");
+const tasks = @import("testing/tasks.zig");
 const V = @import("verify.zig");
 const shakedown = @import("shakedown");
 const Trust = @import("Trust.zig");
@@ -115,7 +116,7 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
 
 fn signalRead(io: std.Io, context: ?*anyopaque) void {
     @setRuntimeSafety(true);
-    const started: *std.Io.Event = @ptrCast(@alignCast(context.?)); // safe: this fault owns the aligned Event context until the joined loader finishes
+    const started: *std.Io.Event = @ptrCast(@alignCast(context.?)); // this fault owns the aligned Event context until the joined loader finishes
     started.set(io);
 }
 
@@ -158,7 +159,7 @@ test "F25 catalogue_trust_snapshot_extension_race_and_time (workers keep one imm
     var started: usize = 0;
     defer {
         gate.set(io);
-        for (workers[0..started]) |*worker| _ = worker.cancel(io) catch {}; // glint-ignore: Z026 -- reaping on exit; the success path awaits every worker and checks its result, so only a test that is already failing drops one here
+        for (workers[0..started]) |*worker| tasks.reap(anyerror!void, io, worker);
     }
     for (&workers) |*worker| {
         worker.* = try snapshotWorker(io, first.?, &gate);

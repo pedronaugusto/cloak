@@ -237,7 +237,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     const parsed = try Messages.certificateRequest(msg);
     const ex = try self.startExchange();
     @memcpy(ex.context[0..parsed.context.len], parsed.context);
-    ex.context_len = @intCast(parsed.context.len); // safe: a vector<0..255>
+    ex.context_len = @intCast(parsed.context.len); // a vector<0..255>
     try ex.transcript.exposeMut().commit(msg);
     // A credential of the type the handshake agreed (RFC 7250), with a scheme the server takes,
     // the first that chains to an authority it names, else the first (RFC 8446 section 4.2.4).
@@ -252,7 +252,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     }
     const choice = pick.chosen();
     const scheme = if (choice) |c| c.value else null;
-    if (choice) |c| ex.credential = @intCast(c.index); // safe: at most 32 credentials
+    if (choice) |c| ex.credential = @intCast(c.index); // at most 32 credentials
     const entries: []const []const u8 = if (choice) |c| credentials[c.index].auth.entries() else &.{};
     var total: usize = 64 + 8 + certificates.PrivateKey.max_signature;
     for (entries) |der| total += der.len + 5;
@@ -262,7 +262,7 @@ pub fn onRequest(self: *PostAuth, msg: []const u8, credentials: []const Terms.Cl
     const chosen = scheme orelse return self.answered(false);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const content = Messages.signedContent(ex.sign_content.exposeMut(), false, ex.transcript.expose().digest(&digest_buf));
-    ex.sign_content_len = @intCast(content.len); // safe: signed content is at most 146 bytes
+    ex.sign_content_len = @intCast(content.len); // signed content is at most 146 bytes
     ex.sign_scheme = chosen;
     const identity = credentials[ex.credential].auth.identity;
     // Cloak signs for a key it holds, with fresh noise; a key held elsewhere is the caller's.
@@ -329,7 +329,7 @@ fn answered(self: *PostAuth, presented: bool) Error!void {
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     const digest = ex.transcript.expose().digest(&digest_buf);
     @memcpy(ex.digest.exposeMut()[0..digest.len], digest);
-    ex.digest_len = @intCast(digest.len); // safe: 32 or 48
+    ex.digest_len = @intCast(digest.len); // 32 or 48
     _ = self.machine.client.step(.answer) catch unreachable; // unreachable: answering until now
     self.holder.store(.write, .release);
 }
@@ -535,7 +535,7 @@ pub fn onFinished(self: *PostAuth, msg: []const u8) Error!void {
     @memcpy(ex.received.exposeMut()[0..n], received);
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     @memcpy(ex.digest.exposeMut()[0..n], ex.transcript.expose().digest(&digest_buf));
-    ex.digest_len = @intCast(n); // safe: 32 or 48
+    ex.digest_len = @intCast(n); // 32 or 48
     _ = self.machine.server.step(.finished) catch unreachable; // unreachable: finished
 }
 

@@ -22,14 +22,14 @@ const State = struct {
 };
 const Completion = struct { phase: Phase = .pending, result: ?Native.EvaluateError!Path = null };
 const Phase = enum { pending, running, ready, abandoned, acknowledged };
+/// A field of the caller's executor, which `submit` recovers with `@fieldParentPtr`.
 pub const Executor = struct {
-    context: *anyopaque,
     /// Success transfers a retained job to the executor. It must call run then deinit,
     /// including during shutdown, and may not store a connection pointer.
-    submit: *const fn (*anyopaque, Job) SubmitError!void,
+    submit: *const fn (executor: *Executor, job: Job) SubmitError!void,
 };
 pub const SubmitError = error{ ServiceBusy, ExecutorClosed };
-pub const Options = struct { timeout: std.Io.Timeout = .none, executor: ?Executor = null, anchors: []const []const u8 = &.{} };
+pub const Options = struct { timeout: std.Io.Timeout = .none, executor: ?*Executor = null, anchors: []const []const u8 = &.{} };
 pub const InitError = OwnedRequest.InitError || Budget.ReserveError || SubmitError || error{ ServiceExecutorRequired, ServiceLimit };
 pub fn init(gpa: std.mem.Allocator, budget: *Budget, request: types.Request, options: Options) InitError!Job {
     @setRuntimeSafety(true);
@@ -37,7 +37,7 @@ pub fn init(gpa: std.mem.Allocator, budget: *Budget, request: types.Request, opt
     const job = try make(gpa, budget, request, options.anchors);
     if (options.executor) |executor| {
         const handed: Job = .{ .state = job.state.retain() };
-        executor.submit(executor.context, handed) catch |err| {
+        executor.submit(executor, handed) catch |err| {
             handed.deinit();
             job.deinit();
             return err;

@@ -229,7 +229,7 @@ pub fn Curve(comptime params: Params) type {
                 const negative = 0 -% (raw >> bits); // all ones when the top bit is set
                 var d = ((mask - raw) & negative) | (raw & ~negative);
                 d = (d >> 1) + (d & 1);
-                out[i] = .{ .magnitude = @truncate(d), .negative = @truncate(negative & 1) }; // safe: d <= 2^(bits-1) and the sign is one bit
+                out[i] = .{ .magnitude = @truncate(d), .negative = @truncate(negative & 1) }; // d <= 2^(bits-1) and the sign is one bit
             }
         }
 

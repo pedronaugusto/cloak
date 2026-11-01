@@ -21,15 +21,15 @@ pub fn decrypt(key: *const [24]u8, iv: [8]u8, encrypted: []const u8, out: []u8) 
     }
     const padding: usize = out[out.len - 1];
     var bad: u8 = @intFromBool(padding == 0) | @intFromBool(padding > 8);
-    for (0..8) |i| bad |= (0 -% @as(u8, @intFromBool(i < padding))) & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // safe: padding is one u8 from the final plaintext byte
-    // safe: expose only the completed padding verdict required by the offline parser API.
+    for (0..8) |i| bad |= (0 -% @as(u8, @intFromBool(i < padding))) & (out[out.len - 1 - i] ^ @as(u8, @intCast(padding))); // padding is one u8 from the final plaintext byte
+    // Expose only the completed padding verdict required by the offline parser API.
     if (bad != 0) return error.BadPassword;
     return out[0 .. out.len - padding];
 }
 fn permutation(comptime width: usize, x: u64, table: []const u8) u64 {
     @setRuntimeSafety(true);
     var result: u64 = 0;
-    for (table) |position| result = (result << 1) | ((x >> @as(u6, @intCast(width - position))) & 1); // safe: FIPS permutation positions are in 1..width, so the shift fits u6
+    for (table) |position| result = (result << 1) | ((x >> @as(u6, @intCast(width - position))) & 1); // FIPS permutation positions are in 1..width, so the shift fits u6
     return result;
 }
 fn schedule(keys: *[16]u64, key: *const [8]u8) void {

@@ -37,7 +37,7 @@ pub const Options = struct {
     /// Suites the client offers; the peer always selects the pair's suite.
     offer: ?[]const SuiteAll = null,
     trusted_root: ?[]const u8 = null,
-    key_log: ?Connection.KeyLog = null,
+    key_log: ?*Connection.KeyLog = null,
     /// Leave signing requests open so a test can answer them itself.
     hold_sign: bool = false,
     /// The allocator behind the connection alone, to measure what it holds.
@@ -126,7 +126,7 @@ pub fn Pair(comptime suite: Suite13) type {
 
         fn now(self: *const Self) u64 {
             const io = self.clock orelse return 0;
-            // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+            // Monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
             return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         }
 

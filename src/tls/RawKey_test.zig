@@ -433,14 +433,11 @@ test "C10 raw public keys over TLS 1.2: a ServerHello answers only what was offe
 /// An NSS key log sink.
 const Lines = struct {
     text: std.ArrayList(u8) = .empty,
+    key_log: @import("Connection.zig").KeyLog = .{ .write = write },
 
-    fn write(context: ?*anyopaque, line: []const u8) void {
-        const self: *Lines = @ptrCast(@alignCast(context.?));
+    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
+        const self: *Lines = @fieldParentPtr("key_log", log);
         self.text.appendSlice(gpa, line) catch @panic("the key log is out of memory");
-    }
-
-    fn log(self: *Lines) @import("Connection.zig").KeyLog {
-        return .{ .context = self, .write = write };
     }
 };
 
@@ -515,7 +512,7 @@ test "F143 catalogue_resumed_server_certificate_type (a resumption answers serve
             var lines: Lines = .{};
             defer lines.text.deinit(gpa);
             var options = raw_client;
-            options.server_key_log = lines.log();
+            options.server_key_log = &lines.key_log;
             const duo = try Duo.init(gpa, options);
             defer duo.deinit();
             try duo.handshakeUntilServerFlight();

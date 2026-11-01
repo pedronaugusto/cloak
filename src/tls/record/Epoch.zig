@@ -155,7 +155,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // compare live addresses only to permit exact ciphertext-body alias.
             try self.admit(inner_len);
             wire[0..3].* = .{ 23, 3, 3 };
-            // safe: bounded by max_inner + the fixed 16-byte AEAD tag.
+            // Bounded by max_inner + the fixed 16-byte AEAD tag.
             std.mem.writeInt(u16, wire[3..5], @intCast(inner_len + A.tag_length), .big);
             const inner = wire[5..][0..inner_len];
             if (input.ptr != inner.ptr) @memcpy(inner[0..input.len], input);

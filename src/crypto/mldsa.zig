@@ -314,7 +314,7 @@ pub fn Scheme(comptime level: Level) type {
                 packHints(hints, sig[ctilde + z_bytes * l ..][0 .. omega + k]);
                 return;
             }
-            // safe: the loop ends with probability below 2^-128 per signature.
+            // The loop ends with probability below 2^-128 per signature.
             aegis.assert.invariant(false, "ML-DSA signing ends within its rejection bound");
         }
 

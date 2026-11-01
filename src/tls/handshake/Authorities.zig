@@ -76,7 +76,7 @@ pub fn required(set: ?u32, i: usize) bool {
 
 /// Credential `i`'s bit in a set of at most 32 that chain to the named authorities.
 pub fn bit(i: usize) u32 {
-    return @as(u32, 1) << @intCast(i); // safe: client credentials are at most 32
+    return @as(u32, 1) << @intCast(i); // client credentials are at most 32
 }
 
 /// Whether credential `i` is preferred under `named`, the set that chains to the names a peer
@@ -131,7 +131,7 @@ pub fn wireLength(names: []const []const u8) usize {
 /// The list's contents, each name with its length; the caller writes the list's own length.
 pub fn write(w: *Writer, names: []const []const u8) Writer.WriteError!void {
     @setRuntimeSafety(true);
-    // safe: `validate` held each name and the whole list within `max_bytes`.
+    // `validate` held each name and the whole list within `max_bytes`.
     for (names) |name| try w.vector(u16, name);
 }
 

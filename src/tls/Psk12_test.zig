@@ -19,17 +19,14 @@ const Table = struct {
     entries: []const Psk.External,
     queries: usize = 0,
     last: ?Psk.Query = null,
+    lookup: Psk.Lookup = .{ .find = find },
 
-    fn find(context: ?*anyopaque, query: Psk.Query) ?Psk.External {
-        const self: *Table = @ptrCast(@alignCast(context.?));
+    fn find(lookup: *Psk.Lookup, query: Psk.Query) ?Psk.External {
+        const self: *Table = @fieldParentPtr("lookup", lookup);
         self.queries += 1;
         self.last = query;
         for (self.entries) |entry| if (std.mem.eql(u8, entry.identity, query.identity)) return entry;
         return null;
-    }
-
-    fn lookup(self: *Table) Psk.Lookup {
-        return .{ .context = self, .find = find };
     }
 };
 
@@ -39,7 +36,7 @@ fn key12(identity: []const u8, secret: []const u8) Psk.External {
 
 /// A TLS 1.2 PSK client listing `suites` against a server with keys alone (or `credentials`).
 fn options(suites: []const Suite, psk: *const Psk.External, table: *Table) Duo.Options {
-    return .{ .client_suites = suites, .client_max = .tls12, .client_verify_none = true, .client_psks = psk[0..1], .server_suites = Suite.default ++ psk_suites, .server_psk = table.lookup(), .server_psk_only = true };
+    return .{ .client_suites = suites, .client_max = .tls12, .client_verify_none = true, .client_psks = psk[0..1], .server_suites = Suite.default ++ psk_suites, .server_psk = &table.lookup, .server_psk_only = true };
 }
 
 fn exportsMatch(duo: *Duo) !void {
@@ -81,7 +78,7 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
     // The client offers both kinds; a server with a credential and keys picks by its own list.
     const both: []const Suite = &.{ .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 };
     {
-        const duo = try Duo.init(gpa, .{ .client_suites = both, .client_max = .tls12, .client_psks = &.{psk}, .server_suites = &.{ .psk_aes_128_ccm_8, .ecdhe_ecdsa_aes_128_ccm_8 }, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .client_suites = both, .client_max = .tls12, .client_psks = &.{psk}, .server_suites = &.{ .psk_aes_128_ccm_8, .ecdhe_ecdsa_aes_128_ccm_8 }, .server_psk = &table.lookup });
         defer duo.deinit();
         try duo.handshake();
         try std.testing.expect(duo.client.info().?.external_psk != null);
@@ -89,7 +86,7 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
         try std.testing.expectEqual(@as(?u8, null), duo.server.info().?.credential);
     }
     {
-        const duo = try Duo.init(gpa, .{ .client_suites = both, .client_max = .tls12, .client_psks = &.{psk}, .server_suites = &.{ .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 }, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .client_suites = both, .client_max = .tls12, .client_psks = &.{psk}, .server_suites = &.{ .ecdhe_ecdsa_aes_128_ccm_8, .psk_aes_128_ccm_8 }, .server_psk = &table.lookup });
         defer duo.deinit();
         try duo.handshake();
         const info = duo.client.info().?;
@@ -105,7 +102,7 @@ test "C10 TLS 1.2 PSK: the server's order decides between a key and a certificat
     // A client allowing TLS 1.3 too negotiates it with a server that has it: the TLS 1.2 key is
     // never offered there (RFC 8446 appendix E.7).
     {
-        const duo = try Duo.init(gpa, .{ .client_suites = Suite.default ++ psk_suites, .client_psks = &.{psk}, .server_suites = Suite.default ++ psk_suites, .server_psk = table.lookup() });
+        const duo = try Duo.init(gpa, .{ .client_suites = Suite.default ++ psk_suites, .client_psks = &.{psk}, .server_suites = Suite.default ++ psk_suites, .server_psk = &table.lookup });
         defer duo.deinit();
         try duo.handshake();
         const info = duo.client.info().?;
@@ -119,7 +116,8 @@ test "F95 catalogue_psk12_identity_probe_and_offline_guess: a wrong key and an u
     // for another identity: each the same refusal, the client's Finished record failing to open
     // (bad_record_mac), so a prober cannot tell which identities exist.
     const Lying = struct {
-        fn find(_: ?*anyopaque, _: Psk.Query) ?Psk.External {
+        var lookup: Psk.Lookup = .{ .find = find };
+        fn find(_: *Psk.Lookup, _: Psk.Query) ?Psk.External {
             return key12("someone-else", &key16);
         }
     };
@@ -132,7 +130,7 @@ test "F95 catalogue_psk12_identity_probe_and_offline_guess: a wrong key and an u
     for (cases) |case| {
         var table: Table = .{ .entries = case.held };
         var opts = options(psk_suites, &case.offered, &table);
-        if (case.lying) opts.server_psk = .{ .find = Lying.find };
+        if (case.lying) opts.server_psk = &Lying.lookup;
         const duo = try Duo.init(gpa, opts);
         defer duo.deinit();
         try std.testing.expectError(error.BadRecord, duo.handshake());
@@ -159,7 +157,7 @@ test "F95 catalogue_psk12_identity_probe_and_offline_guess: a key's version, len
     try std.testing.expectError(error.InvalidOptions, Duo.init(gpa, .{ .server_suites = Suite.default ++ psk_suites }));
     // A TLS 1.3 lookup answered with a TLS 1.2 key passes it over: a full handshake.
     var held: Table = .{ .entries = &.{.{ .identity = "dev", .secret = &(key16 ++ key16), .version = .tls12 }} };
-    const duo = try Duo.init(gpa, .{ .client_psks = &.{.{ .identity = "dev", .secret = &(key16 ++ key16) }}, .server_psk = held.lookup() });
+    const duo = try Duo.init(gpa, .{ .client_psks = &.{.{ .identity = "dev", .secret = &(key16 ++ key16) }}, .server_psk = &held.lookup });
     defer duo.deinit();
     try duo.handshake();
     try std.testing.expect((duo.server.info().?.external_psk == null) and held.queries == 1 and held.last.?.version == .tls13);
@@ -189,7 +187,7 @@ test "C10 DTLS 1.2 PSK: CoAP's PSK profile, over a cookie exchange, with loss" {
     const psk = key12("coap-node", &key16);
     var table: Table = .{ .entries = &.{psk} };
     for ([_]Suite{ .psk_aes_128_ccm_8, .psk_aes_128_ccm }) |suite| for ([_]u16{ 0, 200 }) |loss| {
-        const pair = try Pair.init(gpa, .{ .client_suites = &.{suite}, .client_max = .tls12, .server_suites = &.{ .aes_128_gcm_sha256, .ecdhe_ecdsa_aes_128_ccm_8, suite }, .client_psks = &.{psk}, .server_psk = table.lookup(), .psk_only = true, .loss = loss, .seed = 5 + loss });
+        const pair = try Pair.init(gpa, .{ .client_suites = &.{suite}, .client_max = .tls12, .server_suites = &.{ .aes_128_gcm_sha256, .ecdhe_ecdsa_aes_128_ccm_8, suite }, .client_psks = &.{psk}, .server_psk = &table.lookup, .psk_only = true, .loss = loss, .seed = 5 + loss });
         defer pair.deinit();
         try pair.run();
         for ([_]@TypeOf(pair.client.dtls.info().?){ pair.client.dtls.info().?, pair.server.dtls.info().? }) |info| {
@@ -206,7 +204,7 @@ test "C10 DTLS 1.2 PSK: CoAP's PSK profile, over a cookie exchange, with loss" {
 test "C10 DTLS 1.3 PSK-DHE through the datagram carrier, with a server holding keys alone" {
     const psk: Psk.External = .{ .identity = "node-13", .secret = &(key16 ++ key16) };
     var table: Table = .{ .entries = &.{psk} };
-    const pair = try Pair.init(gpa, .{ .client_suites = &.{.aes_128_ccm_sha256}, .server_suites = &.{.aes_128_ccm_sha256}, .client_psks = &.{psk}, .server_psk = table.lookup(), .psk_only = true });
+    const pair = try Pair.init(gpa, .{ .client_suites = &.{.aes_128_ccm_sha256}, .server_suites = &.{.aes_128_ccm_sha256}, .client_psks = &.{psk}, .server_psk = &table.lookup, .psk_only = true });
     defer pair.deinit();
     try pair.run();
     const info = pair.server.dtls.info().?;

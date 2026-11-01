@@ -14,7 +14,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     if (request.chain.len == 0 or request.chain.len > request.limits.certificates) return error.ServiceLimit;
     const additional = try store(request.chain);
     defer _ = C.CertCloseStore(additional, .{});
-    const leaf = CertCreateCertificateContext(1, request.chain[0].ptr, @intCast(request.chain[0].len)) orelse return error.NativePolicyFailure; // safe: store already checked the DER length to fit the SDK u32 size
+    const leaf = CertCreateCertificateContext(1, request.chain[0].ptr, @intCast(request.chain[0].len)) orelse return error.NativePolicyFailure; // store already checked the DER length to fit the SDK u32 size
     defer _ = C.CertFreeCertificateContext(leaf);
     var engine: C.HCERTCHAINENGINE = .CURRENT_USER;
     var roots: ?C.HCERTSTORE = null;
@@ -34,12 +34,12 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     const ticks: i128 = (@as(i128, now) + 11644473600) * 10_000_000;
     if (ticks < 0 or ticks > std.math.maxInt(u64)) return error.InvalidValidationTime;
     // The range is checked before converting the Windows 100ns epoch.
-    const stamp: u64 = @intCast(ticks); // safe: epoch ticks were checked to fit u64
-    var time: W.FILETIME = .{ .dwLowDateTime = @truncate(stamp), .dwHighDateTime = @truncate(stamp >> 32) }; // safe: FILETIME uses low and high 32-bit words of the checked u64 epoch
+    const stamp: u64 = @intCast(ticks); // epoch ticks were checked to fit u64
+    var time: W.FILETIME = .{ .dwLowDateTime = @truncate(stamp), .dwHighDateTime = @truncate(stamp >> 32) }; // FILETIME uses low and high 32-bit words of the checked u64 epoch
     const oid: [1]W.LPCSTR = .{if (request.purpose == .server) "1.3.6.1.5.5.7.3.1" else "1.3.6.1.5.5.7.3.2"};
     const parameters: C.CERT_CHAIN.PARA = .{ .RequestedUsage = .{ .dwType = .AND, .Usage = .{ .cUsageIdentifier = 1, .rgpszUsageIdentifier = &oid } } };
     var raw: *const C.CERT_CHAIN.CONTEXT = undefined;
-    if (!C.CertGetCertificateChain(engine, leaf, &time, additional, &parameters, @bitCast(offline_flags), null, &raw).toBool()) return error.NativePolicyFailure; // safe: SDK packed flags have the documented 32-bit layout
+    if (!C.CertGetCertificateChain(engine, leaf, &time, additional, &parameters, @bitCast(offline_flags), null, &raw).toBool()) return error.NativePolicyFailure; // SDK packed flags have the documented 32-bit layout
     defer C.CertFreeCertificateChain(raw);
     const name: ?[:0]u16 = switch (request.identity) {
         .dns => |dns| blk: {
@@ -81,7 +81,7 @@ fn store(certificates: []const []const u8) Error!C.HCERTSTORE {
     errdefer _ = C.CertCloseStore(owner, .{});
     for (certificates) |der| {
         if (der.len > std.math.maxInt(u32)) return error.ServiceLimit;
-        if (!C.CertAddEncodedCertificateToStore(owner, .{ .CERT = .ASN }, der.ptr, @intCast(der.len), .ALWAYS, null).toBool()) return error.NativePolicyFailure; // safe: DER length was checked to fit the SDK u32 size
+        if (!C.CertAddEncodedCertificateToStore(owner, .{ .CERT = .ASN }, der.ptr, @intCast(der.len), .ALWAYS, null).toBool()) return error.NativePolicyFailure; // DER length was checked to fit the SDK u32 size
     }
     return owner;
 }

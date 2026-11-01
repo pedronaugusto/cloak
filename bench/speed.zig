@@ -34,7 +34,7 @@ const Context = struct {
     }
 
     fn now(self: *const Context) u64 {
-        // safe: monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
+        // Monotonic nanoseconds since an arbitrary origin are positive and below 2^64.
         return @intCast(std.Io.Clock.awake.now(self.io).nanoseconds);
     }
 

@@ -17,7 +17,7 @@ test "F07 catalogue_der_lengths_children_and_depth (the hard recursion cap survi
         const header: usize = if (length < 128) 2 else 3;
         @memmove(encoded[header..][0..length], encoded[0..length]);
         encoded[0] = 0x30;
-        // safe: seventy wrappers produce fewer than 256 bytes in this fixture.
+        // Seventy wrappers produce fewer than 256 bytes in this fixture.
         const byte: u8 = @intCast(length);
         if (header == 2) encoded[1] = byte else {
             encoded[1] = 0x81;

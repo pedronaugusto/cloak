@@ -70,7 +70,7 @@ fn range(c: u8, low: u8, high: u8) u8 {
     @setRuntimeSafety(true);
     // Each difference lies in [-255,255], so bit 15 detects either exclusion.
     const outside = ((@as(u16, c) -% low) | (@as(u16, high) -% c)) >> 15;
-    return @truncate(outside -% 1); // safe: low byte of 0xffff/0 is the desired full/empty mask
+    return @truncate(outside -% 1); // low byte of 0xffff/0 is the desired full/empty mask
 }
 
 test {

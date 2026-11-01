@@ -89,11 +89,11 @@ pub const Options = struct {
     /// Verify nothing at the client.
     client_verify_none: bool = false,
     /// Certificate codecs: the client's decoders and the server's encoders.
-    client_codecs: []const Compression.Codec = &.{},
-    server_codecs: []const Compression.Codec = &.{},
+    client_codecs: []const *Compression.Codec = &.{},
+    server_codecs: []const *Compression.Codec = &.{},
     /// Provisioned keys: the client's and the server's lookup.
     client_psks: []const Psk.External = &.{},
-    server_psk: ?Psk.Lookup = null,
+    server_psk: ?*Psk.Lookup = null,
     /// The server holds no credential: provisioned keys are its only authentication.
     server_psk_only: bool = false,
     /// What the client connection allocates from, to measure it; the harness's own otherwise.
@@ -149,8 +149,8 @@ pub const Options = struct {
     client_max_fragment: ?u16 = null,
     server_max_fragment: ?u16 = null,
     /// Each end's key log (NSS key log lines), to read its records or know its secrets in a test.
-    client_key_log: ?Connection.KeyLog = null,
-    server_key_log: ?Connection.KeyLog = null,
+    client_key_log: ?*Connection.KeyLog = null,
+    server_key_log: ?*Connection.KeyLog = null,
     /// A second client credential after the first: `dc_client` under the delegation root, with
     /// the client's key (a chain of another issuer), or with `client_second_raw` the client's key
     /// as a raw public key (RFC 7250).

@@ -71,11 +71,11 @@ pub const Options = struct {
     /// that depends on one order is found now rather than when a new extension moves it.
     permute_extensions: bool = false,
     /// Certificate decoders to offer (RFC 8879); borrowed.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys to offer (PSK-DHE), plain or imported (RFC 9258); borrowed.
     external_psks: []const Psk.External = &.{},
     limits: Client.Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -111,11 +111,11 @@ pub const ServerOptions = struct {
     /// Encrypted Client Hello keys (RFC 9849), borrowed for the life of the handshake.
     ech_keys: []const Ech.Key = &.{},
     /// Certificate encoders (RFC 8879) in the server's order of preference; borrowed.
-    certificate_compression: []const Compression.Codec = &.{},
+    certificate_compression: []const *Compression.Codec = &.{},
     /// Provisioned keys, looked up by the offered identity (PSK-DHE).
-    external_psk: ?Psk.Lookup = null,
+    external_psk: ?*Psk.Lookup = null,
     limits: Client.Limits = .{},
-    key_log: ?KeyLog = null,
+    key_log: ?*KeyLog = null,
     generation: types.ConnectionGeneration = .fromRaw(0),
 };
 
@@ -437,7 +437,6 @@ fn advance(self: *Handshake) void {
     var emit: Emit = undefined;
     while (self.hs.pop(&emit)) switch (emit) {
         .message => |m| {
-            // safe: the flight buffer is bounded by the handshake limit, below 4 GiB.
             self.current = .{ .data = .{ .level = levelOf(m.epoch), .start = m.start, .len = m.len, .acked = 0, .flight_end = !self.hs.pending() } };
             return;
         },
@@ -478,7 +477,7 @@ pub fn ack(self: *Handshake, consumed: usize) void {
     switch (current.*) {
         .data => |*d| {
             aegis.assert.pre(consumed <= d.len - d.acked, "the caller acknowledges at most the event's data");
-            // safe: the remainder of a message is at most its u32 length.
+            // The remainder of a message is at most its u32 length.
             d.acked += @intCast(consumed);
             if (d.acked < d.len) return;
             self.current = null;

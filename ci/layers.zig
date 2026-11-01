@@ -6,6 +6,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "wire", .patterns = &.{ "src/wire.zig", "src/wire/**" } },
     .{ .name = "certificate", .patterns = &.{ "src/certificate.zig", "src/certificate/**" } },
     .{ .name = "authentication owners", .patterns = &.{ "src/verify.zig", "src/verify/**", "src/Verification.zig", "src/credentials.zig", "src/credentials/**", "src/PrivateKey.zig", "src/Identity.zig", "src/ClientAuth.zig", "src/Pkcs12.zig", "src/Trust.zig", "src/services.zig", "src/services/**" } },
+    .{ .name = "issuance", .patterns = &.{"src/Issue.zig"} },
     .{ .name = "native verification driver", .patterns = &.{"src/NativeVerification.zig"} },
     .{ .name = "certificates module", .patterns = &.{"src/certificates.zig"} },
     .{ .name = "TLS wire and crypto", .patterns = &.{ "src/tls/wire.zig", "src/tls/wire/**", "src/tls/crypto.zig", "src/tls/crypto/**" } },
@@ -100,3 +101,5 @@ const sibling_references = [_]gantry.rules.ReferenceRule{
 };
 const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{ "std", "builtin", "shakedown", "aegis" } }};
 pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ sibling_references);
+// A namespace publishing a part of its own directory: the part imports the namespace back.
+pub const reexports = [_]struct { from: []const u8, to: []const u8 }{.{ .from = "src/crypto/rsa.zig", .to = "src/crypto/rsa/keygen.zig" }};

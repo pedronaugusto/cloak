@@ -106,10 +106,10 @@ pub const ImportedIdentity = struct {
     pub fn write(self: ImportedIdentity, out: []u8) []u8 {
         @setRuntimeSafety(true);
         const len = 2 + self.identity.len + 2 + self.context.len + 4;
-        std.mem.writeInt(u16, out[0..2], @intCast(self.identity.len), .big); // safe: at most max_identity
+        std.mem.writeInt(u16, out[0..2], @intCast(self.identity.len), .big); // at most max_identity
         @memcpy(out[2..][0..self.identity.len], self.identity);
         const rest = out[2 + self.identity.len ..];
-        std.mem.writeInt(u16, rest[0..2], @intCast(self.context.len), .big); // safe: at most max_context
+        std.mem.writeInt(u16, rest[0..2], @intCast(self.context.len), .big); // at most max_context
         @memcpy(rest[2..][0..self.context.len], self.context);
         std.mem.writeInt(u16, rest[2 + self.context.len ..][0..2], self.protocol, .big);
         std.mem.writeInt(u16, rest[4 + self.context.len ..][0..2], self.kdf, .big);
@@ -168,10 +168,10 @@ pub const Query = struct {
 };
 
 /// A server's provisioned keys: `find` returns the key for a query, or null. Its result is
-/// copied before `find` is called again; it must name the queried identity exactly.
+/// copied before `find` is called again; it must name the queried identity exactly. It is a field
+/// of the caller's own type, which `find` recovers with `@fieldParentPtr`.
 pub const Lookup = struct {
-    context: ?*anyopaque = null,
-    find: *const fn (context: ?*anyopaque, query: Query) ?External,
+    find: *const fn (lookup: *Lookup, query: Query) ?External,
 };
 
 pub fn validate(psk: External) error{InvalidOptions}!void {

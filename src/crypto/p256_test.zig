@@ -59,7 +59,7 @@ test "F04 catalogue_scalar_nonce_length_and_tail_dispatch (P-256 base and variab
     for (0..edges.len + 32 + 200) |i| {
         const value = if (i < edges.len) edges[i] else if (i < edges.len + 32) blk: {
             const zeros = i - edges.len;
-            const width: u9 = 8 * @as(u9, @intCast(32 - zeros)); // safe: zeros is below 32
+            const width: u9 = 8 * @as(u9, @intCast(32 - zeros)); // zeros is below 32
             const bound: u256 = if (width == 256) p256.order else @as(u256, 1) << @intCast(width);
             break :blk 1 + prng.random().int(u256) % (bound - 1);
         } else 1 + prng.random().int(u256) % (p256.order - 1);

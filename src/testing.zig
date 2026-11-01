@@ -17,6 +17,7 @@ pub const p521_field = @import("crypto/field.zig").p521;
 pub const nist_field = @import("crypto/field.zig").nist;
 pub const s2n = @import("crypto/field.zig").s2n;
 pub const x25519 = @import("crypto/x25519.zig");
+pub const edwards25519 = @import("crypto/edwards25519.zig");
 pub const suites = @import("tls/crypto/Suite.zig");
 pub const Exchange = @import("tls/crypto/Exchange.zig");
 pub const Hpke = @import("tls/crypto/Hpke.zig");

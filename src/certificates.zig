@@ -15,3 +15,16 @@ pub const encryption = @import("verify/encryption.zig");
 pub const types = @import("types.zig");
 pub const NativeVerification = @import("NativeVerification.zig");
 pub const services = @import("services.zig");
+/// Certificates and certification requests, written: what a template says, signed.
+pub const Template = @import("certificate/Template.zig").Certificate;
+pub const RequestTemplate = @import("certificate/Template.zig").Request;
+pub const template = @import("certificate/Template.zig");
+pub const Request = @import("certificate/Request.zig");
+pub const Issuer = @import("Issue.zig").Issuer;
+pub const issue = @import("Issue.zig").issue;
+pub const request = @import("Issue.zig").request;
+pub const verifyRequest = @import("Issue.zig").verifyRequest;
+/// PEM armour for any DER: certificates, requests, keys.
+pub const pem = struct {
+    pub const write = @import("credentials/Pem.zig").write;
+};

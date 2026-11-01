@@ -74,13 +74,13 @@ pub fn deinit(self: *Keys) void {
 }
 
 /// What carries keys to a kernel: `install` gives the kernel a direction's keys, the first time
-/// or as a key update. On an error the kernel holds none of them, and on success all.
+/// or as a key update. On an error the kernel holds none of them, and on success all. It is a
+/// field of the kernel's own type, which `installFn` recovers with `@fieldParentPtr`.
 pub const Installer = struct {
-    context: *anyopaque,
-    installFn: *const fn (context: *anyopaque, direction: Direction, keys: *const Keys) InstallError!void,
+    installFn: *const fn (installer: *Installer, direction: Direction, keys: *const Keys) InstallError!void,
 
-    pub fn install(self: Installer, direction: Direction, keys: *const Keys) InstallError!void {
-        return self.installFn(self.context, direction, keys);
+    pub fn install(self: *Installer, direction: Direction, keys: *const Keys) InstallError!void {
+        return self.installFn(self, direction, keys);
     }
 };
 

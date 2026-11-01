@@ -9,7 +9,7 @@ test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: every character m
     for (0..4) |position| {
         for (0..256) |byte| {
             source = @splat('A');
-            source[position] = @intCast(byte); // safe: exhaustive byte loop is below 256
+            source[position] = @intCast(byte); // exhaustive byte loop is below 256
             try compare(&source);
         }
     }
@@ -37,7 +37,7 @@ fn compare(source: []const u8) !void {
 test "F06 catalogue_key_import_failure_and_kdf_budget (Base64: byte round trip and erasure)" {
     @setRuntimeSafety(true);
     var input: [256]u8 = undefined;
-    for (&input, 0..) |*byte, i| byte.* = @intCast(i); // safe: array positions cover exactly the byte range
+    for (&input, 0..) |*byte, i| byte.* = @intCast(i); // array positions cover exactly the byte range
     var encoded: [344]u8 = undefined;
     var output: [256]u8 = undefined;
     for (0..input.len + 1) |len| {
