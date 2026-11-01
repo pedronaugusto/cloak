@@ -4,8 +4,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ## [Unreleased]
 
-## [0.23.1] - 2026-10-31
-
 ### Breaking
 
 - The interfaces a caller supplies carry no `context: ?*anyopaque`: `Connection.KeyLog`, `certificate_compression.Codec`, `Session.Custom`, `Session.Signer`, `Psk.Lookup` (`external_psk`), `services.Job.Executor` and `offload.Installer`. Each is now a field of the caller's own type; its functions take a pointer to it and recover the owner with `@fieldParentPtr`, and the options take that pointer (`key_log: ?*KeyLog`, `certificate_compression: []const *Codec`, `trust = .{ .custom = *Custom }`, `signer: ?*Signer`, `external_psk: ?*Lookup`, `executor: ?*Executor`, `Connection.offload(direction, *Installer)`). `linux.Socket` and the test kernel hold their `installer`; `Socket.installer()` is gone. A key log, for one:
@@ -46,7 +44,13 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - An RSA private key keeps its private exponent d (validated as before), so it can be written back.
 ### Fixed
 
-- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. COFF's directive now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged).
+- Windows on x86_64 links again for good: the COFF directive that gives s2n-bignum's X25519 base ladders their function entry now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged). 0.23.1's change to the label's name did not link.
+
+## [0.23.1] - 2026-10-31
+
+### Fixed
+
+- Windows on x86_64 links again: s2n-bignum's X25519 base ladders give the label their Windows entry calls a function directive, which cloak's shim named `cloak_<label>` while the label kept its own name, so the linker looked for a symbol nothing defined. The label now takes the same name (`src/crypto/vendor/shim`; the vendored files are unchanged).
 - Debug builds erase 128 KiB below a private key's parse, not 96 KiB: Zig's own x86_64 backend, which compiles Debug for x86_64 Linux, has larger frames than LLVM, and an encrypted RSA key's parse reached 108 KiB there, past what was erased.
 - A server with `external_psk` set panicked on a crafted pre_shared_key identity: `Psk.ImportedIdentity.parse` added the identity's leading length, and then its context length, to small constants in 16 bits, which overflowed for an identity length of 0xfffe or 0xffff or a context length of 0xfffa or more (a panic in every build, the file running with runtime safety). The lengths are now read as usize, and such an identity reads as a plain one, as other bytes do. Affected: 0.21.0 to 0.23.0.
 
