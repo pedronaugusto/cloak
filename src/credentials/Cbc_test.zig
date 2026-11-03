@@ -1,5 +1,5 @@
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Cbc = @import("Cbc.zig");
 test "credential AES CBC NIST SP800-38A and PKCS7 rejection" {
     @setRuntimeSafety(true);

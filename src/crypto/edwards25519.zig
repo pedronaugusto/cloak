@@ -13,7 +13,7 @@
 //! it is at least 2^255, and every scalar passed here (below L, or L itself) is below that, so
 //! a point with a small-order component gives [h]A + [s]B as written, as std computes it.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const s2n = @import("field.zig").s2n;
 const Fe = @import("field.zig").curve25519.Fe;
 const Montgomery = @import("field.zig").Montgomery;

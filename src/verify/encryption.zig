@@ -2,7 +2,7 @@
 //! `crypto/pkcs1.zig`'s and the public operation std's, as signature verification takes it.
 //! No private operation here: decryption is `PrivateKey.decrypt`'s.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const A = @import("../certificate/Algorithm.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 

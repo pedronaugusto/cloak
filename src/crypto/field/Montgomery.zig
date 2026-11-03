@@ -5,7 +5,7 @@
 //! instructions for every value: carries move through add/subtract-with-carry chains and the
 //! one conditional subtraction selects through a mask the compiler cannot see through.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const builtin = @import("builtin");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {

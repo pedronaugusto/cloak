@@ -9,7 +9,7 @@
 const std = @import("std");
 const s2n = @import("field.zig").s2n;
 const Fe = @import("field.zig").curve25519.Fe;
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 
 pub const length = 32;
 

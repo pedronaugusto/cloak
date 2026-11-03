@@ -476,7 +476,7 @@ pub fn ack(self: *Handshake, consumed: usize) void {
     const current = &(self.current orelse return);
     switch (current.*) {
         .data => |*d| {
-            aegis.assert.pre(consumed <= d.len - d.acked, "the caller acknowledges at most the event's data");
+            aegis.assert.invariant(consumed <= d.len - d.acked, "the caller acknowledges at most the event's data");
             // The remainder of a message is at most its u32 length.
             d.acked += @intCast(consumed);
             if (d.acked < d.len) return;

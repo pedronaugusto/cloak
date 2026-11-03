@@ -189,7 +189,7 @@ const Loading = struct {
         {
             var held = try self.done.acquire(io);
             defer held.deinit(io);
-            while (!held.value().*) self.finished.wait(io, &held, deadline) catch |err| switch (err) {
+            while (!held.value().*) held.wait(&self.finished, io, deadline) catch |err| switch (err) {
                 error.Timeout => if (expired(io, deadline)) return error.Timeout,
                 error.Canceled => return error.Canceled,
                 error.WaiterLimit => unreachable, // unreachable: the caller is the one waiter

@@ -13,7 +13,7 @@
 //! temporaries to the stack: secret computations run it inside `aegis.secret.scrubbed`, which
 //! scrubs that stack and sets the processor's data-independent timing mode around them.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const s2n = @import("s2n.zig");
 const Montgomery = @import("Montgomery.zig");
 

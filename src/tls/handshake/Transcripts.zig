@@ -58,7 +58,7 @@ pub fn moveInto(self: *Self, destination: *Self) void {
 /// A TLS 1.3 transcript over the same messages, to be continued apart: the hashes copied into an
 /// owner of its own, nothing kept. The caller deinits it.
 pub fn fork(self: *const Self) Self {
-    aegis.assert.pre(self.datagram12 == null, "a forked transcript has no DTLS 1.2 form");
+    aegis.assert.invariant(self.datagram12 == null, "a forked transcript has no DTLS 1.2 form");
     return .{ .state = .init(self.state.expose().*) };
 }
 
@@ -337,7 +337,7 @@ pub const Selected = union(enum) {
 /// The chosen hash's state, to be continued apart from this transcript. Only once the suite is
 /// selected, and never for a datagram transcript of DTLS 1.2.
 pub fn selected(self: *const Self) Selected {
-    aegis.assert.pre(self.datagram12 == null, "a TLS 1.3 transcript has no DTLS 1.2 form");
+    aegis.assert.invariant(self.datagram12 == null, "a TLS 1.3 transcript has no DTLS 1.2 form");
     return switch (self.state.expose().*) {
         .pending => unreachable, // unreachable: the suite is selected before the handshake completes
         .sha256 => |t| .{ .sha256 = t },

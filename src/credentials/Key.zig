@@ -1,6 +1,6 @@
 //! Bounded key parsing into the material `PrivateKey` signs with.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");

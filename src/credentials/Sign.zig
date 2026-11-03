@@ -10,7 +10,7 @@
 //! constant-time CRT operation of `crypto/rsa.zig`, which checks every result against the
 //! public key before it is written.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const edwards25519 = @import("../crypto/edwards25519.zig");
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");

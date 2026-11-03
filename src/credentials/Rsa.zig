@@ -4,7 +4,7 @@
 //! BoringSSL and ring hold it. No wrong signature leaves on a key whose factors are not: the
 //! private operation checks each signature against the public key before releasing it.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Der = @import("../wire/Der.zig");
 const kernel = @import("../crypto/rsa.zig");
 const roca = @import("../crypto/roca.zig");

@@ -1,7 +1,7 @@
 //! Fixed-width borrowed arithmetic for RSA preparation. No secret-dependent
 //! active width, bigint copies in callees, or secret-indexed addressing.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Uint = @This();
 const width = @bitSizeOf(usize) - 1;
 const mask = std.math.maxInt(usize) >> 1;

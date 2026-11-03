@@ -2,7 +2,7 @@
 //! Length, padding count and final validity are framing decisions. Character
 //! classification and byte reconstruction use fixed arithmetic at public offsets. `dest` is the
 //! caller's secret owner, which erases it when decoding fails.
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 pub const Error = error{InvalidBase64};
 
 pub fn size(source: []const u8) Error!usize {

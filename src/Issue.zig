@@ -3,7 +3,7 @@
 //! parser and a verification of the signature under the issuer's public key. See docs/design.md
 //! "Issuing certificates".
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const certificate = @import("certificate.zig");
 const Template = @import("certificate/Template.zig");
 const Request = @import("certificate/Request.zig");

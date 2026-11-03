@@ -16,7 +16,7 @@
 //! qinv = q^(p-2) mod p.
 const std = @import("std");
 const aegis = @import("aegis");
-const Secret = aegis.secret.Secret;
+const Secret = aegis.Secret;
 const rsa = @import("../rsa.zig");
 const ct = @import("../field.zig").Montgomery;
 

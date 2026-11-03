@@ -348,7 +348,7 @@ pub const Response = struct {
 
 /// The answer for the write half to end with its Finished and send.
 pub fn response(self: *const PostAuth) Response {
-    aegis.assert.pre(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
+    aegis.assert.invariant(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
     const ex = self.exchange.?;
     return .{ .flight = ex.flight.view()[0..ex.flight_len], .transcript = ex.digest.expose()[0..ex.digest_len] };
 }
@@ -356,7 +356,7 @@ pub fn response(self: *const PostAuth) Response {
 /// The write half sent the answer, or never will (it closed): the next request is the read
 /// half's again.
 pub fn sent(self: *PostAuth) void {
-    aegis.assert.pre(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
+    aegis.assert.invariant(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
     const presented = self.exchange.?.presented;
     self.endExchange();
     _ = self.machine.client.step(.sent) catch unreachable; // unreachable: owed until now
@@ -401,7 +401,7 @@ pub fn request(self: *PostAuth, out: []u8) (Error || error{RequestOutstanding})!
 
 /// The request is sealed: its answer is the read half's to take.
 pub fn publish(self: *PostAuth) void {
-    aegis.assert.pre(self.machine.server.current() == .requested, "a built request is published");
+    aegis.assert.invariant(self.machine.server.current() == .requested, "a built request is published");
     self.holder.store(.read, .release);
 }
 
@@ -543,7 +543,7 @@ pub const FinishedCheck = struct { transcript: []const u8, received: []const u8 
 
 /// The Finished the record layer checks, and the transcript it must be the MAC of.
 pub fn finishedCheck(self: *const PostAuth) FinishedCheck {
-    aegis.assert.pre(self.machine.server.current() == .checking, "a received Finished awaits its check");
+    aegis.assert.invariant(self.machine.server.current() == .checking, "a received Finished awaits its check");
     const ex = self.exchange.?;
     return .{ .transcript = ex.digest.expose()[0..ex.digest_len], .received = ex.received.expose()[0..ex.digest_len] };
 }
@@ -551,7 +551,7 @@ pub fn finishedCheck(self: *const PostAuth) FinishedCheck {
 /// The record layer accepted the Finished: the exchange counts, and the next request is the
 /// write half's to make.
 pub fn settled(self: *PostAuth) void {
-    aegis.assert.pre(self.machine.server.current() == .checking, "a checked Finished settles its exchange");
+    aegis.assert.invariant(self.machine.server.current() == .checking, "a checked Finished settles its exchange");
     const ex = self.exchange.?;
     const authenticated = ex.authenticated;
     if (ex.leaf.len != 0) {

@@ -27,7 +27,7 @@ const aegis = @import("aegis");
 const builtin = @import("builtin");
 const ct = @import("field.zig").Montgomery;
 const bignum = @import("field.zig").bignum;
-const Secret = aegis.secret.Secret;
+const Secret = aegis.Secret;
 /// RSA key generation (FIPS 186-5 A.1.3), on these moduli.
 pub const keygen = @import("rsa/keygen.zig");
 

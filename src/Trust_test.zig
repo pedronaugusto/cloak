@@ -92,16 +92,16 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
         try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     }
     var clock = shakedown.Clock.init(std.testing.io, .{});
-    var started: std.Io.Event = .unset;
+    var started: Started = .{};
     const stall: shakedown.IoFault = .stall;
-    const fault = try shakedown.FaultIo.init(std.testing.allocator, clock.io(), .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_read_streaming, .n = 1 } }, .fault = .{ .call = .{ .f = signalRead, .ctx = &started, .then = &stall } } }} });
+    const fault = try shakedown.FaultIo.init(std.testing.allocator, clock.io(), .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_read_streaming, .n = 1 } }, .fault = .{ .call = .{ .hook = &started.hook, .then = &stall } } }} });
     defer fault.deinit();
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
     try trust.addPem(@embedFile("credentials/testdata/p256.cert.pem"), .{});
     var work = try std.testing.io.concurrent(Trust.addFile, .{ &trust, fault.io(), path, Trust.LoadOptions{ .timeout = .{ .duration = .{ .raw = .fromMilliseconds(1), .clock = .awake } } } });
     const barrier: std.Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } };
-    started.waitTimeout(std.testing.io, barrier) catch |err| {
+    started.event.waitTimeout(std.testing.io, barrier) catch |err| {
         _ = work.cancel(std.testing.io) catch return err;
         return err;
     };
@@ -114,11 +114,16 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
 }
 
-fn signalRead(io: std.Io, context: ?*anyopaque) void {
-    @setRuntimeSafety(true);
-    const started: *std.Io.Event = @ptrCast(@alignCast(context.?)); // this fault owns the aligned Event context until the joined loader finishes
-    started.set(io);
-}
+/// The stalled read's start, signalled from the fault's hook.
+const Started = struct {
+    event: std.Io.Event = .unset,
+    hook: shakedown.Hook = .{ .run = signalRead },
+
+    fn signalRead(hook: *shakedown.Hook, io: std.Io) void {
+        const self: *Started = @fieldParentPtr("hook", hook);
+        self.event.set(io);
+    }
+};
 
 test "trust native system policy keeps explicit anchors besides it" {
     @setRuntimeSafety(true);

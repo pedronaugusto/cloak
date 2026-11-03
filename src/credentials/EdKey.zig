@@ -1,6 +1,6 @@
 //! Owned RFC8032 seed expansion; every orchestration temporary is erased.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const edwards25519 = @import("../crypto/edwards25519.zig");
 /// RFC 8032 5.1.5: the key `out` holds, the seed then the public key it derives. The clamped
 /// scalar is a multiple of 8 below 2^255 and at least 2^254, so never 0 mod L: every seed is a

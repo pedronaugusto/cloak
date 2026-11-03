@@ -17,7 +17,7 @@ pub fn pending(self: *const Outbox) []const u8 {
 
 pub fn acknowledge(self: *Outbox, n: usize) void {
     @setRuntimeSafety(true);
-    aegis.assert.pre(n <= self.end - self.start, "the caller acknowledges at most what is pending");
+    aegis.assert.invariant(n <= self.end - self.start, "the caller acknowledges at most what is pending");
     self.start += n;
     if (self.start == self.end) {
         self.start = 0;

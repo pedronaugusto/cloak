@@ -1,6 +1,6 @@
 //! Bounded offline PBKDF2/HMAC orchestration with owned, erased working state.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const aegis = @import("aegis");
 pub const DeriveError = error{KdfLimit};
 /// The longest key `derive` makes: SHA-512's output, as PBMAC1 over HMAC-SHA-512 asks.

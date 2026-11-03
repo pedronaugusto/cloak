@@ -2,7 +2,7 @@ const std = @import("std");
 const keygen = @import("keygen.zig");
 const rsa = @import("../rsa.zig");
 const Rsa = @import("../../credentials/Rsa.zig");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Managed = std.math.big.int.Managed;
 
 const gpa = std.testing.allocator;

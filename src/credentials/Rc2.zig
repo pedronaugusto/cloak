@@ -5,7 +5,7 @@
 //! with masks: no secret reaches an address. Secret temporaries live in aegis `Secret` owners;
 //! `out` is the caller's secret owner, which erases it when decryption fails.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 pub const Error = error{ InvalidCiphertext, BadPassword };
 
 /// Decrypts `encrypted` under `key` with `effective` key bits (40 or 128 for PKCS#12) in CBC

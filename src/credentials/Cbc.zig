@@ -3,7 +3,7 @@
 //! temporaries live in one aegis `Secret`; `out` is the caller's secret owner, which erases it
 //! when decryption fails.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 pub const Error = error{ InvalidCiphertext, BadPassword };
 pub fn decrypt(key: []const u8, iv: [16]u8, encrypted: []const u8, out: []u8) Error![]u8 {
     @setRuntimeSafety(true);

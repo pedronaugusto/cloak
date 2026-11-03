@@ -13,7 +13,7 @@
 //! temporaries are their own owners, wiped on return; the assembly's stack is the caller's to scrub.
 const builtin = @import("builtin");
 const s2n = @import("s2n.zig");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 
 pub const assembly = s2n.assembly;
 pub const max_limbs = 64;

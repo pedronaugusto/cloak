@@ -68,7 +68,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         /// take; nothing changes here until `release`.
         pub fn exportKeys(self: *const Self, keys: *Keys) void {
             @setRuntimeSafety(true);
-            aegis.assert.pre(!self.closed and self.owner != .kernel, "only keys this epoch holds are exported");
+            aegis.assert.invariant(!self.closed and self.owner != .kernel, "only keys this epoch holds are exported");
             @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
             keys.iv.exposeMut().* = self.iv.expose().*;
             keys.sequence = self.sequence.raw();
@@ -93,7 +93,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (self.closed) return error.Closed;
             if (self.traffic == null) return error.MissingTraffic;
             // A kernel takes one key update at a time: the next keys wait for it.
-            aegis.assert.pre(self.owner != .next, "a kernel takes the next keys before another update");
+            aegis.assert.invariant(self.owner != .next, "a kernel takes the next keys before another update");
             var next = TrafficSecret.init(undefined);
             defer next.deinit();
             // unreachable: fixed label and hash-sized output meet the HKDF bounds.
@@ -110,13 +110,13 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         /// holding the keys leaves it here too. Only an open epoch made from a traffic secret.
         pub fn finished(self: *const Self, transcript: *const [Hash.digest_length]u8, out: *[Hash.digest_length]u8) void {
             @setRuntimeSafety(true);
-            aegis.assert.pre(!self.closed and self.traffic != null, "a Finished is made under an open epoch's traffic secret");
+            aegis.assert.invariant(!self.closed and self.traffic != null, "a Finished is made under an open epoch's traffic secret");
             Labels.finished(Hash, .tls13, out, self.traffic.?.expose(), transcript);
         }
         /// Checks a post-handshake Finished received under this epoch, in constant time.
         pub fn checkFinished(self: *const Self, transcript: *const [Hash.digest_length]u8, received: []const u8) Labels.CheckError!void {
             @setRuntimeSafety(true);
-            aegis.assert.pre(!self.closed and self.traffic != null, "a Finished is checked under an open epoch's traffic secret");
+            aegis.assert.invariant(!self.closed and self.traffic != null, "a Finished is checked under an open epoch's traffic secret");
             return Labels.checkFinished(Hash, .tls13, self.traffic.?.expose(), transcript, received);
         }
         fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {

@@ -101,7 +101,7 @@ pub fn kernelCipher(self: *const Protection) ?Keys.Cipher {
 pub fn exportKeys(self: *const Protection, keys: *Keys) void {
     @setRuntimeSafety(true);
     const cipher = self.kernelCipher();
-    aegis.assert.pre(cipher != null, "keys are exported only for a cipher a kernel runs");
+    aegis.assert.invariant(cipher != null, "keys are exported only for a cipher a kernel runs");
     keys.cipher = cipher.?;
     keys.version = if (self.tls12()) .tls12 else .tls13;
     switch (self.state) {
@@ -189,14 +189,14 @@ pub const FinishedError = @import("../crypto/Labels.zig").CheckError;
 /// of `transcript` (the suite's hash length) under the current traffic secret, into `out`.
 pub fn finished(self: *const Protection, transcript: []const u8, out: []u8) []u8 {
     @setRuntimeSafety(true);
-    aegis.assert.pre(!self.tls12(), "post-handshake authentication is TLS 1.3's");
+    aegis.assert.invariant(!self.tls12(), "post-handshake authentication is TLS 1.3's");
     switch (self.state) {
         inline else => |*e, tag| {
             if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) {
                 unreachable; // unreachable: refused above
             } else {
                 const n = suites.Hash(@field(Suite13, @tagName(tag))).digest_length;
-                aegis.assert.pre(transcript.len == n and out.len >= n, "a transcript and a MAC are the suite's hash length");
+                aegis.assert.invariant(transcript.len == n and out.len >= n, "a transcript and a MAC are the suite's hash length");
                 e.finished(transcript[0..n], out[0..n]);
                 return out[0..n];
             }
@@ -208,14 +208,14 @@ pub fn finished(self: *const Protection, transcript: []const u8, out: []u8) []u8
 /// keys, in constant time; `BadFinished` when it is not the MAC of `transcript`.
 pub fn checkFinished(self: *const Protection, transcript: []const u8, received: []const u8) FinishedError!void {
     @setRuntimeSafety(true);
-    aegis.assert.pre(!self.tls12(), "post-handshake authentication is TLS 1.3's");
+    aegis.assert.invariant(!self.tls12(), "post-handshake authentication is TLS 1.3's");
     switch (self.state) {
         inline else => |*e, tag| {
             if (comptime std.mem.startsWith(u8, @tagName(tag), "tls12_")) {
                 unreachable; // unreachable: refused above
             } else {
                 const n = suites.Hash(@field(Suite13, @tagName(tag))).digest_length;
-                aegis.assert.pre(transcript.len == n, "a transcript is the suite's hash length");
+                aegis.assert.invariant(transcript.len == n, "a transcript is the suite's hash length");
                 return e.checkFinished(transcript[0..n], received);
             }
         },

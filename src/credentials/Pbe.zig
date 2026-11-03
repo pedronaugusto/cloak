@@ -4,7 +4,7 @@
 //! with SHA-1, under 3DES or RC2). Every derived key is a secret owner; the plaintext is a
 //! `SecretBytes` the caller releases.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const aegis = @import("aegis");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");

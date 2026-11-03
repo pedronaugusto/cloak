@@ -60,7 +60,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
         /// them up with the records.
         pub fn exportKeys(self: *const Self, keys: *Keys) void {
             @setRuntimeSafety(true);
-            aegis.assert.pre(!self.closed and self.owner == .software, "only keys this epoch holds are exported");
+            aegis.assert.invariant(!self.closed and self.owner == .software, "only keys this epoch holds are exported");
             @memcpy(keys.key.exposeMut()[0..A.key_length], self.key.expose());
             const iv = keys.iv.exposeMut();
             iv.* = self.iv.expose().*;

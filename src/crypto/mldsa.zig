@@ -11,7 +11,7 @@
 //! SHAKE stream, as FIPS 204's reference does. The arithmetic follows std's (from CIRCL), whose
 //! bounds it keeps: coefficients below 2q into the inverse NTT.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const aegis = @import("aegis");
 const Shake128 = std.crypto.hash.sha3.Shake128;
 const Shake256 = std.crypto.hash.sha3.Shake256;
@@ -209,7 +209,7 @@ pub fn Scheme(comptime level: Level) type {
         /// zeros for the deterministic variant.
         pub fn sign(sk: *const [secret_key_length]u8, message: []const u8, context: []const u8, noise: *const [noise_length]u8, sig: *[signature_length]u8) void {
             @setRuntimeSafety(true);
-            aegis.assert.pre(context.len <= 255, "an ML-DSA context is at most 255 bytes");
+            aegis.assert.invariant(context.len <= 255, "an ML-DSA context is at most 255 bytes");
             const rho = sk[sk_rho..][0..32];
             var mu: [64]u8 = undefined;
             messageHash(sk[sk_tr..][0..64], message, context, &mu);

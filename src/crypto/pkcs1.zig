@@ -6,7 +6,7 @@
 //! `DecryptionFailed`, says nothing of which check failed: Manger's attack needs exactly that.
 //! Only a decoded message's length leaves the mask, once the whole encoding has held.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const ct = @import("field.zig").Montgomery;
 
 /// The hashes OAEP's label hash and MGF1 take: SHA-1 (JOSE's RSA-OAEP), SHA-256, SHA-384 and

@@ -10,7 +10,7 @@
 //! ServerKeyExchange carrying an identity hint the client ignores, then the client's identity in
 //! its ClientKeyExchange; the key authenticates both ends.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const certificates = @import("../../certificates.zig");
 const suites = @import("../crypto/Suite.zig");
 const Prf = @import("../crypto/Prf.zig");

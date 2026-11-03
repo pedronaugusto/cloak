@@ -4,7 +4,7 @@
 //! X25519 is `crypto/x25519.zig`'s (s2n-bignum's verified ladder, or the RFC's over fiat-crypto's
 //! field), its shared secret the 32 bytes RFC 7748 names.
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const p256 = @import("../crypto/p256.zig");
 const p384 = @import("../crypto/p384.zig");
 const p521 = @import("../crypto/p521.zig");

@@ -1,7 +1,7 @@
 //! Bounded textual armor. Decoded buffers belong to the caller.
 const std = @import("std");
 const SecretBytes = @import("aegis").SecretBytes;
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Pem = @This();
 const Base64 = @import("Base64.zig");
 text: []const u8,

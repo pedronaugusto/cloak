@@ -10,7 +10,7 @@
 //! are optional (RFC 7518 sections 4.1 and 5.1) and absent from WebCrypto.
 const std = @import("std");
 const aegis = @import("aegis");
-const Secret = aegis.secret.Secret;
+const Secret = aegis.Secret;
 const aes = @import("crypto/aes.zig");
 
 const Aes128 = std.crypto.core.aes.Aes128;
@@ -36,14 +36,14 @@ pub fn AesGcm(comptime bits: u16) type {
 
         /// Encrypts `m` into `c` (as long as `m`) and writes the tag over `c` and `ad`.
         pub fn seal(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) void {
-            aegis.assert.pre(c.len == m.len, "an AES-GCM ciphertext buffer is as long as the message");
+            aegis.assert.invariant(c.len == m.len, "an AES-GCM ciphertext buffer is as long as the message");
             aegis.secret.scrubbed(aes.depth(), sealKernel, .{ c, tag, m, ad, nonce, key });
         }
 
         /// Checks the tag, then decrypts `c` into `m` (as long as `c`); on a refusal no plaintext is
         /// written to `m`, the tag being checked before any block is decrypted.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, nonce: *const [nonce_length]u8, key: *const [key_length]u8) Error!void {
-            aegis.assert.pre(m.len == c.len, "an AES-GCM message buffer is as long as the ciphertext");
+            aegis.assert.invariant(m.len == c.len, "an AES-GCM message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, nonce, key });
         }
 
@@ -170,14 +170,14 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
 
         /// Encrypts `m` into `c` (`ciphertextLength(m.len)` bytes) under `iv`, and writes the tag.
         pub fn seal(c: []u8, tag: *[tag_length]u8, m: []const u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) void {
-            aegis.assert.pre(c.len == ciphertextLength(m.len), "a CBC-HMAC ciphertext buffer is ciphertextLength(message) bytes");
+            aegis.assert.invariant(c.len == ciphertextLength(m.len), "a CBC-HMAC ciphertext buffer is ciphertextLength(message) bytes");
             aegis.secret.scrubbed(aes.depth(), sealKernel, .{ c, tag, m, ad, iv, key });
         }
 
         /// Checks the tag, then decrypts `c` into `m` (as long as `c`) and returns the message
         /// without its padding. Any refusal is `AuthenticationFailed`, and leaves `m` as it was.
         pub fn open(m: []u8, c: []const u8, tag: *const [tag_length]u8, ad: []const u8, iv: *const [iv_length]u8, key: *const [key_length]u8) Error![]u8 {
-            aegis.assert.pre(m.len == c.len, "a CBC-HMAC message buffer is as long as the ciphertext");
+            aegis.assert.invariant(m.len == c.len, "a CBC-HMAC message buffer is as long as the ciphertext");
             return aegis.secret.scrubbed(aes.depth(), openKernel, .{ m, c, tag, ad, iv, key });
         }
 

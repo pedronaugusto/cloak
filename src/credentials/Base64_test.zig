@@ -1,5 +1,5 @@
 const std = @import("std");
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Base64 = @import("Base64.zig");
 const shakedown = @import("shakedown");
 

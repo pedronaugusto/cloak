@@ -4,7 +4,7 @@
 //! The base multiplication walks the comb with a full scan of each window and complete
 //! projective additions, which have no exceptional cases; the comb's table holds the field's
 //! Montgomery limbs, which both of its backends share. Everything else is the shared curve's.
-const Secret = @import("aegis").secret.Secret;
+const Secret = @import("aegis").Secret;
 const Montgomery = @import("field.zig").Montgomery;
 const weierstrass = @import("weierstrass.zig");
 const table = @import("p256/table.zig");

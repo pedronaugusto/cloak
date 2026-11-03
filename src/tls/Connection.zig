@@ -712,13 +712,13 @@ pub fn owes(self: *Connection) bool {
 
 /// Ciphertext to write to the transport, after what the read half owes is written.
 pub fn output(self: *Connection) []const u8 {
-    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys writes the records");
+    aegis.assert.invariant(!self.tx_kernel, "a kernel that holds the write keys writes the records");
     if (self.owes()) self.writeOwed();
     return self.outbox.pending();
 }
 
 pub fn acknowledge(self: *Connection, n: usize) void {
-    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys writes the records");
+    aegis.assert.invariant(!self.tx_kernel, "a kernel that holds the write keys writes the records");
     self.outbox.acknowledge(n);
 }
 
@@ -980,7 +980,7 @@ fn midAuth(self: *const Connection) bool {
 /// means the output backlog must drain first.
 pub fn send(self: *Connection, plaintext: []const u8) SendError!usize {
     @setRuntimeSafety(true);
-    aegis.assert.pre(!self.tx_kernel, "a kernel that holds the write keys seals application data");
+    aegis.assert.invariant(!self.tx_kernel, "a kernel that holds the write keys seals application data");
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
     self.writeOwed();
@@ -1202,8 +1202,8 @@ pub fn receiveControl(self: *Connection, record_type: u8, plaintext: []const u8)
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
-    aegis.assert.pre(self.rx_kernel, "control records come from a kernel that holds the read keys");
-    aegis.assert.pre(self.plain_kind == null and self.hs.need() == .none, "a control record waits until the last one's request is answered");
+    aegis.assert.invariant(self.rx_kernel, "control records come from a kernel that holds the read keys");
+    aegis.assert.invariant(self.plain_kind == null and self.hs.need() == .none, "a control record waits until the last one's request is answered");
     if (self.phase() == .failed) {
         if (self.rx) |*p| p.deinit();
         self.rx = null;
@@ -1257,7 +1257,7 @@ pub fn control(self: *Connection) ?Control {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
-    aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
+    aegis.assert.invariant(self.tx_kernel, "control records go to a kernel that holds the write keys");
     if (self.owes()) self.writeOwed();
     const pending = self.outbox.pending();
     if (pending.len == 0 or self.rekey_at == 0) return null;
@@ -1270,9 +1270,9 @@ pub fn acknowledgeControl(self: *Connection) void {
     @setRuntimeSafety(true);
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
-    aegis.assert.pre(self.tx_kernel, "control records go to a kernel that holds the write keys");
+    aegis.assert.invariant(self.tx_kernel, "control records go to a kernel that holds the write keys");
     const pending = self.outbox.pending();
-    aegis.assert.pre(pending.len != 0 and self.rekey_at != 0, "the caller acknowledges a record control handed out");
+    aegis.assert.invariant(pending.len != 0 and self.rekey_at != 0, "the caller acknowledges a record control handed out");
     const n = 3 + @as(usize, std.mem.readInt(u16, pending[1..3], .big));
     self.outbox.acknowledge(n);
     // The KeyUpdate's bytes end at `rekey_at`, past every whole record before it.
@@ -1302,7 +1302,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
     defer timing.end();
     switch (direction) {
         .read => {
-            aegis.assert.pre(self.rx_kernel, "records are counted by a kernel that holds the read keys");
+            aegis.assert.invariant(self.rx_kernel, "records are counted by a kernel that holds the read keys");
             if (self.phase() == .failed) return error.Closed;
             if ((self.read_done.load(.acquire) == .done)) return;
             const p = if (self.rx) |*x| x else return error.Closed;
@@ -1318,7 +1318,7 @@ pub fn offloadRecords(self: *Connection, direction: Direction, records: u64) Err
             self.owe(owe_update_request) catch |err| return self.readFailed(err);
         },
         .write => {
-            aegis.assert.pre(self.tx_kernel, "records are counted by a kernel that holds the write keys");
+            aegis.assert.invariant(self.tx_kernel, "records are counted by a kernel that holds the write keys");
             self.writeOwed();
             if (self.phase() == .failed) return error.Closed;
             // After close_notify nothing more is sealed, so nothing more is counted.
@@ -1344,7 +1344,7 @@ pub fn readable(self: *const Connection) []const u8 {
 
 pub fn consume(self: *Connection, n: usize) void {
     @setRuntimeSafety(true);
-    aegis.assert.pre(n <= self.plain_end - self.plain_pos, "the caller consumes at most what is readable");
+    aegis.assert.invariant(n <= self.plain_end - self.plain_pos, "the caller consumes at most what is readable");
     self.plain_pos += n;
     if (self.plain_pos == self.plain_end and self.plain_kind == .application) self.clearRecord();
 }
@@ -1371,7 +1371,7 @@ fn blocked(self: *const Connection) bool {
 /// with the unconsumed remainder.
 pub fn receive(self: *Connection, input: []const u8) ReceiveError!usize {
     @setRuntimeSafety(true);
-    aegis.assert.pre(!self.rx_kernel, "a kernel that holds the read keys opens the records");
+    aegis.assert.invariant(!self.rx_kernel, "a kernel that holds the read keys opens the records");
     const timing = aegis.secret.Timing.begin();
     defer timing.end();
     if (self.phase() == .failed) {
