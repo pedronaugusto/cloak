@@ -47,7 +47,7 @@ pub inline fn barrier(value: u64) u64 {
     var v = value;
     if (@inComptime()) return v;
     switch (builtin.cpu.arch) {
-        // aegis: boundary: an empty asm that ties the value to a register, so the optimizer cannot see through a mask
+        // aegis: boundary(A019): an empty asm that ties the value to a register, so the optimizer cannot see through a mask
         .x86_64, .aarch64 => asm volatile (""
             : [v] "+r" (v),
         ),

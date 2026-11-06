@@ -166,6 +166,7 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
                 if (attempts == 64) return error.EntropyUnavailable;
                 io.randomSecure(draw[0..width]) catch return error.EntropyUnavailable;
                 if (curve == .p521) draw[0] &= 0x01;
+                // glint-ignore: Z026 -- a draw that is no key in the curve's range is drawn again, up to the attempts bound above
                 if (parser.ecKey(curve, draw[0..width], null, out)) break else |_| {}
             }
         },

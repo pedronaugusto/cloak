@@ -10,9 +10,11 @@ const encrypted_examples = [_][]const u8{ @embedFile("testdata/ed25519.enc-low-w
 const pem_examples = [_][]const u8{ @embedFile("testdata/ed25519.pkcs8.pem"), "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----", "" };
 
 fn parseKey(bytes: []const u8) void {
+    // glint-ignore: Z026 -- a fuzzed key may parse or not; the target asks only that neither crashes or leaks
     if (PrivateKey.parse(std.testing.allocator, bytes, .{ .iterations = 4 })) |key| key.deinit() else |_| {}
 }
 fn parseEncrypted(bytes: []const u8) void {
+    // glint-ignore: Z026 -- a fuzzed key may parse or not; the target asks only that neither crashes or leaks
     if (PrivateKey.parse(std.testing.allocator, bytes, .{ .passphrase = "correct-horse", .iterations = 4 })) |key| key.deinit() else |_| {}
 }
 fn walkPem(bytes: []const u8) void {

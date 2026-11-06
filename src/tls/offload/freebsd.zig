@@ -146,6 +146,7 @@ pub fn probe() Capabilities {
                 socket.install(direction, &keys) catch continue;
                 result.ciphers[@intFromBool(version == .tls13)][@backingInt(direction)].insert(cipher);
                 if (version == .tls13) {
+                    // glint-ignore: Z026 -- a kernel that takes the keys but not a second install offers no rekey, which the probe then reports
                     if (socket.install(direction, &keys)) |_| {
                         result.rekey[@backingInt(direction)] = true;
                     } else |_| {}
@@ -165,7 +166,7 @@ const Listener = struct {
         const fd = try openSocket();
         errdefer _ = c.close(fd);
         var address: c.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-        const any: *c.sockaddr = @ptrCast(&address); // aegis: boundary: sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *c.sockaddr = @ptrCast(&address); // aegis: boundary(A019): sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.bind(fd, any, @sizeOf(c.sockaddr.in)));
         try check(c.listen(fd, 4));
         var len: c.socklen_t = @sizeOf(c.sockaddr.in);
@@ -190,7 +191,7 @@ const Listener = struct {
     fn pair(self: *const Listener) error{ProbeFailed}!Pair {
         const client = try openSocket();
         errdefer _ = c.close(client);
-        const any: *const c.sockaddr = @ptrCast(&self.address); // aegis: boundary: sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *const c.sockaddr = @ptrCast(&self.address); // aegis: boundary(A019): sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.connect(client, any, @sizeOf(c.sockaddr.in)));
         const server = c.accept4(self.fd, null, null, c.SOCK.CLOEXEC);
         if (server < 0) return error.ProbeFailed;

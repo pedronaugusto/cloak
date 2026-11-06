@@ -95,7 +95,7 @@ fn x86HasMulx() bool {
 fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
     var eax: u32 = 0;
     var ebx: u32 = 0;
-    // aegis: boundary: cpuid, the processor's feature leaves, read once per process
+    // aegis: boundary(A019): cpuid, the processor's feature leaves, read once per process
     asm volatile ("cpuid"
         : [eax] "={eax}" (eax),
           [ebx] "={ebx}" (ebx),
@@ -111,7 +111,7 @@ fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
 fn wideMultiplier() bool {
     if (builtin.os.tag != .linux) return false;
     if (std.os.linux.getauxval(std.elf.AT.HWCAP) & (1 << 11) == 0) return false;
-    // aegis: boundary: MIDR_EL1, which the kernel emulates for user space under HWCAP_CPUID
+    // aegis: boundary(A019): MIDR_EL1, which the kernel emulates for user space under HWCAP_CPUID
     const midr = asm volatile ("mrs %[midr], midr_el1"
         : [midr] "=r" (-> u64),
     );

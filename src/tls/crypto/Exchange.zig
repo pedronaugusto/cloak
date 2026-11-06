@@ -166,7 +166,7 @@ pub const Share = struct {
             .p384 => try initCurve(ecdh.P384, &self, entropy),
             .p521 => try initCurve(ecdh.P521, &self, entropy),
             .x25519_mlkem768 => {
-                var pair_owner: aegis.Secret(MlKem.KeyPair) = .init(MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy); // aegis: boundary: std returns the pair by value; its copy is in the frame `scrubbed` erases (`depth`)
+                var pair_owner: aegis.Secret(MlKem.KeyPair) = .init(MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy); // std returns the pair by value; its copy is in the frame `scrubbed` erases (`depth`)
                 defer pair_owner.deinit();
                 const pair = pair_owner.expose();
                 var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[MlKem.seed_length..][0..X25519.seed_length].*));
