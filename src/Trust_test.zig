@@ -1,5 +1,5 @@
 const std = @import("std");
-const tasks = @import("testing/tasks.zig");
+const tasks = @import("shakedown").tasks;
 const V = @import("verify.zig");
 const shakedown = @import("shakedown");
 const Trust = @import("Trust.zig");

@@ -2,7 +2,7 @@
 //! order while key updates (asked for, answered and forced by low record limits) and a close in
 //! one direction happen mid-stream. The hardened tier runs it under ThreadSanitizer.
 const std = @import("std");
-const tasks = @import("../testing/tasks.zig");
+const tasks = @import("shakedown").tasks;
 const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
 const Server = @import("handshake/Server.zig");

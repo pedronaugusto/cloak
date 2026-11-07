@@ -1,5 +1,5 @@
 const std = @import("std");
-const tasks = @import("../testing/tasks.zig");
+const tasks = @import("shakedown").tasks;
 const builtin = @import("builtin");
 const Job = @import("Job.zig");
 const Budget = @import("Budget.zig");
