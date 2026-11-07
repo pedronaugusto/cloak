@@ -6,6 +6,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Breaking
 
+- `Purpose` has `code_signing` and `time_stamping`: an exhaustive switch over it needs those arms.
 - The interfaces a caller supplies carry no `context: ?*anyopaque`: `Connection.KeyLog`, `certificate_compression.Codec`, `Session.Custom`, `Session.Signer`, `Psk.Lookup` (`external_psk`), `services.Job.Executor` and `offload.Installer`. Each is now a field of the caller's own type; its functions take a pointer to it and recover the owner with `@fieldParentPtr`, and the options take that pointer (`key_log: ?*KeyLog`, `certificate_compression: []const *Codec`, `trust = .{ .custom = *Custom }`, `signer: ?*Signer`, `external_psk: ?*Lookup`, `executor: ?*Executor`, `Connection.offload(direction, *Installer)`). `linux.Socket` and the test kernel hold their `installer`; `Socket.installer()` is gone. A key log, for one:
 
   ```zig
@@ -29,6 +30,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Added
 
+- `cms.verify`: a CMS signature (RFC 5652 SignedData) verified against the caller's roots, at the time an RFC 3161 timestamp proves, failing closed (docs/design.md "CMS"); `Purpose.code_signing` and `Purpose.time_stamping`; `cloak-nuget-check`, a NuGet package's author signature and package hash checked, for a tool that pins cloak (bay's NuGet pins).
 - `tls.offload.freebsd`: FreeBSD's kernel record layer (ktls(4), FreeBSD 13 and later; design C9.1). `Socket.install` gives a direction's keys to a TCP socket once (`TCP_TXTLS_ENABLE` or `TCP_RXTLS_ENABLE`; a second install is `RekeyUnsupported`, since FreeBSD has no TLS 1.3 key update), and `probe` reports what the running kernel takes. AES-GCM and ChaCha20-Poly1305 move, CCM stays in software, and so does a write direction under a peer's record_size_limit. `tls.offload.Keys.equivalentRecords` is the count a kernel that cannot read its records back reports to `offloadRecords`: ceil(2n / 1025) full-size records for n bytes, sound for any framing.
 - ML-DSA keys from their seed: `fromComponents(.mldsa)` takes the 32-byte seed and optionally the public key, compared with the seed's, as RFC 9964's JOSE keys (`AKP`) carry them; the same constructor RFC 9881's seed form is read through.
 - Key generation: `PrivateKey.generate(gpa, io, kind)` for P-256, P-384, P-521, Ed25519, X25519 (agreement alone: an ephemeral key, as JWE's ECDH-ES draws), ML-DSA-44/65/87 and RSA (`.{ .rsa = .@"2048" | .@"3072" | .@"4096" }`, e = 65537), entropy from `io.randomSecure`, each key built by the constructor a parsed key of its kind goes through. RSA follows FIPS 186-5 A.1.3 in constant time on every value kept: probable primes 7 mod 8 with the top two bits set, trial division by the primes below 2^12, Miller-Rabin with Table B.1's rounds, d from lambda by the small-e inverse, the whole as one scrubbed computation; generated keys pass `fromIntegers`, their factors are prime by an independent test on std, and they sign (PKCS#1, PSS) and decrypt (OAEP).

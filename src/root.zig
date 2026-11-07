@@ -18,6 +18,8 @@ pub const Identity = certificates.Identity;
 pub const ClientAuth = certificates.ClientAuth;
 /// Reads a PKCS#12 (PFX, .p12) file into its key and certificates.
 pub const Pkcs12 = certificates.Pkcs12;
+/// A CMS signature (RFC 5652 SignedData) verified against the caller's roots.
+pub const cms = certificates.cms;
 
 /// Portable bounded certificate verification.
 pub const verify = certificates.verify;

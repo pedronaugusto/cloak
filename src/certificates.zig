@@ -6,6 +6,8 @@ pub const ClientAuth = @import("ClientAuth.zig");
 /// PKCS#12 (PFX) files read into a key and its certificates.
 pub const Pkcs12 = @import("Pkcs12.zig");
 pub const verify = @import("verify.zig");
+/// A CMS signature (RFC 5652) verified: its content, its signer, RFC 3161's time.
+pub const cms = @import("cms.zig");
 /// Strict DER certificate parsing with borrowed public-key metadata.
 pub const certificate = @import("certificate.zig");
 /// Public-key signature verification over parsed certificate keys; no private operations.

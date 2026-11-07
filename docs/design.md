@@ -125,6 +125,42 @@ modulo each prime up to 167) and checked against the published ones; a random mo
 with probability below 2^-150. Trusting such a key is the failure, not its speed: a certificate
 with one is invalid (bad_certificate), like any malformed key.
 
+## CMS
+
+`cloak.cms.verify(gpa, bytes, options)` verifies a CMS signature (RFC 5652 SignedData) and
+returns what it proved: the signed content, the signer's certificate and the time its chain
+was checked at. It is the check a NuGet pin runs (`tools/nuget-check.zig`, which bay runs as a
+pinned tool; bay carries no CMS of its own).
+
+It fails closed, with no fallback:
+
+- DER only, one signer, the content embedded; a detached signature, several signers or no
+  signed attributes are `UnsupportedCms`, not guessed at.
+- The signed attributes it must read: `contentType` (the content's), `messageDigest` (the
+  content's digest under the signer's digest algorithm, SHA-256/384/512) and RFC 5035's
+  `signingCertificateV2` when present (the signer's certificate by its hash). RFC 2634's SHA-1
+  `signingCertificate` is read only beside V2, as timestamping authorities write both; alone it
+  is `UnsupportedCms`. An attribute named twice or with more than one value is refused
+  (RFC 5652 11). Other signed attributes are covered by the signature and need no reading.
+- The signature is over the attributes as a SET OF (the `[0]` tag rewritten), with the
+  signer's key, its algorithm held to the digest (`rsaEncryption` takes the digest's hash).
+- The chain goes through cloak's one path builder (`verify`), to the caller's roots alone,
+  for `Purpose.code_signing`, at the time an RFC 3161 timestamp proves: the token is itself a
+  SignedData of a TSTInfo whose imprint covers this signature's value, its signer chaining for
+  `Purpose.time_stamping` at the time it states. A timestamp that is there and cannot be
+  proved fails; with none, the caller's `time` is used, or `TimestampRequired`.
+- `code_signing` and `time_stamping` leaves must list their EKU: unlike a web certificate,
+  no such key is one by listing nothing.
+
+Unsigned attributes are anyone's to strip or add, so only the timestamp is read among them, and
+it proves itself; a repository's countersignature (NuGet's) changes nothing. Revocation is not
+checked: the pin's root is the trust, as the pin's author chose it.
+
+Proved on a real package (`src/cms_test.zig`): Microsoft's signature on
+`microsoft.direct3d.d3d12.1.619.6.nupkg` as nuget.org serves it, timestamped by DigiCert,
+chained to DigiCert Trusted Root G4; the content, the package hash in it, the timestamp and
+a byte every 97 changed are each refused, and another root finds no path.
+
 ## PKCS#12
 
 `Pkcs12.parse` reads a PFX (RFC 7292) into what cloak's owners already take: a `PrivateKey`

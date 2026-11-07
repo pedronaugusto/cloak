@@ -58,11 +58,19 @@ pub fn purpose(cert: *const C.Certificate, desired: T.Purpose, ca: bool) Error!v
     if (cert.x509(37)) |eku| {
         var r = try C.Extensions.sequence(eku.value);
         var allowed = false;
-        const wanted: []const u8 = if (desired == .server) "\x2b\x06\x01\x05\x05\x07\x03\x01" else "\x2b\x06\x01\x05\x05\x07\x03\x02";
+        const wanted: []const u8 = switch (desired) {
+            .server => "\x2b\x06\x01\x05\x05\x07\x03\x01",
+            .client => "\x2b\x06\x01\x05\x05\x07\x03\x02",
+            .code_signing => "\x2b\x06\x01\x05\x05\x07\x03\x03",
+            .time_stamping => "\x2b\x06\x01\x05\x05\x07\x03\x08",
+        };
         while (!r.empty()) {
             const id = (try r.expect(6)).value;
             allowed = allowed or std.mem.eql(u8, id, wanted) or std.mem.eql(u8, id, "\x55\x1d\x25\x00");
         }
         if (!allowed) return error.InvalidPurpose;
+    } else if (!ca and (desired == .code_signing or desired == .time_stamping)) {
+        // Unlike a web certificate, no such key is one by having no list.
+        return error.InvalidPurpose;
     }
 }

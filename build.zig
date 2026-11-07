@@ -5,7 +5,16 @@ pub fn build(b: *std.Build) void {
     @setRuntimeSafety(true);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    b.modules.put(b.allocator, "cloak", createCloak(b, b, target, optimize)) catch @panic("out of memory configuring cloak");
+    const cloak = createCloak(b, b, target, optimize);
+    b.modules.put(b.allocator, "cloak", cloak) catch @panic("out of memory configuring cloak");
+    // A NuGet package's signature checked, for a tool that pins cloak and runs this (bay's
+    // NuGet pins): `dependency.artifact("cloak-nuget-check")`.
+    b.installArtifact(b.addExecutable(.{ .name = "cloak-nuget-check", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/nuget-check.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "cloak", .module = cloak }},
+    }) }));
 }
 
 /// cloak's development: its tests, checks and benchmarks, under preflight's
@@ -63,6 +72,9 @@ pub fn dev(b: *std.Build, tools: type) void {
     run_options.setCwd(p.path("."));
     b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
     const failstop = b.addExecutable(.{ .name = "cloak-failstop", .root_module = b.createModule(.{ .root_source_file = p.path("ci/failstop.zig"), .target = host, .optimize = .fast, .imports = &.{.{ .name = "cloak", .module = createCloak(b, p, host, .fast) }} }) });
+    const nuget_check = b.addRunArtifact(package.artifact("cloak-nuget-check"));
+    nuget_check.addPassthruArgs();
+    b.step("nuget-check", "Check a NuGet package's signature: -- --root <der> --root-sha256 <hex> <package>").dependOn(&nuget_check.step);
     b.step("check-failstop", "Stop a caller that breaks a precondition, in ReleaseFast too").dependOn(&b.addRunArtifact(failstop).step);
     // Timing evidence on the build that ships: a statistical test, run by hand, never a gate.
     const timing_module = b.createModule(.{ .root_source_file = p.path("bench/timing.zig"), .target = host, .optimize = .fast, .imports = benchImports(b, host, .fast) });

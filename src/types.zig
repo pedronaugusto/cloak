@@ -53,7 +53,14 @@ pub const Token = struct {
     }
 };
 pub const Identity = union(enum) { none, dns: []const u8, ipv4: [4]u8, ipv6: [16]u8 };
-pub const Purpose = enum { server, client };
+pub const Purpose = enum {
+    server,
+    client,
+    /// A signature on code or a package (id-kp-codeSigning): a leaf must say so.
+    code_signing,
+    /// A timestamp (id-kp-timeStamping, RFC 3161 2.3): a leaf must say so.
+    time_stamping,
+};
 pub const Mode = enum { full, none };
 pub const Revocation = enum { off, if_present, required };
 pub const Coverage = enum { leaf, whole_path };
