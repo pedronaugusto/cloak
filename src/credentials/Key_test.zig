@@ -36,6 +36,11 @@ test "F06 catalogue_key_import_failure_and_kdf_budget (input and KDF bounds prec
     @setRuntimeSafety(true);
     try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.pkcs1.pem"), .{ .bytes = 8 }));
     try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = 1 }));
+    // A passphrase past the bound is refused before any KDF reads it, a legacy PEM key's too.
+    const long: [4097]u8 = @splat('p');
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = &long }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = &long }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-des3.pem"), .{ .passphrase = "correct-horse", .password_bytes = 12 }));
     try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{}));
     try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
 }

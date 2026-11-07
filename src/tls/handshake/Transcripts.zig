@@ -19,7 +19,7 @@ pub fn keep(self: *Self, gpa: std.mem.Allocator) void {
 
 /// Every message kept so far, in order.
 pub fn keptBytes(self: *const Self) []const u8 {
-    return self.kept.expose(); // aegis: design: the kept messages, lent until the transcript is released
+    return self.kept.expose(); // the kept messages, lent until the transcript is released
 }
 
 /// Erases and frees the kept messages and stops keeping.

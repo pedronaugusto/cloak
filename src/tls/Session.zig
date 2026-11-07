@@ -297,14 +297,15 @@ pub fn open(
     };
     errdefer {
         if (options.diagnostics) |report| report.* = session.diagnostics();
-        if (options.ech_retry) |out| if (session.conn.echRetryConfigs()) |list| {
-            if (gpa.dupe(u8, list)) |copy| {
-                out.* = copy;
-            } else |_| {}
-        };
         session.conn.deinit();
     }
-    try session.handshake();
+    session.handshake() catch |err| {
+        // The server's retry configs are the caller's copy; without memory for it, that is the error.
+        if (options.ech_retry) |out| if (session.conn.echRetryConfigs()) |list| {
+            out.* = try gpa.dupe(u8, list);
+        };
+        return err;
+    };
 }
 
 /// The native verifier's verdict is reused for an hour at most (design 5.5).

@@ -25,7 +25,7 @@ pub fn deinit(self: *Builder) void {
 
 /// What is written so far, borrowed until the next write.
 pub fn written(self: *const Builder) []const u8 {
-    return self.bytes.expose(); // aegis: design: a borrow of the builder's bytes, ended by its next write, as SecretBytes.expose's is
+    return self.bytes.expose(); // a borrow of the builder's bytes, ended by its next write, as SecretBytes.expose's is
 }
 
 /// A copy of the bytes written, the caller's, for public DER: the builder is empty after.

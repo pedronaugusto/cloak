@@ -31,7 +31,9 @@ test "C1 DER certificate parsing and authentication take every vector and the od
     for (certificate_examples) |input| try certificateInput(input);
 }
 fn certificateInput(input: []const u8) !void {
+    // glint-ignore: Z026 -- fuzzed input may validate or not; the target checks only what parses
     if (D.validate(input, .{})) |_| {} else |_| {}
+    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
     if (C.parse(input, .{})) |parsed| {
         try std.testing.expectEqual(input.len, parsed.der.len);
         try std.testing.expect(parsed.tbs.len <= input.len);
@@ -39,6 +41,7 @@ fn certificateInput(input: []const u8) !void {
         try std.testing.expect(parsed.extension_count <= parsed.extensions.len);
     } else |_| {}
     const request: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, now) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    // glint-ignore: Z026 -- fuzzed input may verify or not; the target checks only what verifies
     if (V.verify(std.testing.allocator, request, &.{anchor})) |value| {
         var receipt = value;
         defer receipt.deinit();
@@ -64,6 +67,7 @@ test "C1 offline CRL and OCSP evidence take every vector" {
 fn evidenceInput(input: []const u8) !void {
     const path = [_]C.Certificate{ try C.parse(leaf, .{}), try C.parse(anchor, .{}) };
     for ([_]T.Evidence{ .{ .crls = &.{input} }, .{ .ocsp = &.{input} } }) |supplied| {
+        // glint-ignore: Z026 -- fuzzed evidence may check or not; the target checks only what does
         if (R.check(&path, now, .{ .mode = .required }, supplied)) |result| {
             try std.testing.expectEqual(.good, result.status);
             try std.testing.expect(result.expires.? >= now);

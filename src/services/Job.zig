@@ -74,6 +74,7 @@ pub fn run(job: Job) void {
     guard.deinit();
     // Allocator cleanup can block or reenter: it runs after the mutation lease.
     if (abandoned) {
+        // glint-ignore: Z026 -- a job that failed holds no path to free
         if (result) |*path| path.deinit() else |_| {}
     }
 }
@@ -90,6 +91,7 @@ pub fn abandon(job: Job) void {
     guard.value().result = null;
     guard.deinit();
     if (detached) |*result| {
+        // glint-ignore: Z026 -- a job that failed holds no path to free
         if (result.*) |*path| path.deinit() else |_| {}
     }
 }
@@ -134,6 +136,7 @@ fn release(state: *State) void {
     guard.value().result = null;
     guard.deinit();
     if (detached) |*result| {
+        // glint-ignore: Z026 -- a job that failed holds no path to free
         if (result.*) |*path| path.deinit() else |_| {}
     }
     state.inputs.deinit();

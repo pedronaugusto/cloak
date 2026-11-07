@@ -196,6 +196,7 @@ test "C7 a client's record_size_limit under 64 is illegal_parameter" {
     const pair = try ServerPair(.aes_128_gcm_sha256).init(gpa, .{ .record_size_limit = 63 }, .{});
     defer pair.deinit();
     // The run ends at the server's refusal; its diagnostics say why.
+    // glint-ignore: Z026 -- the run is to end in the server's refusal, and any error is it; its diagnostics say why
     if (pair.run()) |_| return error.TestUnexpectedResult else |_| {}
     try std.testing.expectEqual(error.IllegalParameter, pair.conn.diagnostics().reason.?);
     try std.testing.expectEqual(@import("wire/Alert.zig").Alert.illegal_parameter, pair.conn.diagnostics().alert_sent.?);

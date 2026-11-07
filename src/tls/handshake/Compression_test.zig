@@ -116,6 +116,7 @@ fn fuzzCompressed(_: void, case: *shakedown.Case) !void {
     const parsed = Compression.parse(input) catch return;
     // Algorithm, declared length and the vector fill the message exactly.
     try std.testing.expect(parsed.data.len != 0 and parsed.length != 0 and 4 + 2 + 3 + 3 + parsed.data.len == input.len);
+    // glint-ignore: Z026 -- a mutated message may decompress or not; the test checks only what does
     if (Compression.decompress(gpa, &.{&zlib}, parsed, 4096)) |message| {
         defer gpa.free(message);
         // Exactly the declared length, under its header, never more than the bound.

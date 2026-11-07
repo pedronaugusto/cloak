@@ -242,6 +242,7 @@ pub fn probe() Capabilities {
                 socket.install(direction, &keys) catch continue;
                 result.ciphers[@intFromBool(version == .tls13)][@backingInt(direction)].insert(cipher);
                 if (version == .tls13) {
+                    // glint-ignore: Z026 -- a kernel that takes the keys but not a second install offers no rekey, which the probe then reports
                     if (socket.install(direction, &keys)) |_| {
                         result.rekey[@backingInt(direction)] = true;
                     } else |_| {}
@@ -261,7 +262,7 @@ const Listener = struct {
         const fd = try openSocket();
         errdefer _ = descriptors.close(fd);
         var address: linux.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-        const any: *linux.sockaddr = @ptrCast(&address); // aegis: boundary: sockaddr.in begins with the family, as every sockaddr does
+        const any: *linux.sockaddr = @ptrCast(&address); // aegis: boundary(A019): sockaddr.in begins with the family, as every sockaddr does
         try check(linux.bind(fd, any, @sizeOf(linux.sockaddr.in)));
         try check(linux.listen(fd, 4));
         var len: linux.socklen_t = @sizeOf(linux.sockaddr.in);

@@ -10,12 +10,12 @@ owner: aegis.SecretBytes = .empty,
 
 /// The whole allocation; empty before the first `ensure`.
 pub fn bytes(self: *Buffer) []u8 {
-    return self.owner.exposeMut(); // aegis: design: the buffer's own borrow, as SecretBytes lends it; it ends at the next `ensure` or `free`
+    return self.owner.exposeMut(); // the buffer's own borrow, as SecretBytes lends it; it ends at the next `ensure` or `free`
 }
 
 /// `bytes`, read only.
 pub fn view(self: *const Buffer) []const u8 {
-    return self.owner.expose(); // aegis: design: as `bytes`
+    return self.owner.expose(); // as `bytes`
 }
 
 /// At least `len` bytes, what the buffer held kept at their offsets.
@@ -24,7 +24,7 @@ pub fn ensure(self: *Buffer, gpa: std.mem.Allocator, len: usize) std.mem.Allocat
     try self.owner.reserve(gpa, len);
     // unreachable: the live prefix grows to the capacity it is within.
     self.owner.resizeWithinCapacity(self.owner.capacity()) catch unreachable;
-    return self.owner.exposeMut(); // aegis: design: as `bytes`
+    return self.owner.exposeMut(); // as `bytes`
 }
 
 /// Erases and returns the allocation to `gpa`, which made it; the buffer is empty again.

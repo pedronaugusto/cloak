@@ -1615,7 +1615,7 @@ fn openEch(self: *Server, wire: []const u8, outer: *const ClientHello, second: b
     e.inner.deinit(self.gpa);
     e.inner = inner;
     self.ech_accepted = true;
-    return e.inner.expose(); // aegis: design: the inner hello, lent for the handshake; the scratch that owns it outlives every use
+    return e.inner.expose(); // the inner hello, lent for the handshake; the scratch that owns it outlives every use
 }
 
 fn notDecrypted(self: *Server) ?[]const u8 {
