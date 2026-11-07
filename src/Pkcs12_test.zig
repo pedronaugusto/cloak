@@ -125,6 +125,10 @@ test "credential PKCS#12 refuses a wrong, missing or tampered password before de
     try std.testing.expectError(error.BadPassword, Pkcs12.parse(gpa, bytes, .{ .passphrase = "wrong" }));
     try std.testing.expectError(error.PasswordRequired, Pkcs12.parse(gpa, bytes, .{}));
     try std.testing.expectError(error.BadPassword, Pkcs12.parse(gpa, @embedFile(dir ++ "p256.unicode.legacy.p12"), .{ .passphrase = "passwrd" }));
+    // Bytes that are not UTF-8 have no BMP form for the appendix B MAC, and key PBMAC1 to a MAC
+    // that does not verify: neither opens the file.
+    try std.testing.expectError(error.InvalidPassword, Pkcs12.parse(gpa, bytes, .{ .passphrase = "\xff\xfe" }));
+    try std.testing.expectError(error.BadPassword, Pkcs12.parse(gpa, @embedFile(dir ++ "p256.pbmac1.p12"), .{ .passphrase = "\xff\xfe" }));
     // Any byte of the authenticated safe changed fails the MAC, whatever it was.
     var tampered = bytes.*;
     for ([_]usize{ 64, tampered.len / 2, tampered.len - 120 }) |at| {
@@ -147,6 +151,11 @@ test "credential PKCS#12 bounds hostile files before the work" {
     const gpa = std.testing.allocator;
     const bytes = @embedFile(dir ++ "p256.iter2048.p12");
     try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .iterations = 2047 } }));
+    // A password past the bound is refused before the MAC's KDF reads it.
+    const long: [4097]u8 = @splat('p');
+    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = &long }));
+    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .password_bytes = password.len - 1 } }));
+    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, @embedFile(dir ++ "p256.pbmac1.p12"), .{ .passphrase = &long }));
     try std.testing.expectError(error.InputLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bytes = 1000 } }));
     try std.testing.expectError(error.CertificateLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .certificates = 2 }));
     try std.testing.expectError(error.BagLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bags = 3 } }));
