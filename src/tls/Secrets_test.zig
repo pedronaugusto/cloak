@@ -108,7 +108,7 @@ const Lines = struct {
     text: std.ArrayList(u8) = .empty,
     key_log: Connection.KeyLog = .{ .write = write },
 
-    fn write(log: *Connection.KeyLog, line: []const u8) void {
+    fn write(log: *Connection.KeyLog, _: ?std.Io, line: []const u8) void {
         const self: *Lines = @fieldParentPtr("key_log", log);
         self.text.appendSlice(std.testing.allocator, line) catch @panic("the key log is out of memory");
     }

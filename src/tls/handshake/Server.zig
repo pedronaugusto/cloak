@@ -772,7 +772,7 @@ pub fn keyLog(self: *const Server, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink, line[0 .. at + 1]);
+    sink.write(sink, null, line[0 .. at + 1]);
 }
 
 // ---------------------------------------------------------------- input

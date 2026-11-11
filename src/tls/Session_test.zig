@@ -441,6 +441,38 @@ test "C2 session takes a custom verifier's verdict, and reports a refusal by the
     }
 }
 
+/// A key log that counts the lines it is given with an `Io` and without one.
+const KeyLogIo = struct {
+    with_io: usize = 0,
+    without_io: usize = 0,
+    key_log: Connection.KeyLog = .{ .write = write },
+
+    fn write(log: *Connection.KeyLog, io: ?std.Io, line: []const u8) void {
+        const self: *KeyLogIo = @fieldParentPtr("key_log", log);
+        std.debug.assert(line.len != 0);
+        if (io != null) self.with_io += 1 else self.without_io += 1;
+    }
+};
+
+test "a session hands its key log the session's own Io with every line" {
+    const gpa = std.testing.allocator;
+    var verifier: Custom = .{};
+    var lines: KeyLogIo = .{};
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .key_log = &lines.key_log };
+    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+    defer session.deinit();
+    try std.testing.expect(lines.with_io > 0);
+    try std.testing.expectEqual(@as(usize, 0), lines.without_io);
+}
+
 test "C10 session keeps the verifier's reason for a refused chain: Certificate Transparency" {
     const gpa = std.testing.allocator;
     var trust = certificates.Trust.init(gpa);

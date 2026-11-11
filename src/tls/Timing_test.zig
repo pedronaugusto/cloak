@@ -11,7 +11,7 @@ const Seen = struct {
     lines: usize = 0,
     outside: usize = 0,
     key_log: @import("Connection.zig").KeyLog = .{ .write = write },
-    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
+    fn write(log: *@import("Connection.zig").KeyLog, _: ?std.Io, line: []const u8) void {
         _ = line;
         const self: *Seen = @fieldParentPtr("key_log", log);
         self.lines += 1;

@@ -715,7 +715,7 @@ test "C2 key log lines carry each traffic secret" {
         const Self = @This();
         lines: std.ArrayList(u8) = .empty,
         key_log: Connection.KeyLog = .{ .write = write },
-        fn write(log: *Connection.KeyLog, line: []const u8) void {
+        fn write(log: *Connection.KeyLog, _: ?std.Io, line: []const u8) void {
             const self: *Self = @fieldParentPtr("key_log", log);
             self.lines.appendSlice(std.testing.allocator, line) catch unreachable;
         }

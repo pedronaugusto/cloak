@@ -739,7 +739,7 @@ const HandshakeLog = struct {
     len: usize = 0,
     key_log: @import("Connection.zig").KeyLog = .{ .write = write },
 
-    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
+    fn write(log: *@import("Connection.zig").KeyLog, _: ?std.Io, line: []const u8) void {
         const self: *HandshakeLog = @fieldParentPtr("key_log", log);
         if (!std.mem.startsWith(u8, line, "SERVER_HANDSHAKE_TRAFFIC_SECRET ")) return;
         const hex = std.mem.trimEnd(u8, line[std.mem.findScalarLast(u8, line, ' ').? + 1 ..], "\n");

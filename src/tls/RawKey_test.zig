@@ -435,7 +435,7 @@ const Lines = struct {
     text: std.ArrayList(u8) = .empty,
     key_log: @import("Connection.zig").KeyLog = .{ .write = write },
 
-    fn write(log: *@import("Connection.zig").KeyLog, line: []const u8) void {
+    fn write(log: *@import("Connection.zig").KeyLog, _: ?std.Io, line: []const u8) void {
         const self: *Lines = @fieldParentPtr("key_log", log);
         self.text.appendSlice(gpa, line) catch @panic("the key log is out of memory");
     }

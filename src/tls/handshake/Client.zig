@@ -40,9 +40,13 @@ pub const Limits = Terms.Limits;
 pub const Verify = Terms.Verify;
 
 /// Receives NSS key-log lines. The sink is outside the confidentiality guarantee. It is a field
-/// of the sink's own type, which `write` recovers with `@fieldParentPtr`.
+/// of the sink's own type, which `write` recovers with `@fieldParentPtr`. `io` is the task's: a
+/// `Session` hands its own, so a sink that writes to a file or a socket can keep its write from
+/// taking the task's cancel (blocked cancel protection), and the cancel lands at the handshake's
+/// next cancellation point. The engine driven directly (`Connection`, `Datagram`, QUIC) has no
+/// `Io` and hands null.
 pub const KeyLog = struct {
-    write: *const fn (log: *KeyLog, line: []const u8) void,
+    write: *const fn (log: *KeyLog, io: ?std.Io, line: []const u8) void,
 };
 
 /// Resumption from a cache of tickets: TLS 1.3 PSK-DHE, a fresh key exchange every time.
@@ -1658,7 +1662,7 @@ pub fn keyLog(self: *const Client, label: []const u8, secret: []const u8) void {
         at += 2;
     }
     line[at] = '\n';
-    sink.write(sink, line[0 .. at + 1]);
+    sink.write(sink, null, line[0 .. at + 1]);
 }
 
 /// A DTLS 1.2 server asks the hello again with its cookie (RFC 6347 section 4.2.1): the same

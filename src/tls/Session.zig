@@ -221,6 +221,8 @@ trust: Trust,
 signer: ?*Signer,
 eof: Eof,
 clock: Clock,
+/// The caller's key log, handed the session's `Io` with each line (`KeyLogRelay`).
+key_log_relay: KeyLogRelay = .{},
 /// The first failure behind a `ReadFailed` or `WriteFailed` from an adapter, as an error's
 /// integer; zero for none. Read it with `failure`.
 failure_code: aegis.Atomic(Code) = .init(.none),
@@ -286,7 +288,7 @@ pub fn open(
         .max_fragment = options.max_fragment,
         .limits = options.limits,
         .compat = options.compat,
-        .key_log = options.key_log,
+        .key_log = if (options.key_log != null) &session.key_log_relay.relay else null,
         .keep_peer_leaf = options.keep_peer_leaf,
     });
     session.* = .{
@@ -299,6 +301,7 @@ pub fn open(
         .signer = options.signer,
         .eof = options.eof,
         .clock = options.clock,
+        .key_log_relay = .{ .inner = options.key_log },
         .reader_interface = .{ .vtable = &reader_vtable, .buffer = read_buffer, .seek = 0, .end = 0 },
         .writer_interface = .{ .vtable = &writer_vtable, .buffer = write_buffer },
     };
@@ -314,6 +317,20 @@ pub fn open(
         return err;
     };
 }
+
+/// What the engine writes key-log lines to when a session drives it: the caller's key log, given
+/// the session's `Io`, which the engine (with no `Io` of its own) cannot give.
+const KeyLogRelay = struct {
+    relay: Connection.KeyLog = .{ .write = forward },
+    inner: ?*Connection.KeyLog = null,
+
+    fn forward(log: *Connection.KeyLog, _: ?std.Io, line: []const u8) void {
+        const r: *KeyLogRelay = @fieldParentPtr("relay", log);
+        const session: *Session = @alignCast(@fieldParentPtr("key_log_relay", r));
+        const inner = r.inner orelse return;
+        inner.write(inner, session.io, line);
+    }
+};
 
 /// The native verifier's verdict is reused for an hour at most (design 5.5).
 pub const native_max_age: std.Io.Duration = .fromSeconds(60 * 60);
@@ -448,7 +465,7 @@ pub fn accept(
         .record_size_limit = options.record_size_limit,
         .max_fragment = options.max_fragment,
         .limits = options.limits,
-        .key_log = options.key_log,
+        .key_log = if (options.key_log != null) &session.key_log_relay.relay else null,
         .keep_peer_leaf = options.keep_peer_leaf,
     });
     session.* = .{
@@ -461,6 +478,7 @@ pub fn accept(
         .signer = options.signer,
         .eof = options.eof,
         .clock = options.clock,
+        .key_log_relay = .{ .inner = options.key_log },
         .reader_interface = .{ .vtable = &reader_vtable, .buffer = read_buffer, .seek = 0, .end = 0 },
         .writer_interface = .{ .vtable = &writer_vtable, .buffer = write_buffer },
     };
