@@ -51,6 +51,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - aegis 0.3's names: `aegis.Secret` where `aegis.secret.Secret` was, `assert.invariant` where `assert.pre` and `assert.post` were, and the trust store's load waits on its guard (`held.wait(&condition, io, deadline)`). Pins aegis breaking-0.3 (7bdb587) and shakedown's port to it, whose fault callbacks are `shakedown.Hook`s (the trust store's stalled-read test).
 ### Fixed
 
+- `cloak-nuget-check` is built only for a hosted target. It is a command-line tool on `std.process` and `Io.Threaded`, which does not compile for a freestanding one; a wasm32-freestanding build now gets the library alone, where its check failed inside std.
 - Windows on x86_64 links again for good: the COFF directive that gives s2n-bignum's X25519 base ladders their function entry now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged). 0.23.1's change to the label's name did not link.
 ### Fixed
 
