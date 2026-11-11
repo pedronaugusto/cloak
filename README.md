@@ -10,6 +10,12 @@ Requires Zig 0.17.0. Pin a reviewed commit:
 zig fetch --save git+https://github.com/pedronaugusto/cloak#<commit>
 ```
 
+## Stability
+
+cloak is 0.x and tracks Zig 0.17.x. A breaking change comes only in a minor release
+(0.23 to 0.24), with a CHANGELOG entry saying what changed and what to write instead; a
+patch release never breaks.
+
 ## Usage
 
 Load trust before traffic and retain a snapshot while using its issuer index. The verifier takes explicit time, name, policy generations and a completion token:
