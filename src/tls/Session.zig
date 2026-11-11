@@ -228,6 +228,10 @@ key_log_relay: KeyLogRelay = .{},
 failure_code: aegis.Atomic(Code) = .init(.none),
 /// The verifier's refusal of the peer's chain, as an error's integer; zero for none.
 verification_code: aegis.Atomic(Code) = .init(.none),
+/// The transport's two ends, which say why a read or a write on them failed (`noteFailure`
+/// records it; a cancel comes out as `error.Canceled`).
+input_end: aegis.io.ReadEnd,
+output_end: aegis.io.WriteEnd,
 /// The transport's reader, held by the reading task through each read.
 reading: aegis.BlockingGuarded(*std.Io.Reader),
 /// The transport's writer, held by whichever task writes to the connection's write half or to
@@ -236,13 +240,15 @@ writing: aegis.BlockingGuarded(*std.Io.Writer),
 reader_interface: std.Io.Reader,
 writer_interface: std.Io.Writer,
 
-/// Performs the handshake over `input` and `output`. The session must stay at this address.
+/// Performs the handshake over `input` and `output`, ends that say why a read or a write failed:
+/// a canceled transport read or write is `error.Canceled`, and the peer is sent nothing. The
+/// session must stay at this address.
 pub fn open(
     session: *Session,
     gpa: std.mem.Allocator,
     io: std.Io,
-    input: *std.Io.Reader,
-    output: *std.Io.Writer,
+    input: aegis.io.ReadEnd,
+    output: aegis.io.WriteEnd,
     read_buffer: []u8,
     write_buffer: []u8,
     options: Options,
@@ -295,8 +301,10 @@ pub fn open(
         .gpa = gpa,
         .io = io,
         .conn = conn,
-        .reading = .init(input),
-        .writing = .init(output),
+        .input_end = input,
+        .output_end = output,
+        .reading = .init(input.reader()),
+        .writing = .init(output.writer()),
         .trust = options.trust,
         .signer = options.signer,
         .eof = options.eof,
@@ -417,13 +425,14 @@ pub const ServerOptions = struct {
     diagnostics: ?*Diagnostics = null,
 };
 
-/// Performs the server handshake over `input` and `output`. The session must stay at this address.
+/// Performs the server handshake over `input` and `output`, as `open` does. The session must stay
+/// at this address.
 pub fn accept(
     session: *Session,
     gpa: std.mem.Allocator,
     io: std.Io,
-    input: *std.Io.Reader,
-    output: *std.Io.Writer,
+    input: aegis.io.ReadEnd,
+    output: aegis.io.WriteEnd,
     read_buffer: []u8,
     write_buffer: []u8,
     options: ServerOptions,
@@ -472,8 +481,10 @@ pub fn accept(
         .gpa = gpa,
         .io = io,
         .conn = conn,
-        .reading = .init(input),
-        .writing = .init(output),
+        .input_end = input,
+        .output_end = output,
+        .reading = .init(input.reader()),
+        .writing = .init(output.writer()),
         .trust = options.client_trust,
         .signer = options.signer,
         .eof = options.eof,
@@ -554,6 +565,22 @@ pub fn rebind(session: *Session, io: std.Io) void {
     session.io = io;
 }
 
+/// The session's plaintext reader as an end that states its cause (`failure`), for a layer
+/// above that takes ends.
+pub fn readEnd(session: *Session) aegis.io.ReadEnd {
+    return .init(&session.reader_interface, session, sessionCause);
+}
+
+/// The session's plaintext writer as an end that states its cause (`failure`).
+pub fn writeEnd(session: *Session) aegis.io.WriteEnd {
+    return .init(&session.writer_interface, session, sessionCause);
+}
+
+fn sessionCause(context: *const anyopaque) ?anyerror {
+    const session: *const Session = @ptrCast(@alignCast(context));
+    return session.failure();
+}
+
 pub fn reader(session: *Session) *std.Io.Reader {
     return &session.reader_interface;
 }
@@ -616,8 +643,15 @@ fn transportFailedWith(session: *Session, err: anyerror) error{ReadFailed} {
     return error.ReadFailed;
 }
 
-fn transportFailed(session: *Session, err: error{ ReadFailed, WriteFailed }) @TypeOf(err) {
-    session.noteFailure(err);
+/// A transport read or write that failed: the end's cause is recorded (the interface's error where
+/// the end records none), and a cancel comes out as `error.Canceled`, which owes the peer nothing.
+fn transportFailed(session: *Session, err: error{ ReadFailed, WriteFailed }) (@TypeOf(err) || std.Io.Cancelable) {
+    const cause = switch (err) {
+        error.ReadFailed => session.input_end.failure(),
+        error.WriteFailed => session.output_end.failure(),
+    };
+    session.noteFailure(cause orelse err);
+    if (cause) |c| if (c == error.Canceled) return error.Canceled;
     return err;
 }
 
@@ -829,7 +863,7 @@ fn readMore(session: *Session, input: *std.Io.Reader) (ReadError || OpenError)!v
             session.conn.receiveEof() catch |eof_err| return session.remember(eof_err);
             return error.EndOfStream;
         },
-        error.ReadFailed => return session.remember(error.ReadFailed),
+        error.ReadFailed => return session.transportFailed(error.ReadFailed),
     };
     const n = session.conn.receive(data) catch |err| {
         // The fatal alert the failure owes the peer.
@@ -858,8 +892,8 @@ pub const AwaitError = ReadError || std.Io.Cancelable || error{
 /// answered, as an HTTP/1.1 client waiting for its response. Plaintext that comes first is kept
 /// in the reader's buffer for `reader()`, as far as it holds. A refused answer ends the session
 /// (`ReadFailed`, its cause in `failure`). Cancelled waiting for the read lock or for entropy, it
-/// is `Canceled` and the session stays as it was; a failed transport read, cancelled or not, is
-/// `ReadFailed`, its cause kept by the transport.
+/// is `Canceled` and the session stays as it was; a transport read canceled is `Canceled` too
+/// (its end says so), and any other failed transport read is `ReadFailed`, its cause in `failure`.
 pub fn awaitCertificate(session: *Session, number: u64) AwaitError!Connection.PostAuthOutcome {
     @setRuntimeSafety(true);
     var held = try session.reading.acquire(session.io);
@@ -948,7 +982,10 @@ fn flushLocked(session: *Session, output: *std.Io.Writer) std.Io.Writer.Error!vo
         session.noteFailure(err);
         return error.WriteFailed;
     };
-    output.flush() catch return error.WriteFailed;
+    output.flush() catch {
+        session.noteFailure(session.output_end.failure() orelse error.WriteFailed);
+        return error.WriteFailed;
+    };
     // Idle until the next write: no output buffer held.
     session.conn.trimOutput();
 }

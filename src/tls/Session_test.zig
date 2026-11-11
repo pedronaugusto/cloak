@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
 const Connection = @import("Connection.zig");
@@ -27,7 +28,7 @@ test "C2 session streams plaintext both ways over std.Io and closes cleanly" {
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot));
+    try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, options(snapshot));
     defer session.deinit();
     // A kept session is read from a later task's Io.
     session.rebind(std.testing.io);
@@ -63,7 +64,7 @@ test "C2 session takes a fully qualified name's trailing dot as the same host" {
     var write_buffer: [256]u8 = undefined;
     var settings = options(snapshot);
     settings.identity = .{ .dns = "example.com." };
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+    try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings);
     defer session.deinit();
     try std.testing.expect(session.info().?.peer_authenticated);
 }
@@ -85,7 +86,7 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
         var settings = options(snapshot);
         settings.eof = eof;
         var read_buffer: [64]u8 = undefined;
-        try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings);
+        try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, settings);
         defer session.deinit();
         var line: [8]u8 = undefined;
         if (eof == .strict) {
@@ -132,7 +133,7 @@ test "C3 session accepts over std.Io, serves a request and closes cleanly" {
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, .{
+    try session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, .{
         .credentials = &credentials,
         .alpn = &.{ "http/1.1", "h2" },
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -171,7 +172,7 @@ test "C3 session sends the alert for a failed handshake before it returns" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     var report: Session.Diagnostics = .{};
-    try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.NoApplicationProtocol, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &credentials,
         .alpn = &.{"h2"},
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -198,12 +199,12 @@ test "C3 session accept needs a signer for an identity without a key, and uses i
     transport.init(&peer, &transport_read, &.{});
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
-    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &credentials,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
     var signer: Session.Signer = .{ .sign = signWithFixtures };
-    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &credentials,
         .signer = &signer,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -246,11 +247,11 @@ test "C10 session accept needs no signer for a credential that signs only throug
     // A key held elsewhere without one needs a signer; this one signs only through its credential,
     // so the session starts, and a client that does not take delegated credentials finds no
     // credential to answer it.
-    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.SignerRequired, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &.{.{ .identity = identity, .delegated = delegated }},
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
-    try std.testing.expectError(error.NoSignatureScheme, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.NoSignatureScheme, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &.{.{ .identity = identity, .delegated = delegated, .delegated_only = true }},
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
@@ -275,7 +276,7 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
         }
     };
     var signer: Session.Signer = .{ .sign = failing.sign };
-    try std.testing.expectError(error.SigningFailed, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.SigningFailed, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &credentials,
         .signer = &signer,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -303,7 +304,7 @@ test "a signer that is canceled cancels the accept, and sends the peer nothing" 
         }
     };
     var signer: Session.Signer = .{ .sign = canceled.sign };
-    try std.testing.expectError(error.Canceled, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+    try std.testing.expectError(error.Canceled, session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, .{
         .credentials = &credentials,
         .signer = &signer,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -324,7 +325,7 @@ test "a custom verifier that is canceled cancels the open, and sends the peer no
     var write_buffer: [256]u8 = undefined;
     var report: Session.Diagnostics = .{};
     const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
-    try std.testing.expectError(error.Canceled, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
+    try std.testing.expectError(error.Canceled, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings));
     try std.testing.expectEqual(@as(?Alert, null), report.alert_sent);
 }
 
@@ -354,11 +355,11 @@ test "C2 session checks a snapshot of the system's policy with the system, and i
         settings.diagnostics = &report;
         if (!trusted) {
             // The system does not know the test root.
-            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
+            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings));
             try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
             continue;
         }
-        try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+        try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings);
         defer session.deinit();
         try std.testing.expect(session.info().?.peer_authenticated);
     }
@@ -382,7 +383,7 @@ test "C2 session reports a rejected server chain as the alert it sent" {
     var report: Session.Diagnostics = .{};
     var settings = options(stranger);
     settings.diagnostics = &report;
-    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings));
+    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, settings));
     try std.testing.expectEqual(@as(?Alert, .unknown_ca), report.alert_sent);
     try std.testing.expectEqual(@as(?Connection.Error, error.VerificationRejected), report.reason);
     try std.testing.expectEqual(@as(?Session.VerifyError, error.NoTrustedPath), report.verification);
@@ -429,11 +430,11 @@ test "C2 session takes a custom verifier's verdict, and reports a refusal by the
         var report: Session.Diagnostics = .{};
         const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
         if (accept) {
-            try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+            try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings);
             defer session.deinit();
             try std.testing.expect(session.info().?.peer_authenticated);
         } else {
-            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
+            try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings));
             try std.testing.expectEqual(case.alert, report.alert_sent);
             try std.testing.expectEqual(case.refusal, report.verification);
         }
@@ -467,7 +468,7 @@ test "a session hands its key log the session's own Io with every line" {
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
     const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .key_log = &lines.key_log };
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+    try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings);
     defer session.deinit();
     try std.testing.expect(lines.with_io > 0);
     try std.testing.expectEqual(@as(usize, 0), lines.without_io);
@@ -497,7 +498,7 @@ test "C10 session keeps the verifier's reason for a refused chain: Certificate T
     var settings = options(snapshot);
     settings.policy.transparency = &required;
     settings.diagnostics = &report;
-    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, settings));
+    try std.testing.expectError(error.VerificationRejected, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &.{}, settings));
     try std.testing.expectEqual(@as(?Alert, .bad_certificate), report.alert_sent);
     try std.testing.expectEqual(@as(?Session.VerifyError, error.MissingTransparency), report.verification);
 }
@@ -524,7 +525,7 @@ test "C10 session answers a post-handshake CertificateRequest from the reading t
     var settings = options(snapshot);
     settings.credentials = &.{.{ .auth = auth }};
     settings.post_handshake_auth = true;
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings);
+    try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings);
     defer session.deinit();
     try std.testing.expectEqual(Connection.PostAuthOutcome{ .generation = 0, .authenticated = false }, session.postAuthentication().?);
     try peer.requestCertificate("session");
@@ -552,9 +553,17 @@ const CancelledTransport = struct {
         for (data[0 .. data.len - 1]) |slice| n += slice.len;
         return n + data[data.len - 1].len * splat;
     }
+    /// The read end, its cause the transport's own record.
+    fn readEnd(self: *CancelledTransport) aegis.io.ReadEnd {
+        return .init(&self.reader, self, cause);
+    }
+    fn cause(context: *const anyopaque) ?anyerror {
+        const self: *const CancelledTransport = @ptrCast(@alignCast(context));
+        return self.err;
+    }
 };
 
-test "a cancelled transport read ends open with ReadFailed and releases the connection" {
+test "a cancelled transport read ends open with Canceled, sends the peer nothing, and releases the connection" {
     const gpa = std.testing.allocator;
     var trust = certificates.Trust.init(gpa);
     defer trust.deinit();
@@ -566,8 +575,16 @@ test "a cancelled transport read ends open with ReadFailed and releases the conn
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try std.testing.expectError(error.ReadFailed, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot)));
+    var report: Session.Diagnostics = .{};
+    var settings = options(snapshot);
+    settings.diagnostics = &report;
+    try std.testing.expectError(error.Canceled, session.open(gpa, std.testing.io, transport.readEnd(), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, settings));
     try std.testing.expectEqual(@as(?anyerror, error.Canceled), transport.err);
+    try std.testing.expectEqual(@as(?Alert, null), report.alert_sent);
+    // A transport that records no cause: the failure stays ReadFailed.
+    var plain: CancelledTransport = .{};
+    plain.reader.buffer = &plain.buffer;
+    try std.testing.expectError(error.ReadFailed, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&plain.reader), aegis.io.WriteEnd.causeless(&plain.writer), &read_buffer, &write_buffer, options(snapshot)));
     // The testing allocator reports anything open left behind.
 }
 
@@ -592,7 +609,7 @@ test "C10 session accept asks for a client certificate after the handshake and g
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, .{
+    try session.accept(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, .{
         .credentials = &credentials,
         .client_trust = .{ .snapshot = snapshot },
         .post_handshake_auth = true,
@@ -652,7 +669,7 @@ test "a handshake whose entropy draw is cancelled ends open with Canceled and se
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try std.testing.expectError(error.Canceled, session.open(gpa, fault.io(), &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot)));
+    try std.testing.expectError(error.Canceled, session.open(gpa, fault.io(), aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, options(snapshot)));
     // No alert, no ClientHello: the cancel is the caller's, not a failure owed to the peer.
     try std.testing.expectEqual(@as(usize, 0), transport.written);
 }
@@ -673,7 +690,7 @@ test "awaitCertificate cancelled waiting for the read lock is Canceled" {
     var session: Session = undefined;
     var read_buffer: [256]u8 = undefined;
     var write_buffer: [256]u8 = undefined;
-    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot));
+    try session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, options(snapshot));
     defer session.deinit();
     const fault = try shakedown.FaultIo.init(gpa, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .futexWait, .n = 1 } }, .fault = .cancel }} });
     defer fault.deinit();

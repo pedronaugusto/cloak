@@ -79,7 +79,7 @@ pub fn fetch(
     var session: cloak.tls.Session = undefined;
     var plain_in: [4096]u8 = undefined;
     var plain_out: [4096]u8 = undefined;
-    try session.open(gpa, io, &reader.interface, &writer.interface, &plain_in, &plain_out, .{
+    try session.open(gpa, io, .fromStream(&reader), .fromStream(&writer), &plain_in, &plain_out, .{
         .identity = .{ .dns = host },
         .trust = .{ .snapshot = roots },
         .alpn = &.{"http/1.1"},
@@ -116,7 +116,7 @@ pub fn serve(
     var session: cloak.tls.Session = undefined;
     var plain_in: [4096]u8 = undefined;
     var plain_out: [4096]u8 = undefined;
-    try session.accept(gpa, io, &reader.interface, &writer.interface, &plain_in, &plain_out, .{
+    try session.accept(gpa, io, .fromStream(&reader), .fromStream(&writer), &plain_in, &plain_out, .{
         .credentials = credentials,
         .alpn = &.{"http/1.1"},
     });

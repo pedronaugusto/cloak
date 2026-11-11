@@ -1,6 +1,7 @@
 //! Encrypted Client Hello end to end, cloak client against cloak server, and the failure
 //! catalogue's ECH rows (F75, F76).
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../certificates.zig");
 const types = certificates.types;
 const Duo = @import("../testing/Duo.zig");
@@ -442,7 +443,7 @@ test "C6 ECH session: a rejection fails open and hands the caller the retry conf
     var write_buffer: [256]u8 = undefined;
     var retry: []u8 = undefined;
     var report: Session.Diagnostics = undefined;
-    try std.testing.expectError(error.EchRejected, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, .{
+    try std.testing.expectError(error.EchRejected, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport.reader), aegis.io.WriteEnd.causeless(&transport.writer), &read_buffer, &write_buffer, .{
         .identity = .{ .dns = "example.com" },
         .trust = .{ .snapshot = snapshot },
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },

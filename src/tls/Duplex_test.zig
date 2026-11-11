@@ -2,6 +2,7 @@
 //! order while key updates (asked for, answered and forced by low record limits) and a close in
 //! one direction happen mid-stream. The hardened tier runs it under ThreadSanitizer.
 const std = @import("std");
+const aegis = @import("aegis");
 const tasks = @import("shakedown").tasks;
 const certificates = @import("../certificates.zig");
 const Session = @import("Session.zig");
@@ -59,7 +60,7 @@ const End = struct {
 
 fn acceptAndRun(end: *End, io: std.Io, input: *std.Io.Reader, output: *std.Io.Writer, out_pipe: *Pipe, credentials: []const Server.Credential, suites: []const Suite, records: u64) !void {
     const gpa = std.testing.allocator;
-    try end.session.accept(gpa, io, input, output, &end.read_buffer, &end.write_buffer, .{
+    try end.session.accept(gpa, io, aegis.io.ReadEnd.causeless(input), aegis.io.WriteEnd.causeless(output), &end.read_buffer, &end.write_buffer, .{
         .credentials = credentials,
         .suites = suites,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -107,7 +108,7 @@ fn duplex(suites: []const Suite, update_every: usize, records: u64) !void {
     var serving = try io.concurrent(acceptAndRun, .{ &server, io, &up.reader, &down.writer, &down, &credentials, suites, records });
     var client: End = .{};
     var opened = true;
-    client.session.open(gpa, io, &down.reader, &up.writer, &client.read_buffer, &client.write_buffer, .{
+    client.session.open(gpa, io, aegis.io.ReadEnd.causeless(&down.reader), aegis.io.WriteEnd.causeless(&up.writer), &client.read_buffer, &client.write_buffer, .{
         .identity = .{ .dns = "example.com" },
         .trust = .{ .snapshot = snapshot },
         .suites = suites,
@@ -148,7 +149,7 @@ const ResumeEnd = struct {
 
 fn serveOnce(end: *ResumeEnd, io: std.Io, input: *std.Io.Reader, output: *std.Io.Writer, out_pipe: *Pipe, credentials: []const Server.Credential, tickets: *Session.TicketKeys) !void {
     defer out_pipe.close();
-    try end.session.accept(std.testing.allocator, io, input, output, &end.read_buffer, &end.write_buffer, .{
+    try end.session.accept(std.testing.allocator, io, aegis.io.ReadEnd.causeless(input), aegis.io.WriteEnd.causeless(output), &end.read_buffer, &end.write_buffer, .{
         .credentials = credentials,
         .tickets = tickets,
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
@@ -194,7 +195,7 @@ test "C5 sessions over std.Io resume: the client keeps the server's tickets as i
         var server: ResumeEnd = .{};
         var serving = try io.concurrent(serveOnce, .{ &server, io, &up.reader, &down.writer, &down, &credentials, &tickets });
         var client: ResumeEnd = .{};
-        client.session.open(gpa, io, &down.reader, &up.writer, &client.read_buffer, &client.write_buffer, .{
+        client.session.open(gpa, io, aegis.io.ReadEnd.causeless(&down.reader), aegis.io.WriteEnd.causeless(&up.writer), &client.read_buffer, &client.write_buffer, .{
             .identity = .{ .dns = "example.com" },
             .trust = .{ .snapshot = snapshot },
             .resumption = .{ .cache = &cache },

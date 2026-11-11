@@ -2,6 +2,7 @@
 //! and trusts the leaf's key by its pin alone, both roles, TLS 1.3 and 1.2, nothing else of the
 //! chain checked; curl's pinned public key with peer verification off.
 const std = @import("std");
+const aegis = @import("aegis");
 const certificates = @import("../certificates.zig");
 const Duo = @import("../testing/Duo.zig");
 const Session = @import("Session.zig");
@@ -158,7 +159,7 @@ test "F141 catalogue_pin_without_authorities (options the pins cannot keep are r
     var buffer: [64]u8 = undefined;
     var transport_out: std.Io.Writer = .fixed(&buffer);
     var session: Session = undefined;
-    try std.testing.expectError(error.InvalidOptions, session.open(gpa, std.testing.io, &transport_in, &transport_out, &.{}, &.{}, .{
+    try std.testing.expectError(error.InvalidOptions, session.open(gpa, std.testing.io, aegis.io.ReadEnd.causeless(&transport_in), aegis.io.WriteEnd.causeless(&transport_out), &.{}, &.{}, .{
         .identity = .none,
         .trust = .{ .leaf_keys = &pins },
         .pins = &pins,
