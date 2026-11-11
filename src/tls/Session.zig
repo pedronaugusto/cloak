@@ -52,10 +52,12 @@ pub const Trust = union(enum) {
 /// `@fieldParentPtr`.
 pub const Custom = struct {
     generation: certificates.types.TrustGeneration,
-    verify: *const fn (custom: *Custom, gpa: std.mem.Allocator, request: certificates.types.Request) VerifyError!certificates.types.Verification,
+    /// A verifier that waits (an online status check, a remote policy) waits through `io`, and
+    /// returns `error.Canceled` when its task is canceled: the session sends the peer nothing.
+    verify: *const fn (custom: *Custom, io: std.Io, gpa: std.mem.Allocator, request: certificates.types.Request) VerifyError!certificates.types.Verification,
 };
 
-pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, Failed };
+pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, Failed } || std.Io.Cancelable;
 
 /// Signs the CertificateVerify content for a certificate whose key cloak does not hold: an
 /// identity made with `initExternal`, or a key kind cloak does not sign with yet (RSA). It is a
@@ -63,9 +65,14 @@ pub const VerifyError = certificates.verify.VerifyError || error{ OutOfMemory, F
 pub const Signer = struct {
     /// Signs `request.content` under `request.scheme` into `out` and returns the length. Content
     /// marked `prehashed` is already the digest of the scheme's hash (a TLS 1.2
-    /// CertificateVerify): sign it without hashing again.
-    sign: *const fn (signer: *Signer, request: SignRequest, out: []u8) error{SigningFailed}!usize,
+    /// CertificateVerify): sign it without hashing again. A signer that waits (an HSM, a KMS)
+    /// waits through `io`, and returns `error.Canceled` when its task is canceled: the session
+    /// sends the peer nothing.
+    sign: *const fn (signer: *Signer, io: std.Io, request: SignRequest, out: []u8) SignError!usize,
 };
+
+/// Why a signer gave no signature.
+pub const SignError = error{SigningFailed} || std.Io.Cancelable;
 
 /// What a signer is asked to sign.
 pub const SignRequest = Connection.SignRequest;
@@ -627,9 +634,13 @@ fn serve(session: *Session) OpenError!bool {
                     continue;
                 };
                 var signature: [1024]u8 = undefined;
-                const len = signer.sign(signer, sign_request, &signature) catch {
-                    try session.conn.provide(request.token, .signing_failed);
-                    continue;
+                const len = signer.sign(signer, session.io, sign_request, &signature) catch |err| switch (err) {
+                    // Cancelled, the request stays open and the engine has not failed: no alert.
+                    error.Canceled => return error.Canceled,
+                    error.SigningFailed => {
+                        try session.conn.provide(request.token, .signing_failed);
+                        continue;
+                    },
                 };
                 try session.conn.provide(request.token, .{ .signature = signature[0..len] });
             },
@@ -647,7 +658,7 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
             .portable => certificates.verify.indexed(session.gpa, request, snapshot.issuers()),
             .macos, .windows => session.verifyNative(request, snapshot),
         },
-        .custom => |custom| custom.verify(custom, session.gpa, request),
+        .custom => |custom| custom.verify(custom, session.io, session.gpa, request),
     };
     if (result) |verified| {
         var receipt = verified;
@@ -655,6 +666,8 @@ fn verify(session: *Session, token: certificates.types.Token, request: certifica
         try session.conn.provide(token, .{ .verified = &receipt });
     } else |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
+        // Cancelled, the request stays open and the engine has not failed: no alert.
+        if (err == error.Canceled) return error.Canceled;
         _ = session.verification_code.cmpxchgStrong(.none, @fromBackingInt(@intFromError(err)), .acq_rel, .acquire);
         const why: Connection.VerifyFailure = switch (err) {
             error.NoTrustedPath => .untrusted,

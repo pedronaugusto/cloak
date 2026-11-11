@@ -104,7 +104,7 @@ test "C2 session treats a bare transport end as truncation unless allowed" {
 const Server = @import("handshake/Server.zig");
 const client_module = @import("../testing/ClientPeer.zig");
 
-fn signWithFixtures(_: *Session.Signer, request: Session.SignRequest, out: []u8) error{SigningFailed}!usize {
+fn signWithFixtures(_: *Session.Signer, _: std.Io, request: Session.SignRequest, out: []u8) Session.SignError!usize {
     if (request.scheme != .ecdsa_p256_sha256 or request.prehashed) return error.SigningFailed;
     const content = request.content;
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
@@ -270,7 +270,7 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
     var session: Session = undefined;
     var read_buffer: [64]u8 = undefined;
     const failing = struct {
-        fn sign(_: *Session.Signer, _: Session.SignRequest, _: []u8) error{SigningFailed}!usize {
+        fn sign(_: *Session.Signer, _: std.Io, _: Session.SignRequest, _: []u8) Session.SignError!usize {
             return error.SigningFailed;
         }
     };
@@ -281,6 +281,51 @@ test "C3 session accept reports a signer that fails as a failed handshake" {
         .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
     }));
     try std.testing.expect(!peer.server_finished_ok);
+}
+
+test "a signer that is canceled cancels the accept, and sends the peer nothing" {
+    const gpa = std.testing.allocator;
+    const identity = try certificates.Identity.initExternal(gpa, &.{ pki.p256, pki.ca }, .{});
+    defer identity.deinit();
+    const credentials = [_]Server.Credential{.{ .identity = identity }};
+    var peer = client_module.ClientPeer(.aes_128_gcm_sha256).init(gpa, .{}, 5);
+    defer peer.deinit();
+    try peer.start();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [64]u8 = undefined;
+    // A remote signer (an HSM, a KMS) whose wait was canceled.
+    const canceled = struct {
+        fn sign(_: *Session.Signer, _: std.Io, _: Session.SignRequest, _: []u8) Session.SignError!usize {
+            return error.Canceled;
+        }
+    };
+    var signer: Session.Signer = .{ .sign = canceled.sign };
+    try std.testing.expectError(error.Canceled, session.accept(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &.{}, .{
+        .credentials = &credentials,
+        .signer = &signer,
+        .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) },
+    }));
+    try std.testing.expect(!peer.server_finished_ok);
+}
+
+test "a custom verifier that is canceled cancels the open, and sends the peer no alert" {
+    const gpa = std.testing.allocator;
+    var verifier: Custom = .{ .refusal = error.Canceled };
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{});
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    var report: Session.Diagnostics = .{};
+    const settings: Session.Options = .{ .identity = .{ .dns = "example.com" }, .trust = .{ .custom = &verifier.custom }, .clock = .{ .fixed = .fromNanoseconds(@as(i96, pki.time) * std.time.ns_per_s) }, .diagnostics = &report };
+    try std.testing.expectError(error.Canceled, session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, settings));
+    try std.testing.expectEqual(@as(?Alert, null), report.alert_sent);
 }
 
 test "C2 session checks a snapshot of the system's policy with the system, and its own roots besides" {
@@ -350,7 +395,7 @@ const Custom = struct {
     calls: usize = 0,
     custom: Session.Custom = .{ .generation = .fromRaw(1), .verify = verify },
 
-    fn verify(custom: *Session.Custom, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
+    fn verify(custom: *Session.Custom, _: std.Io, gpa: std.mem.Allocator, request: certificates.types.Request) Session.VerifyError!certificates.types.Verification {
         const self: *Custom = @fieldParentPtr("custom", custom);
         self.calls += 1;
         if (self.refusal) |err| return err;
