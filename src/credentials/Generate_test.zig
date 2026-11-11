@@ -222,3 +222,13 @@ test "an ML-DSA key from its seed (RFC 9964's AKP priv) is the key its PKCS#8 ho
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa44, .seed = seed, .public = &other } }));
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .mldsa = .{ .level = .mldsa44, .seed = seed[1..] } }));
 }
+
+test "a generation whose entropy draw is cancelled ends as Canceled, for every kind" {
+    const shakedown = @import("shakedown");
+    const kinds = [_]PrivateKey.Kind{ .p256, .p384, .p521, .ed25519, .x25519, .mldsa44, .mldsa65, .mldsa87, .{ .rsa = .@"2048" } };
+    for (kinds) |kind| {
+        const fault = try shakedown.FaultIo.init(gpa, io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .randomSecure, .n = 1 } }, .fault = .cancel }} });
+        defer fault.deinit();
+        try std.testing.expectError(error.Canceled, PrivateKey.generate(gpa, fault.io(), kind));
+    }
+}

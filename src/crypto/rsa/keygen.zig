@@ -37,14 +37,14 @@ pub const Size = enum(u16) {
     }
 };
 
-pub const Error = error{ EntropyUnavailable, GenerationFailed };
+pub const Error = error{ EntropyUnavailable, GenerationFailed } || std.Io.Cancelable;
 
 /// `io.randomSecure` as a source: what `PrivateKey.generate` draws from.
 pub const IoSource = struct {
     io: std.Io,
 
-    pub fn fill(self: *const IoSource, buffer: []u8) error{EntropyUnavailable}!void {
-        self.io.randomSecure(buffer) catch return error.EntropyUnavailable;
+    pub fn fill(self: *const IoSource, buffer: []u8) std.Io.RandomSecureError!void {
+        return self.io.randomSecure(buffer);
     }
 };
 
@@ -78,8 +78,9 @@ const Half = [rsa.max_half]u64;
 /// of primes among 7 mod 8 values of 2048 bits (about 1 in 355), never reached by chance.
 const max_candidates = 1 << 16;
 
-/// A new key of `size` from `source`, which has `fill(buffer) error{EntropyUnavailable}!void`
-/// and must be a cryptographic source (a key from a predictable one is predictable). The whole
+/// A new key of `size` from `source`, which has `fill(buffer) E!void` for `E` within
+/// `error{ EntropyUnavailable, Canceled }` and must be a cryptographic source (a key from a
+/// predictable one is predictable); a cancelled draw ends the generation as `Canceled`. The whole
 /// runs as one secret computation, its stack scrubbed after.
 pub fn generate(size: Size, source: anytype, out: *Integers) Error!void {
     return aegis.secret.scrubbed(depth, generateKernel, .{ size, source, out });
@@ -195,7 +196,7 @@ fn randomPrime(bits: usize, source: anytype, s: *State, out: *Half) Error!void {
     const k = bits / 64;
     const bytes = s.draw[0 .. bits / 8];
     for (0..max_candidates) |_| {
-        source.fill(bytes) catch return error.EntropyUnavailable;
+        try source.fill(bytes);
         bytes[0] |= 0xc0;
         bytes[bytes.len - 1] |= 0x07;
         fromBigEndian(out[0..k], bytes);
@@ -237,7 +238,7 @@ pub fn millerRabin(w: []const u64, source: anytype, s: *State) Error!bool {
         if (draws > max_candidates) return error.GenerationFailed;
         // A base uniform in [2, w - 2]: drawn below 2^width and refused outside the range.
         const base = s.draw[0 .. 8 * k];
-        source.fill(base) catch return error.EntropyUnavailable;
+        try source.fill(base);
         fromBigEndian(s.x[0..k], base);
         s.x[k - 1] &= width_mask;
         if (!inBaseRange(s.x[0..k], w)) continue;

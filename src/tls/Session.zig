@@ -195,7 +195,7 @@ pub const Options = struct {
     diagnostics: ?*Diagnostics = null,
 };
 
-pub const OpenError = Connection.InitError || Connection.Error || Connection.ProvideError || error{
+pub const OpenError = Connection.InitError || Connection.Error || Connection.ProvideError || std.Io.Cancelable || error{
     ReadFailed,
     WriteFailed,
     EndOfStream,
@@ -542,6 +542,9 @@ pub fn writer(session: *Session) *std.Io.Writer {
 fn handshake(session: *Session) OpenError!void {
     @setRuntimeSafety(true);
     session.handshakeLoop() catch |err| {
+        // A cancelled handshake owes the peer nothing: the engine has not failed, and the caller
+        // asked for no more I/O.
+        if (err == error.Canceled) return err;
         // A failed handshake leaves an alert queued; the peer is owed it, best effort.
         var held = session.writing.acquireUncancelable(session.io);
         defer held.deinit(session.io);
@@ -607,7 +610,11 @@ fn serve(session: *Session) OpenError!bool {
                 if (len > bytes.len) return error.EntropyUnavailable;
                 if (session.io.randomSecure(bytes[0..len])) {
                     try session.conn.provide(request.token, .{ .entropy = bytes[0..len] });
-                } else |_| try session.conn.provide(request.token, .entropy_failed);
+                } else |err| switch (err) {
+                    // Cancelled, the request stays open and the engine has not failed: no alert.
+                    error.Canceled => return error.Canceled,
+                    error.EntropyUnavailable => try session.conn.provide(request.token, .entropy_failed),
+                }
             },
             .time => try session.conn.provide(request.token, .{ .time = switch (session.clock) {
                 .real => std.Io.Clock.real.now(session.io),
@@ -759,6 +766,7 @@ fn readerStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.I
     defer held.deinit(session.io);
     const view = session.plaintext(held.value().*) catch |err| return switch (err) {
         error.EndOfStream => error.EndOfStream,
+        error.Canceled => session.remember(error.Canceled),
         else => error.ReadFailed,
     };
     const n = limit.minInt(view.len);
@@ -798,12 +806,15 @@ fn readMore(session: *Session, input: *std.Io.Reader) (ReadError || OpenError)!v
         return session.remember(err);
     };
     input.toss(n);
-    _ = session.serve() catch |err| return session.remember(err);
+    _ = session.serve() catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => return session.remember(err),
+    };
     // A KeyUpdate, a post-handshake answer or a warning the read owes the peer.
     if (session.conn.owes()) session.pushOwed() catch |err| return session.remember(err);
 }
 
-pub const AwaitError = ReadError || error{
+pub const AwaitError = ReadError || std.Io.Cancelable || error{
     /// The session keeps no post-handshake authentication.
     PostAuthUnavailable,
     /// Plaintext came ahead of the answer and the reader's buffer is full: read it, then wait
@@ -815,10 +826,12 @@ pub const AwaitError = ReadError || error{
 /// checked, and returns the outcome: for a server whose peer sends nothing more until it is
 /// answered, as an HTTP/1.1 client waiting for its response. Plaintext that comes first is kept
 /// in the reader's buffer for `reader()`, as far as it holds. A refused answer ends the session
-/// (`ReadFailed`, its cause in `failure`).
+/// (`ReadFailed`, its cause in `failure`). Cancelled waiting for the read lock or for entropy, it
+/// is `Canceled` and the session stays as it was; a failed transport read, cancelled or not, is
+/// `ReadFailed`, its cause kept by the transport.
 pub fn awaitCertificate(session: *Session, number: u64) AwaitError!Connection.PostAuthOutcome {
     @setRuntimeSafety(true);
-    var held = session.reading.acquire(session.io) catch |err| return session.remember(err);
+    var held = try session.reading.acquire(session.io);
     defer held.deinit(session.io);
     while (true) {
         const outcome = session.conn.postAuthentication() orelse {
@@ -830,6 +843,7 @@ pub fn awaitCertificate(session: *Session, number: u64) AwaitError!Connection.Po
         if (view.len == 0) {
             session.readMore(held.value().*) catch |err| return switch (err) {
                 error.EndOfStream => error.EndOfStream,
+                error.Canceled => error.Canceled,
                 else => error.ReadFailed,
             };
             continue;

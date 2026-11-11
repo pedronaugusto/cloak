@@ -24,7 +24,7 @@ pub const Issuer = struct {
     algorithm: ?Algorithm.Signature = null,
 };
 
-pub const Error = Template.Error || certificate.ParseError || error{ EntropyUnavailable, KeyMismatch, IssuerNotCa, UnsupportedAlgorithm, SigningFailed, InvalidSignature };
+pub const Error = Template.Error || certificate.ParseError || std.Io.Cancelable || error{ EntropyUnavailable, KeyMismatch, IssuerNotCa, UnsupportedAlgorithm, SigningFailed, InvalidSignature };
 
 /// The signature a key makes by default: Ed25519; ECDSA with the curve's hash (SHA-512 for
 /// P-521); RSA PKCS#1 v1.5 with SHA-256 (Go's); ML-DSA of its parameter set.
@@ -100,7 +100,7 @@ pub fn issue(gpa: std.mem.Allocator, io: std.Io, template: *const Template.Certi
     };
     var serial_buffer: [16]u8 = undefined;
     const serial = template.serial orelse blk: {
-        io.randomSecure(&serial_buffer) catch return error.EntropyUnavailable;
+        try io.randomSecure(&serial_buffer);
         // Positive, and sixteen bytes long: the top bit clear, the next set.
         serial_buffer[0] = (serial_buffer[0] & 0x7f) | 0x40;
         break :blk &serial_buffer;
@@ -164,7 +164,7 @@ fn sign(io: std.Io, key: PrivateKey, algorithm: Algorithm.Signature, message: []
     defer noise_owner.deinit();
     const noise = noise_owner.exposeMut();
     const length = key.noiseLength();
-    io.randomSecure(noise[0..length]) catch return error.EntropyUnavailable;
+    try io.randomSecure(noise[0..length]);
     return key.sign(algorithm, message, noise[0..length], out) catch |err| switch (err) {
         error.UnsupportedAlgorithm => error.UnsupportedAlgorithm,
         else => error.SigningFailed,

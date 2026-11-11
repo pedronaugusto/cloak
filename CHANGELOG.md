@@ -6,6 +6,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Breaking
 
+- A cancelled entropy draw is `error.Canceled`, where it was `EntropyUnavailable`: `PrivateKey.GenerateError`, `Issue.Error`, `Session.OpenError` and `Session.AwaitError` gain `Canceled`, and an exhaustive switch over one needs that arm. A session handshake cancelled while drawing its entropy returns `Canceled` and sends the peer nothing, where it failed with `internal_error` sent. `Session.awaitCertificate` cancelled waiting for the read lock is `Canceled`, where it was `ReadFailed` and marked the session failed.
 - `Purpose` has `code_signing` and `time_stamping`: an exhaustive switch over it needs those arms.
 - The interfaces a caller supplies carry no `context: ?*anyopaque`: `Connection.KeyLog`, `certificate_compression.Codec`, `Session.Custom`, `Session.Signer`, `Psk.Lookup` (`external_psk`), `services.Job.Executor` and `offload.Installer`. Each is now a field of the caller's own type; its functions take a pointer to it and recover the owner with `@fieldParentPtr`, and the options take that pointer (`key_log: ?*KeyLog`, `certificate_compression: []const *Codec`, `trust = .{ .custom = *Custom }`, `signer: ?*Signer`, `external_psk: ?*Lookup`, `executor: ?*Executor`, `Connection.offload(direction, *Installer)`). `linux.Socket` and the test kernel hold their `installer`; `Socket.installer()` is gone. A key log, for one:
 

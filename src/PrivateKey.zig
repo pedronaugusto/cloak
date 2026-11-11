@@ -123,7 +123,7 @@ pub const Kind = union(enum) { p256, p384, p521, ed25519, x25519, mldsa44, mldsa
 /// An RSA key's modulus, in bits: FIPS 186-5's sizes, e = 65537.
 pub const RsaSize = rsa_keygen.Size;
 /// `GenerationFailed`: the source gave no prime in 2^16 candidates, which a working one never does.
-pub const GenerateError = std.mem.Allocator.Error || error{ EntropyUnavailable, GenerationFailed };
+pub const GenerateError = std.mem.Allocator.Error || std.Io.Cancelable || error{ EntropyUnavailable, GenerationFailed };
 
 /// A new key of `kind` from `io.randomSecure`, built by the constructor a parsed key of its kind
 /// goes through: an EC scalar drawn until it is in range, an Ed25519 or ML-DSA seed, an X25519
@@ -164,24 +164,24 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
             var attempts: usize = 0;
             while (true) : (attempts += 1) {
                 if (attempts == 64) return error.EntropyUnavailable;
-                io.randomSecure(draw[0..width]) catch return error.EntropyUnavailable;
+                try io.randomSecure(draw[0..width]);
                 if (curve == .p521) draw[0] &= 0x01;
                 // glint-ignore: Z026 -- a draw that is no key in the curve's range is drawn again, up to the attempts bound above
                 if (parser.ecKey(curve, draw[0..width], null, out)) break else |_| {}
             }
         },
         .ed25519 => {
-            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            try io.randomSecure(draw[0..32]);
             // unreachable: every 32-byte seed is a key.
             parser.ed25519Key(draw[0..32], null, out) catch unreachable;
         },
         .x25519 => {
-            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            try io.randomSecure(draw[0..32]);
             // unreachable: every 32 bytes are an X25519 private key.
             parser.x25519Key(draw[0..32], null, out) catch unreachable;
         },
         .mldsa44, .mldsa65, .mldsa87 => {
-            io.randomSecure(draw[0..32]) catch return error.EntropyUnavailable;
+            try io.randomSecure(draw[0..32]);
             const level: mldsa.Level = switch (kind) {
                 .mldsa44 => .mldsa44,
                 .mldsa65 => .mldsa65,

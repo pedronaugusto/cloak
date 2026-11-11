@@ -542,3 +542,69 @@ test "C10 session accept asks for a client certificate after the handshake and g
     try session.writer().flush();
     try std.testing.expectEqualSlices(u8, "HTTP/1.1 200 OK\r\n\r\n", peer.received.items);
 }
+
+/// A transport that keeps what is written to it and ends its reads.
+const RecordingTransport = struct {
+    reader: std.Io.Reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
+    writer: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+    written: usize = 0,
+    fn stream(_: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        return error.EndOfStream;
+    }
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *RecordingTransport = @fieldParentPtr("writer", w);
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |slice| n += slice.len;
+        n += data[data.len - 1].len * splat;
+        self.written += n;
+        return n;
+    }
+};
+
+test "a handshake whose entropy draw is cancelled ends open with Canceled and sends the peer nothing" {
+    const shakedown = @import("shakedown");
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    const fault = try shakedown.FaultIo.init(gpa, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .randomSecure, .n = 1 } }, .fault = .cancel }} });
+    defer fault.deinit();
+    var transport: RecordingTransport = .{};
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    try std.testing.expectError(error.Canceled, session.open(gpa, fault.io(), &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot)));
+    // No alert, no ClientHello: the cancel is the caller's, not a failure owed to the peer.
+    try std.testing.expectEqual(@as(usize, 0), transport.written);
+}
+
+test "awaitCertificate cancelled waiting for the read lock is Canceled" {
+    const shakedown = @import("shakedown");
+    const gpa = std.testing.allocator;
+    var trust = certificates.Trust.init(gpa);
+    defer trust.deinit();
+    try trust.addDer(pki.ca, .{});
+    const snapshot = try trust.freeze();
+    defer snapshot.deinit();
+    var peer = peer_module.Peer(.aes_128_gcm_sha256).init(gpa, .{ .alpn = "h2" });
+    defer peer.deinit();
+    var transport: Loopback(@TypeOf(peer)) = undefined;
+    var transport_read: [4096]u8 = undefined;
+    transport.init(&peer, &transport_read, &.{});
+    var session: Session = undefined;
+    var read_buffer: [256]u8 = undefined;
+    var write_buffer: [256]u8 = undefined;
+    try session.open(gpa, std.testing.io, &transport.reader, &transport.writer, &read_buffer, &write_buffer, options(snapshot));
+    defer session.deinit();
+    const fault = try shakedown.FaultIo.init(gpa, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .futexWait, .n = 1 } }, .fault = .cancel }} });
+    defer fault.deinit();
+    session.rebind(fault.io());
+    defer session.rebind(std.testing.io);
+    // Another reader holds the lock: the wait for it is cancelled.
+    var other = session.reading.tryAcquire().?;
+    defer other.deinit(std.testing.io);
+    try std.testing.expectError(error.Canceled, session.awaitCertificate(1));
+    try std.testing.expectEqual(@as(?anyerror, null), session.failure());
+}
