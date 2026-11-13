@@ -2084,6 +2084,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
         inline else => |*k, tag| {
             var psk = aegis.Secret([Schedule.Schedule(tag).length]u8).init(undefined);
             defer psk.deinit();
+            // glint-ignore: Z026 -- a ticket whose secret cannot be derived is not kept: the next connection makes a full handshake
             k.schedule.ticketSecret(ticket.nonce, psk.exposeMut()) catch return;
             resumption.cache.store(.{
                 .key = &self.cache_key,
@@ -2097,7 +2098,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .auth_expires = self.auth_expires,
                 .authenticated = self.authenticated,
                 .pin = self.pin,
-            }) catch return;
+            }) catch return; // glint-ignore: Z026 -- a ticket the cache refuses is not kept: the next connection makes a full handshake
         },
     }
 }

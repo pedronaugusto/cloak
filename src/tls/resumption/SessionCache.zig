@@ -242,6 +242,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
         var guard = self.table.acquire();
         defer guard.deinit();
         const table = guard.value();
+        // glint-ignore: Z026 -- a sequence at its end places no more entries: the ticket is not cached
         table.sequence = std.math.add(u64, table.sequence, 1) catch break :placing;
         entry.sequence = table.sequence;
         // The key's oldest tickets beyond its share, then the cache's oldest beyond its bounds.
@@ -273,6 +274,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
             table.slots[i] = null;
         }
         if (table.bytes.remaining() >= cost(entry)) for (table.slots) |*slot| if (slot.* == null) {
+            // glint-ignore: Z026 -- a ticket the byte budget cannot hold is not placed
             entry.charge = table.bytes.reserve(cost(entry)) catch break;
             slot.* = entry;
             placed = true;

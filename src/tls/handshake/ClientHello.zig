@@ -573,7 +573,9 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     var nibbles: std.bit_set.Static(16) = .empty;
     var all: Reader = .{ .bytes = self.extensions };
     while (all.pos < all.bytes.len) {
+        // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
         const id = all.int(u16) catch break;
+        // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
         _ = all.vector(u16) catch break;
         if (!exempt(id)) nibbles.set(id >> 12);
     }
@@ -585,7 +587,9 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
         var pass: Reader = .{ .bytes = self.extensions };
         while (pass.pos < pass.bytes.len) {
             const start = pass.pos;
+            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
             const id = pass.int(u16) catch break;
+            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
             _ = pass.vector(u16) catch break;
             if (id >> 12 != nibble or exempt(id)) continue;
             present.set(id & 0xfff);
@@ -594,7 +598,9 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
         var ids = present.iterator(.{});
         while (ids.next()) |low| {
             var entry: Reader = .{ .bytes = self.extensions[starts[low]..] };
+            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
             const id = entry.int(u16) catch break;
+            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
             const bytes = (entry.vector(u16) catch break).bytes;
             var head: [6]u8 = undefined;
             std.mem.writeInt(u16, head[0..2], id, .big);

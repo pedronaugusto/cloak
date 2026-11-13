@@ -206,6 +206,7 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var state: Ticket.State = undefined;
+    // glint-ignore: Z026 -- a ticket this server cannot open is no resumption: the handshake is a full one
     Ticket.open(ring, hello.session_ticket.?, now, &state) catch return;
     defer state.deinit();
     if (state.version != .tls12 or state.datagram != (self.options.transport == .datagram)) return;

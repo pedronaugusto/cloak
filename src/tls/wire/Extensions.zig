@@ -38,7 +38,9 @@ fn uniqueBlock(block: []const u8) error{DuplicateExtension}!void {
         var ids: std.bit_set.Static(4096) = .empty;
         var r: R = .{ .bytes = block };
         while (r.pos < block.len) {
+            // glint-ignore: Z026 -- a malformed entry ends this uniqueness pass; next refuses it when it reaches it
             const id = r.int(u16) catch break;
+            // glint-ignore: Z026 -- a malformed entry ends this uniqueness pass; next refuses it when it reaches it
             _ = r.vector(u16) catch break;
             if (id >> 12 != high) continue;
             if (ids.isSet(id & 0xfff)) return error.DuplicateExtension;

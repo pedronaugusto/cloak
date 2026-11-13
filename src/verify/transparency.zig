@@ -211,6 +211,7 @@ const Context = struct {
         self.signatures_left.* -= 1;
         const input = try signedInput(self.gpa, sct, entry);
         defer self.gpa.free(input);
+        // glint-ignore: Z026 -- an SCT whose signature does not verify counts for no log
         signatures.verify(key.key, key.algorithm, input, sct.signature) catch return;
         tally.logs[tally.n] = @intCast(index);
         tally.n += 1;

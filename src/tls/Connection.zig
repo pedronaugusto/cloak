@@ -620,7 +620,9 @@ fn failWhole(self: *Connection, err: Error) void {
 fn sendAlert(self: *Connection, level: u8, alert: Alert) void {
     @setRuntimeSafety(true);
     const body = [2]u8{ level, @backingInt(alert) };
+    // glint-ignore: Z026 -- an alert with no room left in the outbox is not sent: the connection has failed either way
     const dst = self.outbox.tail(self.gpa, body.len + record_overhead, self.limits.output + max_record) catch return;
+    // glint-ignore: Z026 -- an alert the write side can no longer seal is not sent: the connection has failed either way
     const wire = self.sealRecord(.alert, &body, dst) catch return;
     self.outbox.commit(wire.len);
     self.alert_sent.store(.of(alert), .release);

@@ -220,12 +220,14 @@ fn curve(ctx: *const Context, comptime G: type, comptime Point: type, comptime n
     state.* = .{};
     while (true) {
         ctx.io.random(&state.scalar);
+        // glint-ignore: Z026 -- a random scalar out of the group's range is drawn again
         G.check(&state.scalar) catch continue;
         break;
     }
     var other: [G.scalar_length]u8 = undefined;
     while (true) {
         ctx.io.random(&other);
+        // glint-ignore: Z026 -- a random scalar with no public key is drawn again
         G.publicKey(&other, &state.peer) catch continue;
         break;
     }

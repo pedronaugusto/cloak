@@ -532,5 +532,5 @@ fn storeTicket(self: anytype) void {
         .auth_expires = self.auth_expires,
         .authenticated = self.authenticated and self.options.verify != .none,
         .pin = self.pin,
-    }) catch return;
+    }) catch return; // glint-ignore: Z026 -- a ticket the cache refuses is not kept: the next connection makes a full handshake
 }

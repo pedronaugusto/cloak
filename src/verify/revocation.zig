@@ -128,6 +128,7 @@ fn crl(path: []const C.Certificate, now: i64, policy: T.RevocationPolicy, der: [
             const ski = ca.x509(14) orelse continue;
             if (!std.mem.eql(u8, id, (try Der.single(ski.value, 4)).value)) continue;
         }
+        // glint-ignore: Z026 -- a candidate issuer whose signature does not verify the response is not its signer: the next one is tried
         signatures.verify(ca.public_key, try C.Algorithm.signature(algorithm.encoded), tbs.encoded, sig) catch continue;
         mask |= bit(i);
     }

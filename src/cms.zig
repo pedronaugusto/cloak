@@ -216,9 +216,11 @@ fn digest(hash: Algorithm.Hash, bytes: []const u8, out: *[max_digest]u8) []const
 fn findSigner(parsed: *const Parsed) Error![]const u8 {
     const signer = &parsed.signer;
     for (parsed.certificates[0..parsed.certificate_count]) |der| {
+        // glint-ignore: Z026 -- a carried certificate that does not parse is not the signer's: the next one is tried
         const cert = Certificate.parse(der, .{}) catch continue;
         if (signer.key_id) |wanted| {
             const extension = cert.x509(14) orelse continue;
+            // glint-ignore: Z026 -- a certificate whose subject key identifier does not parse is not the one the signer names
             const key_id = Der.single(extension.value, 0x04) catch continue;
             if (std.mem.eql(u8, key_id.value, wanted)) return der;
         } else if (std.mem.eql(u8, cert.issuer, signer.issuer.?) and std.mem.eql(u8, cert.serial, signer.serial.?)) return der;

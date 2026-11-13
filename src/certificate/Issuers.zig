@@ -24,6 +24,7 @@ pub fn init(gpa: std.mem.Allocator, anchors: []const []const u8, limits: Limits)
     for (anchors, 0..) |der, index| {
         // Unusable anchors cannot pass verification; do not let an unrelated
         // malformed/unsupported candidate poison every other issuer bucket.
+        // glint-ignore: Z026 -- an anchor that does not parse cannot pass verification, and is left out of every issuer bucket
         const cert = Certificate.parse(der, .{}) catch continue;
         storage[parsed] = .{ .key = try Name.key(cert.subject), .der = der, .index = index };
         parsed += 1;

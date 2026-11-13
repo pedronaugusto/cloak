@@ -307,10 +307,12 @@ pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: 
     encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
     const encoded = encoded_owner.exposeMut();
     var context = for (keys) |key| {
+        // glint-ignore: Z026 -- a configured key whose config does not parse cannot open this offer: the next key is tried
         const config = (parseConfig(key.config) catch continue).config orelse continue;
         if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
         const info_buf = try gpa.alloc(u8, 8 + key.config.len);
         defer gpa.free(info_buf);
+        // glint-ignore: Z026 -- a key whose HPKE context cannot be set up for this offer cannot open it: the next key is tried
         var context = Hpke.setupRecipient(offer.suite, enc, key.secret, info(info_buf, key.config)) catch continue;
         context.seq = seq;
         context.open(encoded, aad, offer.payload) catch {

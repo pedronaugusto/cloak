@@ -144,6 +144,7 @@ pub fn probe() Capabilities {
                 const socket: Socket = .{ .fd = pair.client };
                 var keys: Keys = .{ .version = version, .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
                 defer keys.deinit();
+                // glint-ignore: Z026 -- a cipher the running kernel refuses is left out of the probe's answer
                 socket.install(direction, &keys) catch continue;
                 result.ciphers[@intFromBool(version == .tls13)][@backingInt(direction)].insert(cipher);
                 if (version == .tls13) {

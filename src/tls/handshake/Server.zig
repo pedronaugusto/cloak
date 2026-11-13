@@ -1149,6 +1149,7 @@ fn choosePsk(self: *Server, msg: []const u8, hello: *const ClientHello) Client.E
     while (index < 8) : (index += 1) {
         const offer = hello.pskIdentity(index) orelse return;
         var state: Ticket.State = undefined;
+        // glint-ignore: Z026 -- a ticket this server cannot open is no resumption: the next offered identity is tried
         Ticket.open(snapshot.ring(), offer.identity, now, &state) catch continue;
         defer state.deinit();
         if (!self.resumable(&state, hello, now)) continue;
