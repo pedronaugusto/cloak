@@ -70,7 +70,7 @@ fn run(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, args: []const [
     var computed: [32]u8 = undefined;
     archive.unsignedHash(&computed);
     if (!std.mem.eql(u8, &computed, &named)) return error.PackageMismatch;
-    return std.fmt.allocPrint(arena, "verified: signed {d}, timestamped {}, package sha256 {x}", .{
+    return arena.print("verified: signed {d}, timestamped {}, package sha256 {x}", .{
         @divFloor(verified.time.toNanoseconds(), std.time.ns_per_s), verified.timestamped, computed,
     });
 }
@@ -84,7 +84,7 @@ fn manifestHash(content: []const u8) Failure![32]u8 {
     while (lines.next()) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
         if (line.len == 0) continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.ManifestInvalid;
+        const colon = std.mem.findScalar(u8, line, ':') orelse return error.ManifestInvalid;
         const name = line[0..colon];
         if (!std.mem.endsWith(u8, name, "-Hash")) continue;
         if (!std.mem.eql(u8, name, "2.16.840.1.101.3.4.2.1-Hash")) return error.UnsupportedHash;
