@@ -217,7 +217,7 @@ fn fuzzEchInput(_: void, case: *shakedown.Case) !void {
     const encoded = hello(&encoded_buf, "", &.{ .{ 0xfd00, &.{ 4, 0, 10, 0, 51 } }, .{ 0xfe0d, &.{1} } });
     var bytes: [512]u8 = undefined;
     const input = inputs.draw(case, &bytes, &.{ list, config, offer, encoded[4..] }, 48);
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (Ech.parseConfig(input)) |parsed| {
         try std.testing.expect(parsed.len <= input.len);
         if (parsed.config) |c| {
@@ -226,11 +226,11 @@ fn fuzzEchInput(_: void, case: *shakedown.Case) !void {
             _ = c.suite();
         }
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (Ech.choose(input)) |chosen| {
         if (chosen) |c| try std.testing.expect(c.usable());
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (Ech.parseOffer(input)) |parsed| switch (parsed) {
         .inner => try std.testing.expectEqual(1, input.len),
         .outer => |o| try std.testing.expect(o.payload.len != 0 and o.enc.len + o.payload.len + 10 == input.len),

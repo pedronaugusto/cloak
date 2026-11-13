@@ -139,7 +139,7 @@ test "fuzz certification request parsing and signature checks" {
             }
             try std.testing.expect(request.extension_count <= Request.max_extensions);
             // A mutated request still parses or not, and its signature holds or not; neither crashes.
-            // glint-ignore: Z026 -- a mutated request may verify or not; the test asks only that neither crashes
+            // a mutated request may verify or not; the test asks only that neither crashes
             if (@import("../Issue.zig").verifyRequest(&request)) |_| {} else |_| {}
         }
     }.run, .{ .cases = 256 });

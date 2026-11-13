@@ -203,11 +203,11 @@ test "fuzz PKCS#12 key bags, plain and shrouded" {
             var bag_password = try Pbe.Password.init(std.testing.allocator, password, false, .{});
             defer bag_password.deinit(std.testing.allocator);
             for ([_]bool{ false, true }) |shrouded| {
-                // glint-ignore: Z026 -- a fuzzed bag may parse or not; the target asks only that neither crashes or leaks
+                // a fuzzed bag may parse or not; the target asks only that neither crashes or leaks
                 if (PrivateKey.parseBag(std.testing.allocator, input, shrouded, &bag_password, .{ .iterations = 4 })) |key| key.deinit() else |_| {}
             }
             var material: Key.Material = undefined;
-            // glint-ignore: Z026 -- a fuzzed key may parse or not; the target asks only that neither crashes or leaks
+            // a fuzzed key may parse or not; the target asks only that neither crashes or leaks
             if (Key.parsePlain(input, .{}, &material)) |_| std.crypto.secureZero(u8, std.mem.asBytes(&material)) else |_| {}
         }
     }.run, .{ .cases = 128 });

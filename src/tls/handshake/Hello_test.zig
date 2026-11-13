@@ -99,12 +99,12 @@ test "C2 TLS hello selections take the fixture and an empty encrypted extensions
     try parseAny("\x08\x00\x00\x02\x00\x00");
 }
 fn parseAny(input: []const u8) !void {
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (H.server(input, "", &shares, .{}, .{})) |answer| switch (answer) {
         .tls13 => |parsed| try std.testing.expect(parsed.retry or parsed.share.len == parsed.group.?.serverShareLength()),
         .tls12 => |parsed| try std.testing.expect(parsed.random.len == 32),
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (H.encrypted(input, .{}, false)) |parsed| {
         try std.testing.expectEqual(@as(usize, 0), parsed.alpn.len);
     } else |_| {}

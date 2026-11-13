@@ -19,14 +19,14 @@ fn mutate(_: void, case: *shakedown.Case) !void {
     const input = bytes[0..length];
     const now = try std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10);
     const req: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, now) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
-    // glint-ignore: Z026 -- generated input may verify or not; the property checks only what verifies
+    // generated input may verify or not; the property checks only what verifies
     if (V.verify(case.gpa, req, &.{anchor})) |receipt_value| {
         var receipt = receipt_value;
         defer receipt.deinit();
         try std.testing.expectEqualSlices(u8, (try C.parse(leaf, .{})).tbs, (try C.parse(input, .{})).tbs);
         try receipt.check(req);
     } else |_| {}
-    // glint-ignore: Z026 -- generated input may parse or not; the property checks only what parses
+    // generated input may parse or not; the property checks only what parses
     if (C.parse(input, .{})) |cert| {
         try std.testing.expect(cert.der.len == input.len);
         try std.testing.expect(cert.tbs.len <= cert.der.len and cert.spki.len <= cert.tbs.len);

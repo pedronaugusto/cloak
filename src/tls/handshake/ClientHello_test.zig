@@ -120,7 +120,7 @@ fn fuzz(_: void, case: *shakedown.Case) !void {
         for (0..shakedown.gen.int(s, u3)) |_| seed[shakedown.gen.intRange(s, u16, 0, @intCast(seed.len - 1))] = shakedown.gen.int(s, u8);
         input = seed;
     }
-    // glint-ignore: Z026 -- a fuzzed hello may parse or not; the target checks only what parses
+    // a fuzzed hello may parse or not; the target checks only what parses
     if (ClientHello.parse(input, .stream)) |hello| {
         try std.testing.expect(hello.random.len == 32 and hello.session.len <= 32);
         // No supported_versions extension (a TLS 1.2 hello, or the extension's type edited away) leaves no versions.

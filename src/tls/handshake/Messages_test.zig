@@ -165,24 +165,24 @@ fn fuzz(_: void, case: *shakedown.Case) !void {
 
 fn parseAll(input: []const u8) !void {
     var chain: [M.max_certificates][]const u8 = undefined;
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.certificate(input, 16, 4096, &chain, .{ .delegated = true, .scts = true })) |parsed| {
         try std.testing.expect(parsed.count <= 16 and parsed.total_bytes <= 4096);
         for (chain[0..parsed.count]) |der| try std.testing.expect(der.len != 0);
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.certificateRequest(input)) |request| {
         try std.testing.expect(request.schemes.len >= 2 and request.schemes.len % 2 == 0);
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.certificateVerify(input)) |cv| try std.testing.expect(cv.signature.len <= input.len) else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.finished(input, 32)) |verify_data| try std.testing.expectEqual(@as(usize, 32), verify_data.len) else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.newSessionTicket(input)) |ticket| {
         try std.testing.expect(ticket.ticket.len != 0 and ticket.lifetime <= M.max_ticket_lifetime);
     } else |_| {}
-    // glint-ignore: Z026 -- fuzzed input may parse or not; the target checks only what parses
+    // fuzzed input may parse or not; the target checks only what parses
     if (M.keyUpdate(input)) |request| try std.testing.expect(request or !request) else |_| {}
 }
 
