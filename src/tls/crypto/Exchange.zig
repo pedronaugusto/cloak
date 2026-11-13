@@ -156,7 +156,8 @@ pub const Share = struct {
         var self: Share = .{ .group = group, .private = undefined, .public = @splat(0) };
         switch (group) {
             .x25519 => {
-                var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*));
+                var key_owner: aegis.Secret(X25519.KeyPair) = undefined;
+                key_owner.make(X25519.KeyPair.generateDeterministic, .{entropy[0..X25519.seed_length].*});
                 defer key_owner.deinit();
                 const key = key_owner.expose();
                 self.private = .{ .x25519 = .init(key.secret_key) };
@@ -166,10 +167,12 @@ pub const Share = struct {
             .p384 => try initCurve(ecdh.P384, &self, entropy),
             .p521 => try initCurve(ecdh.P521, &self, entropy),
             .x25519_mlkem768 => {
-                var pair_owner: aegis.Secret(MlKem.KeyPair) = .init(MlKem.KeyPair.generateDeterministic(entropy[0..MlKem.seed_length].*) catch return error.InvalidEntropy); // std returns the pair by value; its copy is in the frame `scrubbed` erases (`depth`)
+                var pair_owner: aegis.Secret(MlKem.KeyPair) = undefined;
+                pair_owner.make(MlKem.KeyPair.generateDeterministic, .{entropy[0..MlKem.seed_length].*}) catch return error.InvalidEntropy;
                 defer pair_owner.deinit();
                 const pair = pair_owner.expose();
-                var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[MlKem.seed_length..][0..X25519.seed_length].*));
+                var key_owner: aegis.Secret(X25519.KeyPair) = undefined;
+                key_owner.make(X25519.KeyPair.generateDeterministic, .{entropy[MlKem.seed_length..][0..X25519.seed_length].*});
                 defer key_owner.deinit();
                 const key = key_owner.expose();
                 self.private = .{ .x25519_mlkem768 = .{ .kem = .init(pair.secret_key), .x25519 = .init(key.secret_key) } };
@@ -189,7 +192,8 @@ pub const Share = struct {
     fn initPure(comptime P: type, self: *Share, entropy: []const u8) InitError!P.Private {
         @setRuntimeSafety(true);
         const seed = entropy[0..P.Kem.seed_length];
-        var pair_owner: aegis.Secret(P.Kem.KeyPair) = .init(P.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy);
+        var pair_owner: aegis.Secret(P.Kem.KeyPair) = undefined;
+        pair_owner.make(P.Kem.KeyPair.generateDeterministic, .{seed.*}) catch return error.InvalidEntropy;
         defer pair_owner.deinit();
         const pair = pair_owner.expose();
         const ek = pair.public_key.toBytes();
@@ -202,7 +206,8 @@ pub const Share = struct {
         const scalar = entropy[0..H.Curve.scalar_length];
         H.Curve.publicKey(scalar, self.public[0..H.Curve.public_length]) catch return error.InvalidEntropy;
         const seed = entropy[H.Curve.scalar_length..][0..H.Kem.seed_length];
-        var pair_owner: aegis.Secret(H.Kem.KeyPair) = .init(H.Kem.KeyPair.generateDeterministic(seed.*) catch return error.InvalidEntropy);
+        var pair_owner: aegis.Secret(H.Kem.KeyPair) = undefined;
+        pair_owner.make(H.Kem.KeyPair.generateDeterministic, .{seed.*}) catch return error.InvalidEntropy;
         defer pair_owner.deinit();
         const pair = pair_owner.expose();
         const ek = pair.public_key.toBytes();
@@ -281,7 +286,8 @@ pub const Share = struct {
     fn decaps(comptime K: type, comptime from_seed: bool, key: anytype, ciphertext: *const [K.ciphertext_length]u8) AgreeError![K.shared_length]u8 {
         @setRuntimeSafety(true);
         if (from_seed) {
-            var pair_owner: aegis.Secret(K.KeyPair) = .init(K.KeyPair.generateDeterministic(key.*) catch return error.InvalidShare);
+            var pair_owner: aegis.Secret(K.KeyPair) = undefined;
+            pair_owner.make(K.KeyPair.generateDeterministic, .{key.*}) catch return error.InvalidShare;
             defer pair_owner.deinit();
             return pair_owner.expose().secret_key.decaps(ciphertext) catch error.InvalidShare;
         } else return key.decaps(ciphertext) catch error.InvalidShare;
@@ -381,7 +387,8 @@ fn respondShare(comptime group: Group, client_share: []const u8, entropy: []cons
     const into = out.agreed.secret.exposeMut();
     switch (group) {
         .x25519 => {
-            var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[0..X25519.seed_length].*));
+            var key_owner: aegis.Secret(X25519.KeyPair) = undefined;
+            key_owner.make(X25519.KeyPair.generateDeterministic, .{entropy[0..X25519.seed_length].*});
             defer key_owner.deinit();
             const key = key_owner.expose();
             out.public[0..32].* = key.public_key;
@@ -393,7 +400,8 @@ fn respondShare(comptime group: Group, client_share: []const u8, entropy: []cons
             var sealed_owner: aegis.Secret(MlKem.EncapsulatedSecret) = .init(ek.encapsDeterministic(entropy[0..MlKem.encaps_seed_length]));
             defer sealed_owner.deinit();
             const sealed = sealed_owner.expose();
-            var key_owner: aegis.Secret(X25519.KeyPair) = .init(X25519.KeyPair.generateDeterministic(entropy[MlKem.encaps_seed_length..][0..X25519.seed_length].*));
+            var key_owner: aegis.Secret(X25519.KeyPair) = undefined;
+            key_owner.make(X25519.KeyPair.generateDeterministic, .{entropy[MlKem.encaps_seed_length..][0..X25519.seed_length].*});
             defer key_owner.deinit();
             const key = key_owner.expose();
             into[32..64].* = X25519.scalarmult(key.secret_key, client_share[MlKem.PublicKey.encoded_length..][0..32].*) catch return error.WeakKey;
