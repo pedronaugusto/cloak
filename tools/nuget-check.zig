@@ -72,7 +72,7 @@ fn run(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, args: []const [
     archive.unsignedHash(&computed);
     if (!std.mem.eql(u8, &computed, &named)) return error.PackageMismatch;
     return arena.print("verified: signed {d}, timestamped {}, package sha256 {x}", .{
-        @divFloor(verified.time.toNanoseconds(), std.time.ns_per_s), verified.timestamped, computed,
+        cloak.types.seconds(verified.time), verified.timestamped, computed,
     });
 }
 

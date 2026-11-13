@@ -17,9 +17,9 @@ const types = @import("../../certificates.zig").types;
 pub const Options = struct {
     /// How long a ticket lives, counted from the full handshake its session began with. At most
     /// seven days (RFC 8446 section 4.6.1).
-    lifetime: std.Io.Duration = .fromSeconds(24 * 60 * 60),
+    lifetime: std.Io.Duration = types.secondsSpan(24 * 60 * 60),
     /// How long a key issues tickets after it is installed.
-    rotation: std.Io.Duration = .fromSeconds(6 * 60 * 60),
+    rotation: std.Io.Duration = types.secondsSpan(6 * 60 * 60),
 };
 
 /// Keys a snapshot holds: the issuing key and those still opening tickets.

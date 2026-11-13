@@ -48,8 +48,8 @@ pub const Srtp = Hello.Srtp;
 /// The retransmission timer (RFC 9147 section 5.8.2): the first wait, its doubling cap, and how
 /// many retransmissions before the handshake gives up.
 pub const Timing = struct {
-    initial: std.Io.Duration = .fromSeconds(1),
-    max: std.Io.Duration = .fromSeconds(60),
+    initial: std.Io.Duration = types.secondsSpan(1),
+    max: std.Io.Duration = types.secondsSpan(60),
     retransmissions: u8 = 7,
 };
 
@@ -1199,7 +1199,7 @@ fn readEpoch(self: *Datagram, bits: u2) ?*Record.Epoch {
 /// How long the read epochs before a newer one stay: two maximum segment lifetimes (RFC 9293's
 /// two minutes each), after which no delayed copy of their records remains; BoringSSL keeps the
 /// same.
-const old_epoch_kept: std.Io.Duration = .fromSeconds(4 * 60);
+const old_epoch_kept = types.secondsSpan(4 * 60);
 
 /// Erases the read epochs whose keeping time passed, at the association's next receive or send:
 /// no timer of its own wakes the caller for it.
