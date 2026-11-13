@@ -1,0 +1,10 @@
+{
+  "disallowed": [
+    {
+      "source": "std",
+      "declaration": "Io.async",
+      "reason": "the caller owns asynchronous work",
+      "replacement": "return the work and let the caller start it"
+    }
+  ]
+}
