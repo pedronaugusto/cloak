@@ -227,8 +227,9 @@ pub fn remaining(self: *const Protection) struct { records: u64, bytes: u64 } {
     @setRuntimeSafety(true);
     return switch (self.state) {
         inline else => |*e| .{
-            .records = e.limits.records.raw() -| e.sequence.raw(),
-            .bytes = e.limits.bytes.raw() -| e.bytes.raw(),
+            // None left once the count reaches the limit.
+            .records = (e.limits.records.sub(e.sequence) catch @TypeOf(e.sequence).fromRaw(0)).raw(),
+            .bytes = (e.limits.bytes.sub(e.bytes) catch @TypeOf(e.bytes).fromRaw(0)).raw(),
         },
     };
 }
