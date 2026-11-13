@@ -172,12 +172,12 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
         },
         .ed25519 => {
             try io.randomSecure(draw[0..32]);
-            // unreachable: every 32-byte seed is a key.
+            // glint-ignore: Z026 -- every 32-byte seed is a key.
             parser.ed25519Key(draw[0..32], null, out) catch unreachable;
         },
         .x25519 => {
             try io.randomSecure(draw[0..32]);
-            // unreachable: every 32 bytes are an X25519 private key.
+            // glint-ignore: Z026 -- every 32 bytes are an X25519 private key.
             parser.x25519Key(draw[0..32], null, out) catch unreachable;
         },
         .mldsa44, .mldsa65, .mldsa87 => {
@@ -187,7 +187,7 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
                 .mldsa65 => .mldsa65,
                 else => .mldsa87,
             };
-            // unreachable: every 32-byte seed is a key.
+            // glint-ignore: Z026 -- every 32-byte seed is a key.
             parser.mldsaFromSeed(level, draw[0..32], null, out) catch unreachable;
         },
         .rsa => |size| {

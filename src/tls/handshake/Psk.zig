@@ -136,7 +136,7 @@ pub fn derive(psk: External, prefix: Labels.Prefix, imported_identity: []const u
             Labels.extract(H, epskx.exposeMut(), &@as([H.digest_length]u8, @splat(0)), psk.secret);
             var identity_hash: [H.digest_length]u8 = undefined;
             H.hash(imported_identity, &identity_hash, .{});
-            Labels.expandWith(H, prefix, out, epskx.expose(), "derived psk", &identity_hash) catch unreachable; // unreachable: the label, a hash and at most 48 bytes are within the bounds
+            Labels.expandWith(H, prefix, out, epskx.expose(), "derived psk", &identity_hash) catch unreachable; // glint-ignore: Z026 -- the label, a hash and at most 48 bytes are within the bounds
         },
     }
 }

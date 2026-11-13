@@ -576,7 +576,7 @@ pub fn provideTime(self: *Server, now: std.Io.Timestamp) Client.Error!void {
         // The ClientHello waited for the clock; it was parsed and checked once already.
         errdefer self.state.fail();
         self.scratch.?.hello_held = false;
-        const hello = ClientHello.parse(self.held, self.options.transport) catch unreachable; // unreachable: these bytes parsed before
+        const hello = ClientHello.parse(self.held, self.options.transport) catch unreachable; // glint-ignore: Z026 -- these bytes parsed before
         if (self.version == .tls12) return Server12.answer(self, self.held, &hello);
         return self.answerHello(self.held, &hello);
     }
@@ -1795,7 +1795,7 @@ fn issueTickets(self: *Server) Client.Error!void {
         }
         // The sealed ticket is ciphertext: it goes to the client as it is.
         var sealed_buf: [Ticket.max_length]u8 = undefined;
-        const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
+        const sealed = Ticket.seal(key, drawn[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // glint-ignore: Z026 -- the buffer holds the longest ticket
         const lifetime: u32 = @intCast(@min(expires - now_s, Messages.max_ticket_lifetime)); // positive and at most seven days
         const dst = try self.reserve(4 + 4 + 4 + 2 + 2 + sealed.len + 2);
         const message = try Messages.buildNewSessionTicket(dst, lifetime, state.age_add, &nonce, sealed);

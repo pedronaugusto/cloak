@@ -51,7 +51,7 @@ pub fn Agree(comptime G: type) type {
         pub fn init(self: *Self) void {
             var other: [G.scalar_length]u8 = @splat(0x35);
             other[0] = 0x21;
-            G.publicKey(&other, &self.peer) catch unreachable; // unreachable: a fixed in-range scalar
+            G.publicKey(&other, &self.peer) catch unreachable; // glint-ignore: Z026 -- a fixed in-range scalar
         }
         pub fn prepare(self: *Self, slot: usize, class: leak.Class, random: std.Random) void {
             const scalar = &self.scalars[slot];
@@ -129,7 +129,7 @@ pub const Decaps = struct {
     out: [K.shared_length]u8 = undefined,
     failures: usize = 0,
     pub fn init(self: *Decaps) void {
-        self.pair = K.KeyPair.generateDeterministic(@splat(7)) catch unreachable; // unreachable: a fixed seed
+        self.pair = K.KeyPair.generateDeterministic(@splat(7)) catch unreachable; // glint-ignore: Z026 -- a fixed seed
         self.valid = self.pair.public_key.encapsDeterministic(&@as([K.encaps_seed_length]u8, @splat(9))).ciphertext;
     }
     pub fn prepare(self: *Decaps, slot: usize, class: leak.Class, random: std.Random) void {

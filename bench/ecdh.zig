@@ -36,21 +36,21 @@ pub fn main(init: std.process.Init) !void {
         const peer = try curve.fromSec1(&b_public);
         const Cloak = struct {
             fn publicKey(scalar: *const [group.scalar_length]u8, public: *[group.public_length]u8) void {
-                group.publicKey(scalar, public) catch unreachable; // unreachable: the benchmark's scalar is in range
+                group.publicKey(scalar, public) catch unreachable; // glint-ignore: Z026 -- the benchmark's scalar is in range
                 std.mem.doNotOptimizeAway(public);
             }
             fn agree(scalar: *const [group.scalar_length]u8, public: []const u8, secret: *[group.scalar_length]u8) void {
-                group.agree(scalar, public, secret) catch unreachable; // unreachable: the benchmark's peer key is valid
+                group.agree(scalar, public, secret) catch unreachable; // glint-ignore: Z026 -- the benchmark's peer key is valid
                 std.mem.doNotOptimizeAway(secret);
             }
         };
         const Std = struct {
             fn base(scalar: [group.scalar_length]u8) void {
-                const point = curve.basePoint.mul(scalar, .big) catch unreachable; // unreachable: in range
+                const point = curve.basePoint.mul(scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
                 std.mem.doNotOptimizeAway(&point);
             }
             fn mul(point: curve, scalar: [group.scalar_length]u8) void {
-                const product = point.mul(scalar, .big) catch unreachable; // unreachable: in range
+                const product = point.mul(scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
                 std.mem.doNotOptimizeAway(&product);
             }
         };
@@ -81,7 +81,7 @@ fn exchange25519(init: std.process.Init, out: *std.Io.Writer, iterations: usize)
             std.mem.doNotOptimizeAway(&public);
         }
         fn agree(scalar: *const [32]u8, public: []const u8, secret: *[32]u8) void {
-            ecdh.X25519.agree(scalar, public, secret) catch unreachable; // unreachable: the peer key is valid
+            ecdh.X25519.agree(scalar, public, secret) catch unreachable; // glint-ignore: Z026 -- the peer key is valid
             std.mem.doNotOptimizeAway(secret);
         }
     };
@@ -91,7 +91,7 @@ fn exchange25519(init: std.process.Init, out: *std.Io.Writer, iterations: usize)
             std.mem.doNotOptimizeAway(&public);
         }
         fn agree(scalar: [32]u8, public: [32]u8) void {
-            const secret = Std.scalarmult(scalar, public) catch unreachable; // unreachable: the peer key is valid
+            const secret = Std.scalarmult(scalar, public) catch unreachable; // glint-ignore: Z026 -- the peer key is valid
             std.mem.doNotOptimizeAway(&secret);
         }
     };
@@ -120,11 +120,11 @@ fn signing(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void
         const Run = struct {
             fn cloakSign(k: cloak.PrivateKey, n: []const u8) void {
                 var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-                const signature = k.sign(entry[3], message, n, &buffer) catch unreachable; // unreachable: the key and algorithm agree
+                const signature = k.sign(entry[3], message, n, &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
                 std.mem.doNotOptimizeAway(signature);
             }
             fn stdSign(p: Ecdsa.KeyPair, n: [Ecdsa.noise_length]u8) void {
-                const signature = p.sign(message, n) catch unreachable; // unreachable: any noise signs
+                const signature = p.sign(message, n) catch unreachable; // glint-ignore: Z026 -- any noise signs
                 std.mem.doNotOptimizeAway(&signature);
             }
         };
@@ -139,11 +139,11 @@ fn signing(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void
     const Run = struct {
         fn cloakSign(k: cloak.PrivateKey) void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const signature = k.sign(.ed25519, message, "", &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            const signature = k.sign(.ed25519, message, "", &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
             std.mem.doNotOptimizeAway(signature);
         }
         fn stdSign(p: Ed.KeyPair) void {
-            const signature = p.sign(message, null) catch unreachable; // unreachable: the key pair is consistent
+            const signature = p.sign(message, null) catch unreachable; // glint-ignore: Z026 -- the key pair is consistent
             std.mem.doNotOptimizeAway(&signature);
         }
     };

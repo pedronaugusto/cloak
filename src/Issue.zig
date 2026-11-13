@@ -30,7 +30,7 @@ pub const Error = Template.Error || certificate.ParseError || std.Io.Cancelable 
 /// P-521); RSA PKCS#1 v1.5 with SHA-256 (Go's); ML-DSA of its parameter set.
 pub fn defaultAlgorithm(key: PrivateKey) Algorithm.Signature {
     var buffer: [PrivateKey.max_public_key_info]u8 = undefined;
-    // unreachable: cloak encoded it.
+    // glint-ignore: Z026 -- cloak encoded it.
     const public = certificate.parsePublicKey(key.publicKeyInfo(&buffer)) catch unreachable;
     return switch (public) {
         .rsa => .{ .rsa = .sha256 },

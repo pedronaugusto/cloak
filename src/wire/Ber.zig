@@ -38,7 +38,7 @@ pub fn write(bytes: []const u8, limits: Limits, out: []u8) Error!void {
         written = emit(bytes, element, out, written);
         at = element.end;
     }
-    std.debug.assert(written == out.len);
+    aegis.assert.invariant(written == out.len, "written == out.len");
 }
 
 /// `measure` and `write` into a new allocation.
@@ -146,7 +146,7 @@ fn contents(bytes: []const u8, element: Element, out: []u8, at: usize) usize {
     var cursor = element.start;
     var budget: usize = std.math.maxInt(usize);
     while (cursor < element.stop) {
-        // unreachable: the element was parsed whole within the same bounds.
+        // glint-ignore: Z026 -- the element was parsed whole within the same bounds.
         const child = parse(bytes[0..element.stop], cursor, 64, &budget) catch unreachable;
         if (element.flatten) {
             if (child.tag & 0x20 == 0) {

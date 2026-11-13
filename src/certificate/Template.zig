@@ -426,10 +426,10 @@ fn time(b: *Builder, at: std.Io.Timestamp) Error!void {
     if (year > 9999) return error.InvalidValidity;
     var buffer: [15]u8 = undefined;
     if (year < 2050) {
-        const text = std.mem.print(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year % 100, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 13 bytes
+        const text = std.mem.print(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year % 100, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // glint-ignore: Z026 -- 13 bytes
         try b.element(0x17, text);
     } else {
-        const text = std.mem.print(&buffer, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // unreachable: 15 bytes
+        const text = std.mem.print(&buffer, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // glint-ignore: Z026 -- 15 bytes
         try b.element(0x18, text);
     }
 }

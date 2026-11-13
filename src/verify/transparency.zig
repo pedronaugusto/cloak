@@ -54,7 +54,7 @@ pub const List = struct {
 
     pub fn next(self: *List) ?Sct {
         @setRuntimeSafety(true);
-        // unreachable: `init` checked the framing whole.
+        // glint-ignore: Z026 -- `init` checked the framing whole.
         while (self.entry() catch unreachable) |found| if (found) |sct| return sct;
         return null;
     }
@@ -304,10 +304,10 @@ pub fn precertificate(gpa: std.mem.Allocator, tbs: []const u8) Error![]u8 {
         at = Der.header(out, at, 0x30, kept);
         list = sequence.reader();
         while (!list.empty()) {
-            // unreachable: the first pass read every extension and its OID.
+            // glint-ignore: Z026 -- the first pass read every extension and its OID.
             const ext = list.expect(0x30) catch unreachable;
             var er = ext.reader();
-            // unreachable: as above.
+            // glint-ignore: Z026 -- as above.
             if (std.mem.eql(u8, (er.expect(6) catch unreachable).value, sct_list_oid)) continue;
             @memcpy(out[at..][0..ext.encoded.len], ext.encoded);
             at += ext.encoded.len;
@@ -315,7 +315,7 @@ pub fn precertificate(gpa: std.mem.Allocator, tbs: []const u8) Error![]u8 {
     }
     @memcpy(out[at..][0..suffix.len], suffix);
     at += suffix.len;
-    std.debug.assert(at == out.len);
+    aegis.assert.invariant(at == out.len, "at == out.len");
     return out;
 }
 

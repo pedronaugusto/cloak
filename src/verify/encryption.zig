@@ -46,15 +46,15 @@ pub fn encrypt(key: A.PublicKey, scheme: A.Encryption, message: []const u8, seed
         .oaep => |oaep| try pkcs1.encode(oaep, message, seed, em[0..k]),
     }
     const Modulus = std.crypto.ff.Modulus(4096);
-    // unreachable: checkRsa held the modulus odd, 2048 to 4096 bits, and the exponent below it.
+    // glint-ignore: Z026 -- checkRsa held the modulus odd, 2048 to 4096 bits, and the exponent below it.
     const n = Modulus.fromBytes(rsa.modulus, .big) catch unreachable;
-    // unreachable: EM's leading byte is zero, so it is below n.
+    // glint-ignore: Z026 -- EM's leading byte is zero, so it is below n.
     const m = Modulus.Fe.fromBytes(n, em[0..k], .big) catch unreachable;
-    // unreachable: as above.
+    // glint-ignore: Z026 -- as above.
     const e = Modulus.Fe.fromBytes(n, rsa.exponent, .big) catch unreachable;
-    // unreachable: a nonzero exponent, which checkRsa held.
+    // glint-ignore: Z026 -- a nonzero exponent, which checkRsa held.
     const c = n.powPublic(m, e) catch unreachable;
-    // unreachable: c is below n, which is k bytes.
+    // glint-ignore: Z026 -- c is below n, which is k bytes.
     c.toBytes(out[0..k], .big) catch unreachable;
     return out[0..k];
 }

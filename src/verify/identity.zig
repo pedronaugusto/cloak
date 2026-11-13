@@ -36,7 +36,7 @@ pub fn pins(cert: *const C.Certificate, set: []const [32]u8) Error!void {
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(cert.spki, &hash, .{});
     // Every pin is compared; only whether one matched is released.
-    var matches = aegis.secret.Choice.fromBit(0) catch unreachable; // unreachable: 0 is a bit
+    var matches = aegis.secret.Choice.fromBit(0) catch unreachable; // glint-ignore: Z026 -- 0 is a bit
     for (set) |*pin| matches = matches.@"or"(aegis.secret.equal(32, &hash, pin));
     if (!matches.declassify("a pin mismatch is refused")) return error.PinMismatch;
 }

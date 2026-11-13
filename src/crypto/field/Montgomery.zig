@@ -7,6 +7,7 @@
 const std = @import("std");
 const Secret = @import("aegis").Secret;
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {
     const s1 = @addWithOverflow(a, b);
@@ -47,7 +48,7 @@ pub inline fn barrier(value: u64) u64 {
     var v = value;
     if (@inComptime()) return v;
     switch (builtin.cpu.arch) {
-        // aegis: boundary(A019): an empty asm that ties the value to a register, so the optimizer cannot see through a mask
+        // glint-ignore: P007 -- boundary: an empty asm that ties the value to a register, so the optimizer cannot see through a mask
         .x86_64, .aarch64 => asm volatile (""
             : [v] "+r" (v),
         ),
@@ -93,8 +94,8 @@ pub fn Field(comptime modulus: comptime_int) type {
         pub const one: Self = .{ .limbs = split((1 << (64 * n)) % modulus) };
 
         comptime {
-            std.debug.assert(modulus & 1 == 1);
-            std.debug.assert(m[0] *% inverse == std.math.maxInt(u64));
+            aegis.assert.invariant(modulus & 1 == 1, "modulus & 1 == 1");
+            aegis.assert.invariant(m[0] *% inverse == std.math.maxInt(u64), "m[0] *% inverse == std.math.maxInt(u64)");
         }
 
         fn split(comptime value: comptime_int) Limbs {
@@ -110,7 +111,7 @@ pub fn Field(comptime modulus: comptime_int) type {
         pub fn constant(comptime value: comptime_int) Self {
             comptime {
                 @setEvalBranchQuota(100_000);
-                std.debug.assert(value < modulus);
+                aegis.assert.invariant(value < modulus, "value < modulus");
                 return .{ .limbs = split((value << (64 * n)) % modulus) };
             }
         }

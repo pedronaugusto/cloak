@@ -132,7 +132,7 @@ fn aead(ctx: *const Context, comptime suite: Suite13, comptime name: []const u8,
             std.mem.doNotOptimizeAway(&s.tag);
         }
         fn open(s: *@This()) void {
-            A.decrypt(&s.back, &s.cipher, s.tag, &s.ad, s.nonce, s.key) catch unreachable; // unreachable: sealed with the same key
+            A.decrypt(&s.back, &s.cipher, s.tag, &s.ad, s.nonce, s.key) catch unreachable; // glint-ignore: Z026 -- sealed with the same key
             std.mem.doNotOptimizeAway(&s.back);
         }
     };
@@ -158,7 +158,7 @@ fn x25519(ctx: *const Context) !void {
             std.mem.doNotOptimizeAway(&s.out);
         }
         fn agree(s: *@This()) void {
-            s.out = X.scalarmult(s.secret, s.peer) catch unreachable; // unreachable: a valid peer key
+            s.out = X.scalarmult(s.secret, s.peer) catch unreachable; // glint-ignore: Z026 -- a valid peer key
             std.mem.doNotOptimizeAway(&s.out);
         }
     };
@@ -187,31 +187,31 @@ fn curve(ctx: *const Context, comptime G: type, comptime Point: type, comptime n
         leaf_key: cloak.certificates.certificate.PublicKey = undefined,
         std_pair: std.crypto.sign.ecdsa.Ecdsa(Point, if (hash == .sha256) std.crypto.hash.sha2.Sha256 else std.crypto.hash.sha2.Sha384).KeyPair = undefined,
         fn keygen(s: *@This()) void {
-            G.publicKey(&s.scalar, &s.public) catch unreachable; // unreachable: the scalar is in range
+            G.publicKey(&s.scalar, &s.public) catch unreachable; // glint-ignore: Z026 -- the scalar is in range
             std.mem.doNotOptimizeAway(&s.public);
         }
         fn agree(s: *@This()) void {
-            G.agree(&s.scalar, &s.peer, &s.shared) catch unreachable; // unreachable: valid key and peer
+            G.agree(&s.scalar, &s.peer, &s.shared) catch unreachable; // glint-ignore: Z026 -- valid key and peer
             std.mem.doNotOptimizeAway(&s.shared);
         }
         fn sign(s: *@This()) void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const signature = s.key.sign(.{ .ecdsa = hash }, s.message, s.noise[0..s.noise_len], &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            const signature = s.key.sign(.{ .ecdsa = hash }, s.message, s.noise[0..s.noise_len], &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
             std.mem.doNotOptimizeAway(signature);
         }
         fn verify(s: *@This()) void {
-            cloak.certificates.signature.verify(s.leaf_key, .{ .ecdsa = hash }, s.message, s.signature[0..s.signature_len]) catch unreachable; // unreachable: a valid signature
+            cloak.certificates.signature.verify(s.leaf_key, .{ .ecdsa = hash }, s.message, s.signature[0..s.signature_len]) catch unreachable; // glint-ignore: Z026 -- a valid signature
         }
         fn stdKeygen(s: *@This()) void {
-            const point = Point.basePoint.mul(s.scalar, .big) catch unreachable; // unreachable: in range
+            const point = Point.basePoint.mul(s.scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
             std.mem.doNotOptimizeAway(&point);
         }
         fn stdAgree(s: *@This()) void {
-            const point = s.peer_point.mul(s.scalar, .big) catch unreachable; // unreachable: in range
+            const point = s.peer_point.mul(s.scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
             std.mem.doNotOptimizeAway(&point);
         }
         fn stdSign(s: *@This()) void {
-            const signature = s.std_pair.sign(s.message, s.noise[0..G.scalar_length].*) catch unreachable; // unreachable: any noise signs
+            const signature = s.std_pair.sign(s.message, s.noise[0..G.scalar_length].*) catch unreachable; // glint-ignore: Z026 -- any noise signs
             std.mem.doNotOptimizeAway(&signature);
         }
     };
@@ -262,11 +262,11 @@ fn ed25519(ctx: *const Context) !void {
         leaf_key: cloak.certificates.certificate.PublicKey = undefined,
         fn sign(s: *@This()) void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const signature = s.key.sign(.ed25519, s.message, "", &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            const signature = s.key.sign(.ed25519, s.message, "", &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
             std.mem.doNotOptimizeAway(signature);
         }
         fn verify(s: *@This()) void {
-            cloak.certificates.signature.verify(s.leaf_key, .ed25519, s.message, s.signature[0..64]) catch unreachable; // unreachable: a valid signature
+            cloak.certificates.signature.verify(s.leaf_key, .ed25519, s.message, s.signature[0..64]) catch unreachable; // glint-ignore: Z026 -- a valid signature
         }
     };
     var state: State = .{ .message = ctx.message };
@@ -291,7 +291,7 @@ fn mlkem(ctx: *const Context) !void {
         pair: K.KeyPair = undefined,
         ciphertext: [K.ciphertext_length]u8 = undefined,
         fn keygen(s: *@This()) void {
-            const pair = K.KeyPair.generateDeterministic(s.seed) catch unreachable; // unreachable: any seed
+            const pair = K.KeyPair.generateDeterministic(s.seed) catch unreachable; // glint-ignore: Z026 -- any seed
             std.mem.doNotOptimizeAway(&pair);
         }
         fn encaps(s: *@This()) void {
@@ -299,7 +299,7 @@ fn mlkem(ctx: *const Context) !void {
             std.mem.doNotOptimizeAway(&result);
         }
         fn decaps(s: *@This()) void {
-            const secret = s.pair.secret_key.decaps(&s.ciphertext) catch unreachable; // unreachable: a valid ciphertext
+            const secret = s.pair.secret_key.decaps(&s.ciphertext) catch unreachable; // glint-ignore: Z026 -- a valid ciphertext
             std.mem.doNotOptimizeAway(&secret);
         }
     };
@@ -321,7 +321,7 @@ fn rsa(ctx: *const Context, comptime name: []const u8) !void {
         message: []const u8,
         signature: []const u8,
         fn verify(s: *@This()) void {
-            cloak.certificates.signature.verify(s.key, .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } }, s.message, s.signature) catch unreachable; // unreachable: a valid signature
+            cloak.certificates.signature.verify(s.key, .{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } }, s.message, s.signature) catch unreachable; // glint-ignore: Z026 -- a valid signature
         }
     };
     const der = try ctx.file(name ++ ".der");
@@ -339,12 +339,12 @@ fn rsa(ctx: *const Context, comptime name: []const u8) !void {
         noise: [cloak.PrivateKey.max_noise]u8,
         fn pss(s: *@This()) void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const made = s.key.sign(.{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            const made = s.key.sign(.{ .pss = .{ .hash = .sha256, .mgf_hash = .sha256, .salt_length = 32 } }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
             std.mem.doNotOptimizeAway(made);
         }
         fn pkcs1(s: *@This()) void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const made = s.key.sign(.{ .rsa = .sha256 }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // unreachable: the key and algorithm agree
+            const made = s.key.sign(.{ .rsa = .sha256 }, s.message, s.noise[0..s.key.noiseLength()], &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
             std.mem.doNotOptimizeAway(made);
         }
     };
@@ -516,7 +516,7 @@ fn bulk(ctx: *const Context) !void {
                 wire_len: usize = 0,
                 fn seal(s: *@This()) void {
                     const conn = &s.pair.client.conn;
-                    const n = conn.send(&s.plain) catch unreachable; // unreachable: a connected client with room
+                    const n = conn.send(&s.plain) catch unreachable; // glint-ignore: Z026 -- a connected client with room
                     std.debug.assert(n == size);
                     const bytes = conn.output();
                     s.wire_len = bytes.len;
@@ -529,7 +529,7 @@ fn bulk(ctx: *const Context) !void {
                 fn openWire(s: *@This(), wire: []const u8) void {
                     const conn = &s.pair.server.conn;
                     var at: usize = 0;
-                    while (at < wire.len) at += conn.receive(wire[at..]) catch unreachable; // unreachable: an authentic record
+                    while (at < wire.len) at += conn.receive(wire[at..]) catch unreachable; // glint-ignore: Z026 -- an authentic record
                     const view = conn.readable();
                     std.debug.assert(view.len == size);
                     std.mem.doNotOptimizeAway(view.ptr);

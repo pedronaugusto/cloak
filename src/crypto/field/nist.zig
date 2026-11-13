@@ -16,6 +16,7 @@ const std = @import("std");
 const Secret = @import("aegis").Secret;
 const s2n = @import("s2n.zig");
 const Montgomery = @import("Montgomery.zig");
+const aegis = @import("aegis");
 
 pub const Curve = enum { p256, p384 };
 
@@ -72,7 +73,7 @@ pub fn FieldWith(comptime curve: Curve, comptime backend: Backend, comptime vari
         pub fn constant(comptime value: comptime_int) Self {
             comptime {
                 @setEvalBranchQuota(100_000);
-                std.debug.assert(value < modulus);
+                aegis.assert.invariant(value < modulus, "value < modulus");
                 return .{ .limbs = split((value << (64 * n)) % modulus) };
             }
         }

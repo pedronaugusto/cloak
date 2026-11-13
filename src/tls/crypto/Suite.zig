@@ -8,6 +8,7 @@
 //! Availability is not policy permission.
 const std = @import("std");
 const ccm = @import("Ccm.zig");
+const aegis = @import("aegis");
 
 /// Protocol versions, by their wire number on a stream. DTLS shares them: DTLS 1.2 and 1.3 are
 /// these versions carried in datagrams, with wire numbers of their own (`Transport.wire`).
@@ -258,10 +259,10 @@ pub fn Hash12(comptime suite: Suite12) type {
 
 comptime {
     for (std.enums.values(Cipher)) |cipher| {
-        std.debug.assert(AeadOf(cipher).tag_length == cipher.tagLength());
-        std.debug.assert(AeadOf(cipher).key_length == cipher.keyLength());
-        std.debug.assert(AeadOf(cipher).nonce_length == 12);
+        aegis.assert.invariant(AeadOf(cipher).tag_length == cipher.tagLength(), "AeadOf(cipher).tag_length == cipher.tagLength()");
+        aegis.assert.invariant(AeadOf(cipher).key_length == cipher.keyLength(), "AeadOf(cipher).key_length == cipher.keyLength()");
+        aegis.assert.invariant(AeadOf(cipher).nonce_length == 12, "AeadOf(cipher).nonce_length == 12");
     }
-    for (std.enums.values(Suite)) |suite| std.debug.assert((suite.tls13() == null) != (suite.tls12() == null));
-    std.debug.assert(std.enums.values(Suite).len == std.enums.values(Suite13).len + std.enums.values(Suite12).len);
+    for (std.enums.values(Suite)) |suite| aegis.assert.invariant((suite.tls13() == null) != (suite.tls12() == null), "(suite.tls13() == null) != (suite.tls12() == null)");
+    aegis.assert.invariant(std.enums.values(Suite).len == std.enums.values(Suite13).len + std.enums.values(Suite12).len, "std.enums.values(Suite).len == std.enums.values(Suite13).len + std.enums.values(Suite12).len");
 }

@@ -105,7 +105,7 @@ fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options:
     const held = if (key) |owned| owned.retain() else null;
     errdefer if (held) |owned| owned.deinit();
     // The key parsed above borrows the caller's bytes: parse it again from the owned copy.
-    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }) }; // unreachable: the same bytes parsed above
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }) }; // glint-ignore: Z026 -- the same bytes parsed above
 }
 
 /// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
@@ -156,7 +156,7 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         wire += der.len;
     }
     // The leaf's key borrows the owned copy, not the caller's bytes.
-    const public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // unreachable: the same bytes parsed above
+    const public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // glint-ignore: Z026 -- the same bytes parsed above
     const held = if (key) |signer| signer.retain() else null;
     errdefer if (held) |signer| signer.deinit();
     return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = public_key, .issuers = names }) };

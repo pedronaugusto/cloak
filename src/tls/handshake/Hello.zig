@@ -778,9 +778,9 @@ fn permute(block: []u8, permutation: Permutation, grease: ?Grease, cookie_leads:
     while (r.pos != block.len) {
         if (count == max_units) return error.InvalidOptions;
         const start = r.pos;
-        // unreachable: the block was written just now, whole extensions only.
+        // glint-ignore: Z026 -- the block was written just now, whole extensions only.
         ids[count] = r.int(u16) catch unreachable;
-        // unreachable: as above, each id is followed by its body.
+        // glint-ignore: Z026 -- as above, each id is followed by its body.
         _ = r.vector(u16) catch unreachable;
         units[count] = .{ .start = start, .len = r.pos - start, .key = permutation.rank(ids[count]) };
         count += 1;

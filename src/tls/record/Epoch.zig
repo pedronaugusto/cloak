@@ -96,7 +96,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             aegis.assert.invariant(self.owner != .next, "a kernel takes the next keys before another update");
             var next = TrafficSecret.init(undefined);
             defer next.deinit();
-            // unreachable: fixed label and hash-sized output meet the HKDF bounds.
+            // glint-ignore: Z026 -- fixed label and hash-sized output meet the HKDF bounds.
             Labels.expand(Hash, next.exposeMut(), self.traffic.?.expose(), "traffic upd", "") catch unreachable;
             derive(next.expose(), self.key.exposeMut(), self.iv.exposeMut());
             self.traffic.?.exposeMut().* = next.expose().*;
@@ -120,9 +120,9 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             return Labels.checkFinished(Hash, .tls13, self.traffic.?.expose(), transcript, received);
         }
         fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {
-            // unreachable: fixed label and AEAD-sized output meet the HKDF bounds.
+            // glint-ignore: Z026 -- fixed label and AEAD-sized output meet the HKDF bounds.
             Labels.expand(Hash, key, secret, "key", "") catch unreachable;
-            // unreachable: fixed label and twelve-byte output meet the HKDF bounds.
+            // glint-ignore: Z026 -- fixed label and twelve-byte output meet the HKDF bounds.
             Labels.expand(Hash, iv, secret, "iv", "") catch unreachable;
         }
         pub fn deinit(self: *Self) void {
@@ -134,7 +134,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
         }
         fn admit(self: *Self, len: usize) error{RecordLimit}!void {
             @setRuntimeSafety(true);
-            // unreachable: every admitted record kept the bytes within the limit.
+            // glint-ignore: Z026 -- every admitted record kept the bytes within the limit.
             const room = self.limits.bytes.sub(self.bytes) catch unreachable;
             if (self.sequence.compare(self.limits.records) != .lt or ByteCount.fromRaw(len).compare(room) == .gt) {
                 self.deinit();
@@ -162,8 +162,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             inner[input.len] = @backingInt(content);
             @memset(inner[input.len + 1 ..], 0);
             Kernels.seal(A, inner, wire[5 + inner_len ..][0..16], inner, wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose());
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(inner_len)) catch unreachable; // unreachable: admit kept the bytes within the limit
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(inner_len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
             return wire;
         }
         /// Tag verification precedes release. Any peer failure erases this epoch.
@@ -208,8 +208,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (end == 0) return self.unexpected();
             const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected();
             if (content != .application and end == 1) return self.unexpected();
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
         }
         fn bad(self: *Self) error{BadRecord} {
@@ -232,8 +232,8 @@ fn overlap(a: []const u8, b: []const u8) bool {
     return if (x <= y) y - x < a.len else x - y < b.len;
 }
 comptime {
-    std.debug.assert(max_inner + 16 <= max_ciphertext);
-    for (std.enums.values(suites.Suite13)) |suite| std.debug.assert(@sizeOf(Epoch(suite)) <= 192);
+    aegis.assert.invariant(max_inner + 16 <= max_ciphertext, "max_inner + 16 <= max_ciphertext");
+    for (std.enums.values(suites.Suite13)) |suite| aegis.assert.invariant(@sizeOf(Epoch(suite)) <= 192, "@sizeOf(Epoch(suite)) <= 192");
 }
 test {
     _ = @import("Epoch_test.zig");

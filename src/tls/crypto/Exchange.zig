@@ -50,14 +50,14 @@ const PureMlKem768 = Pure(MlKem);
 const PureMlKem1024 = Pure(MlKem1024);
 
 comptime {
-    std.debug.assert(P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength().?);
-    std.debug.assert(P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength().?);
-    std.debug.assert(P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength().?);
-    std.debug.assert(P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength().?);
-    std.debug.assert(MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength().?);
-    std.debug.assert(MlKem.ciphertext_length == Group.mlkem768.serverShareLength().?);
-    std.debug.assert(MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength().?);
-    std.debug.assert(MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength().?);
+    aegis.assert.invariant(P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength().?, "P256MlKem768.client_length == Group.secp256r1_mlkem768.clientShareLength().?");
+    aegis.assert.invariant(P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength().?, "P256MlKem768.server_length == Group.secp256r1_mlkem768.serverShareLength().?");
+    aegis.assert.invariant(P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength().?, "P384MlKem1024.client_length == Group.secp384r1_mlkem1024.clientShareLength().?");
+    aegis.assert.invariant(P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength().?, "P384MlKem1024.server_length == Group.secp384r1_mlkem1024.serverShareLength().?");
+    aegis.assert.invariant(MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength().?, "MlKem.PublicKey.encoded_length == Group.mlkem768.clientShareLength().?");
+    aegis.assert.invariant(MlKem.ciphertext_length == Group.mlkem768.serverShareLength().?, "MlKem.ciphertext_length == Group.mlkem768.serverShareLength().?");
+    aegis.assert.invariant(MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength().?, "MlKem1024.PublicKey.encoded_length == Group.mlkem1024.clientShareLength().?");
+    aegis.assert.invariant(MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength().?, "MlKem1024.ciphertext_length == Group.mlkem1024.serverShareLength().?");
 }
 
 pub const InitError = error{ InvalidEntropy, WeakKey };

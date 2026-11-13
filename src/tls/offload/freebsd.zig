@@ -11,6 +11,7 @@
 //! plaintext, so a peer's record_size_limit keeps the write direction in software.
 const std = @import("std");
 const Keys = @import("Keys.zig");
+const aegis = @import("aegis");
 
 const c = std.c;
 
@@ -166,7 +167,7 @@ const Listener = struct {
         const fd = try openSocket();
         errdefer _ = c.close(fd);
         var address: c.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-        const any: *c.sockaddr = @ptrCast(&address); // aegis: boundary(A019): sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *c.sockaddr = @ptrCast(&address); // glint-ignore: P007 -- boundary: sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.bind(fd, any, @sizeOf(c.sockaddr.in)));
         try check(c.listen(fd, 4));
         var len: c.socklen_t = @sizeOf(c.sockaddr.in);
@@ -191,7 +192,7 @@ const Listener = struct {
     fn pair(self: *const Listener) error{ProbeFailed}!Pair {
         const client = try openSocket();
         errdefer _ = c.close(client);
-        const any: *const c.sockaddr = @ptrCast(&self.address); // aegis: boundary(A019): sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *const c.sockaddr = @ptrCast(&self.address); // glint-ignore: P007 -- boundary: sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.connect(client, any, @sizeOf(c.sockaddr.in)));
         const server = c.accept4(self.fd, null, null, c.SOCK.CLOEXEC);
         if (server < 0) return error.ProbeFailed;
@@ -211,5 +212,5 @@ fn check(rc: c_int) error{ProbeFailed}!void {
 
 comptime {
     // The C struct on a 64-bit FreeBSD: three pointers, six ints, two bytes and eight, padded.
-    if (@sizeOf(usize) == 8) std.debug.assert(@sizeOf(TlsEnable) == 64);
+    if (@sizeOf(usize) == 8) aegis.assert.invariant(@sizeOf(TlsEnable) == 64, "@sizeOf(TlsEnable) == 64");
 }

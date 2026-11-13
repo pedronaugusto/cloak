@@ -179,7 +179,7 @@ pub const Credential = struct {
         @setRuntimeSafety(true);
         if (identity.form() != .x509) return error.NotDelegator;
         const leaf_der = identity.chain()[0];
-        const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // unreachable: the identity parsed it
+        const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // glint-ignore: Z026 -- the identity parsed it
         if (!delegator(&leaf)) return error.NotDelegator;
         const view = try parse(bytes);
         const scheme: Scheme = @fromBackingInt(view.scheme);
@@ -198,7 +198,7 @@ pub const Credential = struct {
         std.crypto.hash.sha2.Sha256.hash(leaf_der, &leaf_hash, .{});
         const held = key.retain();
         errdefer held.deinit();
-        return .{ .state = try .create(gpa, .{ .gpa = gpa, .bytes = owned, .view = parse(owned) catch unreachable, .key = held, .role = role, .leaf = leaf_hash, .expires = expires }) }; // unreachable: the same bytes parsed above
+        return .{ .state = try .create(gpa, .{ .gpa = gpa, .bytes = owned, .view = parse(owned) catch unreachable, .key = held, .role = role, .leaf = leaf_hash, .expires = expires }) }; // glint-ignore: Z026 -- the same bytes parsed above
     }
 
     pub fn retain(self: Credential) Credential {
@@ -289,7 +289,7 @@ pub fn issue(gpa: std.mem.Allocator, identity: certificates.Identity, spec: Spec
     if (identity.form() != .x509) return error.NotDelegator;
     if (identity.noiseLength() == null) return error.KeyHeldElsewhere;
     const leaf_der = identity.chain()[0];
-    const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // unreachable: the identity parsed it
+    const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // glint-ignore: Z026 -- the identity parsed it
     if (!delegator(&leaf)) return error.NotDelegator;
     if (!allowed(spec.scheme)) return error.UnsupportedScheme;
     const public_key = certificates.certificate.parsePublicKey(spec.spki) catch return error.UnsupportedScheme;
@@ -303,18 +303,18 @@ pub fn issue(gpa: std.mem.Allocator, identity: certificates.Identity, spec: Spec
     const credential = try gpa.alloc(u8, 4 + 2 + 3 + spec.spki.len);
     defer gpa.free(credential);
     var w: Writer = .{ .bytes = credential };
-    w.int(u32, valid_time) catch unreachable; // unreachable: sized above
-    w.int(u16, @backingInt(spec.scheme)) catch unreachable; // unreachable: sized above
-    w.vector(u24, spec.spki) catch unreachable; // unreachable: sized above
+    w.int(u32, valid_time) catch unreachable; // glint-ignore: Z026 -- sized above
+    w.int(u16, @backingInt(spec.scheme)) catch unreachable; // glint-ignore: Z026 -- sized above
+    w.vector(u24, spec.spki) catch unreachable; // glint-ignore: Z026 -- sized above
     const content = try signedContent(gpa, spec.role, leaf_der, credential, @backingInt(spec.algorithm));
     defer gpa.free(content);
     var signature_buf: [PrivateKey.max_signature]u8 = undefined;
     const signature = identity.sign(signing, content, noise, &signature_buf) catch return error.SigningFailed;
     const out = try gpa.alloc(u8, credential.len + 2 + 2 + signature.len);
     var o: Writer = .{ .bytes = out };
-    o.put(credential) catch unreachable; // unreachable: sized above
-    o.int(u16, @backingInt(spec.algorithm)) catch unreachable; // unreachable: sized above
-    o.vector(u16, signature) catch unreachable; // unreachable: sized above
+    o.put(credential) catch unreachable; // glint-ignore: Z026 -- sized above
+    o.int(u16, @backingInt(spec.algorithm)) catch unreachable; // glint-ignore: Z026 -- sized above
+    o.vector(u16, signature) catch unreachable; // glint-ignore: Z026 -- sized above
     return out;
 }
 

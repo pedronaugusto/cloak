@@ -13,6 +13,7 @@
 //! it is at least 2^255, and every scalar passed here (below L, or L itself) is below that, so
 //! a point with a small-order component gives [h]A + [s]B as written, as std computes it.
 const std = @import("std");
+const aegis = @import("aegis");
 const Secret = @import("aegis").Secret;
 const s2n = @import("field.zig").s2n;
 const Fe = @import("field.zig").curve25519.Fe;
@@ -138,8 +139,8 @@ pub fn With(comptime chosen: Backend, comptime variant: ?s2n.Variant) type {
         }
 
         pub fn mulDoubleBasePublic(out: *[encoded_length]u8, h: *const [32]u8, a: *const Affine, s: *const [32]u8) void {
-            std.debug.assert(h[31] < 128);
-            std.debug.assert(s[31] < 128);
+            aegis.assert.invariant(h[31] < 128, "h[31] < 128");
+            aegis.assert.invariant(s[31] < 128, "s[31] < 128");
             switch (chosen) {
                 .fiat => portable.mulDoubleBasePublic(out, h, a, s),
                 .s2n => {

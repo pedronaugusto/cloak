@@ -286,7 +286,7 @@ const small_primes = blk: {
         var j = i * i;
         while (j < limit) : (j += i) composite[j] = true;
     }
-    std.debug.assert(count == list.len);
+    aegis.assert.invariant(count == list.len, "count == list.len");
     break :blk list;
 };
 

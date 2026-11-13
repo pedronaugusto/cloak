@@ -140,7 +140,7 @@ pub const keyWrap = struct {
                 @memcpy(r[8 * (i - 1) ..][0..8], block[8..]);
             }
         }
-        const same = aegis.secret.equalBytes(&a, &iv) catch unreachable; // unreachable: both are 8 bytes
+        const same = aegis.secret.equalBytes(&a, &iv) catch unreachable; // glint-ignore: Z026 -- both are 8 bytes
         if (!same.declassify("a failed unwrap releases nothing but the refusal")) return error.AuthenticationFailed;
         @memcpy(out, r);
     }
@@ -222,7 +222,7 @@ pub fn CbcHmac(comptime which: enum { a128cbc_hs256, a256cbc_hs512 }) type {
             defer owner.deinit();
             const s = owner.exposeMut();
             mac(&s.expected, c, ad, iv, key[0..half]);
-            const same = aegis.secret.equalBytes(&s.expected, tag) catch unreachable; // unreachable: both are tag_length bytes
+            const same = aegis.secret.equalBytes(&s.expected, tag) catch unreachable; // glint-ignore: Z026 -- both are tag_length bytes
             if (!same.declassify("a refused tag ends the decryption before any block")) return error.AuthenticationFailed;
             const ctx = Aes.initDec(key[half..].*);
             const blocks = c.len / 16;

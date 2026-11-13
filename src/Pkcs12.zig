@@ -98,19 +98,19 @@ fn parseFile(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
         // The leaf is the certificate the key signs for; localKeyId is only a label. The key's
         // public half is encoded once and each certificate's compared with it.
         var info_buffer: [PrivateKey.max_public_key_info]u8 = undefined;
-        const own = certificate.parsePublicKey(collector.held.?.publicKeyInfo(&info_buffer)) catch unreachable; // unreachable: cloak encoded it
+        const own = certificate.parsePublicKey(collector.held.?.publicKeyInfo(&info_buffer)) catch unreachable; // glint-ignore: Z026 -- cloak encoded it
         const leaf = for (found, 0..) |der, i| {
-            const cert = certificate.parse(der, .{}) catch unreachable; // unreachable: parsed when collected
+            const cert = certificate.parse(der, .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
             if (samePublicKey(own, cert.public_key)) break i;
         } else return error.KeyMismatch;
         std.mem.swap([]const u8, &found[0], &found[leaf]);
         chain_length = 1;
         // Each issuer by Name, as path building matches them, until a self-issued certificate.
         while (true) {
-            const current = certificate.parse(found[chain_length - 1], .{}) catch unreachable; // unreachable: parsed when collected
+            const current = certificate.parse(found[chain_length - 1], .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
             if (current.selfIssued()) break;
             const next = for (found[chain_length..], chain_length..) |der, i| {
-                const candidate = certificate.parse(der, .{}) catch unreachable; // unreachable: parsed when collected
+                const candidate = certificate.parse(der, .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
                 if (certificate.Name.equal(candidate.subject, current.issuer)) break i;
             } else break;
             // Keep the rest in file order: rotate the issuer to the front of the remainder.

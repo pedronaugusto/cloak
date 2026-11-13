@@ -9,6 +9,7 @@ const std = @import("std");
 const Secret = @import("aegis").Secret;
 const fiat = @import("../vendor/fiat.zig").p521;
 const shared = @import("s2n.zig");
+const aegis = @import("aegis");
 const barrier = @import("Montgomery.zig").barrier;
 
 /// The big-endian encoding's length.
@@ -54,7 +55,7 @@ pub fn FieldWith(comptime backend: Backend, comptime variant: ?Variant) type {
         /// A public constant below p, in this backend's limbs.
         pub fn constant(comptime value: u521) Self {
             comptime {
-                std.debug.assert(value < std.math.maxInt(u521));
+                aegis.assert.invariant(value < std.math.maxInt(u521), "value < std.math.maxInt(u521)");
                 var r: Self = undefined;
                 // fiat: eight 58-bit limbs and a 57-bit one; s2n-bignum: nine 64-bit words.
                 const width = if (backend == .fiat) 58 else 64;

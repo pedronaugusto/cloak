@@ -71,7 +71,7 @@ pub fn close(self: *Builder, mark: Mark) Error!void {
     if (end + count > self.bytes.capacity()) {
         self.bytes.reserve(self.gpa, @max(end + count, 2 * self.bytes.capacity())) catch return error.OutOfMemory;
     }
-    // unreachable: reserved above.
+    // glint-ignore: Z026 -- reserved above.
     self.bytes.resizeWithinCapacity(end + count) catch unreachable;
     const items = self.bytes.exposeMut();
     @memmove(items[mark.at + count .. end + count], items[mark.at..end]);

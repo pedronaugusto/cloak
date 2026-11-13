@@ -303,7 +303,7 @@ pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: 
     defer gpa.free(aad);
     var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
     defer encoded_owner.deinit(gpa);
-    // unreachable: the live prefix grows to the capacity it is within.
+    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
     encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
     const encoded = encoded_owner.exposeMut();
     var context = for (keys) |key| {
@@ -332,7 +332,7 @@ pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u
     defer gpa.free(aad);
     var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
     defer encoded_owner.deinit(gpa);
-    // unreachable: the live prefix grows to the capacity it is within.
+    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
     encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
     const encoded = encoded_owner.exposeMut();
     context.open(encoded, aad, offer.payload) catch return error.DecryptFailed;
@@ -379,7 +379,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
 
     var owner = try aegis.SecretBytes.init(gpa, outer.len + encoded.len + 4);
     errdefer owner.deinit(gpa);
-    // unreachable: the live prefix grows to the capacity it is within.
+    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
     owner.resizeWithinCapacity(owner.capacity()) catch unreachable;
     const out = owner.exposeMut();
     var w: Writer = .{ .bytes = out };
@@ -429,7 +429,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     if (ext_len > 65535 or w.pos - 4 > 0xffffff) return error.IllegalParameter;
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len), .big); // checked above
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big); // checked above
-    // unreachable: the hello is within the allocation it was written to.
+    // glint-ignore: Z026 -- the hello is within the allocation it was written to.
     owner.resizeWithinCapacity(w.pos) catch unreachable;
     return owner;
 }
@@ -445,7 +445,7 @@ pub fn confirmation(comptime Hash: type, transport: Transport, inner_random: *co
     const zero: [Hash.digest_length]u8 = @splat(0);
     Labels.extract(Hash, prk, &zero, inner_random);
     var out: [8]u8 = undefined;
-    Labels.expandWith(Hash, transport.prefix(), &out, prk, label, digest) catch unreachable; // unreachable: fixed labels, hash-sized context
+    Labels.expandWith(Hash, transport.prefix(), &out, prk, label, digest) catch unreachable; // glint-ignore: Z026 -- fixed labels, hash-sized context
     return out;
 }
 

@@ -145,7 +145,7 @@ pub fn Schedule(comptime suite: suites.Suite13) type {
             return hash;
         }
         fn expand(prefix: Labels.Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) void {
-            // unreachable: internal labels are <=249 bytes, contexts and outputs are hash-sized.
+            // glint-ignore: Z026 -- internal labels are <=249 bytes, contexts and outputs are hash-sized.
             Labels.expandWith(Hash, prefix, out, secret, label, context) catch unreachable;
         }
     };

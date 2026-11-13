@@ -74,7 +74,7 @@ fn extractKernel(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []cons
 pub fn finished(comptime Hash: type, prefix: Prefix, out: *[Hash.digest_length]u8, traffic: *const [Hash.digest_length]u8, transcript: *const [Hash.digest_length]u8) void {
     var key = aegis.Secret([Hash.digest_length]u8).init(undefined);
     defer key.deinit();
-    // unreachable: the fixed label/context and hash-sized output meet expand bounds.
+    // glint-ignore: Z026 -- the fixed label/context and hash-sized output meet expand bounds.
     expandWith(Hash, prefix, key.exposeMut(), traffic, "finished", "") catch unreachable;
     extract(Hash, out, key.expose(), transcript);
 }

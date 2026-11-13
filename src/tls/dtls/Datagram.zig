@@ -539,7 +539,7 @@ const Span = aegis.units.Duration(.nanosecond, i96);
 
 /// A quarter of `wait`, rounded toward zero: an ACK's delay (RFC 9147 section 7.1).
 fn quarter(wait: std.Io.Duration) std.Io.Duration {
-    // unreachable: 4 is neither zero nor -1
+    // glint-ignore: Z026 -- 4 is neither zero nor -1
     return (Span.fromIoDuration(wait, .exact).divTrunc(4) catch unreachable).toIoDuration();
 }
 

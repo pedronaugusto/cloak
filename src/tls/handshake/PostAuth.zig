@@ -330,7 +330,7 @@ fn answered(self: *PostAuth, presented: bool) Error!void {
     const digest = ex.transcript.expose().digest(&digest_buf);
     @memcpy(ex.digest.exposeMut()[0..digest.len], digest);
     ex.digest_len = @intCast(digest.len); // 32 or 48
-    _ = self.machine.client.step(.answer) catch unreachable; // unreachable: answering until now
+    _ = self.machine.client.step(.answer) catch unreachable; // glint-ignore: Z026 -- answering until now
     self.holder.store(.write, .release);
 }
 
@@ -359,7 +359,7 @@ pub fn sent(self: *PostAuth) void {
     aegis.assert.invariant(self.holder.load(.acquire) == .write and self.machine.client.current() == .owed, "the write half holds a built answer");
     const presented = self.exchange.?.presented;
     self.endExchange();
-    _ = self.machine.client.step(.sent) catch unreachable; // unreachable: owed until now
+    _ = self.machine.client.step(.sent) catch unreachable; // glint-ignore: Z026 -- owed until now
     self.record(presented);
     self.holder.store(.read, .release);
 }
@@ -394,7 +394,7 @@ pub fn request(self: *PostAuth, out: []u8) (Error || error{RequestOutstanding})!
     @memcpy(ex.context[0..8], &context);
     ex.context_len = 8;
     try ex.transcript.exposeMut().commit(message);
-    _ = self.machine.server.step(.request) catch unreachable; // unreachable: idle, checked above
+    _ = self.machine.server.step(.request) catch unreachable; // glint-ignore: Z026 -- idle, checked above
     self.requests = number;
     return .{ .message = message, .number = number };
 }
@@ -432,11 +432,11 @@ pub fn onCertificate(self: *PostAuth, msg: []const u8, policy: Policy) Error!voi
     // The answer to this request and no other: a context it did not send is a replay or a mix-up.
     if (!std.mem.eql(u8, parsed.context, ex.context[0..ex.context_len])) return error.IllegalParameter;
     if (parsed.count == 0) {
-        _ = self.machine.server.step(.empty_certificate) catch unreachable; // unreachable: requested
+        _ = self.machine.server.step(.empty_certificate) catch unreachable; // glint-ignore: Z026 -- requested
         try ex.transcript.exposeMut().commit(msg);
         return;
     }
-    _ = self.machine.server.step(.certificate) catch unreachable; // unreachable: requested
+    _ = self.machine.server.step(.certificate) catch unreachable; // glint-ignore: Z026 -- requested
     const held = (try ex.held.ensure(self.gpa, msg.len))[0..msg.len];
     @memcpy(held, msg);
     const kept = try Messages.certificate(held, policy.limits.certificates, policy.limits.chain_bytes, &ex.chain, .{});
@@ -461,7 +461,7 @@ pub fn onCertificate(self: *PostAuth, msg: []const u8, policy: Policy) Error!voi
 }
 
 fn chainVerified(self: *PostAuth, authenticated: bool) Error!void {
-    _ = self.machine.server.step(.verify_chain) catch unreachable; // unreachable: chain
+    _ = self.machine.server.step(.verify_chain) catch unreachable; // glint-ignore: Z026 -- chain
     self.exchange.?.authenticated = authenticated;
 }
 
@@ -519,7 +519,7 @@ pub fn onCertificateVerify(self: *PostAuth, msg: []const u8) Error!void {
     const content = Messages.signedContent(&content_buf, false, ex.transcript.expose().digest(&digest_buf));
     var taken: [Hello.max_peer_schemes]Hello.SignatureScheme = undefined;
     try Possession.verifyKey(parsed.scheme, Hello.peerSchemes(self.peer, Hello.verifySchemes(.{ .require_pq_auth = self.pq_only }), &taken), try Possession.peerKey(ex.chain[0], self.raw_client), content, parsed.signature);
-    _ = self.machine.server.step(.certificate_verify) catch unreachable; // unreachable: possession
+    _ = self.machine.server.step(.certificate_verify) catch unreachable; // glint-ignore: Z026 -- possession
     try ex.transcript.exposeMut().commit(msg);
     if (self.keep_leaf) try Possession.keepLeaf(self.gpa, &ex.leaf, ex.chain[0], self.raw_client);
 }
@@ -536,7 +536,7 @@ pub fn onFinished(self: *PostAuth, msg: []const u8) Error!void {
     var digest_buf: [Transcripts.max_digest]u8 = undefined;
     @memcpy(ex.digest.exposeMut()[0..n], ex.transcript.expose().digest(&digest_buf));
     ex.digest_len = @intCast(n); // 32 or 48
-    _ = self.machine.server.step(.finished) catch unreachable; // unreachable: finished
+    _ = self.machine.server.step(.finished) catch unreachable; // glint-ignore: Z026 -- finished
 }
 
 pub const FinishedCheck = struct { transcript: []const u8, received: []const u8 };
@@ -560,7 +560,7 @@ pub fn settled(self: *PostAuth) void {
         ex.leaf = &.{};
     }
     self.endExchange();
-    _ = self.machine.server.step(.settle) catch unreachable; // unreachable: checking
+    _ = self.machine.server.step(.settle) catch unreachable; // glint-ignore: Z026 -- checking
     self.record(authenticated);
     self.holder.store(.write, .release);
 }

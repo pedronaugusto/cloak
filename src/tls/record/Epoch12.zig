@@ -93,7 +93,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
 
         fn admit(self: *Self, len: usize) error{RecordLimit}!void {
             @setRuntimeSafety(true);
-            // unreachable: every admitted record kept the bytes within the limit.
+            // glint-ignore: Z026 -- every admitted record kept the bytes within the limit.
             const room = self.limits.bytes.sub(self.bytes) catch unreachable;
             if (self.sequence.compare(self.limits.records) != .lt or Epoch.ByteCount.fromRaw(len).compare(room) == .gt) {
                 self.deinit();
@@ -122,8 +122,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             if (explicit != 0) std.mem.writeInt(u64, wire[5..][0..8], self.sequence.raw(), .big);
             if (input.ptr != body.ptr) @memcpy(body, input);
             Kernels.seal(A, body, wire[wire_len - A.tag_length ..][0..A.tag_length], body, &self.additional(content, input.len), self.iv.expose(), self.sequence.raw(), self.key.expose());
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(input.len)) catch unreachable; // unreachable: admit kept the bytes within the limit
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(input.len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
             return wire;
         }
 
@@ -154,8 +154,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             // The peer chooses the explicit nonce; it is authenticated through the tag.
             const counter = if (explicit != 0) std.mem.readInt(u64, wire[5..13], .big) else self.sequence.raw();
             Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch return self.bad();
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // unreachable: admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // unreachable: admit kept the bytes within the limit
+            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
+            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
             return .{ .content = content, .bytes = plain };
         }
 

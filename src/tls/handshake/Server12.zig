@@ -118,7 +118,7 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
     // RFC 6066 section 8: the credential's staple, as a CertificateStatus, for a client that asks.
     self.scratch.?.sends_ocsp = hello.ocsp and self.options.credentials[self.credential.?].ocsp.len != 0;
     self.state.flags.ocsp12 = self.scratch.?.sends_ocsp;
-    return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello) catch unreachable; // unreachable: fits12 took it
+    return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello) catch unreachable; // glint-ignore: Z026 -- fits12 took it
 }
 
 /// The kind of suite a key authenticates for this client.
@@ -378,7 +378,7 @@ fn sendTicket(self: anytype) Error!void {
             state.alpn_len = @intCast(self.alpn.len); // a protocol name is at most 255 bytes
             @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
             state.server_name_len = scratch.server_name_len;
-            sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // unreachable: the buffer holds the longest ticket
+            sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // glint-ignore: Z026 -- the buffer holds the longest ticket
             hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // positive and at most seven days
         }
     };

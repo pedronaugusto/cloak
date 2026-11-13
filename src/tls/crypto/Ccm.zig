@@ -15,7 +15,7 @@ pub const Aes256Ccm = AesCcm(crypto.core.aes.Aes256, 16);
 pub const Aes128Ccm8 = AesCcm(crypto.core.aes.Aes128, 8);
 
 fn AesCcm(comptime Aes: type, comptime tag_bytes: comptime_int) type {
-    comptime std.debug.assert(tag_bytes == 16 or tag_bytes == 8);
+    comptime aegis.assert.invariant(tag_bytes == 16 or tag_bytes == 8, "tag_bytes == 16 or tag_bytes == 8");
     return struct {
         pub const key_length = Aes.key_bits / 8;
         pub const tag_length = tag_bytes;

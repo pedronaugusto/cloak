@@ -123,7 +123,7 @@ pub fn restart(self: *Self) void {
         shadow.deinit();
         shadow.* = .init(.{});
     }
-    // unreachable: a shrink is within the capacity; it erases what it drops.
+    // glint-ignore: Z026 -- a shrink is within the capacity; it erases what it drops.
     self.kept.resizeWithinCapacity(0) catch unreachable;
 }
 

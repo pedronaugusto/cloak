@@ -120,11 +120,11 @@ pub const Epoch = struct {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
                 const secret = self.traffic.expose()[0..Hash.digest_length];
-                // unreachable: fixed labels and key-sized outputs meet the HKDF bounds.
+                // glint-ignore: Z026 -- fixed labels and key-sized outputs meet the HKDF bounds.
                 Labels.expandWith(Hash, .dtls13, self.key.exposeMut()[0..key_len], secret, "key", "") catch unreachable;
-                // unreachable: a fixed label and a twelve-byte output meet the HKDF bounds.
+                // glint-ignore: Z026 -- a fixed label and a twelve-byte output meet the HKDF bounds.
                 Labels.expandWith(Hash, .dtls13, self.iv.exposeMut(), secret, "iv", "") catch unreachable;
-                // unreachable: a fixed label and a key-sized output meet the HKDF bounds.
+                // glint-ignore: Z026 -- a fixed label and a key-sized output meet the HKDF bounds.
                 Labels.expandWith(Hash, .dtls13, self.sn.exposeMut()[0..key_len], secret, "sn", "") catch unreachable;
             },
         }
@@ -149,7 +149,7 @@ pub const Epoch = struct {
         switch (self.suite.?) {
             inline else => |tag| {
                 const Hash = suites.Hash(tag);
-                // unreachable: the fixed label and hash-sized output meet the HKDF bounds.
+                // glint-ignore: Z026 -- the fixed label and hash-sized output meet the HKDF bounds.
                 Labels.expandWith(Hash, .dtls13, out.traffic.exposeMut()[0..Hash.digest_length], self.traffic.expose()[0..Hash.digest_length], "traffic upd", "") catch unreachable;
             },
         }
