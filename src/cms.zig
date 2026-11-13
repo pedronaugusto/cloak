@@ -101,7 +101,7 @@ const Signer = struct {
 
 /// Verifies `bytes`, a DER ContentInfo holding a SignedData.
 pub fn verify(gpa: Allocator, bytes: []const u8, options: Options) Error!Verified {
-    if (bytes.len > options.max_bytes.raw()) return error.DerLimit;
+    if (aegis.units.Bytes(usize).fromRaw(bytes.len).compare(options.max_bytes) == .gt) return error.DerLimit;
     const parsed = try gpa.create(Parsed);
     defer gpa.destroy(parsed);
     parsed.* = try aegis.input.Untrusted([]const u8).init(bytes).parse({}, parseSignedData);
