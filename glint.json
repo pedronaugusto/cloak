@@ -41,6 +41,20 @@
         "P007"
       ],
       "reason": "fiat-crypto's generated field code, vendored byte for byte (ci/preflight.json's vendored entries name each file's upstream and hash): its casts are the Rocq-verified generator's"
+    },
+    {
+      "file": "src/Trust.zig",
+      "rules": [
+        "A009"
+      ],
+      "reason": "the trust store's root files and directories, read bounded (aegis.own.readFile, limits.file_bytes) into the PEM and DER parsers"
+    },
+    {
+      "file": "tools/nuget-check.zig",
+      "rules": [
+        "A009"
+      ],
+      "reason": "the NuGet check's two inputs, the root certificate and the package named on its command line, read bounded into the signature check"
     }
   ],
   "disallowed": [

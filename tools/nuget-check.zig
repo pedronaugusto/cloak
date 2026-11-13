@@ -9,6 +9,7 @@
 //! success; 1 and the reason otherwise. Nothing is ever taken on trust, and nothing is retried.
 const std = @import("std");
 const cloak = @import("cloak");
+const aegis = @import("aegis");
 const Io = std.Io;
 
 const usage = "usage: cloak-nuget-check --root <der> --root-sha256 <hex> <package.nupkg>\n";
@@ -54,7 +55,7 @@ fn run(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, args: []const [
             package_path = args[i];
         } else return error.Usage;
     }
-    const root = try Io.Dir.cwd().readFileAlloc(io, root_path orelse return error.Usage, arena, .limited(1 << 16));
+    const root = try aegis.own.readFile(io, .cwd(), root_path orelse return error.Usage, arena, .fromRaw(1 << 16));
     var wanted: [32]u8 = undefined;
     const hex = root_hex orelse return error.Usage;
     if (hex.len != 64) return error.Usage;
@@ -63,7 +64,7 @@ fn run(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, args: []const [
     std.crypto.hash.sha2.Sha256.hash(root, &actual, .{});
     if (!std.mem.eql(u8, &actual, &wanted)) return error.RootMismatch;
 
-    const package = try Io.Dir.cwd().readFileAlloc(io, package_path orelse return error.Usage, arena, .limited(max_package));
+    const package = try aegis.own.readFile(io, .cwd(), package_path orelse return error.Usage, arena, .fromRaw(max_package));
     const archive = try Archive.read(package);
     const verified = try cloak.cms.verify(gpa, archive.signature, .{ .roots = &.{root} });
     const named = try manifestHash(verified.content);
