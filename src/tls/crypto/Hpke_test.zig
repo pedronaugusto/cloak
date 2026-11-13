@@ -3,6 +3,7 @@
 //! 1.27.1's crypto/hpke testdata (rfc9180.json), whose ciphertexts are checked through 1,000
 //! sealed messages accumulated into SHAKE128, as Go's own test does.
 const std = @import("std");
+const shakedown = @import("shakedown");
 const Hpke = @import("Hpke.zig");
 
 fn hex(comptime text: []const u8) [text.len / 2]u8 {
@@ -164,4 +165,86 @@ test "C6 HPKE refuses what it must: a forged ciphertext, a wrong AAD, an odd sui
     var spent = try Hpke.setupSender(suite, &r.public, "", &(@as([32]u8, @splat(3))), &enc);
     spent.deinit();
     try std.testing.expectError(error.MessageLimit, spent.seal(&ct, "", "hello"));
+}
+
+test "HPKE property: a message sealed under any suite opens to itself; changed anywhere, it is refused, releases nothing and leaves the context as it was" {
+    // Context.open's promise: a failure leaves the sequence number unchanged and decrypts nothing
+    // into `out`. A message is sealed under any supported AEAD, info, AAD and plaintext; one byte of
+    // its ciphertext or tag, its AAD, or the encapsulated key changed is AuthenticationFailed with
+    // none of the plaintext in `out` (which std's AEADs leave undefined on a failure), after which
+    // the message as sealed still opens at the same sequence number.
+    try shakedown.check(std.testing.allocator, {}, changedMessage, .{ .cases = 512, .seed = 0x4b9e });
+}
+
+fn changedMessage(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
+    const aeads = [_]Hpke.Aead{ .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 };
+    const suite: Hpke.Suite = .{ .kdf = .hkdf_sha256, .aead = aeads[shakedown.gen.intRange(s, usize, 0, aeads.len - 1)] };
+    var ikm_r: [32]u8 = undefined;
+    var ikm_e: [32]u8 = undefined;
+    var info_buf: [24]u8 = undefined;
+    var aad_buf: [24]u8 = undefined;
+    var plain_buf: [64]u8 = undefined;
+    for (&ikm_r) |*b| b.* = shakedown.gen.int(s, u8);
+    for (&ikm_e) |*b| b.* = shakedown.gen.int(s, u8);
+    const info = info_buf[0..shakedown.gen.intRange(s, usize, 0, info_buf.len)];
+    const aad = aad_buf[0..shakedown.gen.intRange(s, usize, 0, aad_buf.len - 1)];
+    const plaintext = plain_buf[0..shakedown.gen.intRange(s, usize, 0, plain_buf.len)];
+    for (info) |*b| b.* = shakedown.gen.int(s, u8);
+    for (aad) |*b| b.* = shakedown.gen.int(s, u8);
+    for (plaintext) |*b| b.* = shakedown.gen.int(s, u8);
+
+    var r = Hpke.deriveKeyPair(&ikm_r);
+    defer r.deinit();
+    var enc: [Hpke.enc_length]u8 = undefined;
+    var sender = try Hpke.setupSender(suite, &r.public, info, &ikm_e, &enc);
+    defer sender.deinit();
+    var sealed_buf: [plain_buf.len + Hpke.tag_length]u8 = undefined;
+    const sealed = sealed_buf[0 .. plaintext.len + Hpke.tag_length];
+    try sender.seal(sealed, aad, plaintext);
+
+    var changed_buf: [sealed_buf.len]u8 = undefined;
+    const changed = changed_buf[0..sealed.len];
+    @memcpy(changed, sealed);
+    var other_aad_buf: [aad_buf.len]u8 = undefined;
+    var other_aad: []const u8 = aad;
+    var other_enc = enc;
+    const flip = shakedown.gen.intRange(s, u8, 1, 255);
+    switch (shakedown.gen.intRange(s, u8, 0, 2)) {
+        0 => changed[shakedown.gen.intRange(s, usize, 0, changed.len - 1)] ^= flip,
+        1 => {
+            // One byte changed, or one more.
+            @memcpy(other_aad_buf[0..aad.len], aad);
+            if (aad.len > 0 and shakedown.gen.boolean(s)) {
+                other_aad_buf[shakedown.gen.intRange(s, usize, 0, aad.len - 1)] ^= flip;
+                other_aad = other_aad_buf[0..aad.len];
+            } else {
+                other_aad_buf[aad.len] = flip;
+                other_aad = other_aad_buf[0 .. aad.len + 1];
+            }
+        },
+        else => other_enc[shakedown.gen.intRange(s, usize, 0, other_enc.len - 1)] ^= flip,
+    }
+    const enc_changed = !std.mem.eql(u8, &enc, &other_enc);
+    var recipient = Hpke.setupRecipient(suite, &other_enc, r.secret.expose(), info) catch |err| {
+        // An encapsulated key changed to a low-order point agrees on nothing.
+        try std.testing.expect(enc_changed and err == error.InvalidKey);
+        return;
+    };
+    defer recipient.deinit();
+    var out_buf: [plain_buf.len]u8 = @splat(0xc5);
+    const out = out_buf[0..plaintext.len];
+    try std.testing.expectError(error.AuthenticationFailed, recipient.open(out, other_aad, changed));
+    // Decrypted, `out` would agree with the plaintext nearly everywhere; left undefined or as it
+    // was, it agrees by chance, at about one byte in 256.
+    if (plaintext.len >= 8) {
+        var agree: usize = 0;
+        for (out, plaintext) |o, p| agree += @intFromBool(o == p);
+        try std.testing.expect(agree * 2 < plaintext.len);
+    }
+    try std.testing.expectEqual(@as(u64, 0), recipient.seq);
+    if (enc_changed) return;
+    // The context is where it was: the message as sealed opens, to itself.
+    try recipient.open(out, aad, sealed);
+    try std.testing.expectEqualSlices(u8, plaintext, out);
 }

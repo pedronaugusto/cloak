@@ -2,6 +2,7 @@
 //! serves it, its time proved by DigiCert's timestamp; and that signature tampered with,
 //! byte by byte where each check stands.
 const std = @import("std");
+const shakedown = @import("shakedown");
 const cms = @import("cms.zig");
 const gpa = std.testing.allocator;
 
@@ -88,4 +89,31 @@ test "every byte flipped is refused or changes nothing it vouches for" {
 test "junk and truncation are refused" {
     try std.testing.expectError(error.InvalidDer, cms.verify(gpa, "not a signature", options));
     if (cms.verify(gpa, real[0 .. real.len / 2], options)) |_| return error.TestUnexpectedResult else |_| {}
+}
+
+test "CMS property: any one byte changed is refused, or changes nothing verify vouches for" {
+    // verify's promise (docs/design.md "CMS"): it fails closed. A change anywhere in what the
+    // signature covers, the chain, or the timestamp is an error; only the unsigned attributes are
+    // anyone's to change, and a signature that still verifies gives the same content and time.
+    // RSA at each case is slow, so a few dozen positions, drawn anew each seed.
+    try shakedown.check(gpa, {}, changedByte, .{ .cases = 48, .seed = 0xc35a });
+}
+fn changedByte(_: void, case: *shakedown.Case) !void {
+    const at = shakedown.gen.intRange(case.source, usize, 0, real.len - 1);
+    const copy = try gpa.dupe(u8, real);
+    defer gpa.free(copy);
+    copy[at] ^= shakedown.gen.intRange(case.source, u8, 1, 255);
+    const clean = try cms.verify(gpa, real, options);
+    const got = cms.verify(gpa, copy, options) catch return;
+    try std.testing.expectEqualStrings(clean.content, got.content);
+    try std.testing.expectEqualStrings(clean.signer, got.signer);
+    try std.testing.expectEqual(clean.time.toNanoseconds(), got.time.toNanoseconds());
+}
+
+test "CMS property: a signature cut short anywhere is refused" {
+    try shakedown.check(gpa, {}, cutShort, .{ .cases = 64, .seed = 0xc35b });
+}
+fn cutShort(_: void, case: *shakedown.Case) !void {
+    const len = shakedown.gen.intRange(case.source, usize, 0, real.len - 1);
+    if (cms.verify(gpa, real[0..len], options)) |_| return error.TestUnexpectedResult else |_| {}
 }

@@ -1,6 +1,7 @@
 //! Certificate Transparency's checks (F88): RFC 6962's reference vectors, a public certificate
 //! from two production logs, and the policy over certificate-transparency-go's test PKI.
 const std = @import("std");
+const shakedown = @import("shakedown");
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
@@ -363,4 +364,112 @@ test "F88 SCTs in the leaf's stapled OCSP response count, read only with a respo
     var invalid = base;
     invalid.evidence = .{ .ocsp = &.{&forged} };
     try std.testing.expectError(error.InvalidRevocation, Verifier.verify(gpa, invalid, &.{pki.ocsp_ca}));
+}
+
+test "SCT property: a list is taken exactly when it is a SignedCertificateTimestampList, and yields its version 1 SCTs in order" {
+    // List's promise (RFC 6962 section 3.3): init checks the framing whole, one or more SCTs, none
+    // empty, each version 1 SCT exactly its fields with a signature; next then yields the version 1
+    // SCTs in order, skipping other versions, and never fails. Lists drawn well formed and then,
+    // half the time, one byte changed, cut short or lengthened, against a decoder written from the
+    // RFC.
+    try shakedown.check(std.testing.allocator, {}, sctList, .{ .cases = 2048, .seed = 0x5c71 });
+}
+
+const SctModel = struct {
+    scts: [32]ct.Sct = undefined,
+    count: usize = 0,
+};
+
+/// A SignedCertificateTimestampList read by position from the RFC's grammar.
+fn modelScts(bytes: []const u8) ?SctModel {
+    var m: SctModel = .{};
+    if (bytes.len < 2) return null;
+    const len = std.mem.readInt(u16, bytes[0..2], .big);
+    if (bytes.len != 2 + len or len == 0) return null;
+    const list = bytes[2..];
+    var at: usize = 0;
+    while (at < list.len) {
+        if (at + 2 > list.len) return null;
+        const n = std.mem.readInt(u16, list[at..][0..2], .big);
+        if (n == 0 or at + 2 + n > list.len) return null;
+        const one = list[at + 2 ..][0..n];
+        at += 2 + n;
+        if (one[0] != 0) continue;
+        // version, log id, timestamp, extensions<0..2^16-1>, hash, algorithm, signature<1..2^16-1>.
+        if (one.len < 1 + 32 + 8 + 2) return null;
+        const ext_len = std.mem.readInt(u16, one[41..43], .big);
+        const p: usize = 43 + ext_len;
+        if (p + 4 > one.len) return null;
+        const sig_len = std.mem.readInt(u16, one[p + 2 ..][0..2], .big);
+        if (sig_len == 0 or p + 4 + sig_len != one.len) return null;
+        if (m.count == m.scts.len) return null;
+        m.scts[m.count] = .{
+            .log_id = one[1..33],
+            .timestamp = std.mem.readInt(u64, one[33..41], .big),
+            .extensions = one[43..][0..ext_len],
+            .hash = one[p],
+            .signature_algorithm = one[p + 1],
+            .signature = one[p + 4 ..][0..sig_len],
+        };
+        m.count += 1;
+    }
+    return m;
+}
+
+fn sctList(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
+    var buf: [1024]u8 = undefined;
+    var w: usize = 2;
+    for (0..shakedown.gen.intRange(s, usize, 1, 4)) |_| {
+        const at = w;
+        w += 2;
+        if (shakedown.gen.intRange(s, u8, 0, 3) == 0) {
+            // Another version: opaque, skipped; now and then empty, which the framing refuses.
+            const n = shakedown.gen.intRange(s, usize, 0, 20);
+            for (buf[w..][0..n]) |*b| b.* = shakedown.gen.int(s, u8);
+            if (n > 0) buf[w] = shakedown.gen.intRange(s, u8, 1, 255);
+            w += n;
+        } else {
+            buf[w] = 0;
+            for (buf[w + 1 ..][0..40]) |*b| b.* = shakedown.gen.int(s, u8);
+            w += 41;
+            const ext = shakedown.gen.intRange(s, usize, 0, 8);
+            std.mem.writeInt(u16, buf[w..][0..2], @intCast(ext), .big);
+            for (buf[w + 2 ..][0 .. ext + 2]) |*b| b.* = shakedown.gen.int(s, u8);
+            w += 2 + ext + 2;
+            // Now and then an empty signature, which the grammar refuses.
+            const sig = if (shakedown.gen.intRange(s, u8, 0, 15) == 0) 0 else shakedown.gen.intRange(s, usize, 1, 72);
+            std.mem.writeInt(u16, buf[w..][0..2], @intCast(sig), .big);
+            for (buf[w + 2 ..][0..sig]) |*b| b.* = shakedown.gen.int(s, u8);
+            w += 2 + sig;
+        }
+        std.mem.writeInt(u16, buf[at..][0..2], @intCast(w - at - 2), .big);
+    }
+    std.mem.writeInt(u16, buf[0..2], @intCast(w - 2), .big);
+    var bytes: []u8 = buf[0..w];
+    switch (shakedown.gen.intRange(s, u8, 0, 5)) {
+        0 => bytes[shakedown.gen.intRange(s, usize, 0, bytes.len - 1)] ^= shakedown.gen.intRange(s, u8, 1, 255),
+        1 => bytes = bytes[0..shakedown.gen.intRange(s, usize, 0, bytes.len - 1)],
+        2 => {
+            buf[w] = shakedown.gen.int(s, u8);
+            bytes = buf[0 .. w + 1];
+        },
+        else => {},
+    }
+    const model = modelScts(bytes);
+    var list = ct.List.init(bytes) catch {
+        try std.testing.expect(model == null);
+        return;
+    };
+    const m = model orelse return error.TestUnexpectedResult;
+    for (m.scts[0..m.count]) |want| {
+        const got = list.next() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualSlices(u8, want.log_id, got.log_id);
+        try std.testing.expectEqual(want.timestamp, got.timestamp);
+        try std.testing.expectEqualSlices(u8, want.extensions, got.extensions);
+        try std.testing.expectEqual(want.hash, got.hash);
+        try std.testing.expectEqual(want.signature_algorithm, got.signature_algorithm);
+        try std.testing.expectEqualSlices(u8, want.signature, got.signature);
+    }
+    try std.testing.expect(list.next() == null);
 }
