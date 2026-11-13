@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/nuget-check.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "cloak", .module = cloak }},
+        .imports = &.{ .{ .name = "cloak", .module = cloak }, .{ .name = "aegis", .module = cloak.import_table.get("aegis").? } },
     }) }));
 }
 
