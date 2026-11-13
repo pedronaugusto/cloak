@@ -328,7 +328,7 @@ pub fn open(
 
 /// What the engine writes key-log lines to when a session drives it: the caller's key log, given
 /// the session's `Io`, which the engine (with no `Io` of its own) cannot give.
-const KeyLogRelay = struct {
+pub const KeyLogRelay = struct {
     relay: Connection.KeyLog = .{ .write = forward },
     inner: ?*Connection.KeyLog = null,
 
