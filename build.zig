@@ -5,8 +5,10 @@ pub fn build(b: *std.Build) void {
     @setRuntimeSafety(true);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const cloak = createCloak(b, b, target, optimize);
-    b.modules.put(b.allocator, "cloak", cloak) catch @panic("out of memory configuring cloak");
+    // The module a dependent imports as `cloak`, declared where every reader of this file finds it.
+    const cloak = b.addModule("cloak", .{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    addAegis(b, cloak, target, optimize);
+    nativeLinks(cloak, target);
     // A NuGet package's signature checked, for a tool that pins cloak and runs this (bay's
     // NuGet pins): `dependency.artifact("cloak-nuget-check")`. A command-line tool on
     // `std.process` and `Io.Threaded`, so built only for a hosted target: a freestanding one
