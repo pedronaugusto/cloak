@@ -2,7 +2,8 @@
 //! connection: the server's both directions offloaded, the client in software. What the kernel
 //! takes decides what each test expects: a kernel that takes TLS 1.3 key updates (6.14 and
 //! later) goes on under the next keys, one that does not ends the connection. A kernel without
-//! the "tls" module skips these.
+//! the "tls" module skips these, except under `zig build kernel-tls` (CLOAK_KERNEL_TLS=required,
+//! the hosted "kernel TLS" job, which loads the module first): there the probe fails instead.
 const std = @import("std");
 const Duo = @import("../../testing/Duo.zig");
 const Connection = @import("../Connection.zig");
@@ -292,6 +293,14 @@ test "C9 the kernel probe: what this kernel's record layer takes" {
         any = any or set.count() != 0;
     };
     if (any) try std.testing.expect(caps.supports(.tls12, .aes_128_gcm, .write));
+    // Where the record layer is required, its tests ran rather than skipped: AES-128-GCM both
+    // ways in both versions, which every kernel with the module has.
+    if (std.testing.environ.getPosix("CLOAK_KERNEL_TLS")) |wanted| if (std.mem.eql(u8, wanted, "required")) {
+        for ([_]Keys.Version{ .tls12, .tls13 }) |version| {
+            try std.testing.expect(caps.supports(version, .aes_128_gcm, .read));
+            try std.testing.expect(caps.supports(version, .aes_128_gcm, .write));
+        }
+    };
     // A key update needs the version that has one.
     if (caps.rekeys(.write)) try std.testing.expect(caps.supports(.tls13, .aes_128_gcm, .write));
 }

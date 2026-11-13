@@ -54,6 +54,13 @@ pub fn dev(b: *std.Build, tools: type) void {
         b.step("parser-fuzz", "Run the parser fuzz properties alone").dependOn(&b.addRunArtifact(fuzz_tests).step);
         const concurrent_tests = b.addTest(.{ .name = "concurrent", .root_module = test_module, .filters = &.{"concurrent"} });
         b.step("concurrent", "Run the tests whose tasks share a session, a snapshot or a job").dependOn(&b.addRunArtifact(concurrent_tests).step);
+        // The Linux kernel record layer's tests where the kernel must have one, so they run
+        // rather than skip: the hosted "kernel TLS" job loads the module first (kernel-tls-setup).
+        const kernel_tests = b.addTest(.{ .name = "kernel-tls", .root_module = test_module, .filters = &.{ "Linux kernel", "C9 the kernel probe" } });
+        const kernel_run = b.addRunArtifact(kernel_tests);
+        kernel_run.setEnvironmentVariable("CLOAK_KERNEL_TLS", "required");
+        b.step("kernel-tls", "Run the Linux kernel record layer's tests, failing where the kernel has none").dependOn(&kernel_run.step);
+        b.step("kernel-tls-setup", "Load Linux's tls module for kernel-tls (sudo modprobe tls)").dependOn(&b.addSystemCommand(&.{ "sudo", "modprobe", "tls" }).step);
         const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
         addAegisOnly(p, check_module, target, optimize);
