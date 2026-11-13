@@ -167,7 +167,7 @@ const Listener = struct {
         const fd = try openSocket();
         errdefer _ = c.close(fd);
         var address: c.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
-        const any: *c.sockaddr = @ptrCast(&address); // glint-ignore: P007 -- boundary: sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *c.sockaddr = @ptrCast(&address); // sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.bind(fd, any, @sizeOf(c.sockaddr.in)));
         try check(c.listen(fd, 4));
         var len: c.socklen_t = @sizeOf(c.sockaddr.in);
@@ -192,7 +192,7 @@ const Listener = struct {
     fn pair(self: *const Listener) error{ProbeFailed}!Pair {
         const client = try openSocket();
         errdefer _ = c.close(client);
-        const any: *const c.sockaddr = @ptrCast(&self.address); // glint-ignore: P007 -- boundary: sockaddr.in begins with the length and family, as every sockaddr does
+        const any: *const c.sockaddr = @ptrCast(&self.address); // sockaddr.in begins with the length and family, as every sockaddr does
         try check(c.connect(client, any, @sizeOf(c.sockaddr.in)));
         const server = c.accept4(self.fd, null, null, c.SOCK.CLOEXEC);
         if (server < 0) return error.ProbeFailed;

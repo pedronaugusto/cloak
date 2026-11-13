@@ -1,4 +1,48 @@
 {
+  "seams": [
+    {
+      "file": "src/tls/offload/linux.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the Linux kernel record layer: a connection's keys installed on its TCP socket through setsockopt (SOL_TLS) and the record-type control messages, raw system calls std does not declare"
+    },
+    {
+      "file": "src/tls/offload/freebsd.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the FreeBSD kernel record layer (ktls(4)): struct tls_enable installed on the TCP socket and the record control messages, raw system calls std does not declare"
+    },
+    {
+      "file": "src/services/windows.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "native verification on Windows: CryptoAPI's chain building and policy calls, declared as Windows documents them"
+    },
+    {
+      "file": "src/services/macos.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "native verification on macOS: Security's SecTrust, opened from the system on first use"
+    },
+    {
+      "file": "src/crypto/field/s2n.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "s2n-bignum's verified field routines, assembled by build.zig and declared as extern symbols"
+    },
+    {
+      "module": "src/crypto/vendor/fiat/",
+      "rules": [
+        "P007"
+      ],
+      "reason": "fiat-crypto's generated field code, vendored byte for byte (ci/preflight.json's vendored entries name each file's upstream and hash): its casts are the Rocq-verified generator's"
+    }
+  ],
   "disallowed": [
     {
       "source": "std",
