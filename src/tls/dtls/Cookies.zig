@@ -40,7 +40,7 @@ pub const Key = struct {
 keys: [2]?Key = .{ null, null },
 next_id: u8 = 0,
 /// How long a cookie is honoured after it was made.
-lifetime: std.Io.Duration = .fromSeconds(60),
+lifetime: std.Io.Duration = types.secondsSpan(60),
 
 pub const RotateError = error{InvalidKey};
 

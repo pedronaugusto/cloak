@@ -57,7 +57,7 @@ pub const Resumption = struct {
     /// trust generation and client certificate are in the cache key already.
     namespace: []const u8 = "",
     /// The longest a session is resumed after the full handshake that authenticated it.
-    max_age: std.Io.Duration = .fromSeconds(7 * 24 * 60 * 60),
+    max_age: std.Io.Duration = types.secondsSpan(7 * 24 * 60 * 60),
     /// TLS 1.2 session tickets too (RFC 5077). An abbreviated TLS 1.2 handshake reuses the
     /// session's master secret with no new key exchange, so it gives up forward secrecy between
     /// the connections of a session: off unless asked for.
@@ -410,7 +410,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Client {
     // ChangeCipherSpec.
     if (options.hello.transport != .stream and options.compat) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
-    if (options.resumption) |resumption| if (resumption.namespace.len > 1024 or resumption.max_age.nanoseconds <= 0) return error.InvalidOptions;
+    if (options.resumption) |resumption| if (resumption.namespace.len > 1024 or !types.positive(resumption.max_age)) return error.InvalidOptions;
     var hello = options.hello;
     // RFC 7250: the types this client asks for and can present.
     hello.raw_server_key = options.verify == .raw_key;
@@ -917,7 +917,7 @@ fn cacheKey(options: Options, namespace: []const u8) [32]u8 {
                 .chain = &.{},
                 .identity = options.identity,
                 .purpose = .server,
-                .time = .fromNanoseconds(0),
+                .time = .zero,
                 .trust_generation = full.trust_generation,
                 .policy_generation = full.policy_generation,
                 .mode = .full,
