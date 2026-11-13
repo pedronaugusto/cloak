@@ -1,4 +1,5 @@
 const std = @import("std");
+const shakedown = @import("shakedown");
 const edwards25519 = @import("edwards25519.zig");
 const s2n = @import("field.zig").s2n;
 const Fiat = edwards25519.With(.fiat, null);
@@ -96,6 +97,57 @@ test "edwards25519: decoding's verdicts and points equal std's (canonical, x = 0
         if (ours) |a| {
             try std.testing.expectEqualSlices(u8, encoding, &a.encode());
             try std.testing.expectEqualSlices(u8, std.mem.asBytes(&a.words), std.mem.asBytes(&Fiat.decode(encoding).?.words));
+            try std.testing.expectEqual(theirs.?.x.isZero(), a.xIsZero());
+        }
+    }
+}
+
+test "edwards25519 property: decoding accepts exactly RFC 8032's encodings, each naming the point it re-encodes to" {
+    // decode's promise (RFC 8032 5.1.3): the point an encoding names, or null when y is not below
+    // p, no x exists, or x is zero with the sign bit set. The oracle is std's decoding with its
+    // canonical check and the x = 0 rule; every backend this build has answers as it does.
+    try shakedown.check(std.testing.allocator, {}, decodesAsRfc8032, .{ .cases = 4096, .seed = 0xed25 });
+}
+fn decodesAsRfc8032(_: void, case: *shakedown.Case) !void {
+    var encoding: [32]u8 = undefined;
+    switch (shakedown.gen.intRange(case.source, u8, 0, 4)) {
+        // Any 32 bytes: about half name no point.
+        0 => for (&encoding) |*byte| {
+            byte.* = shakedown.gen.int(case.source, u8);
+        },
+        // A point, [s]B, with either sign bit: one of the two is a point, the other its negation
+        // or, for x = 0, refused.
+        1 => {
+            var scalar: [32]u8 = undefined;
+            for (&scalar) |*byte| byte.* = shakedown.gen.int(case.source, u8);
+            edwards25519.base(&encoding, &scalar);
+            encoding[31] ^= @as(u8, shakedown.gen.intRange(case.source, u1, 0, 1)) << 7;
+        },
+        // A y of 0 to 18 spelled as y + p, at or above p: never canonical.
+        2 => {
+            encoding = int(p + shakedown.gen.intRange(case.source, u8, 0, 18));
+            encoding[31] |= @as(u8, shakedown.gen.intRange(case.source, u1, 0, 1)) << 7;
+        },
+        3 => {
+            const edges = edgeEncodings();
+            encoding = edges[shakedown.gen.intRange(case.source, usize, 0, edges.len - 1)];
+        },
+        else => {
+            const all = small_order ++ refused;
+            encoding = all[shakedown.gen.intRange(case.source, usize, 0, all.len - 1)];
+        },
+    }
+    const theirs: ?Std = blk: {
+        Std.rejectNonCanonical(encoding) catch break :blk null;
+        const point = Std.fromBytes(encoding) catch break :blk null;
+        if (point.x.isZero() and encoding[31] >> 7 == 1) break :blk null;
+        break :blk point;
+    };
+    const backends = [_]?Affine{ edwards25519.decode(&encoding), Fiat.decode(&encoding) };
+    for (backends) |ours| {
+        try std.testing.expectEqual(theirs == null, ours == null);
+        if (ours) |a| {
+            try std.testing.expectEqualSlices(u8, &encoding, &a.encode());
             try std.testing.expectEqual(theirs.?.x.isZero(), a.xIsZero());
         }
     }

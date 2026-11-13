@@ -187,3 +187,7 @@ test "an encoding decodes to its message, and every flipped byte of it fails as 
     try encode(scheme, "", &seed, &em);
     try testing.expectEqual(@as(usize, 0), (try decode(scheme, &em, &out)).len);
 }
+
+test {
+    _ = @import("pkcs1_test.zig");
+}
