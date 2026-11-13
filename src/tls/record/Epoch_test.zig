@@ -148,7 +148,7 @@ fn tampered(_: void, case: *shakedown.Case) !void {
         sealed[at % sealed.len] ^= flip;
         var out: [R.max_inner]u8 = @splat(0);
         try std.testing.expectError(error.BadRecord, rx.open(sealed, &out));
-        try std.testing.expect(std.mem.indexOf(u8, &out, payload[0..len]) == null);
+        try std.testing.expect(std.mem.find(u8, &out, payload[0..len]) == null);
         try std.testing.expectError(error.Closed, rx.open(next, &out));
     }
 }
