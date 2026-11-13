@@ -272,7 +272,7 @@ suite12: ?suites.Suite12 = null,
 /// TLS 1.2 connection.
 tls12: ?*Flight.Secrets12 = null,
 
-const Scratch = struct {
+pub const Scratch = struct {
     /// The chosen credential's stapled OCSP status goes to a client that asked for it (RFC 6066
     /// section 8): a choice of the handshake alone.
     sends_ocsp: bool = false,
@@ -366,7 +366,7 @@ fn Keyed(comptime suite: Suite13) type {
         handshake: K.Traffic,
     };
 }
-const Keys = union(Suite13) {
+pub const Keys = union(Suite13) {
     aes_128_gcm_sha256: Keyed(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Keyed(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Keyed(.chacha20_poly1305_sha256),

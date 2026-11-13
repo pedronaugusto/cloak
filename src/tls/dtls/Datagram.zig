@@ -251,7 +251,7 @@ const Category = enum { handshake, ticket, key_update, new_cid, request_cid };
 
 /// A flight this end sent, kept until the peer's answer or ACK covers it: its messages, its
 /// retransmission timer and its place among the records ACKs name.
-const Outgoing = struct {
+pub const Outgoing = struct {
     category: Category,
     entries: std.ArrayList(Sent) = .empty,
     bytes: usize = 0,
@@ -281,7 +281,7 @@ const Outgoing = struct {
 const max_flights = 6;
 
 /// Which fragment a sent record carried, for the ACKs that name records (RFC 9147 section 7).
-const Sent_record = struct { epoch: u64, sequence: u64, slot: u8, generation: u32, entry: u16, offset: u32, len: u32 };
+pub const Sent_record = struct { epoch: u64, sequence: u64, slot: u8, generation: u32, entry: u16, offset: u32, len: u32 };
 
 /// A handshake message being reassembled, held as the TLS-form message.
 const Partial = struct {
@@ -299,7 +299,7 @@ const Partial = struct {
     }
 };
 
-const Readable = struct { bytes: []u8 };
+pub const Readable = struct { bytes: []u8 };
 
 gpa: std.mem.Allocator,
 hs: Machine,

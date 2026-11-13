@@ -81,7 +81,7 @@ fn array(sec: *const Security, gpa: std.mem.Allocator, certificates: []const []c
     }
     return sec.CFArrayCreate(null, refs.ptr, @intCast(refs.len), sec.kCFTypeArrayCallBacks) orelse return error.OutOfMemory; // array count was checked to fit signed CFIndex
 }
-const ArrayCallbacks = extern struct { version: isize, retain: ?*const anyopaque, release: ?*const anyopaque, description: ?*const anyopaque, equal: ?*const anyopaque };
+pub const ArrayCallbacks = extern struct { version: isize, retain: ?*const anyopaque, release: ?*const anyopaque, description: ?*const anyopaque, equal: ?*const anyopaque };
 /// The Security and CoreFoundation symbols cloak calls, opened from the system's Security framework on
 /// first use rather than linked, so a macOS build links only libSystem and needs no SDK. Each field is one
 /// symbol: its name is the symbol's and its type is the declaration. The CoreFoundation symbols resolve

@@ -148,7 +148,7 @@ pub const Error = Client.Error || error{ Closed, StaleToken, NoRequest, LevelClo
 
 const Handshake = @This();
 
-const Current = union(enum) {
+pub const Current = union(enum) {
     data: struct { level: Level, start: u32, len: u32, acked: u32, flight_end: bool },
     secret: struct { level: Level, direction: Direction, traffic: Client.Traffic },
     parameters,
@@ -156,7 +156,7 @@ const Current = union(enum) {
     alert: Alert,
 };
 
-const Partial = struct {
+pub const Partial = struct {
     buf: Buffer = .{},
     have: usize = 0,
     total: usize = 0,
