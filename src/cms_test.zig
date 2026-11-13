@@ -14,8 +14,8 @@ test "Microsoft's signature on a real NuGet package verifies, at the time its ti
     const verified = try cms.verify(gpa, real, options);
     try std.testing.expect(verified.timestamped);
     try std.testing.expect(std.mem.startsWith(u8, verified.content, "Version:1\n"));
-    try std.testing.expect(std.mem.indexOf(u8, verified.content, "2.16.840.1.101.3.4.2.1-Hash:udU2lh83lVA5akzVKrThcmEDN+iYiiCvjoakW4kAtIY=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, verified.signer, "Microsoft Corporation") != null);
+    try std.testing.expect(std.mem.find(u8, verified.content, "2.16.840.1.101.3.4.2.1-Hash:udU2lh83lVA5akzVKrThcmEDN+iYiiCvjoakW4kAtIY=") != null);
+    try std.testing.expect(std.mem.find(u8, verified.signer, "Microsoft Corporation") != null);
     // 2025 at the earliest: the signer's certificate is held to that time, not today's.
     try std.testing.expect(@divFloor(verified.time.toNanoseconds(), std.time.ns_per_s) > 1_700_000_000);
 }
@@ -27,7 +27,7 @@ fn tampered(at: usize) ![]u8 {
 }
 
 fn find(needle: []const u8) usize {
-    return std.mem.indexOf(u8, real, needle).?;
+    return std.mem.find(u8, real, needle).?;
 }
 
 test "the content changed: the digest it signed is not the content's" {
@@ -53,7 +53,7 @@ test "a signature no timestamp covers, with no time given, is refused" {
     defer gpa.free(copy);
     const oid = "\x2a\x86\x48\x86\xf7\x0d\x01\x09\x10\x02\x0e";
     var from: usize = 0;
-    while (std.mem.indexOfPos(u8, copy, from, oid)) |at| {
+    while (std.mem.findPos(u8, copy, from, oid)) |at| {
         copy[at + oid.len - 1] = 0x7f;
         from = at + oid.len;
     }
