@@ -341,7 +341,7 @@ pub const KeyLogRelay = struct {
 };
 
 /// The native verifier's verdict is reused for an hour at most (design 5.5).
-pub const native_max_age: std.Io.Duration = .fromSeconds(60 * 60);
+pub const native_max_age = certificates.types.secondsSpan(60 * 60);
 
 fn resumptionFor(options: Options) ?Connection.Resumption {
     var resumption = options.resumption orelse return null;
@@ -349,7 +349,7 @@ fn resumptionFor(options: Options) ?Connection.Resumption {
         .snapshot => |snapshot| snapshot.systemPolicy() != .portable,
         else => false,
     };
-    if (native and resumption.max_age.nanoseconds > native_max_age.nanoseconds) resumption.max_age = native_max_age;
+    if (native and certificates.types.longer(resumption.max_age, native_max_age)) resumption.max_age = native_max_age;
     return resumption;
 }
 

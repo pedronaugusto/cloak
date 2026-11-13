@@ -1194,7 +1194,7 @@ pub fn policyDigest(self: *const Server) [32]u8 {
             const request: types.Request = .{
                 .chain = &.{},
                 .purpose = .client,
-                .time = .fromNanoseconds(0),
+                .time = .zero,
                 .trust_generation = full.trust_generation,
                 .policy_generation = full.policy_generation,
                 .mode = .full,

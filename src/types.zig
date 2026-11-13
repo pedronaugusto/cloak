@@ -42,6 +42,31 @@ fn whole(comptime unit: aegis.units.Unit, value: anytype) i64 {
 pub fn instant(s: i64) std.Io.Timestamp {
     return RealSeconds.fromRaw(s).toTimestamp();
 }
+
+/// A span of whole seconds, as std's Duration: the defaults options and policies write.
+pub fn secondsSpan(comptime count: i64) std.Io.Duration {
+    return Seconds.fromRaw(count).convert(.nanosecond, i96, .exact).toIoDuration();
+}
+
+/// Whether two calendar instants are one.
+pub fn sameInstant(a: std.Io.Timestamp, b: std.Io.Timestamp) bool {
+    return RealNanoseconds.fromTimestamp(a, .exact).eql(RealNanoseconds.fromTimestamp(b, .exact));
+}
+
+/// Whether `a` is before `b`.
+pub fn before(a: std.Io.Timestamp, b: std.Io.Timestamp) bool {
+    return RealNanoseconds.fromTimestamp(a, .exact).compare(RealNanoseconds.fromTimestamp(b, .exact)) == .lt;
+}
+
+/// Whether span `a` is longer than span `b`.
+pub fn longer(a: std.Io.Duration, b: std.Io.Duration) bool {
+    return Nanoseconds.fromIoDuration(a, .exact).compare(Nanoseconds.fromIoDuration(b, .exact)) == .gt;
+}
+
+/// Whether a span is longer than none.
+pub fn positive(d: std.Io.Duration) bool {
+    return Nanoseconds.fromIoDuration(d, .exact).compare(.fromRaw(0)) == .gt;
+}
 /// One service request of one connection: its generation and the request's number within it. A
 /// connection issues each once, so an answer naming another is stale.
 pub const Token = struct {
@@ -69,9 +94,9 @@ pub const RevocationPolicy = struct {
     mode: Revocation = .if_present,
     coverage: Coverage = .leaf,
     /// Allowed difference between the evidence's clock and ours; at most a day.
-    clock_skew: std.Io.Duration = .fromSeconds(300),
+    clock_skew: std.Io.Duration = secondsSpan(300),
     /// How long evidence without a next-update time stays fresh; at most a year.
-    max_age: std.Io.Duration = .fromSeconds(86400),
+    max_age: std.Io.Duration = secondsSpan(86400),
 };
 pub const Evidence = struct {
     crls: []const []const u8 = &.{},
@@ -106,7 +131,7 @@ pub const TransparencyPolicy = struct {
     /// beyond.
     embedded: u8 = 2,
     embedded_long: u8 = 3,
-    long_lifetime: std.Io.Duration = .fromSeconds(180 * 86400),
+    long_lifetime: std.Io.Duration = secondsSpan(180 * 86400),
     /// Distinct logs, none retired, whose SCTs delivered beside the certificate make it compliant.
     delivered: u8 = 2,
     /// Distinct operators among the logs counted, either way.
@@ -325,7 +350,7 @@ pub const Verification = struct {
             .ipv6 => |ip| if (request.identity != .ipv6 or !std.mem.eql(u8, &ip, &request.identity.ipv6)) return error.WrongVerificationRequest,
         }
         if (request.mode == .full and !self.authenticated) return error.Unauthenticated;
-        if (self.validation_time.nanoseconds != request.time.nanoseconds or seconds(self.expires) < seconds(request.time)) return error.VerificationExpired;
+        if (!sameInstant(self.validation_time, request.time) or seconds(self.expires) < seconds(request.time)) return error.VerificationExpired;
     }
     pub fn deinit(self: *Verification) void {
         @setRuntimeSafety(true);

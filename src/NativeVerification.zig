@@ -22,7 +22,7 @@ pub fn take(service: NativeVerification, gpa: std.mem.Allocator, request: types.
     var receipt = try verify.nativePath(gpa, request, path.chain);
     errdefer receipt.deinit();
     try receipt.check(request);
-    if (now.nanoseconds < receipt.validation_time.nanoseconds) return error.ValidationTimeChanged;
+    if (types.before(now, receipt.validation_time)) return error.ValidationTimeChanged;
     if (types.seconds(receipt.expires) < types.seconds(now)) return error.VerificationExpired;
     return receipt;
 }

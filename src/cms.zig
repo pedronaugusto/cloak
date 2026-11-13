@@ -357,7 +357,7 @@ fn checkTimestamp(gpa: Allocator, token: []const u8, covered: []const u8, option
     _ = try info.expect(2); // The serial number.
     const when = try info.expect(0x18);
     const seconds = Certificate.evidenceTime(when) catch return error.InvalidTimestamp;
-    const time: std.Io.Timestamp = .fromNanoseconds(@as(i96, seconds) * std.time.ns_per_s);
+    const time = T.instant(seconds);
     const signer = try checkSigner(gpa, parsed);
     try checkChain(gpa, parsed, signer, .time_stamping, time, options.timestamp_roots orelse options.roots);
     return time;
