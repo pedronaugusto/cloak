@@ -267,7 +267,7 @@ auth_expires: i64 = std.math.maxInt(i64),
 /// Post-handshake authentication, kept from the client's Finished when it was offered.
 post_auth: ?*PostAuth = null,
 
-const Kept = struct {
+pub const Kept = struct {
     /// The credential table, copied, its identities and delegated credentials retained.
     credentials: []Credential = &.{},
     resumption: ?Resumption,
@@ -282,7 +282,7 @@ const Kept = struct {
 /// serves, its binder label and its identity on the wire.
 const External13 = struct { key: u8, hash: Psk.Hash, kind: Schedule.BinderKind, identity: []const u8 };
 
-const Scratch = struct {
+pub const Scratch = struct {
     options: Options = undefined,
     flight: Flight = .{},
     transcripts: Transcripts = .{},
@@ -390,7 +390,7 @@ fn Keyed(comptime suite: Suite13) type {
         handshake: K.Traffic,
     };
 }
-const Keys = union(Suite13) {
+pub const Keys = union(Suite13) {
     aes_128_gcm_sha256: Keyed(.aes_128_gcm_sha256),
     aes_256_gcm_sha384: Keyed(.aes_256_gcm_sha384),
     chacha20_poly1305_sha256: Keyed(.chacha20_poly1305_sha256),

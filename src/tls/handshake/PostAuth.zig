@@ -109,7 +109,7 @@ outcome: aegis.Atomic(Packed) = .init(.none),
 leaf: []u8 = &.{},
 keep_leaf: bool = false,
 
-const Exchange = struct {
+pub const Exchange = struct {
     transcript: aegis.Secret(Transcripts.Selected),
     context: [255]u8 = undefined,
     context_len: u8 = 0,

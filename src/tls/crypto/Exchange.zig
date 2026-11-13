@@ -119,7 +119,7 @@ pub const Agreed = struct {
     }
 };
 
-const Private = union(enum) {
+pub const Private = union(enum) {
     x25519: aegis.Secret([X25519.secret_length]u8),
     p256: aegis.Secret([ecdh.P256.scalar_length]u8),
     p384: aegis.Secret([ecdh.P384.scalar_length]u8),

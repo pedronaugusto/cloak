@@ -77,7 +77,7 @@ pub const Options = struct {
     client_permute: bool = false,
 };
 
-const Packet = struct { bytes: []u8 };
+pub const Packet = struct { bytes: []u8 };
 
 pub const Side = struct {
     dtls: Datagram,
