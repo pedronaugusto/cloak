@@ -247,7 +247,7 @@ const Sent = struct {
 
 /// What a flight is (RFC 9147 section 5.8.4): the handshake's, or one post-handshake message's,
 /// each with a state machine of its own that no other kind interrupts.
-const Category = enum { handshake, ticket, key_update, new_cid, request_cid };
+pub const Category = enum { handshake, ticket, key_update, new_cid, request_cid };
 
 /// A flight this end sent, kept until the peer's answer or ACK covers it: its messages, its
 /// retransmission timer and its place among the records ACKs name.
