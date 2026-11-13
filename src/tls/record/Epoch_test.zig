@@ -120,6 +120,39 @@ fn roundtrip(_: void, case: *shakedown.Case) !void {
     }
 }
 
+test "C2 record property: a record changed in any byte is refused, releases nothing and erases the epoch" {
+    // Epoch.open's promise: tag verification precedes release, and any peer failure erases the
+    // epoch. A sealed record with one byte changed anywhere (header, body or tag) is BadRecord,
+    // `out` holds no copy of its plaintext, and the next record, sealed in order, finds the
+    // epoch closed.
+    try shakedown.check(std.testing.allocator, {}, tampered, .{ .cases = 512, .seed = 0xc2af });
+}
+fn tampered(_: void, case: *shakedown.Case) !void {
+    var payload: [256]u8 = undefined;
+    const len = shakedown.gen.intRange(case.source, usize, 16, payload.len);
+    for (payload[0..len]) |*byte| byte.* = shakedown.gen.int(case.source, u8);
+    const at = shakedown.gen.int(case.source, usize);
+    const flip = shakedown.gen.intRange(case.source, u8, 1, 255);
+    inline for (std.enums.values(S.Suite13)) |suite| {
+        const E = R.Epoch(suite);
+        var tx: E = undefined;
+        try tx.init(&@splat(1), &@splat(2), .{});
+        defer tx.deinit();
+        var rx: E = undefined;
+        try rx.init(&@splat(1), &@splat(2), .{});
+        defer rx.deinit();
+        var wire: [R.max_ciphertext]u8 = undefined;
+        var after: [64]u8 = undefined;
+        const sealed = try tx.seal(.application, payload[0..len], 0, &wire);
+        const next = try tx.seal(.application, "after", 0, &after);
+        sealed[at % sealed.len] ^= flip;
+        var out: [R.max_inner]u8 = @splat(0);
+        try std.testing.expectError(error.BadRecord, rx.open(sealed, &out));
+        try std.testing.expect(std.mem.indexOf(u8, &out, payload[0..len]) == null);
+        try std.testing.expectError(error.Closed, rx.open(next, &out));
+    }
+}
+
 test "C2 KeyUpdate old-key commitment then directional reset" {
     inline for (std.enums.values(S.Suite13)) |suite| {
         const Hash = S.Hash(suite);
