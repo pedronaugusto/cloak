@@ -74,12 +74,12 @@ pub fn dev(b: *std.Build, tools: type) void {
         .target = if (freestanding) host else target,
         .optimize = optimize,
     } });
-    const options_checker = b.addExecutable(.{ .name = "cloak-options-check", .root_module = b.createModule(.{ .root_source_file = p.path("ci/options.zig"), .target = host, .optimize = .safe }) });
-    const run_options = b.addRunArtifact(options_checker);
-    run_options.addArg(b.graph.zig_exe);
-    run_options.addFileArg(p.dependency("aegis", .{ .target = target, .optimize = optimize }).path("src/root.zig"));
-    run_options.setCwd(p.path("."));
-    b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&run_options.step);
+    // A consumer that turns std's side-channel mitigations off does not compile: cloak's guard
+    // refuses it at private-key construction. A module of the build graph, so every reader of
+    // the graph (preflight's lint) sees ci/weak_options.zig with `cloak` bound.
+    const weak_options = b.addExecutable(.{ .name = "cloak-weak-options", .root_module = b.createModule(.{ .root_source_file = p.path("ci/weak_options.zig"), .target = host, .optimize = .safe, .imports = &.{.{ .name = "cloak", .module = createCloak(b, p, host, .safe) }} }) });
+    weak_options.expect_errors = .{ .contains = "cloak private-key construction requires std side-channel mitigations" };
+    b.step("check-options", "Reject consumers disabling private side-channel protections").dependOn(&weak_options.step);
     const failstop = b.addExecutable(.{ .name = "cloak-failstop", .root_module = b.createModule(.{ .root_source_file = p.path("ci/failstop.zig"), .target = host, .optimize = .fast, .imports = &.{.{ .name = "cloak", .module = createCloak(b, p, host, .fast) }} }) });
     if (target.result.os.tag != .freestanding) {
         const nuget_check = b.addRunArtifact(package.artifact("cloak-nuget-check"));
