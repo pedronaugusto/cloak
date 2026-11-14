@@ -54,6 +54,16 @@ pub fn dev(b: *std.Build, tools: type) void {
         b.step("parser-fuzz", "Run the parser fuzz properties alone").dependOn(&b.addRunArtifact(fuzz_tests).step);
         const concurrent_tests = b.addTest(.{ .name = "concurrent", .root_module = test_module, .filters = &.{"concurrent"} });
         b.step("concurrent", "Run the tests whose tasks share a session, a snapshot or a job").dependOn(&b.addRunArtifact(concurrent_tests).step);
+        // The release tier: the parser, credential, trust, service and receipt tests and the
+        // catalogue's C2, C3 and F93 rows, built in ReleaseFast. A step of its own, which the lint's
+        // extra checks run: never `test`, whose step runs the lint that runs the extra checks.
+        const release_shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .fast });
+        const release_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = .fast });
+        release_module.addImport("shakedown", release_shakedown.module("shakedown"));
+        addAegis(p, release_module, target, .fast);
+        nativeLinks(release_module, target);
+        const release_tests = b.addTest(.{ .name = "release-tests", .root_module = release_module, .filters = &.{ "parser", "credential", "trust", "service", "receipt", "C2", "C3", "F93 " } });
+        b.step("test-release", "Run the parser, credential, trust, service and receipt tests and the C2, C3 and F93 rows in ReleaseFast").dependOn(&b.addRunArtifact(release_tests).step);
         // The Linux kernel record layer's tests where the kernel must have one, so they run
         // rather than skip: the hosted "kernel TLS" job loads the module first (kernel-tls-setup).
         const kernel_tests = b.addTest(.{ .name = "kernel-tls", .root_module = test_module, .filters = &.{ "Linux kernel", "C9 the kernel probe" } });
