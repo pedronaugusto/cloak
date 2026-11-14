@@ -1,6 +1,7 @@
 //! Delegated credentials (RFC 9345): the format, the receiver's checks, issuing, and the
 //! Certificate message's leaf extension.
 const std = @import("std");
+const shakedown = @import("shakedown");
 const certificates = @import("../../certificates.zig");
 const Delegation = @import("Delegation.zig");
 const Messages = @import("Messages.zig");
@@ -224,4 +225,48 @@ fn entryMessage(w: *Writer, entries: []const struct { []const u8, []const u8 }) 
     }
     std.mem.writeInt(u24, w.bytes[list_at..][0..3], @intCast(w.pos - list_at - 3), .big);
     _ = Messages.seal(w);
+}
+
+test "Delegation property: a credential changed in any byte is refused, or check vouches for the same key, scheme and expiry" {
+    // check's promise (RFC 9345 sections 4.1.1-4.1.3): the certificate's key signed the credential,
+    // its scheme and its lifetime, so a credential a peer changed anywhere (the lifetime, the
+    // scheme, the key, the delegation's algorithm or its signature) is illegal_parameter, or one
+    // that still passes proves with exactly what was signed. A credential is drawn for either role
+    // and any lifetime the receiver takes, then one byte of one field changed.
+    try shakedown.check(gpa, {}, changedCredential, .{ .cases = 192, .seed = 0xdc10 });
+}
+
+fn changedCredential(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
+    const identity = try identityOf(pki.dc_p256, pki.p256_pem);
+    defer identity.deinit();
+    const role: Delegation.Role = if (shakedown.gen.boolean(s)) .server else .client;
+    const expires = pki.time + shakedown.gen.intRange(s, i64, 60, 6 * day);
+    const good = try forge(identity, role, validTime(pki.dc_p256, expires), 0x0503, .ecdsa_p256_sha256, p384Spki());
+    defer gpa.free(good);
+    const clean = try checkAt(good, pki.dc_p256, role, pki.time);
+    try std.testing.expectEqual(expires, clean.expires);
+    // A field drawn first, so the short ones are changed as often as the long.
+    const view = try Delegation.parse(good);
+    const spki_at = 4 + 2 + 3;
+    const algorithm_at = view.credential.len;
+    const region: struct { usize, usize } = switch (shakedown.gen.intRange(s, u8, 0, 5)) {
+        0 => .{ 0, 4 }, // valid_time
+        1 => .{ 4, 2 }, // the credential's scheme
+        2 => .{ spki_at, view.spki.len }, // its key
+        3 => .{ algorithm_at, 2 }, // the delegation's algorithm
+        4 => .{ algorithm_at + 2, good.len - algorithm_at - 2 }, // its signature, with the length
+        else => .{ 0, good.len },
+    };
+    const copy = try gpa.dupe(u8, good);
+    defer gpa.free(copy);
+    copy[region[0] + shakedown.gen.intRange(s, usize, 0, region[1] - 1)] ^= shakedown.gen.intRange(s, u8, 1, 255);
+    const got = checkAt(copy, pki.dc_p256, role, pki.time) catch |err| {
+        try std.testing.expectEqual(error.IllegalParameter, err);
+        return;
+    };
+    const changed = try Delegation.parse(copy);
+    try std.testing.expectEqualSlices(u8, view.spki, changed.spki);
+    try std.testing.expectEqual(clean.scheme, got.scheme);
+    try std.testing.expectEqual(clean.expires, got.expires);
 }

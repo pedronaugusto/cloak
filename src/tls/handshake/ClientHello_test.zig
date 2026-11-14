@@ -367,3 +367,117 @@ test "F138 catalogue_certificate_authorities_decoded (a ClientHello's certificat
     const hello = try ClientHello.parse(helloWith(&out, "\x00\x2f\x00\x07\x00\x05\x00\x03\x30\x01\x00"), .stream);
     try std.testing.expectEqualSlices(u8, "\x00\x03\x30\x01\x00", hello.authorities.?);
 }
+
+test "PSK property: an offer parses exactly when it is OfferedPsks, and reads back its identities and binders" {
+    // OfferedPsks (RFC 8446 section 4.2.11), as parse documents it: identities<7..2^16-1> of
+    // identity<1..2^16-1> and an age, then binders<33..2^16-1> of binder<32..255>, one for each
+    // identity, nothing after. A hello whose offer is that parses, and pskIdentity, pskBinder and
+    // truncated read it back; any other is refused. Offers drawn well formed and then, half the
+    // time, one byte changed, cut short or lengthened, against a decoder written from the RFC.
+    try shakedown.check(std.testing.allocator, {}, offeredPsks, .{ .cases = 2048, .seed = 0x95c1 });
+}
+
+const Offer = struct {
+    identities: [64]ClientHello.PskIdentity = undefined,
+    binders: [64][]const u8 = undefined,
+    count: usize = 0,
+    /// The binders list with its length: what follows the part the binders cover.
+    binders_wire: usize = 0,
+};
+
+/// OfferedPsks read from the RFC's grammar, by position, apart from the parser's Reader.
+fn modelOffer(body: []const u8) ?Offer {
+    var o: Offer = .{};
+    if (body.len < 2) return null;
+    const ids_len = std.mem.readInt(u16, body[0..2], .big);
+    if (body.len < 4 + ids_len) return null;
+    const ids = body[2..][0..ids_len];
+    const binders_len = std.mem.readInt(u16, body[2 + ids_len ..][0..2], .big);
+    if (body.len != 4 + ids_len + binders_len or ids_len == 0 or binders_len == 0) return null;
+    const binders = body[4 + ids_len ..];
+    var at: usize = 0;
+    while (at < ids.len) : (o.count += 1) {
+        if (at + 2 > ids.len or o.count == o.identities.len) return null;
+        const n = std.mem.readInt(u16, ids[at..][0..2], .big);
+        if (n == 0 or at + 2 + n + 4 > ids.len) return null;
+        o.identities[o.count] = .{ .identity = ids[at + 2 ..][0..n], .age = std.mem.readInt(u32, ids[at + 2 + n ..][0..4], .big) };
+        at += 2 + n + 4;
+    }
+    at = 0;
+    var binder_count: usize = 0;
+    while (at < binders.len) : (binder_count += 1) {
+        const n = binders[at];
+        if (n < 32 or at + 1 + n > binders.len or binder_count == o.binders.len) return null;
+        o.binders[binder_count] = binders[at + 1 ..][0..n];
+        at += 1 + n;
+    }
+    if (binder_count != o.count) return null;
+    o.binders_wire = 2 + binders.len;
+    return o;
+}
+
+fn offeredPsks(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
+    var body_buf: [1024]u8 = undefined;
+    var w: usize = 4;
+    const count = shakedown.gen.intRange(s, usize, 1, 4);
+    for (0..count) |_| {
+        // Now and then an empty identity, which the grammar refuses.
+        const n = if (shakedown.gen.intRange(s, u8, 0, 15) == 0) 0 else shakedown.gen.intRange(s, usize, 1, 40);
+        std.mem.writeInt(u16, body_buf[w..][0..2], @intCast(n), .big);
+        for (body_buf[w + 2 ..][0 .. n + 4]) |*b| b.* = shakedown.gen.int(s, u8);
+        w += 2 + n + 4;
+    }
+    // The body starts at 2: the identities list's length, then the list.
+    std.mem.writeInt(u16, body_buf[2..4], @intCast(w - 4), .big);
+    const binders_at = w;
+    w += 2;
+    // One binder for each identity, or now and then one too many or too few.
+    const binders = switch (shakedown.gen.intRange(s, u8, 0, 15)) {
+        0 => count + 1,
+        1 => count - 1,
+        else => count,
+    };
+    for (0..binders) |_| {
+        const n = shakedown.gen.intRange(s, usize, 31, 48);
+        body_buf[w] = @intCast(n);
+        for (body_buf[w + 1 ..][0..n]) |*b| b.* = shakedown.gen.int(s, u8);
+        w += 1 + n;
+    }
+    std.mem.writeInt(u16, body_buf[binders_at..][0..2], @intCast(w - binders_at - 2), .big);
+    var body: []u8 = body_buf[2..w];
+    switch (shakedown.gen.intRange(s, u8, 0, 5)) {
+        0 => body[shakedown.gen.intRange(s, usize, 0, body.len - 1)] ^= shakedown.gen.intRange(s, u8, 1, 255),
+        1 => body = body[0..shakedown.gen.intRange(s, usize, 0, body.len - 1)],
+        2 => {
+            body_buf[w] = shakedown.gen.int(s, u8);
+            body = body_buf[2 .. w + 1];
+        },
+        else => {},
+    }
+    // supported_versions and psk_key_exchange_modes, then the offer, last as it must be.
+    var extensions: [1100]u8 = undefined;
+    const lead = "\x00\x2b\x00\x03\x02\x03\x04\x00\x2d\x00\x02\x01\x01\x00\x29";
+    @memcpy(extensions[0..lead.len], lead);
+    std.mem.writeInt(u16, extensions[lead.len..][0..2], @intCast(body.len), .big);
+    @memcpy(extensions[lead.len + 2 ..][0..body.len], body);
+    var out: [1200]u8 = undefined;
+    const wire = helloWith(&out, extensions[0 .. lead.len + 2 + body.len]);
+
+    const model = modelOffer(body);
+    const hello = ClientHello.parse(wire, .stream) catch {
+        try std.testing.expect(model == null);
+        return;
+    };
+    const m = model orelse return error.TestUnexpectedResult;
+    try std.testing.expect(hello.has_psk);
+    for (m.identities[0..m.count], m.binders[0..m.count], 0..) |identity, binder, i| {
+        const got = hello.pskIdentity(i).?;
+        try std.testing.expectEqualSlices(u8, identity.identity, got.identity);
+        try std.testing.expectEqual(identity.age, got.age);
+        try std.testing.expectEqualSlices(u8, binder, hello.pskBinder(i));
+    }
+    try std.testing.expect(hello.pskIdentity(m.count) == null);
+    // The binders cover the hello up to their list, which ends it.
+    try std.testing.expectEqualSlices(u8, wire[0 .. wire.len - m.binders_wire], hello.truncated(wire));
+}
