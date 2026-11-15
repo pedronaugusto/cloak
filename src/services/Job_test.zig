@@ -155,7 +155,7 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
         const path = try Path.init(cleanup.allocator(), request(), &.{"abc"});
         var guard = job.state.get().shared.acquire();
         guard.value().phase = .ready;
-        guard.value().result = path;
+        guard.value().result = .{ .path = path };
         guard.deinit();
         cleanup.guard = &job.state.get().shared;
         if (abandon) job.abandon();

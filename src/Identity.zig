@@ -94,18 +94,18 @@ fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options:
     @setRuntimeSafety(true);
     if (spki.len == 0) return error.EmptyChain;
     if (spki.len > options.chain_bytes or spki.len > 0xffffff) return error.IdentityLimit;
-    const public_key = try certificate.parsePublicKey(spki);
-    if (key) |owned| if (!owned.matchesKey(public_key)) return error.KeyMismatch;
+    // The key is parsed from the owned copy, which it borrows, never from the caller's bytes.
     const storage = try gpa.dupe(u8, spki);
     errdefer gpa.free(storage);
+    const public_key = try certificate.parsePublicKey(storage);
+    if (key) |owned| if (!owned.matchesKey(public_key)) return error.KeyMismatch;
     const flight = try gpa.alloc(u8, 3 + spki.len);
     errdefer gpa.free(flight);
     std.mem.writeInt(u24, flight[0..3], @intCast(spki.len), .big); // bounded to u24 above
     @memcpy(flight[3..], spki);
     const held = if (key) |owned| owned.retain() else null;
     errdefer if (held) |owned| owned.deinit();
-    // The key parsed above borrows the caller's bytes: parse it again from the owned copy.
-    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = certificate.parsePublicKey(storage) catch unreachable }) }; // glint-ignore: Z026 -- the same bytes parsed above
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = &.{}, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(std.math.maxInt(i64)), .raw = storage, .public_key = public_key }) };
 }
 
 /// A chain whose key is held elsewhere (a module, another process): cloak never signs for it,
@@ -120,22 +120,18 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     @setRuntimeSafety(true);
     if (certificates.len == 0) return error.EmptyChain;
     if (certificates.len > options.certificates) return error.IdentityLimit;
-    // Each certificate's issuer Name, in the caller's bytes until the chain is copied.
-    const names = try gpa.alloc([]const u8, certificates.len);
-    errdefer gpa.free(names);
     var bytes: usize = 0;
-    var expiry: i64 = std.math.maxInt(i64);
-    for (certificates, names) |der, *issuer| {
+    for (certificates) |der| {
         bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.IdentityLimit).raw();
         if (der.len > 0xffffff or bytes > options.chain_bytes) return error.IdentityLimit;
-        const cert = try certificate.parse(der, .{});
-        expiry = @min(expiry, cert.not_after);
-        issuer.* = cert.issuer;
     }
-    if (key) |owned| if (!owned.matches(certificates[0])) return error.KeyMismatch;
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
     const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();
     if (flight_size > 0xffffff) return error.IdentityLimit;
+    // The chain is copied first and parsed from the copy, so each certificate's issuer Name and
+    // the leaf's key borrow the owned bytes, never the caller's.
+    const names = try gpa.alloc([]const u8, certificates.len);
+    errdefer gpa.free(names);
     const owned = try gpa.alloc([]const u8, certificates.len);
     errdefer gpa.free(owned);
     const storage = try gpa.alloc(u8, bytes);
@@ -144,22 +140,27 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     errdefer gpa.free(flight);
     var at: usize = 0;
     var wire: usize = 0;
-    for (certificates, owned, names) |der, *entry, *issuer| {
+    for (certificates, owned) |der, *entry| {
         @memcpy(storage[at..][0..der.len], der);
         entry.* = storage[at..][0..der.len];
-        // The issuer moves with its certificate into the owned copy.
-        issuer.* = entry.*[@intFromPtr(issuer.ptr) - @intFromPtr(der.ptr) ..][0..issuer.len]; // the issuer lies within its certificate's bytes
         at += der.len;
         std.mem.writeInt(u24, flight[wire..][0..3], @intCast(der.len), .big); // certificate length was checked against u24 above
         wire += 3;
         @memcpy(flight[wire..][0..der.len], der);
         wire += der.len;
     }
-    // The leaf's key borrows the owned copy, not the caller's bytes.
-    const public_key = (certificate.parse(owned[0], .{}) catch unreachable).public_key; // glint-ignore: Z026 -- the same bytes parsed above
+    const leaf = try certificate.parse(owned[0], .{});
+    var expiry: i64 = leaf.not_after;
+    names[0] = leaf.issuer;
+    for (owned[1..], names[1..]) |der, *issuer| {
+        const cert = try certificate.parse(der, .{});
+        expiry = @min(expiry, cert.not_after);
+        issuer.* = cert.issuer;
+    }
+    if (key) |signer| if (!signer.matches(owned[0])) return error.KeyMismatch;
     const held = if (key) |signer| signer.retain() else null;
     errdefer if (held) |signer| signer.deinit();
-    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = public_key, .issuers = names }) };
+    return .{ .state = try .create(gpa, .{ .gpa = gpa, .chain = owned, .storage = storage, .flight = flight, .key = held, .generation = options.generation, .expires = .fromRaw(expiry), .public_key = leaf.public_key, .issuers = names }) };
 }
 pub fn retain(identity: Identity) Identity {
     return .{ .state = identity.state.retain() };

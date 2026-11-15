@@ -30,21 +30,35 @@ pub fn next(self: *Self) NextError!?Extension {
     self.count += 1;
     return .{ .id = id, .bytes = bytes };
 }
+/// A block's well-formed entries in order, from `pos`: the scan ends at the block's end or at the
+/// first entry that is not whole, with nothing to refuse. For a block already checked (a parsed
+/// hello's, one cloak wrote) or a pass that leaves a malformed tail to `next`.
+pub const Scan = struct {
+    bytes: []const u8,
+    /// Where the next entry starts.
+    pos: usize = 0,
+
+    pub fn next(self: *Scan) ?Extension {
+        @setRuntimeSafety(true);
+        const rest = self.bytes[self.pos..];
+        if (rest.len < 4) return null;
+        const len = std.mem.readInt(u16, rest[2..4], .big);
+        if (rest.len - 4 < len) return null;
+        self.pos += 4 + len;
+        return .{ .id = std.mem.readInt(u16, rest[0..2], .big), .bytes = rest[4..][0..len] };
+    }
+};
 /// Whether an ID repeats among the block's well-formed entries; a malformed tail is left to
 /// `next`, which refuses it when it gets there.
 fn uniqueBlock(block: []const u8) error{DuplicateExtension}!void {
     @setRuntimeSafety(true);
     for (0..16) |high| {
         var ids: std.bit_set.Static(4096) = .empty;
-        var r: R = .{ .bytes = block };
-        while (r.pos < block.len) {
-            // glint-ignore: Z026 -- a malformed entry ends this uniqueness pass; next refuses it when it reaches it
-            const id = r.int(u16) catch break;
-            // glint-ignore: Z026 -- a malformed entry ends this uniqueness pass; next refuses it when it reaches it
-            _ = r.vector(u16) catch break;
-            if (id >> 12 != high) continue;
-            if (ids.isSet(id & 0xfff)) return error.DuplicateExtension;
-            ids.set(id & 0xfff);
+        var scan: Scan = .{ .bytes = block };
+        while (scan.next()) |entry| {
+            if (entry.id >> 12 != high) continue;
+            if (ids.isSet(entry.id & 0xfff)) return error.DuplicateExtension;
+            ids.set(entry.id & 0xfff);
         }
     }
 }

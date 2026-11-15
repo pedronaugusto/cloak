@@ -54,8 +54,7 @@ pub const List = struct {
 
     pub fn next(self: *List) ?Sct {
         @setRuntimeSafety(true);
-        // glint-ignore: Z026 -- `init` checked the framing whole.
-        while (self.entry() catch unreachable) |found| if (found) |sct| return sct;
+        while (self.entry() catch aegis.assert.never("`init` checked the list's framing whole")) |found| if (found) |sct| return sct;
         return null;
     }
 
@@ -211,8 +210,8 @@ const Context = struct {
         self.signatures_left.* -= 1;
         const input = try signedInput(self.gpa, sct, entry);
         defer self.gpa.free(input);
-        // glint-ignore: Z026 -- an SCT whose signature does not verify counts for no log
-        signatures.verify(key.key, key.algorithm, input, sct.signature) catch return;
+        // An SCT whose signature does not verify counts for no log.
+        if (!signatures.verifies(key.key, key.algorithm, input, sct.signature)) return;
         tally.logs[tally.n] = @intCast(index);
         tally.n += 1;
         tally.current = tally.current or current;
@@ -305,11 +304,10 @@ pub fn precertificate(gpa: std.mem.Allocator, tbs: []const u8) Error![]u8 {
         at = Der.header(out, at, 0x30, kept);
         list = sequence.reader();
         while (!list.empty()) {
-            // glint-ignore: Z026 -- the first pass read every extension and its OID.
-            const ext = list.expect(0x30) catch unreachable;
+            // The first pass read every extension and its OID: these reads refuse as it did.
+            const ext = list.expect(0x30) catch return error.InvalidTransparency;
             var er = ext.reader();
-            // glint-ignore: Z026 -- as above.
-            if (std.mem.eql(u8, (er.expect(6) catch unreachable).value, sct_list_oid)) continue;
+            if (std.mem.eql(u8, (er.expect(6) catch return error.InvalidTransparency).value, sct_list_oid)) continue;
             @memcpy(out[at..][0..ext.encoded.len], ext.encoded);
             at += ext.encoded.len;
         }

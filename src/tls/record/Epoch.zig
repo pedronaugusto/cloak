@@ -96,8 +96,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             aegis.assert.invariant(self.owner != .next, "a kernel takes the next keys before another update");
             var next = TrafficSecret.init(undefined);
             defer next.deinit();
-            // glint-ignore: Z026 -- fixed label and hash-sized output meet the HKDF bounds.
-            Labels.expand(Hash, next.exposeMut(), self.traffic.?.expose(), "traffic upd", "") catch unreachable;
+            Labels.derive(Hash, .tls13, next.exposeMut(), self.traffic.?.expose(), "traffic upd", "");
             derive(next.expose(), self.key.exposeMut(), self.iv.exposeMut());
             self.traffic.?.exposeMut().* = next.expose().*;
             self.sequence = .fromRaw(0);
@@ -120,10 +119,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             return Labels.checkFinished(Hash, .tls13, self.traffic.?.expose(), transcript, received);
         }
         fn derive(secret: *const [Hash.digest_length]u8, key: *[A.key_length]u8, iv: *[12]u8) void {
-            // glint-ignore: Z026 -- fixed label and AEAD-sized output meet the HKDF bounds.
-            Labels.expand(Hash, key, secret, "key", "") catch unreachable;
-            // glint-ignore: Z026 -- fixed label and twelve-byte output meet the HKDF bounds.
-            Labels.expand(Hash, iv, secret, "iv", "") catch unreachable;
+            Labels.derive(Hash, .tls13, key, secret, "key", "");
+            Labels.derive(Hash, .tls13, iv, secret, "iv", "");
         }
         pub fn deinit(self: *Self) void {
             self.key.deinit();
@@ -132,14 +129,19 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             self.traffic = null;
             self.closed = true;
         }
-        fn admit(self: *Self, len: usize) error{RecordLimit}!void {
+        /// The counts after one more record of `len` bytes, within the limits: what the record's
+        /// success commits. A record past either limit erases the epoch.
+        const Admitted = struct { sequence: RecordCount, bytes: ByteCount };
+        fn admit(self: *Self, len: usize) error{RecordLimit}!Admitted {
             @setRuntimeSafety(true);
-            // glint-ignore: Z026 -- every admitted record kept the bytes within the limit.
-            const room = self.limits.bytes.sub(self.bytes) catch unreachable;
-            if (self.sequence.compare(self.limits.records) != .lt or ByteCount.fromRaw(len).compare(room) == .gt) {
-                self.deinit();
-                return error.RecordLimit;
-            }
+            const sequence = self.sequence.add(.fromRaw(1)) catch return self.exhausted();
+            const bytes = self.bytes.add(.fromRaw(len)) catch return self.exhausted();
+            if (sequence.compare(self.limits.records) == .gt or bytes.compare(self.limits.bytes) == .gt) return self.exhausted();
+            return .{ .sequence = sequence, .bytes = bytes };
+        }
+        fn exhausted(self: *Self) error{RecordLimit} {
+            self.deinit();
+            return error.RecordLimit;
         }
         /// Commit consumes one nonce, irrespective of subsequent transport acks.
         /// Exact alias means input starts at out.ptr + 5; other overlap is refused.
@@ -153,7 +155,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (out.len < wire_len) return error.BufferTooSmall;
             const wire = out[0..wire_len];
             if (overlap(input, wire) and @intFromPtr(input.ptr) != @intFromPtr(wire.ptr) + 5) return error.PartialOverlap; // compare live addresses only to permit exact ciphertext-body alias.
-            try self.admit(inner_len);
+            const admitted = try self.admit(inner_len);
             wire[0..3].* = .{ 23, 3, 3 };
             // Bounded by max_inner + the fixed 16-byte AEAD tag.
             std.mem.writeInt(u16, wire[3..5], @intCast(inner_len + A.tag_length), .big);
@@ -162,8 +164,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             inner[input.len] = @backingInt(content);
             @memset(inner[input.len + 1 ..], 0);
             Kernels.seal(A, inner, wire[5 + inner_len ..][0..16], inner, wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose());
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(inner_len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
+            self.sequence = admitted.sequence;
+            self.bytes = admitted.bytes;
             return wire;
         }
         /// Tag verification precedes release. Any peer failure erases this epoch.
@@ -198,7 +200,7 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             const plain = out[0..len];
             const cipher = wire[5..][0..len];
             if (overlap(wire, plain) and plain.ptr != cipher.ptr) return error.PartialOverlap;
-            try self.admit(len);
+            const admitted = try self.admit(len);
             Kernels.open(A, plain, cipher, wire[wire.len - 16 ..][0..16], wire[0..5], self.iv.expose(), self.sequence.raw(), self.key.expose()) catch {
                 if (trial) return error.Undecryptable;
                 return self.bad();
@@ -208,8 +210,8 @@ pub fn Epoch(comptime suite: suites.Suite13) type {
             if (end == 0) return self.unexpected();
             const content = std.enums.fromInt(Content, plain[end - 1]) orelse return self.unexpected();
             if (content != .application and end == 1) return self.unexpected();
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
+            self.sequence = admitted.sequence;
+            self.bytes = admitted.bytes;
             return .{ .content = content, .bytes = plain[0 .. end - 1] };
         }
         fn bad(self: *Self) error{BadRecord} {

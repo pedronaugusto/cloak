@@ -6,7 +6,6 @@ const std = @import("std");
 const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
 const Reader = @import("../../wire/Reader.zig");
-const Writer = @import("../wire/Writer.zig");
 const Hello = @import("Hello.zig");
 const Possession = @import("Possession.zig");
 
@@ -179,9 +178,12 @@ pub const Credential = struct {
         @setRuntimeSafety(true);
         if (identity.form() != .x509) return error.NotDelegator;
         const leaf_der = identity.chain()[0];
-        const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // glint-ignore: Z026 -- the identity parsed it
+        const leaf = certificates.certificate.parse(leaf_der, .{}) catch aegis.assert.never("an identity's leaf parsed when the identity was made");
         if (!delegator(&leaf)) return error.NotDelegator;
-        const view = try parse(bytes);
+        // The credential is parsed from the copy it keeps, which its view borrows.
+        const owned = try gpa.dupe(u8, bytes);
+        errdefer gpa.free(owned);
+        const view = try parse(owned);
         const scheme: Scheme = @fromBackingInt(view.scheme);
         if (!allowed(scheme)) return error.UnsupportedScheme;
         const public_key = certificates.certificate.parsePublicKey(view.spki) catch return error.UnsupportedScheme;
@@ -192,13 +194,11 @@ pub const Credential = struct {
         const content = try signedContent(gpa, role, leaf_der, view.credential, view.algorithm);
         defer gpa.free(content);
         Possession.verifyKey(view.algorithm, &Hello.schemes, leaf.public_key, content, view.signature) catch return error.BadDelegation;
-        const owned = try gpa.dupe(u8, bytes);
-        errdefer gpa.free(owned);
         var leaf_hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(leaf_der, &leaf_hash, .{});
         const held = key.retain();
         errdefer held.deinit();
-        return .{ .state = try .create(gpa, .{ .gpa = gpa, .bytes = owned, .view = parse(owned) catch unreachable, .key = held, .role = role, .leaf = leaf_hash, .expires = expires }) }; // glint-ignore: Z026 -- the same bytes parsed above
+        return .{ .state = try .create(gpa, .{ .gpa = gpa, .bytes = owned, .view = view, .key = held, .role = role, .leaf = leaf_hash, .expires = expires }) };
     }
 
     pub fn retain(self: Credential) Credential {
@@ -289,7 +289,7 @@ pub fn issue(gpa: std.mem.Allocator, identity: certificates.Identity, spec: Spec
     if (identity.form() != .x509) return error.NotDelegator;
     if (identity.noiseLength() == null) return error.KeyHeldElsewhere;
     const leaf_der = identity.chain()[0];
-    const leaf = certificates.certificate.parse(leaf_der, .{}) catch unreachable; // glint-ignore: Z026 -- the identity parsed it
+    const leaf = certificates.certificate.parse(leaf_der, .{}) catch aegis.assert.never("an identity's leaf parsed when the identity was made");
     if (!delegator(&leaf)) return error.NotDelegator;
     if (!allowed(spec.scheme)) return error.UnsupportedScheme;
     const public_key = certificates.certificate.parsePublicKey(spec.spki) catch return error.UnsupportedScheme;
@@ -300,21 +300,24 @@ pub fn issue(gpa: std.mem.Allocator, identity: certificates.Identity, spec: Spec
     if (expires <= leaf.not_before or expires >= leaf.not_after) return error.OutlivesCertificate;
     const valid_time = std.math.cast(u32, expires - leaf.not_before) orelse return error.OutlivesCertificate;
     if (spec.spki.len > 0xffffff) return error.UnsupportedScheme;
+    // The Credential: valid_time, the scheme, then the SubjectPublicKeyInfo as a u24 vector, each
+    // at its fixed place in a buffer of exactly their size.
     const credential = try gpa.alloc(u8, 4 + 2 + 3 + spec.spki.len);
     defer gpa.free(credential);
-    var w: Writer = .{ .bytes = credential };
-    w.int(u32, valid_time) catch unreachable; // glint-ignore: Z026 -- sized above
-    w.int(u16, @backingInt(spec.scheme)) catch unreachable; // glint-ignore: Z026 -- sized above
-    w.vector(u24, spec.spki) catch unreachable; // glint-ignore: Z026 -- sized above
+    std.mem.writeInt(u32, credential[0..4], valid_time, .big);
+    std.mem.writeInt(u16, credential[4..6], @backingInt(spec.scheme), .big);
+    std.mem.writeInt(u24, credential[6..9], @intCast(spec.spki.len), .big); // checked against u24 above
+    @memcpy(credential[9..], spec.spki);
     const content = try signedContent(gpa, spec.role, leaf_der, credential, @backingInt(spec.algorithm));
     defer gpa.free(content);
     var signature_buf: [PrivateKey.max_signature]u8 = undefined;
     const signature = identity.sign(signing, content, noise, &signature_buf) catch return error.SigningFailed;
+    // The DelegatedCredential: the Credential, the signing scheme, the signature as a u16 vector.
     const out = try gpa.alloc(u8, credential.len + 2 + 2 + signature.len);
-    var o: Writer = .{ .bytes = out };
-    o.put(credential) catch unreachable; // glint-ignore: Z026 -- sized above
-    o.int(u16, @backingInt(spec.algorithm)) catch unreachable; // glint-ignore: Z026 -- sized above
-    o.vector(u16, signature) catch unreachable; // glint-ignore: Z026 -- sized above
+    @memcpy(out[0..credential.len], credential);
+    std.mem.writeInt(u16, out[credential.len..][0..2], @backingInt(spec.algorithm), .big);
+    std.mem.writeInt(u16, out[credential.len + 2 ..][0..2], @intCast(signature.len), .big); // a signature is at most PrivateKey.max_signature bytes, below 2^16
+    @memcpy(out[credential.len + 4 ..], signature);
     return out;
 }
 

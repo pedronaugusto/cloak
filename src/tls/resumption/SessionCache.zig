@@ -188,8 +188,6 @@ pub fn take(self: *SessionCache, key: *const [32]u8, version: suites.Version, no
     return .{ .cache = self, .entry = found orelse return null };
 }
 
-pub const StoreError = std.mem.Allocator.Error || error{TicketTooLong};
-
 /// What `store` copies in; the ticket and PSK are copied, the caller keeps its own.
 pub const Fields = struct {
     key: *const [32]u8,
@@ -208,13 +206,17 @@ pub const Fields = struct {
 };
 
 /// Keeps a ticket, displacing the key's oldest past `per_key` and the cache's oldest past
-/// the entry or byte bound.
-pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
+/// the entry or byte bound: whether it was kept. A cache keeps what it can; a ticket empty or
+/// longer than `max_ticket`, one larger than the byte bound, or one there is no memory for is
+/// not kept, and the next connection makes a full handshake.
+pub fn store(self: *SessionCache, fields: Fields) bool {
     @setRuntimeSafety(true);
-    if (fields.ticket.len == 0 or fields.ticket.len > max_ticket) return error.TicketTooLong;
-    const entry = try self.gpa.create(Entry);
-    errdefer self.gpa.destroy(entry);
-    const ticket = try self.gpa.dupe(u8, fields.ticket);
+    if (fields.ticket.len == 0 or fields.ticket.len > max_ticket) return false;
+    const entry = self.gpa.create(Entry) catch return false;
+    const ticket = self.gpa.dupe(u8, fields.ticket) catch {
+        self.gpa.destroy(entry);
+        return false;
+    };
     entry.* = .{
         .key = fields.key.*,
         .ticket = ticket,
@@ -233,7 +235,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
     @memcpy(entry.secret.exposeMut()[0..fields.secret.len], fields.secret);
     if (cost(entry) > self.options.max_bytes) {
         self.free(entry);
-        return;
+        return false;
     }
     var displaced: [16]?*Entry = @splat(null);
     var displaced_count: usize = 0;
@@ -242,8 +244,9 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
         var guard = self.table.acquire();
         defer guard.deinit();
         const table = guard.value();
-        // glint-ignore: Z026 -- a sequence at its end places no more entries: the ticket is not cached
-        table.sequence = std.math.add(u64, table.sequence, 1) catch break :placing;
+        // A sequence at its end places no more entries: the ticket is not cached.
+        if (table.sequence == std.math.maxInt(u64)) break :placing;
+        table.sequence += 1;
         entry.sequence = table.sequence;
         // The key's oldest tickets beyond its share, then the cache's oldest beyond its bounds.
         while (true) {
@@ -274,8 +277,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
             table.slots[i] = null;
         }
         if (table.bytes.remaining() >= cost(entry)) for (table.slots) |*slot| if (slot.* == null) {
-            // glint-ignore: Z026 -- a ticket the byte budget cannot hold is not placed
-            entry.charge = table.bytes.reserve(cost(entry)) catch break;
+            entry.charge = table.bytes.reserve(cost(entry)) catch aegis.assert.never("the budget's room was checked above, under the same lock");
             slot.* = entry;
             placed = true;
             break;
@@ -283,6 +285,7 @@ pub fn store(self: *SessionCache, fields: Fields) StoreError!void {
     }
     for (displaced[0..displaced_count]) |held| self.free(held.?);
     if (!placed) self.free(entry);
+    return placed;
 }
 
 test {

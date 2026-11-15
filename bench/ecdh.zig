@@ -6,9 +6,11 @@ const cloak = @import("harness").cloak;
 const harness = @import("harness");
 const ecdh = harness.ecdh;
 
-fn time(io: std.Io, comptime body: anytype, args: anytype, iterations: usize) u64 {
+/// The mean nanoseconds of `body(args)` over `iterations` calls; a call that fails ends the run
+/// with its error.
+fn time(io: std.Io, comptime body: anytype, args: anytype, iterations: usize) !u64 {
     const start = std.Io.Clock.awake.now(io).nanoseconds;
-    for (0..iterations) |_| @call(.auto, body, args);
+    for (0..iterations) |_| try @call(.auto, body, args);
     // Elapsed monotonic nanoseconds are positive and far below 2^64.
     return @intCast(@divTrunc(std.Io.Clock.awake.now(io).nanoseconds - start, @as(i96, @intCast(iterations))));
 }
@@ -35,29 +37,29 @@ pub fn main(init: std.process.Init) !void {
         var shared: [group.scalar_length]u8 = undefined;
         const peer = try curve.fromSec1(&b_public);
         const Cloak = struct {
-            fn publicKey(scalar: *const [group.scalar_length]u8, public: *[group.public_length]u8) void {
-                group.publicKey(scalar, public) catch unreachable; // glint-ignore: Z026 -- the benchmark's scalar is in range
+            fn publicKey(scalar: *const [group.scalar_length]u8, public: *[group.public_length]u8) !void {
+                try group.publicKey(scalar, public);
                 std.mem.doNotOptimizeAway(public);
             }
-            fn agree(scalar: *const [group.scalar_length]u8, public: []const u8, secret: *[group.scalar_length]u8) void {
-                group.agree(scalar, public, secret) catch unreachable; // glint-ignore: Z026 -- the benchmark's peer key is valid
+            fn agree(scalar: *const [group.scalar_length]u8, public: []const u8, secret: *[group.scalar_length]u8) !void {
+                try group.agree(scalar, public, secret);
                 std.mem.doNotOptimizeAway(secret);
             }
         };
         const Std = struct {
-            fn base(scalar: [group.scalar_length]u8) void {
-                const point = curve.basePoint.mul(scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
+            fn base(scalar: [group.scalar_length]u8) !void {
+                const point = try curve.basePoint.mul(scalar, .big);
                 std.mem.doNotOptimizeAway(&point);
             }
-            fn mul(point: curve, scalar: [group.scalar_length]u8) void {
-                const product = point.mul(scalar, .big) catch unreachable; // glint-ignore: Z026 -- in range
+            fn mul(point: curve, scalar: [group.scalar_length]u8) !void {
+                const product = try point.mul(scalar, .big);
                 std.mem.doNotOptimizeAway(&product);
             }
         };
-        const cloak_base = time(init.io, Cloak.publicKey, .{ &a, &a_public }, iterations);
-        const cloak_agree = time(init.io, Cloak.agree, .{ &a, &b_public, &shared }, iterations);
-        const std_base = time(init.io, Std.base, .{a}, iterations);
-        const std_mul = time(init.io, Std.mul, .{ peer, a }, iterations);
+        const cloak_base = try time(init.io, Cloak.publicKey, .{ &a, &a_public }, iterations);
+        const cloak_agree = try time(init.io, Cloak.agree, .{ &a, &b_public, &shared }, iterations);
+        const std_base = try time(init.io, Std.base, .{a}, iterations);
+        const std_mul = try time(init.io, Std.mul, .{ peer, a }, iterations);
         try out.interface.print("{s}: cloak keygen={d}ns agree={d}ns | std basePoint.mul={d}ns point.mul={d}ns\n", .{ entry[0], cloak_base, cloak_agree, std_base, std_mul });
     }
     try exchange25519(init, &out.interface, iterations);
@@ -76,30 +78,30 @@ fn exchange25519(init: std.process.Init, out: *std.Io.Writer, iterations: usize)
     init.io.random(&b);
     const b_public = Std.recoverPublicKey(b);
     const Cloak = struct {
-        fn publicKey(scalar: [32]u8) void {
+        fn publicKey(scalar: [32]u8) !void {
             const public = Dh.recoverPublicKey(scalar);
             std.mem.doNotOptimizeAway(&public);
         }
-        fn agree(scalar: *const [32]u8, public: []const u8, secret: *[32]u8) void {
-            ecdh.X25519.agree(scalar, public, secret) catch unreachable; // glint-ignore: Z026 -- the peer key is valid
+        fn agree(scalar: *const [32]u8, public: []const u8, secret: *[32]u8) !void {
+            try ecdh.X25519.agree(scalar, public, secret);
             std.mem.doNotOptimizeAway(secret);
         }
     };
     const Theirs = struct {
-        fn publicKey(scalar: [32]u8) void {
+        fn publicKey(scalar: [32]u8) !void {
             const public = Std.recoverPublicKey(scalar);
             std.mem.doNotOptimizeAway(&public);
         }
-        fn agree(scalar: [32]u8, public: [32]u8) void {
-            const secret = Std.scalarmult(scalar, public) catch unreachable; // glint-ignore: Z026 -- the peer key is valid
+        fn agree(scalar: [32]u8, public: [32]u8) !void {
+            const secret = try Std.scalarmult(scalar, public);
             std.mem.doNotOptimizeAway(&secret);
         }
     };
     var shared: [32]u8 = undefined;
-    const cloak_base = time(init.io, Cloak.publicKey, .{a}, iterations);
-    const cloak_agree = time(init.io, Cloak.agree, .{ &a, &b_public, &shared }, iterations);
-    const std_base = time(init.io, Theirs.publicKey, .{a}, iterations);
-    const std_agree = time(init.io, Theirs.agree, .{ a, b_public }, iterations);
+    const cloak_base = try time(init.io, Cloak.publicKey, .{a}, iterations);
+    const cloak_agree = try time(init.io, Cloak.agree, .{ &a, &b_public, &shared }, iterations);
+    const std_base = try time(init.io, Theirs.publicKey, .{a}, iterations);
+    const std_agree = try time(init.io, Theirs.agree, .{ a, b_public }, iterations);
     try out.print("X25519: cloak keygen={d}ns agree={d}ns | std keygen={d}ns agree={d}ns\n", .{ cloak_base, cloak_agree, std_base, std_agree });
 }
 
@@ -118,18 +120,18 @@ fn signing(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void
         defer key.deinit();
         const pair = Ecdsa.KeyPair.generate(init.io);
         const Run = struct {
-            fn cloakSign(k: cloak.PrivateKey, n: []const u8) void {
+            fn cloakSign(k: cloak.PrivateKey, n: []const u8) !void {
                 var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-                const signature = k.sign(entry[3], message, n, &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
+                const signature = try k.sign(entry[3], message, n, &buffer);
                 std.mem.doNotOptimizeAway(signature);
             }
-            fn stdSign(p: Ecdsa.KeyPair, n: [Ecdsa.noise_length]u8) void {
-                const signature = p.sign(message, n) catch unreachable; // glint-ignore: Z026 -- any noise signs
+            fn stdSign(p: Ecdsa.KeyPair, n: [Ecdsa.noise_length]u8) !void {
+                const signature = try p.sign(message, n);
                 std.mem.doNotOptimizeAway(&signature);
             }
         };
-        const ours = time(init.io, Run.cloakSign, .{ key, noise[0..Ecdsa.noise_length] }, iterations);
-        const theirs = time(init.io, Run.stdSign, .{ pair, noise[0..Ecdsa.noise_length].* }, iterations);
+        const ours = try time(init.io, Run.cloakSign, .{ key, noise[0..Ecdsa.noise_length] }, iterations);
+        const theirs = try time(init.io, Run.stdSign, .{ pair, noise[0..Ecdsa.noise_length].* }, iterations);
         try out.print("{s} sign: cloak={d}ns | std={d}ns\n", .{ entry[0], ours, theirs });
     }
     const Ed = std.crypto.sign.Ed25519;
@@ -137,17 +139,17 @@ fn signing(init: std.process.Init, out: *std.Io.Writer, iterations: usize) !void
     defer key.deinit();
     const pair = Ed.KeyPair.generate(init.io);
     const Run = struct {
-        fn cloakSign(k: cloak.PrivateKey) void {
+        fn cloakSign(k: cloak.PrivateKey) !void {
             var buffer: [cloak.PrivateKey.max_signature]u8 = undefined;
-            const signature = k.sign(.ed25519, message, "", &buffer) catch unreachable; // glint-ignore: Z026 -- the key and algorithm agree
+            const signature = try k.sign(.ed25519, message, "", &buffer);
             std.mem.doNotOptimizeAway(signature);
         }
-        fn stdSign(p: Ed.KeyPair) void {
-            const signature = p.sign(message, null) catch unreachable; // glint-ignore: Z026 -- the key pair is consistent
+        fn stdSign(p: Ed.KeyPair) !void {
+            const signature = try p.sign(message, null);
             std.mem.doNotOptimizeAway(&signature);
         }
     };
-    const ours = time(init.io, Run.cloakSign, .{key}, iterations);
-    const theirs = time(init.io, Run.stdSign, .{pair}, iterations);
+    const ours = try time(init.io, Run.cloakSign, .{key}, iterations);
+    const theirs = try time(init.io, Run.stdSign, .{pair}, iterations);
     try out.print("Ed25519 sign: cloak={d}ns | std={d}ns\n", .{ ours, theirs });
 }

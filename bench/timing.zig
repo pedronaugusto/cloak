@@ -48,10 +48,10 @@ pub fn Agree(comptime G: type) type {
         scalars: [slots][G.scalar_length]u8 = undefined,
         out: [G.scalar_length]u8 = undefined,
         failures: usize = 0,
-        pub fn init(self: *Self) void {
+        pub fn init(self: *Self) !void {
             var other: [G.scalar_length]u8 = @splat(0x35);
             other[0] = 0x21;
-            G.publicKey(&other, &self.peer) catch unreachable; // glint-ignore: Z026 -- a fixed in-range scalar
+            try G.publicKey(&other, &self.peer);
         }
         pub fn prepare(self: *Self, slot: usize, class: leak.Class, random: std.Random) void {
             const scalar = &self.scalars[slot];
@@ -101,7 +101,7 @@ pub const X25519 = struct {
     secrets: [slots][32]u8 = undefined,
     out: [32]u8 = undefined,
     failures: usize = 0,
-    pub fn init(self: *X25519) void {
+    pub fn init(self: *X25519) !void {
         self.peer = X.recoverPublicKey(@splat(0x41));
     }
     pub fn prepare(self: *X25519, slot: usize, class: leak.Class, random: std.Random) void {
@@ -128,8 +128,8 @@ pub const Decaps = struct {
     ciphertexts: [slots][K.ciphertext_length]u8 = undefined,
     out: [K.shared_length]u8 = undefined,
     failures: usize = 0,
-    pub fn init(self: *Decaps) void {
-        self.pair = K.KeyPair.generateDeterministic(@splat(7)) catch unreachable; // glint-ignore: Z026 -- a fixed seed
+    pub fn init(self: *Decaps) !void {
+        self.pair = try K.KeyPair.generateDeterministic(@splat(7));
         self.valid = self.pair.public_key.encapsDeterministic(&@as([K.encaps_seed_length]u8, @splat(9))).ciphertext;
     }
     pub fn prepare(self: *Decaps, slot: usize, class: leak.Class, random: std.Random) void {
@@ -155,7 +155,7 @@ pub const ShareAgree = struct {
     entropy: [slots][32]u8 = undefined,
     out: [Exchange.max_secret]u8 = undefined,
     failures: usize = 0,
-    pub fn init(self: *ShareAgree) void {
+    pub fn init(self: *ShareAgree) !void {
         self.server = std.crypto.dh.X25519.recoverPublicKey(@splat(0x42));
     }
     pub fn prepare(self: *ShareAgree, slot: usize, class: leak.Class, random: std.Random) void {
@@ -187,7 +187,7 @@ pub const HpkeOpen = struct {
     enc: [32]u8 = undefined,
     secrets: [slots][32]u8 = undefined,
     failures: usize = 0,
-    pub fn init(self: *HpkeOpen) void {
+    pub fn init(self: *HpkeOpen) !void {
         self.enc = std.crypto.dh.X25519.recoverPublicKey(@splat(0x43));
     }
     pub fn prepare(self: *HpkeOpen, slot: usize, class: leak.Class, random: std.Random) void {
@@ -340,8 +340,8 @@ pub fn main(init: std.process.Init) !void {
             const context = try gpa.create(entry[1]);
             defer gpa.destroy(context);
             context.* = .{};
-            if (@hasDecl(entry[1], "init")) context.init();
-            if (@hasField(entry[1], "agree")) context.agree.init();
+            if (@hasDecl(entry[1], "init")) try context.init();
+            if (@hasField(entry[1], "agree")) try context.agree.init();
             const r = try leak.run(gpa, io, context, .{ .measurements = row.measurements, .slots = slots, .batch = row.batch, .seed = 0x7175 });
             // A row that timed failures timed the wrong thing.
             if (context.failures != 0) return failed(out, row, context.failures);

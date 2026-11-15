@@ -293,7 +293,7 @@ test "F76 catalogue_ech_outer_psk_identity_and_guess_oracle" {
         var snapshot = tickets.acquire().?;
         defer snapshot.release();
         var state: Ticket.State = undefined;
-        try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), offer.identity, pki.time, &state));
+        try std.testing.expect(!Ticket.open(snapshot.ring(), offer.identity, pki.time, &state));
         try duo.handshake();
         const client = duo.client.info().?;
         try std.testing.expect(client.resumed and client.ech_accepted and duo.server.info().?.resumed);

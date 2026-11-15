@@ -22,8 +22,7 @@ pub fn view(self: *const Buffer) []const u8 {
 pub fn ensure(self: *Buffer, gpa: std.mem.Allocator, len: usize) std.mem.Allocator.Error![]u8 {
     @setRuntimeSafety(true);
     try self.owner.reserve(gpa, len);
-    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
-    self.owner.resizeWithinCapacity(self.owner.capacity()) catch unreachable;
+    self.owner.resizeWithinCapacity(self.owner.capacity()) catch aegis.assert.never("the live prefix grows to the capacity it is within");
     return self.owner.exposeMut(); // as `bytes`
 }
 

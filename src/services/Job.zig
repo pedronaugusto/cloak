@@ -20,7 +20,25 @@ const State = struct {
     inputs: OwnedRequest,
     shared: Guarded(Completion) = .init(.{}),
 };
-const Completion = struct { phase: Phase = .pending, result: ?Native.EvaluateError!Path = null };
+const Completion = struct { phase: Phase = .pending, result: ?Outcome = null };
+/// What the evaluation answered: a path the job owns until it is taken, or the refusal, kept as
+/// the answer `take` returns.
+const Outcome = union(enum) {
+    path: Path,
+    refused: Native.EvaluateError,
+
+    fn of(result: Native.EvaluateError!Path) Outcome {
+        return if (result) |path| .{ .path = path } else |err| .{ .refused = err };
+    }
+
+    /// Frees what the outcome holds: a path; a refusal holds nothing.
+    fn deinit(outcome: *Outcome) void {
+        switch (outcome.*) {
+            .path => |*path| path.deinit(),
+            .refused => {},
+        }
+    }
+};
 const Phase = enum { pending, running, ready, abandoned, acknowledged };
 /// A field of the caller's executor, which `submit` recovers with `@fieldParentPtr`.
 pub const Executor = struct {
@@ -64,7 +82,7 @@ pub fn run(job: Job) void {
     if (guard.value().phase != .pending) @panic("cloak service completion executed twice");
     guard.value().phase = .running;
     guard.deinit();
-    var result = Native.evaluate(job.state.get().gpa, job.state.get().inputs.request, job.state.get().inputs.anchors);
+    var result: Outcome = .of(Native.evaluate(job.state.get().gpa, job.state.get().inputs.request, job.state.get().inputs.anchors));
     guard = job.state.get().shared.acquire();
     const abandoned = guard.value().phase == .abandoned;
     if (!abandoned) {
@@ -73,10 +91,7 @@ pub fn run(job: Job) void {
     }
     guard.deinit();
     // Allocator cleanup can block or reenter: it runs after the mutation lease.
-    if (abandoned) {
-        // glint-ignore: Z026 -- a job that failed holds no path to free
-        if (result) |*path| path.deinit() else |_| {}
-    }
+    if (abandoned) result.deinit();
 }
 /// Cancels only this completion. The executor remains responsible for reaping work.
 pub fn abandon(job: Job) void {
@@ -90,10 +105,7 @@ pub fn abandon(job: Job) void {
     var detached = guard.value().result;
     guard.value().result = null;
     guard.deinit();
-    if (detached) |*result| {
-        // glint-ignore: Z026 -- a job that failed holds no path to free
-        if (result.*) |*path| path.deinit() else |_| {}
-    }
+    if (detached) |*result| result.deinit();
 }
 pub const TakeError = Native.EvaluateError || Path.CheckError || error{ ServicePending, ServiceAbandoned, ServiceAcknowledged };
 pub fn take(job: Job, request: types.Request) TakeError!Path {
@@ -112,7 +124,10 @@ pub fn take(job: Job, request: types.Request) TakeError!Path {
     const result = guard.value().result.?;
     guard.value().result = null;
     guard.value().phase = .acknowledged;
-    return result;
+    return switch (result) {
+        .path => |path| path,
+        .refused => |err| err,
+    };
 }
 fn ready(phase: Phase) error{ ServicePending, ServiceAbandoned, ServiceAcknowledged }!void {
     @setRuntimeSafety(true);
@@ -135,10 +150,7 @@ fn release(state: *State) void {
     var detached = guard.value().result;
     guard.value().result = null;
     guard.deinit();
-    if (detached) |*result| {
-        // glint-ignore: Z026 -- a job that failed holds no path to free
-        if (result.*) |*path| path.deinit() else |_| {}
-    }
+    if (detached) |*result| result.deinit();
     state.inputs.deinit();
     state.charge.release();
 }

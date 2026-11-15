@@ -157,6 +157,9 @@ pub const Diagnostics = struct {
     reason: ?Error,
     alert_sent: ?Alert,
     alert_received: ?Alert,
+    /// Why the last alert this side tried to send was not written: no room left in the output,
+    /// or a write side that could no longer seal. Null when every alert went out.
+    alert_unsent: ?Error = null,
 };
 
 pub const InitError = Client.InitError || error{InvalidOptions};
@@ -231,6 +234,8 @@ rx_asked_update: bool = false,
 /// The first failure.
 failure: aegis.Atomic(Failure) = .init(.none),
 alert_sent: aegis.Atomic(AlertCode) = .init(.none),
+/// Why the last alert this side tried to send was not written (`Diagnostics.alert_unsent`).
+alert_unsent: aegis.Atomic(Failure) = .init(.none),
 alert_received: aegis.Atomic(AlertCode) = .init(.none),
 /// What the read half owes the write half (`owe_*` bits), and the fatal alert it owes, which is
 /// the last this side sends.
@@ -454,11 +459,14 @@ pub fn diagnostics(self: *const Connection) Diagnostics {
     // A fatal alert the read half owes is the one this side sends, written or not yet.
     const owed = self.owed_alert.load(.acquire);
     const sent = if (owed != .none) owed else self.alert_sent.load(.acquire);
-    return .{ .phase = self.phase(), .reason = self.failureError(), .alert_sent = sent.alert(), .alert_received = self.alert_received.load(.acquire).alert() };
+    return .{ .phase = self.phase(), .reason = errorOf(self.failure.load(.acquire)), .alert_sent = sent.alert(), .alert_received = self.alert_received.load(.acquire).alert(), .alert_unsent = errorOf(self.alert_unsent.load(.acquire)) };
 }
 
 fn failureError(self: *const Connection) ?Error {
-    const code = self.failure.load(.acquire);
+    return errorOf(self.failure.load(.acquire));
+}
+
+fn errorOf(code: Failure) ?Error {
     if (code == .none) return null;
     return @errorCast(@errorFromInt(@backingInt(code)));
 }
@@ -617,13 +625,18 @@ fn failWhole(self: *Connection, err: Error) void {
     self.plain_kind = null;
 }
 
+/// Sends an alert, or keeps why it could not be written for `diagnostics`: a fatal alert follows
+/// a failure already recorded, and a warning's loss ends nothing.
 fn sendAlert(self: *Connection, level: u8, alert: Alert) void {
     @setRuntimeSafety(true);
+    self.writeAlert(level, alert) catch |unsent| self.alert_unsent.store(@fromBackingInt(@intFromError(unsent)), .release);
+}
+
+fn writeAlert(self: *Connection, level: u8, alert: Alert) Error!void {
+    @setRuntimeSafety(true);
     const body = [2]u8{ level, @backingInt(alert) };
-    // glint-ignore: Z026 -- an alert with no room left in the outbox is not sent: the connection has failed either way
-    const dst = self.outbox.tail(self.gpa, body.len + record_overhead, self.limits.output + max_record) catch return;
-    // glint-ignore: Z026 -- an alert the write side can no longer seal is not sent: the connection has failed either way
-    const wire = self.sealRecord(.alert, &body, dst) catch return;
+    const dst = try self.outbox.tail(self.gpa, body.len + record_overhead, self.limits.output + max_record);
+    const wire = try self.sealRecord(.alert, &body, dst);
     self.outbox.commit(wire.len);
     self.alert_sent.store(.of(alert), .release);
 }

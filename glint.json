@@ -36,6 +36,20 @@
       "reason": "s2n-bignum's verified field routines, assembled by build.zig and declared as extern symbols"
     },
     {
+      "file": "src/crypto/field/barrier.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the constant-time selections' optimization barrier: an empty asm that ties a mask to a register, so the optimizer cannot see through it, which std does not declare"
+    },
+    {
+      "file": "src/crypto/sha1/armv8.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the ARMv8 Cryptography Extensions' SHA-1 instructions, each on registers alone with no memory operand, which std does not declare"
+    },
+    {
       "module": "src/crypto/vendor/fiat/",
       "rules": [
         "P007"

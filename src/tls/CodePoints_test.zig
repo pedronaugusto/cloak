@@ -130,11 +130,11 @@ test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code po
     defer state.deinit();
     @memset(state.secret.exposeMut(), 0x5a);
     var buffer: [Ticket.max_length]u8 = undefined;
-    const sealed = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
+    const sealed = Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
     var opened: Ticket.State = undefined;
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), sealed, 1001, &opened));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), sealed, 1001, &opened));
     state.group = .x25519;
-    const good = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
-    try Ticket.open(snapshot.ring(), good, 1001, &opened);
+    const good = Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
+    try std.testing.expect(Ticket.open(snapshot.ring(), good, 1001, &opened));
     opened.deinit();
 }

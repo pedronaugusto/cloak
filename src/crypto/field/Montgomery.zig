@@ -6,7 +6,6 @@
 //! one conditional subtraction selects through a mask the compiler cannot see through.
 const std = @import("std");
 const Secret = @import("aegis").Secret;
-const builtin = @import("builtin");
 const aegis = @import("aegis");
 
 pub inline fn addc(a: u64, b: u64, c: u1) struct { u64, u1 } {
@@ -44,21 +43,7 @@ inline fn row(comptime n: usize, a: u64, b: [n]u64) [n + 1]u64 {
 }
 
 /// Hides a mask from the optimizer so a selection stays a selection and never becomes a branch.
-pub inline fn barrier(value: u64) u64 {
-    var v = value;
-    if (@inComptime()) return v;
-    switch (builtin.cpu.arch) {
-        // glint-ignore: P007 -- boundary: an empty asm that ties the value to a register, so the optimizer cannot see through a mask
-        .x86_64, .aarch64 => asm volatile (""
-            : [v] "+r" (v),
-        ),
-        else => {
-            const slot: *volatile u64 = &v;
-            return slot.*;
-        },
-    }
-    return v;
-}
+pub const barrier = @import("barrier.zig").barrier;
 
 /// All ones when `bit` is 1, zero when 0.
 pub inline fn maskOf(bit: u1) u64 {

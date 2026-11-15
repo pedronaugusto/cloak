@@ -88,17 +88,15 @@ pub const State = struct {
 const max_plain = 2 + 1 + 48 + 2 + 8 + 8 + 4 + 1 + 255 + 1 + 253 + 1 + 2 + 8 + 32;
 pub const max_length = header_length + max_plain + Aead.tag_length;
 
-pub const SealError = error{BufferTooSmall};
-
-/// Seals `state` under `key` with a fresh `salt` from the handshake's entropy.
-pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *const State, out: []u8) SealError![]u8 {
+/// Seals `state` under `key` with a fresh `salt` from the handshake's entropy, in `out`, which
+/// holds the longest ticket.
+pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *const State, out: *[max_length]u8) []u8 {
     @setRuntimeSafety(true);
     var plain_buf_owner: aegis.Secret([max_plain]u8) = .init(undefined);
     defer plain_buf_owner.deinit();
     const plain_buf = plain_buf_owner.exposeMut();
     const plain = encode(state, plain_buf);
     const total = header_length + plain.len + Aead.tag_length;
-    if (out.len < total) return error.BufferTooSmall;
     out[0] = format(state.version, state.datagram);
     out[1..9].* = key.id;
     out[9..][0..salt_length].* = salt.*;
@@ -110,19 +108,18 @@ pub fn seal(key: *const TicketKeys.Key, salt: *const [salt_length]u8, state: *co
     return out[0..total];
 }
 
-pub const OpenError = error{Undecryptable};
-
-/// Opens a ticket with the ring's key that sealed it, if that key still opens tickets at `now`.
-/// Every failure is the same refusal: an unknown, retired, forged or malformed ticket.
-pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *State) OpenError!void {
+/// Opens a ticket into `out` with the ring's key that sealed it, if that key still opens tickets
+/// at `now`: whether it opened. Every refusal is the same answer, no: an unknown, retired, forged
+/// or malformed ticket is no resumption, and `out` holds nothing.
+pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *State) bool {
     @setRuntimeSafety(true);
-    if (ticket.len < header_length + Aead.tag_length or ticket.len > max_length) return error.Undecryptable;
+    if (ticket.len < header_length + Aead.tag_length or ticket.len > max_length) return false;
     const version: suites.Version = switch (ticket[0]) {
         1, 3 => .tls13,
         2, 4 => .tls12,
-        else => return error.Undecryptable,
+        else => return false,
     };
-    const key = ring.find(ticket[1..9], now) orelse return error.Undecryptable;
+    const key = ring.find(ticket[1..9], now) orelse return false;
     const salt = ticket[9..][0..salt_length];
     var plain_buf_owner: aegis.Secret([max_plain]u8) = .init(undefined);
     defer plain_buf_owner.deinit();
@@ -132,12 +129,13 @@ pub fn open(ring: *const TicketKeys.Ring, ticket: []const u8, now: i64, out: *St
     var sealing = aegis.Secret([Aead.key_length]u8).init(undefined);
     defer sealing.deinit();
     derive(key, salt, sealing.exposeMut());
-    Kernels.open(Aead, plain, ticket[header_length..][0..length], ticket[ticket.len - Aead.tag_length ..][0..Aead.tag_length], ticket[0..header_length], &@splat(0), 0, sealing.expose()) catch return error.Undecryptable;
+    Kernels.open(Aead, plain, ticket[header_length..][0..length], ticket[ticket.len - Aead.tag_length ..][0..Aead.tag_length], ticket[0..header_length], &@splat(0), 0, sealing.expose()) catch return false;
     decode(version, plain, out) catch {
         out.deinit();
-        return error.Undecryptable;
+        return false;
     };
     out.datagram = ticket[0] > 2;
+    return true;
 }
 
 fn derive(key: *const TicketKeys.Key, salt: *const [salt_length]u8, out: *[Aead.key_length]u8) void {

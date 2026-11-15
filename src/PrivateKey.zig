@@ -160,25 +160,25 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
                 else => .{ .p521, 66 },
             };
             // A draw as wide as the order (P-521's top seven bits cleared), out of range one
-            // time in 2^32 (P-256) or far less: a retry, never a bias.
-            var attempts: usize = 0;
-            while (true) : (attempts += 1) {
-                if (attempts == 64) return error.EntropyUnavailable;
+            // time in 2^32 (P-256) or far less: a retry, never a bias. Sixty-four draws out of
+            // range are entropy that is not random.
+            for (1..65) |attempt| {
                 try io.randomSecure(draw[0..width]);
                 if (curve == .p521) draw[0] &= 0x01;
-                // glint-ignore: Z026 -- a draw that is no key in the curve's range is drawn again, up to the attempts bound above
-                if (parser.ecKey(curve, draw[0..width], null, out)) break else |_| {}
+                parser.ecKey(curve, draw[0..width], null, out) catch |err| switch (err) {
+                    error.InvalidKey => if (attempt < 64) continue else return error.EntropyUnavailable,
+                    else => return error.GenerationFailed,
+                };
+                break;
             }
         },
         .ed25519 => {
             try io.randomSecure(draw[0..32]);
-            // glint-ignore: Z026 -- every 32-byte seed is a key.
-            parser.ed25519Key(draw[0..32], null, out) catch unreachable;
+            parser.ed25519Seed(draw[0..32], out);
         },
         .x25519 => {
             try io.randomSecure(draw[0..32]);
-            // glint-ignore: Z026 -- every 32 bytes are an X25519 private key.
-            parser.x25519Key(draw[0..32], null, out) catch unreachable;
+            parser.x25519Secret(draw[0..32], out);
         },
         .mldsa44, .mldsa65, .mldsa87 => {
             try io.randomSecure(draw[0..32]);
@@ -187,8 +187,7 @@ fn generateInto(io: std.Io, kind: Kind, out: *parser.Material) GenerateError!voi
                 .mldsa65 => .mldsa65,
                 else => .mldsa87,
             };
-            // glint-ignore: Z026 -- every 32-byte seed is a key.
-            parser.mldsaFromSeed(level, draw[0..32], null, out) catch unreachable;
+            parser.mldsaSeed(level, draw[0..32], out);
         },
         .rsa => |size| {
             var integers_owner: Secret(rsa_keygen.Integers) = .init(undefined);
@@ -331,16 +330,19 @@ pub const max_public_key_info = certificate.Algorithm.max_public_key_info;
 /// what a raw public key (RFC 7250, `Identity.initRawKey`) or a pin is made of.
 pub fn publicKeyInfo(key: PrivateKey, out: *[max_public_key_info]u8) []const u8 {
     @setRuntimeSafety(true);
-    const material = key.state.get().material.expose();
-    const public: certificate.PublicKey = switch (material.*) {
+    return certificate.Algorithm.encodePublicKey(key.publicKey(), out) catch aegis.assert.never("a private key is never restricted to RSASSA-PSS, and its parts are its material's fixed arrays, each within the longest key `out` holds");
+}
+
+/// This key's public half, borrowing the key: valid while the key is retained.
+pub fn publicKey(key: PrivateKey) certificate.PublicKey {
+    @setRuntimeSafety(true);
+    return switch (key.state.get().material.expose().*) {
         .rsa => |*k| .{ .rsa = .{ .modulus = k.n[0..k.size], .exponent = k.e[0..k.exponent_size] } },
         inline .p256, .p384, .p521 => |*k, tag| .{ .ec = .{ .curve = @field(certificate.Algorithm.Curve, @tagName(tag)), .bytes = &k.public } },
         .ed25519 => |*k| .{ .ed25519 = k.public() },
         .mldsa => |*k| .{ .mldsa = .{ .level = k.level, .bytes = k.publicKey() } },
         .x25519 => |*k| .{ .x25519 = &k.public },
     };
-    // glint-ignore: Z026 -- a private key is never restricted to RSASSA-PSS, and its parts are its material's fixed arrays, each within the longest key `out` holds.
-    return certificate.Algorithm.encodePublicKey(public, out) catch unreachable;
 }
 /// The most noise bytes one signature draws: RSA's blinding seed and salt.
 pub const max_noise = @max(Sign.P384.noise_length, Sign.rsa.noise_length);

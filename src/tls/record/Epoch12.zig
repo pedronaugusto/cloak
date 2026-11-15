@@ -91,14 +91,19 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             return ad;
         }
 
-        fn admit(self: *Self, len: usize) error{RecordLimit}!void {
+        /// The counts after one more record of `len` bytes, within the limits: what the record's
+        /// success commits. A record past either limit erases the epoch.
+        const Admitted = struct { sequence: Epoch.RecordCount, bytes: Epoch.ByteCount };
+        fn admit(self: *Self, len: usize) error{RecordLimit}!Admitted {
             @setRuntimeSafety(true);
-            // glint-ignore: Z026 -- every admitted record kept the bytes within the limit.
-            const room = self.limits.bytes.sub(self.bytes) catch unreachable;
-            if (self.sequence.compare(self.limits.records) != .lt or Epoch.ByteCount.fromRaw(len).compare(room) == .gt) {
-                self.deinit();
-                return error.RecordLimit;
-            }
+            const sequence = self.sequence.add(.fromRaw(1)) catch return self.exhausted();
+            const bytes = self.bytes.add(.fromRaw(len)) catch return self.exhausted();
+            if (sequence.compare(self.limits.records) == .gt or bytes.compare(self.limits.bytes) == .gt) return self.exhausted();
+            return .{ .sequence = sequence, .bytes = bytes };
+        }
+        fn exhausted(self: *Self) error{RecordLimit} {
+            self.deinit();
+            return error.RecordLimit;
         }
 
         /// Seals one record of `content` into `out`. Exact alias means input starts at
@@ -113,7 +118,7 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             const wire = out[0..wire_len];
             const body = wire[5 + explicit ..][0..input.len];
             if (overlap(input, wire) and input.ptr != body.ptr) return error.PartialOverlap;
-            try self.admit(input.len);
+            const admitted = try self.admit(input.len);
             wire[0] = @backingInt(content);
             wire[1..3].* = .{ 3, 3 };
             // Bounded by 2^14 plus the record overhead.
@@ -122,8 +127,8 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             if (explicit != 0) std.mem.writeInt(u64, wire[5..][0..8], self.sequence.raw(), .big);
             if (input.ptr != body.ptr) @memcpy(body, input);
             Kernels.seal(A, body, wire[wire_len - A.tag_length ..][0..A.tag_length], body, &self.additional(content, input.len), self.iv.expose(), self.sequence.raw(), self.key.expose());
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(input.len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
+            self.sequence = admitted.sequence;
+            self.bytes = admitted.bytes;
             return wire;
         }
 
@@ -150,12 +155,12 @@ pub fn Epoch12(comptime cipher: suites.Cipher) type {
             if (out.len < skip + len) return error.BufferTooSmall;
             const plain = out[skip..][0..len];
             if (overlap(wire, plain) and plain.ptr != cipher_text.ptr) return error.PartialOverlap;
-            try self.admit(len);
+            const admitted = try self.admit(len);
             // The peer chooses the explicit nonce; it is authenticated through the tag.
             const counter = if (explicit != 0) std.mem.readInt(u64, wire[5..13], .big) else self.sequence.raw();
             Kernels.open(A, plain, cipher_text, wire[wire.len - A.tag_length ..][0..A.tag_length], &self.additional(content, len), self.iv.expose(), counter, self.key.expose()) catch return self.bad();
-            self.sequence = self.sequence.add(.fromRaw(1)) catch unreachable; // glint-ignore: Z026 -- admit refused the record at the count limit
-            self.bytes = self.bytes.add(.fromRaw(len)) catch unreachable; // glint-ignore: Z026 -- admit kept the bytes within the limit
+            self.sequence = admitted.sequence;
+            self.bytes = admitted.bytes;
             return .{ .content = content, .bytes = plain };
         }
 

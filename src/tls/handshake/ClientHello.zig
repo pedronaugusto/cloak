@@ -569,44 +569,34 @@ pub fn fingerprint(self: *const ClientHello) [32]u8 {
     h.update(&.{@intCast(self.session.len)}); // parsing bounds the session id at 32 bytes
     h.update(self.session);
     h.update(self.suites);
-    // The block was validated when parsed; a malformed entry cannot occur and would end a pass.
+    // The block was validated when parsed: each scan reads it whole.
     var nibbles: std.bit_set.Static(16) = .empty;
-    var all: Reader = .{ .bytes = self.extensions };
-    while (all.pos < all.bytes.len) {
-        // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-        const id = all.int(u16) catch break;
-        // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-        _ = all.vector(u16) catch break;
-        if (!exempt(id)) nibbles.set(id >> 12);
+    var all: Extensions.Scan = .{ .bytes = self.extensions };
+    while (all.next()) |entry| {
+        if (!exempt(entry.id)) nibbles.set(entry.id >> 12);
     }
     var in_use = nibbles.iterator(.{});
     while (in_use.next()) |nibble| {
         var present: std.bit_set.Static(4096) = .empty;
         // Read only where `present` is set.
         var starts: [4096]u16 = undefined;
-        var pass: Reader = .{ .bytes = self.extensions };
-        while (pass.pos < pass.bytes.len) {
+        var pass: Extensions.Scan = .{ .bytes = self.extensions };
+        while (true) {
             const start = pass.pos;
-            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-            const id = pass.int(u16) catch break;
-            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-            _ = pass.vector(u16) catch break;
-            if (id >> 12 != nibble or exempt(id)) continue;
-            present.set(id & 0xfff);
-            starts[id & 0xfff] = @intCast(start); // a block is at most 65,535 bytes
+            const entry = pass.next() orelse break;
+            if (entry.id >> 12 != nibble or exempt(entry.id)) continue;
+            present.set(entry.id & 0xfff);
+            starts[entry.id & 0xfff] = @intCast(start); // a block is at most 65,535 bytes
         }
         var ids = present.iterator(.{});
         while (ids.next()) |low| {
-            var entry: Reader = .{ .bytes = self.extensions[starts[low]..] };
-            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-            const id = entry.int(u16) catch break;
-            // glint-ignore: Z026 -- the block was validated when parsed: a malformed entry cannot occur, and would end the pass
-            const bytes = (entry.vector(u16) catch break).bytes;
+            var at: Extensions.Scan = .{ .bytes = self.extensions, .pos = starts[low] };
+            const entry = at.next() orelse break;
             var head: [6]u8 = undefined;
-            std.mem.writeInt(u16, head[0..2], id, .big);
-            std.mem.writeInt(u32, head[2..6], @intCast(bytes.len), .big); // an extension is at most 65,535 bytes
+            std.mem.writeInt(u16, head[0..2], entry.id, .big);
+            std.mem.writeInt(u32, head[2..6], @intCast(entry.bytes.len), .big); // an extension is at most 65,535 bytes
             h.update(&head);
-            h.update(bytes);
+            h.update(entry.bytes);
         }
     }
     return h.finalResult();

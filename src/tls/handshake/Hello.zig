@@ -774,15 +774,14 @@ fn permute(block: []u8, permutation: Permutation, grease: ?Grease, cookie_leads:
     var units: [max_units]Unit = undefined;
     var ids: [max_units]u16 = undefined;
     var count: usize = 0;
-    var r: Reader = .{ .bytes = block };
-    while (r.pos != block.len) {
+    // The block was written just now, whole extensions only: the scan reads it to its end.
+    var scan: Extensions.Scan = .{ .bytes = block };
+    while (true) {
+        const start = scan.pos;
+        const entry = scan.next() orelse break;
         if (count == max_units) return error.InvalidOptions;
-        const start = r.pos;
-        // glint-ignore: Z026 -- the block was written just now, whole extensions only.
-        ids[count] = r.int(u16) catch unreachable;
-        // glint-ignore: Z026 -- as above, each id is followed by its body.
-        _ = r.vector(u16) catch unreachable;
-        units[count] = .{ .start = start, .len = r.pos - start, .key = permutation.rank(ids[count]) };
+        ids[count] = entry.id;
+        units[count] = .{ .start = start, .len = scan.pos - start, .key = permutation.rank(entry.id) };
         count += 1;
     }
     var lead: usize = @intFromBool(cookie_leads);

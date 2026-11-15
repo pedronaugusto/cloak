@@ -76,9 +76,7 @@ pub const SignRequest = struct {
     /// the credential before it is sent.
     pub fn signWith(request: SignRequest, key: certificates.PrivateKey, noise: []const u8, out: *[certificates.PrivateKey.max_signature]u8) error{SigningFailed}![]const u8 {
         @setRuntimeSafety(true);
-        var info: [certificates.PrivateKey.max_public_key_info]u8 = undefined;
-        const public_key = certificates.certificate.parsePublicKey(key.publicKeyInfo(&info)) catch return error.SigningFailed;
-        const algorithm = @import("Possession.zig").bind12(request.scheme, public_key) catch return error.SigningFailed;
+        const algorithm = @import("Possession.zig").bind12(request.scheme, key.publicKey()) catch return error.SigningFailed;
         if (request.prehashed) return key.signDigest(algorithm, request.content, noise, out) catch error.SigningFailed;
         return key.sign(algorithm, request.content, noise, out) catch error.SigningFailed;
     }

@@ -24,9 +24,9 @@ test "C5 ticket seals and opens the session state under its ring key alone" {
     var state = sample();
     defer state.deinit();
     var buffer: [Ticket.max_length]u8 = undefined;
-    const sealed = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
+    const sealed = Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(4)), &state, &buffer);
     var opened: Ticket.State = undefined;
-    try Ticket.open(snapshot.ring(), sealed, 1001, &opened);
+    try std.testing.expect(Ticket.open(snapshot.ring(), sealed, 1001, &opened));
     defer opened.deinit();
     try std.testing.expectEqual(state.suite, opened.suite);
     try std.testing.expectEqualSlices(u8, state.secretBytes(), opened.secretBytes());
@@ -42,9 +42,9 @@ test "C5 ticket seals and opens the session state under its ring key alone" {
         raw.server_raw = true;
         raw.client_pin = pin;
         var raw_buffer: [Ticket.max_length]u8 = undefined;
-        const raw_sealed = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(6)), &raw, &raw_buffer);
+        const raw_sealed = Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(6)), &raw, &raw_buffer);
         var raw_opened: Ticket.State = undefined;
-        try Ticket.open(snapshot.ring(), raw_sealed, 1001, &raw_opened);
+        try std.testing.expect(Ticket.open(snapshot.ring(), raw_sealed, 1001, &raw_opened));
         defer raw_opened.deinit();
         try std.testing.expect(raw_opened.server_raw and raw_opened.client_authenticated);
         try std.testing.expectEqual(pin, raw_opened.client_pin);
@@ -57,14 +57,14 @@ test "C5 ticket seals and opens the session state under its ring key alone" {
         @memcpy(copy[0..sealed.len], sealed);
         copy[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
         var ignored: Ticket.State = undefined;
-        try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), copy[0..sealed.len], 1001, &ignored));
+        try std.testing.expect(!Ticket.open(snapshot.ring(), copy[0..sealed.len], 1001, &ignored));
     }
     var ignored: Ticket.State = undefined;
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), sealed[0 .. sealed.len - 1], 1001, &ignored));
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), "", 1001, &ignored));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), sealed[0 .. sealed.len - 1], 1001, &ignored));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), "", 1001, &ignored));
     // Another salt is another key: the same state seals to unrelated bytes.
     var other_buffer: [Ticket.max_length]u8 = undefined;
-    const other = try Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(5)), &state, &other_buffer);
+    const other = Ticket.seal(snapshot.ring().issuing(1000).?, &@as([16]u8, @splat(5)), &state, &other_buffer);
     try std.testing.expect(!std.mem.eql(u8, sealed[25..], other[25..]));
 }
 
@@ -109,9 +109,9 @@ fn sealedState(_: void, case: *shakedown.Case) !void {
     for (&salt) |*byte| byte.* = shakedown.gen.int(case.source, u8);
 
     var buffer: [Ticket.max_length]u8 = undefined;
-    const sealed = try Ticket.seal(snapshot.ring().issuing(1000).?, &salt, &state, &buffer);
+    const sealed = Ticket.seal(snapshot.ring().issuing(1000).?, &salt, &state, &buffer);
     var opened: Ticket.State = undefined;
-    try Ticket.open(snapshot.ring(), sealed, 1001, &opened);
+    try std.testing.expect(Ticket.open(snapshot.ring(), sealed, 1001, &opened));
     defer opened.deinit();
     try std.testing.expectEqual(state.version, opened.version);
     try std.testing.expectEqual(state.datagram, opened.datagram);
@@ -130,17 +130,17 @@ fn sealedState(_: void, case: *shakedown.Case) !void {
     var changed: [Ticket.max_length]u8 = undefined;
     @memcpy(changed[0..sealed.len], sealed);
     changed[shakedown.gen.intRange(case.source, usize, 0, sealed.len - 1)] ^= shakedown.gen.intRange(case.source, u8, 1, 255);
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), changed[0..sealed.len], 1001, &refused));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), changed[0..sealed.len], 1001, &refused));
     // Its format byte naming another version or carrier (1 and 3 a TLS 1.3 PSK over a stream and
     // over datagrams, 2 and 4 a TLS 1.2 master secret): a ticket of one is never opened as another.
     for ([_]u8{ 1, 2, 3, 4 }) |format| {
         if (format == sealed[0]) continue;
         @memcpy(changed[0..sealed.len], sealed);
         changed[0] = format;
-        try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), changed[0..sealed.len], 1001, &refused));
+        try std.testing.expect(!Ticket.open(snapshot.ring(), changed[0..sealed.len], 1001, &refused));
     }
     // Cut short anywhere.
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), sealed[0..shakedown.gen.intRange(case.source, usize, 0, sealed.len - 1)], 1001, &refused));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), sealed[0..shakedown.gen.intRange(case.source, usize, 0, sealed.len - 1)], 1001, &refused));
     // Under another ring's key, the same bytes are no ticket of its.
     var other_keys = try TicketKeys.init(std.testing.allocator, .{});
     defer other_keys.deinit();
@@ -148,5 +148,5 @@ fn sealedState(_: void, case: *shakedown.Case) !void {
     try other_keys.rotate(&material, types.instant(1000));
     var other = other_keys.acquire().?;
     defer other.release();
-    try std.testing.expectError(error.Undecryptable, Ticket.open(other.ring(), sealed, 1001, &refused));
+    try std.testing.expect(!Ticket.open(other.ring(), sealed, 1001, &refused));
 }

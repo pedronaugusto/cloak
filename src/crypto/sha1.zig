@@ -5,6 +5,7 @@
 //! not touch these uses: an HMAC and a KDF need its preimage resistance alone.
 const std = @import("std");
 const builtin = @import("builtin");
+const instructions = @import("sha1/armv8.zig");
 
 const accelerated = builtin.cpu.arch == .aarch64 and builtin.zig_backend != .stage2_c and builtin.cpu.has(.aarch64, .sha2);
 pub const Sha1 = if (accelerated) Armv8 else std.crypto.hash.Sha1;
@@ -63,7 +64,7 @@ pub const Armv8 = struct {
         return result;
     }
 
-    const V = @Vector(4, u32);
+    const V = instructions.V;
     fn k(comptime stage: usize) V {
         return @splat(([_]u32{ 0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6 })[stage]);
     }
@@ -181,57 +182,12 @@ pub const Armv8 = struct {
         return v;
     }
 
-    fn h(e: u32) u32 {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1h %[out:s], %[in:s]"
-            : [out] "=w" (-> u32),
-            : [in] "w" (e),
-        );
-    }
-    fn c(abcd: V, e: u32, wk: V) V {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1c %[x:q], %[e:s], %[w].4s"
-            : [x] "=w" (-> V),
-            : [_] "0" (abcd),
-              [e] "w" (e),
-              [w] "w" (wk),
-        );
-    }
-    fn p(abcd: V, e: u32, wk: V) V {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1p %[x:q], %[e:s], %[w].4s"
-            : [x] "=w" (-> V),
-            : [_] "0" (abcd),
-              [e] "w" (e),
-              [w] "w" (wk),
-        );
-    }
-    fn m(abcd: V, e: u32, wk: V) V {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1m %[x:q], %[e:s], %[w].4s"
-            : [x] "=w" (-> V),
-            : [_] "0" (abcd),
-              [e] "w" (e),
-              [w] "w" (wk),
-        );
-    }
-    fn su0(a: V, b: V, c_: V) V {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1su0 %[a].4s, %[b].4s, %[c].4s"
-            : [a] "=w" (-> V),
-            : [_] "0" (a),
-              [b] "w" (b),
-              [c] "w" (c_),
-        );
-    }
-    fn su1(a: V, b: V) V {
-        // glint-ignore: P007 -- boundary: an ARMv8 SHA-1 instruction on registers alone, no memory
-        return asm ("sha1su1 %[a].4s, %[b].4s"
-            : [a] "=w" (-> V),
-            : [_] "0" (a),
-              [b] "w" (b),
-        );
-    }
+    const h = instructions.h;
+    const c = instructions.c;
+    const p = instructions.p;
+    const m = instructions.m;
+    const su0 = instructions.su0;
+    const su1 = instructions.su1;
 };
 
 test "SHA-1 matches std's over every length across three blocks, split and whole" {

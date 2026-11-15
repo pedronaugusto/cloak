@@ -90,6 +90,8 @@ pub const Diagnostics = struct {
     alert_sent: ?Alert = null,
     /// The alert the peer sent.
     alert_received: ?Alert = null,
+    /// Why the last alert this side tried to send was not written (`Connection.Diagnostics.alert_unsent`).
+    alert_unsent: ?Connection.Error = null,
     /// The peer asked for a certificate (or, for a server, this one asks).
     certificate_requested: bool = false,
     /// Why the verifier refused the peer's chain, when it did: the alert names a class
@@ -523,6 +525,7 @@ pub fn diagnostics(session: *const Session) Diagnostics {
         .reason = seen.reason,
         .alert_sent = seen.alert_sent,
         .alert_received = seen.alert_received,
+        .alert_unsent = seen.alert_unsent,
         .certificate_requested = session.conn.certificateRequested(),
         .verification = verification: {
             const code = session.verification_code.load(.acquire);

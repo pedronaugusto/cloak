@@ -303,17 +303,16 @@ pub fn open(gpa: std.mem.Allocator, keys: []const Key, wire: []const u8, offer: 
     defer gpa.free(aad);
     var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
     defer encoded_owner.deinit(gpa);
-    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
-    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
+    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch aegis.assert.never("the live prefix grows to the capacity it is within");
     const encoded = encoded_owner.exposeMut();
     var context = for (keys) |key| {
-        // glint-ignore: Z026 -- a configured key whose config does not parse cannot open this offer: the next key is tried
-        const config = (parseConfig(key.config) catch continue).config orelse continue;
+        // A configured key whose config does not parse cannot open this offer: the next key is tried.
+        const config = (if (parseConfig(key.config)) |parsed| parsed.config else |_| null) orelse continue;
         if (config.id != offer.config_id or !config.lists(offer.suite)) continue;
         const info_buf = try gpa.alloc(u8, 8 + key.config.len);
         defer gpa.free(info_buf);
-        // glint-ignore: Z026 -- a key whose HPKE context cannot be set up for this offer cannot open it: the next key is tried
-        var context = Hpke.setupRecipient(offer.suite, enc, key.secret, info(info_buf, key.config)) catch continue;
+        // A key whose HPKE context cannot be set up for this offer cannot open it: the next key is tried.
+        var context = (Hpke.setupRecipient(offer.suite, enc, key.secret, info(info_buf, key.config)) catch null) orelse continue;
         context.seq = seq;
         context.open(encoded, aad, offer.payload) catch {
             context.deinit();
@@ -334,8 +333,7 @@ pub fn openUnder(gpa: std.mem.Allocator, context: *Hpke.Context, wire: []const u
     defer gpa.free(aad);
     var encoded_owner = try aegis.SecretBytes.init(gpa, offer.payload.len - Hpke.tag_length);
     defer encoded_owner.deinit(gpa);
-    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
-    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch unreachable;
+    encoded_owner.resizeWithinCapacity(encoded_owner.capacity()) catch aegis.assert.never("the live prefix grows to the capacity it is within");
     const encoded = encoded_owner.exposeMut();
     context.open(encoded, aad, offer.payload) catch return error.DecryptFailed;
     return reconstruct(gpa, wire, encoded, transport);
@@ -381,8 +379,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
 
     var owner = try aegis.SecretBytes.init(gpa, outer.len + encoded.len + 4);
     errdefer owner.deinit(gpa);
-    // glint-ignore: Z026 -- the live prefix grows to the capacity it is within.
-    owner.resizeWithinCapacity(owner.capacity()) catch unreachable;
+    owner.resizeWithinCapacity(owner.capacity()) catch aegis.assert.never("the live prefix grows to the capacity it is within");
     const out = owner.exposeMut();
     var w: Writer = .{ .bytes = out };
     const put = struct {
@@ -431,8 +428,7 @@ pub fn reconstruct(gpa: std.mem.Allocator, outer: []const u8, encoded: []const u
     if (ext_len > 65535 or w.pos - 4 > 0xffffff) return error.IllegalParameter;
     std.mem.writeInt(u16, out[ext_at..][0..2], @intCast(ext_len), .big); // checked above
     std.mem.writeInt(u24, out[1..4], @intCast(w.pos - 4), .big); // checked above
-    // glint-ignore: Z026 -- the hello is within the allocation it was written to.
-    owner.resizeWithinCapacity(w.pos) catch unreachable;
+    owner.resizeWithinCapacity(w.pos) catch aegis.assert.never("the hello is within the allocation it was written to");
     return owner;
 }
 
@@ -447,7 +443,7 @@ pub fn confirmation(comptime Hash: type, transport: Transport, inner_random: *co
     const zero: [Hash.digest_length]u8 = @splat(0);
     Labels.extract(Hash, prk, &zero, inner_random);
     var out: [8]u8 = undefined;
-    Labels.expandWith(Hash, transport.prefix(), &out, prk, label, digest) catch unreachable; // glint-ignore: Z026 -- fixed labels, hash-sized context
+    Labels.derive(Hash, transport.prefix(), &out, prk, label, digest);
     return out;
 }
 

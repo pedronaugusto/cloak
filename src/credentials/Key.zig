@@ -234,16 +234,21 @@ fn mldsaKey(comptime level: mldsa.Level, encoded: []const u8, out: *Material) Pa
 pub fn mldsaFromSeed(level: mldsa.Level, seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     if (seed.len != 32) return error.InvalidKey;
-    var encoded_owner: Secret([34]u8) = .init(undefined);
-    defer encoded_owner.deinit();
-    const encoded = encoded_owner.exposeMut();
-    encoded[0] = 0x80;
-    encoded[1] = 32;
-    encoded[2..].* = seed[0..32].*;
-    switch (level) {
-        inline else => |tag| try mldsaKey(tag, encoded, out),
-    }
+    mldsaSeed(level, seed[0..32], out);
     if (public) |p| if (!std.mem.eql(u8, p, out.mldsa.publicKey())) return error.InvalidKey;
+}
+
+/// An ML-DSA key of `level` from its 32-byte seed into `out`, the seed kept: every seed is a key.
+pub fn mldsaSeed(level: mldsa.Level, seed: *const [32]u8, out: *Material) void {
+    @setRuntimeSafety(true);
+    switch (level) {
+        inline else => |tag| {
+            const M = mldsa.Scheme(tag);
+            out.* = .{ .mldsa = .{ .level = tag, .secret = @splat(0), .public = @splat(0), .seed = null } };
+            M.keyFromSeed(seed, out.mldsa.public[0..M.public_key_length], out.mldsa.secret[0..M.secret_key_length]);
+            out.mldsa.seed = seed.*;
+        },
+    }
 }
 
 fn attributes(bytes: []const u8) ParseError!void {
@@ -315,9 +320,15 @@ pub fn ecKey(named: EcCurve, scalar: []const u8, public: ?[]const u8, out: *Mate
 pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     if (seed.len != 32) return error.InvalidKey;
-    out.* = .{ .ed25519 = undefined };
-    EdKey.create(seed[0..32], &out.ed25519.secret);
+    ed25519Seed(seed[0..32], out);
     if (public) |p| if (!std.mem.eql(u8, p, out.ed25519.public())) return error.InvalidKey;
+}
+
+/// An Ed25519 key from its 32-byte seed into `out`: every seed is a key.
+pub fn ed25519Seed(seed: *const [32]u8, out: *Material) void {
+    @setRuntimeSafety(true);
+    out.* = .{ .ed25519 = undefined };
+    EdKey.create(seed, &out.ed25519.secret);
 }
 
 /// An X25519 key from its 32-byte private key (RFC 8410's CurvePrivateKey, RFC 8037's d), into
@@ -326,10 +337,16 @@ pub fn ed25519Key(seed: []const u8, public: ?[]const u8, out: *Material) ParseEr
 pub fn x25519Key(secret: []const u8, public: ?[]const u8, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
     if (secret.len != 32) return error.InvalidKey;
-    out.* = .{ .x25519 = .{ .secret = secret[0..32].*, .public = undefined } };
+    x25519Secret(secret[0..32], out);
+    if (public) |p| if (!std.mem.eql(u8, p, &out.x25519.public)) return error.InvalidKey;
+}
+
+/// An X25519 key from its 32-byte private key into `out`: every 32 bytes are one (RFC 7748 5).
+pub fn x25519Secret(secret: *const [32]u8, out: *Material) void {
+    @setRuntimeSafety(true);
+    out.* = .{ .x25519 = .{ .secret = secret.*, .public = undefined } };
     // cloak's X25519 (crypto/x25519.zig), constant time in the key.
     out.x25519.public = x25519.Dh.recoverPublicKey(out.x25519.secret);
-    if (public) |p| if (!std.mem.eql(u8, p, &out.x25519.public)) return error.InvalidKey;
 }
 
 /// An RSA key from its numbers (`Rsa.fromIntegers`), into `out`.

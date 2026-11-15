@@ -144,19 +144,22 @@ pub fn probe() Capabilities {
                 const socket: Socket = .{ .fd = pair.client };
                 var keys: Keys = .{ .version = version, .cipher = cipher, .key = .init(@splat(0)), .iv = .init(@splat(0)), .sequence = 0 };
                 defer keys.deinit();
-                // glint-ignore: Z026 -- a cipher the running kernel refuses is left out of the probe's answer
-                socket.install(direction, &keys) catch continue;
+                // A cipher the running kernel refuses is left out of the probe's answer.
+                if (!takes(&socket, direction, &keys)) continue;
                 result.ciphers[@intFromBool(version == .tls13)][@backingInt(direction)].insert(cipher);
-                if (version == .tls13) {
-                    // glint-ignore: Z026 -- a kernel that takes the keys but not a second install offers no rekey, which the probe then reports
-                    if (socket.install(direction, &keys)) |_| {
-                        result.rekey[@backingInt(direction)] = true;
-                    } else |_| {}
-                }
+                // A kernel that takes the keys but not a second install offers no rekey.
+                if (version == .tls13 and takes(&socket, direction, &keys)) result.rekey[@backingInt(direction)] = true;
             }
         }
     }
     return result;
+}
+
+/// Whether the running kernel takes `keys` for `direction` on `socket`: the probe's question,
+/// whose every refusal answers no.
+fn takes(socket: *const Socket, direction: Keys.Direction, keys: *const Keys) bool {
+    socket.install(direction, keys) catch return false;
+    return true;
 }
 
 /// A loopback listener for the probe's connections.

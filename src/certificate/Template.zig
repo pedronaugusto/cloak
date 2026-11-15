@@ -424,13 +424,28 @@ fn time(b: *Builder, at: std.Io.Timestamp) Error!void {
     const clock = epoch.getDaySeconds();
     const year = day.year;
     if (year > 9999) return error.InvalidValidity;
+    // YYMMDDHHMMSSZ (13 bytes) or YYYYMMDDHHMMSSZ (15), each field zero-padded decimal.
+    const generalized = year >= 2050;
     var buffer: [15]u8 = undefined;
-    if (year < 2050) {
-        const text = std.mem.print(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year % 100, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // glint-ignore: Z026 -- 13 bytes
-        try b.element(0x17, text);
-    } else {
-        const text = std.mem.print(&buffer, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ year, month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) catch unreachable; // glint-ignore: Z026 -- 15 bytes
-        try b.element(0x18, text);
+    var written: usize = if (generalized) 4 else 2;
+    decimal(buffer[0..written], if (generalized) year else year % 100);
+    for ([_]u32{ month.month.numeric(), month.day_index + 1, clock.getHoursIntoDay(), clock.getMinutesIntoHour(), clock.getSecondsIntoMinute() }) |field| {
+        decimal(buffer[written..][0..2], field);
+        written += 2;
+    }
+    buffer[written] = 'Z';
+    try b.element(if (generalized) 0x18 else 0x17, buffer[0 .. written + 1]);
+}
+
+/// `value`'s low `out.len` decimal digits into `out`, zero-padded.
+fn decimal(out: []u8, value: u32) void {
+    @setRuntimeSafety(true);
+    var rest = value;
+    var at = out.len;
+    while (at > 0) {
+        at -= 1;
+        out[at] = '0' + @as(u8, @intCast(rest % 10));
+        rest /= 10;
     }
 }
 

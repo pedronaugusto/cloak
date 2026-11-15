@@ -83,6 +83,13 @@ pub fn digestOf(algorithm: A.Signature, message: []const u8, out: *[max_digest]u
         },
     };
 }
+/// Whether `signature` is `key`'s over `message`, for a search among candidates (an OCSP
+/// response's possible issuers, a certificate's SCTs): a signature that does not verify answers
+/// "not this one", whatever `verify` would refuse it as.
+pub fn verifies(key: A.PublicKey, algorithm: A.Signature, message: []const u8, signature: []const u8) bool {
+    verify(key, algorithm, message, signature) catch return false;
+    return true;
+}
 /// Verifies a signature over an already computed digest of the algorithm's hash (a TLS 1.2
 /// CertificateVerify signs the running transcript hash). Ed25519 signs messages, not digests.
 pub fn verifyDigest(key: A.PublicKey, algorithm: A.Signature, digest: []const u8, signature: []const u8) Error!void {
