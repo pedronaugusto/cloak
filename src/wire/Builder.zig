@@ -71,8 +71,7 @@ pub fn close(self: *Builder, mark: Mark) Error!void {
     if (end + count > self.bytes.capacity()) {
         self.bytes.reserve(self.gpa, @max(end + count, 2 * self.bytes.capacity())) catch return error.OutOfMemory;
     }
-    // glint-ignore: Z026 -- reserved above.
-    self.bytes.resizeWithinCapacity(end + count) catch unreachable;
+    self.bytes.resizeWithinCapacity(end + count) catch aegis.assert.never("the capacity was reserved above");
     const items = self.bytes.exposeMut();
     @memmove(items[mark.at + count .. end + count], items[mark.at..end]);
     items[mark.at - 1] = 0x80 | @as(u8, @intCast(count)); // a usize has at most eight bytes

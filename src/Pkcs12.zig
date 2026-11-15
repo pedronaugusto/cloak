@@ -59,6 +59,8 @@ pub const Collector = struct {
     options: *const Options,
     held: ?PrivateKey = null,
     found: std.ArrayList([]const u8) = .empty,
+    /// Each of `found` parsed, at the same index, borrowing its owned bytes.
+    parsed: std.ArrayList(certificate.Certificate) = .empty,
 
     const Error = PrivateKey.ParseError || certificate.ParseError || error{ MultipleKeys, CertificateLimit };
 
@@ -73,16 +75,19 @@ pub const Collector = struct {
     pub fn onCertificate(self: *Collector, der: []const u8) Error!void {
         @setRuntimeSafety(true);
         if (self.found.items.len == self.options.certificates) return error.CertificateLimit;
-        _ = try certificate.parse(der, .{});
         const owned = try self.gpa.dupe(u8, der);
         errdefer self.gpa.free(owned);
+        const parsed = try certificate.parse(owned, .{});
+        try self.parsed.ensureUnusedCapacity(self.gpa, 1);
         try self.found.append(self.gpa, owned);
+        self.parsed.appendAssumeCapacity(parsed);
     }
 
     fn deinit(self: *Collector) void {
         if (self.held) |held| held.deinit();
         for (self.found.items) |der| self.gpa.free(der);
         self.found.deinit(self.gpa);
+        self.parsed.deinit(self.gpa);
     }
 };
 
@@ -92,33 +97,34 @@ fn parseFile(gpa: std.mem.Allocator, bytes: []const u8, options: Options) ParseE
     errdefer collector.deinit();
     try walker.walk(gpa, bytes, .{ .passphrase = options.passphrase, .require_mac = options.require_mac, .limits = options.limits }, Collector.Error, &collector);
     const found = collector.found.items;
+    const parsed = collector.parsed.items;
     if (collector.held == null and found.len == 0) return error.Empty;
     var chain_length: usize = 0;
-    if (collector.held != null and found.len != 0) {
-        // The leaf is the certificate the key signs for; localKeyId is only a label. The key's
-        // public half is encoded once and each certificate's compared with it.
-        var info_buffer: [PrivateKey.max_public_key_info]u8 = undefined;
-        const own = certificate.parsePublicKey(collector.held.?.publicKeyInfo(&info_buffer)) catch unreachable; // glint-ignore: Z026 -- cloak encoded it
-        const leaf = for (found, 0..) |der, i| {
-            const cert = certificate.parse(der, .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
+    if (collector.held) |held| if (found.len != 0) {
+        // The leaf is the certificate the key signs for; localKeyId is only a label. Each
+        // certificate's public key is compared with the key's public half.
+        const own = held.publicKey();
+        const leaf = for (parsed, 0..) |*cert, i| {
             if (samePublicKey(own, cert.public_key)) break i;
         } else return error.KeyMismatch;
         std.mem.swap([]const u8, &found[0], &found[leaf]);
+        std.mem.swap(certificate.Certificate, &parsed[0], &parsed[leaf]);
         chain_length = 1;
         // Each issuer by Name, as path building matches them, until a self-issued certificate.
         while (true) {
-            const current = certificate.parse(found[chain_length - 1], .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
+            const current = &parsed[chain_length - 1];
             if (current.selfIssued()) break;
-            const next = for (found[chain_length..], chain_length..) |der, i| {
-                const candidate = certificate.parse(der, .{}) catch unreachable; // glint-ignore: Z026 -- parsed when collected
+            const next = for (parsed[chain_length..], chain_length..) |*candidate, i| {
                 if (certificate.Name.equal(candidate.subject, current.issuer)) break i;
             } else break;
             // Keep the rest in file order: rotate the issuer to the front of the remainder.
             std.mem.rotate([]const u8, found[chain_length .. next + 1], next - chain_length);
+            std.mem.rotate(certificate.Certificate, parsed[chain_length .. next + 1], next - chain_length);
             chain_length += 1;
         }
-    }
+    };
     const certificates = try collector.found.toOwnedSlice(gpa);
+    collector.parsed.deinit(gpa);
     return .{ .key = collector.held, .certificates = certificates, .chain_length = chain_length, .gpa = gpa };
 }
 

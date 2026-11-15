@@ -2,7 +2,8 @@
 //! `crypto/pkcs1.zig`'s and the public operation std's, as signature verification takes it.
 //! No private operation here: decryption is `PrivateKey.decrypt`'s.
 const std = @import("std");
-const Secret = @import("aegis").Secret;
+const aegis = @import("aegis");
+const Secret = aegis.Secret;
 const A = @import("../certificate/Algorithm.zig");
 const pkcs1 = @import("../crypto/pkcs1.zig");
 
@@ -46,15 +47,12 @@ pub fn encrypt(key: A.PublicKey, scheme: A.Encryption, message: []const u8, seed
         .oaep => |oaep| try pkcs1.encode(oaep, message, seed, em[0..k]),
     }
     const Modulus = std.crypto.ff.Modulus(4096);
-    // glint-ignore: Z026 -- checkRsa held the modulus odd, 2048 to 4096 bits, and the exponent below it.
-    const n = Modulus.fromBytes(rsa.modulus, .big) catch unreachable;
-    // glint-ignore: Z026 -- EM's leading byte is zero, so it is below n.
-    const m = Modulus.Fe.fromBytes(n, em[0..k], .big) catch unreachable;
-    // glint-ignore: Z026 -- as above.
-    const e = Modulus.Fe.fromBytes(n, rsa.exponent, .big) catch unreachable;
-    // glint-ignore: Z026 -- a nonzero exponent, which checkRsa held.
-    const c = n.powPublic(m, e) catch unreachable;
-    // glint-ignore: Z026 -- c is below n, which is k bytes.
-    c.toBytes(out[0..k], .big) catch unreachable;
+    // checkRsa held the modulus odd and 2048 to 4096 bits, and the exponent nonzero and below it:
+    // std refuses neither, and would refuse them as no key RSA encrypts to.
+    const n = Modulus.fromBytes(rsa.modulus, .big) catch return error.InvalidPublicKey;
+    const e = Modulus.Fe.fromBytes(n, rsa.exponent, .big) catch return error.InvalidPublicKey;
+    const m = Modulus.Fe.fromBytes(n, em[0..k], .big) catch aegis.assert.never("EM's leading byte is zero, so it is below n");
+    const c = n.powPublic(m, e) catch return error.InvalidPublicKey;
+    c.toBytes(out[0..k], .big) catch aegis.assert.never("c is below n, which is k bytes");
     return out[0..k];
 }

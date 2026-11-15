@@ -22,10 +22,9 @@ pub fn init(gpa: std.mem.Allocator, anchors: []const []const u8, limits: Limits)
     errdefer gpa.free(storage);
     var parsed: usize = 0;
     for (anchors, 0..) |der, index| {
-        // Unusable anchors cannot pass verification; do not let an unrelated
-        // malformed/unsupported candidate poison every other issuer bucket.
-        // glint-ignore: Z026 -- an anchor that does not parse cannot pass verification, and is left out of every issuer bucket
-        const cert = Certificate.parse(der, .{}) catch continue;
+        // An anchor that does not parse cannot pass verification: it is left out of every issuer
+        // bucket, so an unrelated malformed or unsupported one poisons none of the others.
+        const cert = (Certificate.parse(der, .{}) catch null) orelse continue;
         storage[parsed] = .{ .key = try Name.key(cert.subject), .der = der, .index = index };
         parsed += 1;
     }

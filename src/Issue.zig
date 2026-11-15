@@ -29,10 +29,7 @@ pub const Error = Template.Error || certificate.ParseError || std.Io.Cancelable 
 /// The signature a key makes by default: Ed25519; ECDSA with the curve's hash (SHA-512 for
 /// P-521); RSA PKCS#1 v1.5 with SHA-256 (Go's); ML-DSA of its parameter set.
 pub fn defaultAlgorithm(key: PrivateKey) Algorithm.Signature {
-    var buffer: [PrivateKey.max_public_key_info]u8 = undefined;
-    // glint-ignore: Z026 -- cloak encoded it.
-    const public = certificate.parsePublicKey(key.publicKeyInfo(&buffer)) catch unreachable;
-    return switch (public) {
+    return switch (key.publicKey()) {
         .rsa => .{ .rsa = .sha256 },
         .ec => |ec| .{ .ecdsa = switch (ec.curve) {
             .p256 => .sha256,

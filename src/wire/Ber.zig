@@ -146,8 +146,7 @@ fn contents(bytes: []const u8, element: Element, out: []u8, at: usize) usize {
     var cursor = element.start;
     var budget: usize = std.math.maxInt(usize);
     while (cursor < element.stop) {
-        // glint-ignore: Z026 -- the element was parsed whole within the same bounds.
-        const child = parse(bytes[0..element.stop], cursor, 64, &budget) catch unreachable;
+        const child = parse(bytes[0..element.stop], cursor, 64, &budget) catch aegis.assert.never("the element was parsed whole within the same bounds");
         if (element.flatten) {
             if (child.tag & 0x20 == 0) {
                 @memcpy(out[next..][0..child.content], bytes[child.start..child.stop]);
