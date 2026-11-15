@@ -503,12 +503,15 @@ test "Miller-Rabin's rounds are FIPS 186-5 Table B.1's for p and q at each size"
 
 test "a generation reaches less stack than the depth that scrubs it" {
     const Source = struct {
-        rng: std.Random.ChaCha = .init(@splat(11)),
+        // Seeded at run time: as a field's default, ChaCha's key setup runs at
+        // compile time, past the branch quota where the target has no vector
+        // path (riscv64).
+        rng: std.Random.ChaCha,
         pub fn fill(self: *@This(), buffer: []u8) error{EntropyUnavailable}!void {
             self.rng.fill(buffer);
         }
     };
-    var source: Source = .{};
+    var source: Source = .{ .rng = .init(@splat(11)) };
     var out: Secret(Integers) = .init(undefined);
     defer out.deinit();
     inline for (.{ Size.@"2048", .@"4096" }) |size| {
