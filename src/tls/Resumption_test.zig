@@ -177,10 +177,10 @@ test "F65 catalogue_ticket_supplied_key_and_derivation_failure" {
     var state: Ticket.State = .{ .suite = .aes_128_gcm_sha256, .issued = 0, .expires = 10, .age_add = 0, .policy = @splat(0) };
     var buf_a: [Ticket.max_length]u8 = undefined;
     var buf_b: [Ticket.max_length]u8 = undefined;
-    const sealed_a = try Ticket.seal(snapshot_a.ring().issuing(0).?, &@as([16]u8, @splat(9)), &state, &buf_a);
-    const sealed_b = try Ticket.seal(&snapshot_other.ring().keys[0], &@as([16]u8, @splat(9)), &state, &buf_b);
+    const sealed_a = Ticket.seal(snapshot_a.ring().issuing(0).?, &@as([16]u8, @splat(9)), &state, &buf_a);
+    const sealed_b = Ticket.seal(&snapshot_other.ring().keys[0], &@as([16]u8, @splat(9)), &state, &buf_b);
     try std.testing.expect(!std.mem.eql(u8, sealed_a[25..], sealed_b[25..]));
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot_other.ring(), sealed_a, 1, &state));
+    try std.testing.expect(!Ticket.open(snapshot_other.ring(), sealed_a, 1, &state));
 }
 
 const Worker = struct {
@@ -208,15 +208,10 @@ const Worker = struct {
             salt[0] = worker.id;
             salt[1] = @intCast(i);
             var state: Ticket.State = .{ .suite = .aes_128_gcm_sha256, .issued = 1000, .expires = 2000, .age_add = 0, .policy = @splat(0) };
-            const sealed = Ticket.seal(key, &salt, &state, &worker.sealed[worker.count]) catch {
-                worker.failed = true;
-                return;
-            };
+            const sealed = Ticket.seal(key, &salt, &state, &worker.sealed[worker.count]);
             worker.lengths[worker.count] = sealed.len;
             var opened: Ticket.State = undefined;
-            Ticket.open(snapshot.ring(), sealed, 1064, &opened) catch {
-                worker.failed = true;
-            };
+            if (!Ticket.open(snapshot.ring(), sealed, 1064, &opened)) worker.failed = true;
             worker.count += 1;
         }
     }
@@ -253,7 +248,7 @@ test "F66 catalogue_ticket_workers_rotation_restart_and_nonce concurrent issue, 
     var snapshot = restarted.acquire().?;
     defer snapshot.release();
     var opened: Ticket.State = undefined;
-    try std.testing.expectError(error.Undecryptable, Ticket.open(snapshot.ring(), workers[1].sealed[0][0..workers[1].lengths[0]], 1100, &opened));
+    try std.testing.expect(!Ticket.open(snapshot.ring(), workers[1].sealed[0][0..workers[1].lengths[0]], 1100, &opened));
     var current = keys.acquire().?;
     defer current.release();
     const oldest = current.ring().keys[current.ring().count - 1];
@@ -548,12 +543,12 @@ test "F74 catalogue_resumed_mtls_evidence_expiry_and_refresh" {
         defer guard.deinit();
         for (guard.value().slots) |slot| if (slot) |entry| {
             var state: Ticket.State = undefined;
-            try Ticket.open(snapshot.ring(), entry.ticket, pki.time + 200, &state);
+            try std.testing.expect(Ticket.open(snapshot.ring(), entry.ticket, pki.time + 200, &state));
             defer state.deinit();
             try std.testing.expect(state.client_authenticated and state.auth_expires == pki.time + 600);
             state.expires = pki.time + 5000;
             var buffer: [Ticket.max_length]u8 = undefined;
-            const resealed = try Ticket.seal(snapshot.ring().issuing(pki.time).?, &@as([16]u8, @splat(0x42)), &state, &buffer);
+            const resealed = Ticket.seal(snapshot.ring().issuing(pki.time).?, &@as([16]u8, @splat(0x42)), &state, &buffer);
             try std.testing.expectEqual(entry.ticket.len, resealed.len);
             @memcpy(entry.ticket, resealed);
             entry.expires = pki.time + 5000;

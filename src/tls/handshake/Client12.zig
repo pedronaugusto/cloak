@@ -518,7 +518,8 @@ fn storeTicket(self: anytype) void {
     var expires = @min(by_age, self.auth_expires);
     if (self.ticket12_hint != 0) expires = @min(expires, now_s +| @as(i64, self.ticket12_hint));
     if (expires <= now_s) return;
-    resumption.cache.store(.{
+    // A ticket the cache does not keep leaves the next connection a full handshake.
+    _ = resumption.cache.store(.{
         .key = &self.cache_key,
         .ticket = self.ticket12,
         .version = .tls12,
@@ -532,5 +533,5 @@ fn storeTicket(self: anytype) void {
         .auth_expires = self.auth_expires,
         .authenticated = self.authenticated and self.options.verify != .none,
         .pin = self.pin,
-    }) catch return; // glint-ignore: Z026 -- a ticket the cache refuses is not kept: the next connection makes a full handshake
+    });
 }

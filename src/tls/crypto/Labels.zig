@@ -25,6 +25,14 @@ pub fn expand(comptime Hash: type, out: []u8, secret: *const [Hash.digest_length
 pub fn expandWith(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) ExpandError!void {
     @setRuntimeSafety(true);
     if (label.len > 249 or context.len > 255 or out.len > 255 * Hash.digest_length) return error.InvalidLabel;
+    derive(Hash, prefix, out, secret, label, context);
+}
+/// HKDF-Expand-Label for cloak's own derivations, whose bounds are the caller's contract rather
+/// than a check of input: a label of the key schedule's (at most 249 bytes), a context of at most
+/// a digest, an output of a key, an IV, a nonce or a digest. A breach stops in every build.
+pub fn derive(comptime Hash: type, prefix: Prefix, out: []u8, secret: *const [Hash.digest_length]u8, label: []const u8, context: []const u8) void {
+    @setRuntimeSafety(true);
+    aegis.assert.invariant(label.len <= 249 and context.len <= Hash.digest_length and out.len <= 255 * Hash.digest_length, "an HKDF label, context and output of cloak's own are within HKDF-Expand-Label's bounds");
     aegis.secret.scrubbed(Kernels.depth, expandKernel, .{ Hash, prefix, out, secret, label, context });
 }
 /// HMAC keeps its key and hash states in std's frames: the expansion runs in a scrubbed one
@@ -74,8 +82,7 @@ fn extractKernel(comptime Hash: type, out: *[Hash.digest_length]u8, salt: []cons
 pub fn finished(comptime Hash: type, prefix: Prefix, out: *[Hash.digest_length]u8, traffic: *const [Hash.digest_length]u8, transcript: *const [Hash.digest_length]u8) void {
     var key = aegis.Secret([Hash.digest_length]u8).init(undefined);
     defer key.deinit();
-    // glint-ignore: Z026 -- the fixed label/context and hash-sized output meet expand bounds.
-    expandWith(Hash, prefix, key.exposeMut(), traffic, "finished", "") catch unreachable;
+    derive(Hash, prefix, key.exposeMut(), traffic, "finished", "");
     extract(Hash, out, key.expose(), transcript);
 }
 pub const CheckError = error{BadFinished};

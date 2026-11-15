@@ -123,8 +123,7 @@ pub fn restart(self: *Self) void {
         shadow.deinit();
         shadow.* = .init(.{});
     }
-    // glint-ignore: Z026 -- a shrink is within the capacity; it erases what it drops.
-    self.kept.resizeWithinCapacity(0) catch unreachable;
+    self.kept.resizeWithinCapacity(0) catch aegis.assert.never("a shrink to nothing is within any capacity");
 }
 
 /// Erases every byte of the state, the larger variant's included, before it takes `next`.

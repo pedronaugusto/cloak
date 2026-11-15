@@ -10,10 +10,10 @@ test "C5 session cache: newest first, used once, expired dropped, bounded per ke
     defer cache.deinit();
     const a: [32]u8 = @splat(1);
     const b: [32]u8 = @splat(2);
-    try cache.store(fields(&a, "one", 100));
-    try cache.store(fields(&a, "two", 100));
-    try cache.store(fields(&a, "three", 100));
-    try cache.store(fields(&b, "other", 100));
+    _ = cache.store(fields(&a, "one", 100));
+    _ = cache.store(fields(&a, "two", 100));
+    _ = cache.store(fields(&a, "three", 100));
+    _ = cache.store(fields(&b, "other", 100));
     try std.testing.expectEqual(@as(usize, 3), cache.count());
     var taken = cache.take(&a, .tls13, 50).?;
     try std.testing.expectEqualSlices(u8, "three", taken.entry.ticket);
@@ -30,13 +30,13 @@ test "C5 a session cache whose store sequence is spent keeps no more tickets" {
     var cache = try SessionCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     const a: [32]u8 = @splat(1);
-    try cache.store(fields(&a, "one", 100));
+    _ = cache.store(fields(&a, "one", 100));
     {
         var guard = cache.table.acquire();
         defer guard.deinit();
         guard.value().sequence = std.math.maxInt(u64);
     }
-    try cache.store(fields(&a, "two", 100));
+    _ = cache.store(fields(&a, "two", 100));
     try std.testing.expectEqual(@as(usize, 1), cache.count());
     var taken = cache.take(&a, .tls13, 50).?;
     defer taken.release();
@@ -49,7 +49,7 @@ test "C5 session cache bounds entries and bytes and clears" {
     var key: [32]u8 = @splat(0);
     for (0..10) |i| {
         key[0] = @intCast(i);
-        try cache.store(fields(&key, "ticket", 100));
+        _ = cache.store(fields(&key, "ticket", 100));
     }
     try std.testing.expectEqual(@as(usize, 3), cache.count());
     key[0] = 0;
@@ -57,14 +57,14 @@ test "C5 session cache bounds entries and bytes and clears" {
     key[0] = 9;
     var newest = cache.take(&key, .tls13, 0).?;
     newest.release();
-    try std.testing.expectError(error.TicketTooLong, cache.store(fields(&key, "", 100)));
+    try std.testing.expect(!cache.store(fields(&key, "", 100)));
     var long: [SessionCache.max_ticket + 1]u8 = @splat(1);
-    try std.testing.expectError(error.TicketTooLong, cache.store(fields(&key, &long, 100)));
+    try std.testing.expect(!cache.store(fields(&key, &long, 100)));
     cache.clear();
     try std.testing.expectEqual(@as(usize, 0), cache.count());
     var small = try SessionCache.init(std.testing.allocator, .{ .max_bytes = @sizeOf(SessionCache.Entry) + 100 });
     defer small.deinit();
-    try small.store(fields(&key, &(@as([60]u8, @splat(2))), 100));
-    try small.store(fields(&key, &(@as([60]u8, @splat(3))), 100));
+    _ = small.store(fields(&key, &(@as([60]u8, @splat(2))), 100));
+    _ = small.store(fields(&key, &(@as([60]u8, @splat(3))), 100));
     try std.testing.expectEqual(@as(usize, 1), small.count());
 }

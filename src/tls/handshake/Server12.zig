@@ -118,7 +118,8 @@ fn credentialKey(self: anytype, hello: *const ClientHello) Error!suites.Suite12.
     // RFC 6066 section 8: the credential's staple, as a CertificateStatus, for a client that asks.
     self.scratch.?.sends_ocsp = hello.ocsp and self.options.credentials[self.credential.?].ocsp.len != 0;
     self.state.flags.ocsp12 = self.scratch.?.sends_ocsp;
-    return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello) catch unreachable; // glint-ignore: Z026 -- fits12 took it
+    // fits12 took the credential's key, so this is the kind it found.
+    return authenticationOf(self.options.credentials[self.credential.?].identity.publicKey(), hello);
 }
 
 /// The kind of suite a key authenticates for this client.
@@ -206,8 +207,8 @@ fn resumeTicket(self: anytype, ring: *const @import("../resumption/TicketKeys.zi
     @setRuntimeSafety(true);
     const scratch = self.scratch.?;
     var state: Ticket.State = undefined;
-    // glint-ignore: Z026 -- a ticket this server cannot open is no resumption: the handshake is a full one
-    Ticket.open(ring, hello.session_ticket.?, now, &state) catch return;
+    // A ticket this server cannot open is no resumption: the handshake is a full one.
+    if (!Ticket.open(ring, hello.session_ticket.?, now, &state)) return;
     defer state.deinit();
     if (state.version != .tls12 or state.datagram != (self.options.transport == .datagram)) return;
     const suite = state.suite.tls12() orelse return;
@@ -379,7 +380,7 @@ fn sendTicket(self: anytype) Error!void {
             state.alpn_len = @intCast(self.alpn.len); // a protocol name is at most 255 bytes
             @memcpy(state.server_name[0..scratch.server_name_len], scratch.server_name[0..scratch.server_name_len]);
             state.server_name_len = scratch.server_name_len;
-            sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf) catch unreachable; // glint-ignore: Z026 -- the buffer holds the longest ticket
+            sealed = Ticket.seal(key, scratch.ticket_entropy.expose()[0..Ticket.salt_length], &state, &sealed_buf);
             hint = @intCast(@min(expires - now, Messages.max_ticket_lifetime)); // positive and at most seven days
         }
     };

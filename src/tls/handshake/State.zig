@@ -494,8 +494,7 @@ pub const State = struct {
                 const T = if (role == .client) Client else Server;
                 const edge = m.plan(event) catch return error.UnexpectedMessage;
                 try self.admit(current, action, T.rule(edge.from, event), epoch, proof, boundary);
-                // glint-ignore: Z026 -- the edge was planned from the current state a moment ago.
-                m.commit(edge) catch unreachable;
+                m.commit(edge) catch aegis.assert.never("the edge was planned from the current state a moment ago");
             },
         }
     }

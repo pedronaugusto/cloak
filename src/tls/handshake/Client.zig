@@ -2060,15 +2060,16 @@ fn onTicket(self: *Client, msg: []const u8, epoch: Epoch, boundary: bool) Error!
     @setRuntimeSafety(true);
     try self.state.advance(.ticket, epoch, .parsed, boundary);
     const ticket = try Messages.newSessionTicket(msg);
-    self.storeTicket(&ticket);
+    try self.storeTicket(&ticket);
     try self.push(.ticket);
 }
 
 /// Keeps a ticket for a later connection. It expires with the ticket's lifetime, the session's
 /// maximum age from its full handshake, or the server authentication's expiry, whichever is
 /// first; it is received, for its age, at the handshake's time. A ticket that cannot be kept
-/// is dropped: it never fails the connection.
-fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
+/// is dropped: it never fails the connection. A ticket before the handshake's schedule completed
+/// has no secret to derive, which the state machine never lets arrive (`WrongPhase` if it did).
+fn storeTicket(self: *Client, ticket: *const Messages.Ticket) Error!void {
     @setRuntimeSafety(true);
     const resumption = self.kept.resumption orelse return;
     const now = self.now orelse return;
@@ -2084,9 +2085,12 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
         inline else => |*k, tag| {
             var psk = aegis.Secret([Schedule.Schedule(tag).length]u8).init(undefined);
             defer psk.deinit();
-            // glint-ignore: Z026 -- a ticket whose secret cannot be derived is not kept: the next connection makes a full handshake
-            k.schedule.ticketSecret(ticket.nonce, psk.exposeMut()) catch return;
-            resumption.cache.store(.{
+            k.schedule.ticketSecret(ticket.nonce, psk.exposeMut()) catch |err| switch (err) {
+                error.WrongPhase => return error.WrongPhase,
+                error.InvalidLabel => aegis.assert.never("a fixed label, a nonce of at most 255 bytes and a digest-sized output are within the bounds"),
+            };
+            // A ticket the cache does not keep leaves the next connection a full handshake.
+            _ = resumption.cache.store(.{
                 .key = &self.cache_key,
                 .ticket = ticket.ticket,
                 .suite = suites.Suite.from13(tag),
@@ -2098,7 +2102,7 @@ fn storeTicket(self: *Client, ticket: *const Messages.Ticket) void {
                 .auth_expires = self.auth_expires,
                 .authenticated = self.authenticated,
                 .pin = self.pin,
-            }) catch return; // glint-ignore: Z026 -- a ticket the cache refuses is not kept: the next connection makes a full handshake
+            });
         },
     }
 }
