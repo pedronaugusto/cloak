@@ -24,12 +24,12 @@ pub fn main(init: std.process.Init) !void {
         defer init.gpa.free(result.stdout);
         defer init.gpa.free(result.stderr);
         if (result.term == .exited) {
-            var err = std.Io.File.stderr().writer(init.io, &.{});
+            var err = std.Io.File.stderr().writerStreaming(init.io, &.{});
             try err.interface.print("{s}: the misuse ran on (exit {d})\n", .{ case.name, result.term.exited });
             return error.MisuseNotStopped;
         }
         if (std.mem.find(u8, result.stderr, case.message) == null) {
-            var err = std.Io.File.stderr().writer(init.io, &.{});
+            var err = std.Io.File.stderr().writerStreaming(init.io, &.{});
             try err.interface.print("{s}: stopped without its message:\n{s}\n", .{ case.name, result.stderr });
             return error.WrongStop;
         }

@@ -24,9 +24,9 @@ pub fn main(init: std.process.Init) !u8 {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var buffer: [512]u8 = undefined;
-    var out = Io.File.stdout().writer(io, &buffer);
+    var out = Io.File.stdout().writerStreaming(io, &buffer);
     var err_buffer: [512]u8 = undefined;
-    var err_out = Io.File.stderr().writer(io, &err_buffer);
+    var err_out = Io.File.stderr().writerStreaming(io, &err_buffer);
     const result = run(gpa, io, arena, try init.minimal.args.toSlice(arena));
     if (result) |line| {
         try out.interface.print("{s}\n", .{line});

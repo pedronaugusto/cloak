@@ -61,6 +61,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - An RSA private key keeps its private exponent d (validated as before), so it can be written back.
 - The Linux kernel record layer's tests run on CI, where they skipped: a "kernel TLS" job on Ubuntu loads the `tls` module (`zig build kernel-tls-setup`, `sudo modprobe tls`) and runs them alone (`zig build kernel-tls`), where the probe fails if the kernel has no record layer (`CLOAK_KERNEL_TLS=required`), so a skip cannot pass for a run. Elsewhere a kernel without the module still skips them.
 - aegis 0.3's names: `aegis.Secret` where `aegis.secret.Secret` was, `assert.invariant` where `assert.pre` and `assert.post` were, and the trust store's load waits on its guard (`held.wait(&condition, io, deadline)`). Pins aegis breaking-0.3 (7bdb587) and shakedown's port to it, whose fault callbacks are `shakedown.Hook`s (the trust store's stalled-read test).
+- Development: `cloak-nuget-check` and the misuse checks (`ci/failstop.zig`) write standard output and standard error through a streaming writer, where a positional one wrote them at an offset: output appended to a file was written over from its start (glint P014).
 ### Fixed
 
 - The RSA key generation's stack test builds for riscv64: its entropy source seeded ChaCha in a field's default, which runs the key setup at compile time, past the branch quota where the target has no vector path. It is seeded at run time. Tests only.
