@@ -241,14 +241,19 @@ pub fn mldsaFromSeed(level: mldsa.Level, seed: []const u8, public: ?[]const u8, 
 /// An ML-DSA key of `level` from its 32-byte seed into `out`, the seed kept: every seed is a key.
 pub fn mldsaSeed(level: mldsa.Level, seed: *const [32]u8, out: *Material) void {
     @setRuntimeSafety(true);
+    // Each level in a frame of its own: a branch of each level inline in this one held a
+    // `Material` for every level (Debug gives each its own), past the depth a generation erases.
     switch (level) {
-        inline else => |tag| {
-            const M = mldsa.Scheme(tag);
-            out.* = .{ .mldsa = .{ .level = tag, .secret = @splat(0), .public = @splat(0), .seed = null } };
-            M.keyFromSeed(seed, out.mldsa.public[0..M.public_key_length], out.mldsa.secret[0..M.secret_key_length]);
-            out.mldsa.seed = seed.*;
-        },
+        inline else => |tag| mldsaSeedAt(tag, seed, out),
     }
+}
+
+fn mldsaSeedAt(comptime level: mldsa.Level, seed: *const [32]u8, out: *Material) void {
+    @setRuntimeSafety(true);
+    const M = mldsa.Scheme(level);
+    out.* = .{ .mldsa = .{ .level = level, .secret = @splat(0), .public = @splat(0), .seed = null } };
+    M.keyFromSeed(seed, out.mldsa.public[0..M.public_key_length], out.mldsa.secret[0..M.secret_key_length]);
+    out.mldsa.seed = seed.*;
 }
 
 fn attributes(bytes: []const u8) ParseError!void {
