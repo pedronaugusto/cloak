@@ -9,6 +9,10 @@
             .url = "git+https://github.com/pedronaugusto/aegis#f52eabef3ec6534c3a74bea3a3b7d95a91ce2581",
             .hash = "aegis-0.2.4-rsxouoquDQApwYDuGdd2YyEeTeNp6CnJoOZKdVCfc3jt",
         },
+        .ladar = .{
+            .url = "git+https://github.com/pedronaugusto/ladar#c347b6640dbdb24c0b4b104cc7636dc61b7e62ff",
+            .hash = "ladar-0.0.0-fezdEjeMAAAiwXfm-uTPsshtyDNSAbefz9vvg29dtBXY",
+        },
     },
     .dev_dependencies = .{
         .preflight = .{

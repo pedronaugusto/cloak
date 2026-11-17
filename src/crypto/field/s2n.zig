@@ -4,11 +4,12 @@
 //! only the base instruction set. On AArch64 both run everywhere and the `_alt` ones suit cores
 //! with a wide multiplier, which AWS-LC takes them on (Apple M, Neoverse V1/V2), one flag for
 //! every curve as here. The choice is made once per process: at compile
-//! time where the target decides it (x86_64 with BMI2 and ADX; an Apple OS), else by one
-//! question to the processor, cached.
+//! time where the target decides it (x86_64 with BMI2 and ADX; an Apple OS), else at run time:
+//! on x86_64 ladar's answer for BMI2 and ADX, on AArch64 Linux the core's model, cached.
 const std = @import("std");
 const builtin = @import("builtin");
 const aegis = @import("aegis");
+const ladar = @import("ladar");
 
 /// Whether s2n-bignum's assembly is in this build: x86_64, and AArch64 where the object format
 /// is ELF or Mach-O (its AArch64 files carry no COFF directives).
@@ -36,13 +37,12 @@ pub inline fn chosen() Variant {
 /// Whether this processor runs the plain routines at all: on x86_64 they need BMI2 and ADX.
 pub fn plainRuns() bool {
     if (builtin.cpu.arch != .x86_64) return true;
-    if (comptime fixed == .plain) return true;
-    return x86HasMulx();
+    return ladar.has(.x86_bmi2_adx);
 }
 
 /// The variant the target alone decides, if it does.
 const fixed: ?Variant = switch (builtin.cpu.arch) {
-    .x86_64 => if (std.Target.x86.featureSetHasAll(builtin.cpu.features, .{ .bmi2, .adx })) .plain else null,
+    .x86_64 => if (ladar.guaranteed.contains(.x86_bmi2_adx)) .plain else null,
     .aarch64 => if (builtin.os.tag.isDarwin()) .alt else if (builtin.os.tag == .linux) null else .plain,
     else => null,
 };
@@ -59,7 +59,7 @@ const asked = struct {
             .alt => return .alt,
         }
         const variant: Variant = switch (builtin.cpu.arch) {
-            .x86_64 => if (x86HasMulx()) .plain else .alt,
+            .x86_64 => if (ladar.has(.x86_bmi2_adx)) .plain else .alt,
             .aarch64 => if (wideMultiplier()) .alt else .plain,
             else => unreachable, // unreachable: `assembly` holds only on x86_64 and AArch64
         };
@@ -85,24 +85,10 @@ test "s2n-bignum's cached choice holds either variant" {
     }
 }
 
-/// x86_64: BMI2 (leaf 7, EBX bit 8) and ADX (EBX bit 19).
-fn x86HasMulx() bool {
-    if (cpuid(0, 0).eax < 7) return false;
-    const ebx = cpuid(7, 0).ebx;
-    return ebx & (1 << 8) != 0 and ebx & (1 << 19) != 0;
-}
-
-fn cpuid(leaf: u32, subleaf: u32) struct { eax: u32, ebx: u32 } {
-    var eax: u32 = 0;
-    var ebx: u32 = 0;
-    // cpuid, the processor's feature leaves, read once per process
-    asm volatile ("cpuid"
-        : [eax] "={eax}" (eax),
-          [ebx] "={ebx}" (ebx),
-        : [leaf] "{eax}" (leaf),
-          [subleaf] "{ecx}" (subleaf),
-        : .{ .ecx = true, .edx = true });
-    return .{ .eax = eax, .ebx = ebx };
+test "on x86_64 the plain routines run exactly where ladar finds BMI2 and ADX" {
+    if (builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    try std.testing.expectEqual(ladar.has(.x86_bmi2_adx), plainRuns());
+    try std.testing.expectEqual(@as(Variant, if (ladar.has(.x86_bmi2_adx)) .plain else .alt), chosen());
 }
 
 /// AArch64 Linux: a core with a wide multiplier by its MIDR_EL1, which the kernel emulates

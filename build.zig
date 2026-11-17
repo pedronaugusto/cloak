@@ -141,7 +141,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     session_module.addImport("cloak", package.module("cloak"));
     const session_example = b.addTest(.{ .name = "cloak-readme-session", .root_module = session_module });
     b.step("check-session", "Compile the documented session example against the public surface").dependOn(&b.addRunArtifact(session_example).step);
-    preflight.addConsumerCheck(b, p, .{ .package = "cloak", .modules = &.{"cloak"}, .packages = &.{p.dependency("aegis", .{ .target = target, .optimize = optimize })}, .program = p.path("ci/consumer.zig") });
+    preflight.addConsumerCheck(b, p, .{ .package = "cloak", .modules = &.{"cloak"}, .packages = &.{ p.dependency("aegis", .{ .target = target, .optimize = optimize }), p.dependency("ladar", .{ .target = target, .optimize = optimize }) }, .program = p.path("ci/consumer.zig") });
 }
 
 /// One module: certificates and TLS are namespaces of the root. TLS builds on certificates, which
@@ -195,12 +195,14 @@ fn addAegis(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarge
     addAssembly(p, m, target);
 }
 
-/// aegis without the assembly: for a module compiled to one object and never linked (`check`),
-/// which COFF cannot hold together with the assembly's objects, and for a module beside `cloak`'s
-/// in one program, which has the assembly already.
+/// aegis and ladar (which processor features the field routines may use) without the assembly:
+/// for a module compiled to one object and never linked (`check`), which COFF cannot hold together
+/// with the assembly's objects, and for a module beside `cloak`'s in one program, which has the
+/// assembly already.
 fn addAegisOnly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     @setRuntimeSafety(true);
     m.addImport("aegis", p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+    m.addImport("ladar", p.dependency("ladar", .{ .target = target, .optimize = optimize }).module("ladar"));
 }
 
 /// s2n-bignum's routines (src/crypto/vendor, PROVENANCE.md), assembled from its files unchanged:

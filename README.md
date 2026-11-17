@@ -149,7 +149,7 @@ Portable verification uses explicit trust. Linux and BSD system policy loads bou
 
 ## Built with
 
-cloak ships with aegis. [preflight](https://github.com/pedronaugusto/preflight) (the build and CI gate) and [shakedown](https://github.com/pedronaugusto/shakedown) (the tests) are dev dependencies, which [bay](https://github.com/pedronaugusto/bay) gives cloak's own development and a project that depends on cloak never sees.
+cloak ships with aegis and [ladar](https://github.com/pedronaugusto/ladar) (which processor features its field routines may use). [preflight](https://github.com/pedronaugusto/preflight) (the build and CI gate) and [shakedown](https://github.com/pedronaugusto/shakedown) (the tests) are dev dependencies, which [bay](https://github.com/pedronaugusto/bay) gives cloak's own development and a project that depends on cloak never sees.
 
 ## Testing
 
