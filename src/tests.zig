@@ -7,6 +7,7 @@ test {
     _ = @import("tls.zig");
     _ = @import("cipher.zig");
     _ = @import("Trust.zig");
+    _ = @import("limit.zig");
     _ = @import("verify.zig");
     _ = @import("services.zig");
     _ = @import("NativeVerification.zig");

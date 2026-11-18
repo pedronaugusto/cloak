@@ -4,7 +4,9 @@
 //! every byte. This file owns the walk; the key bags' parsing is the key parser's and the
 //! certificates' ordering is `Pkcs12`'s.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const aegis = @import("aegis");
+const types = @import("../types.zig");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
 const Ber = @import("../wire/Ber.zig");
@@ -13,12 +15,12 @@ const Kdf = @import("Kdf.zig");
 const Sha1 = @import("../crypto/sha1.zig").Sha1;
 
 pub const Limits = struct {
-    bytes: usize = 1 << 20,
-    iterations: usize = 1_000_000,
-    salt_bytes: usize = 1024,
-    password_bytes: usize = 4096,
-    bags: usize = 64,
-    nesting: usize = 4,
+    bytes: aegis.units.Bytes(usize) = .literal("1MiB"),
+    iterations: types.Limit(.iterations) = .fromRaw(1_000_000),
+    salt_bytes: aegis.units.Bytes(usize) = .literal("1KiB"),
+    password_bytes: aegis.units.Bytes(usize) = .literal("4KiB"),
+    bags: types.Limit(.bags) = .fromRaw(64),
+    nesting: types.Limit(.nesting) = .fromRaw(4),
 };
 
 pub const Options = struct {
@@ -49,8 +51,8 @@ const oid_sha2_prefix = "\x60\x86\x48\x01\x65\x03\x04\x02";
 pub fn walk(gpa: std.mem.Allocator, bytes: []const u8, options: Options, comptime SinkError: type, sink: anytype) (Error || SinkError)!void {
     @setRuntimeSafety(true);
     const limits = options.limits;
-    if (bytes.len > limits.bytes) return error.InputLimit;
-    const pbe_limits: Pbe.Limits = .{ .iterations = limits.iterations, .salt_bytes = limits.salt_bytes, .password_bytes = limits.password_bytes };
+    if (bound.over(bytes.len, limits.bytes)) return error.InputLimit;
+    const pbe_limits: Pbe.Limits = .{ .iterations = limits.iterations.raw(), .salt_bytes = limits.salt_bytes.raw(), .password_bytes = limits.password_bytes.raw() };
     const pfx = try normalise(gpa, bytes);
     defer gpa.free(pfx);
     var outer = (Der.single(pfx, 0x30) catch return error.InvalidPkcs12).reader();
@@ -130,7 +132,7 @@ fn checkMac(gpa: std.mem.Allocator, mac_data: Der.Element, content: []const u8, 
     try r.finish();
     if (std.mem.eql(u8, id, oid_pbmac1)) return pbmac1(parameters orelse return error.InvalidPkcs12, content, expected, password.utf8, limits);
     if (parameters) |p| if (p.tag != 5 or p.value.len != 0) return error.InvalidPkcs12;
-    if (salt.len > limits.salt_bytes or iterations == 0 or iterations > limits.iterations) return error.KdfLimit;
+    if (bound.over(salt.len, limits.salt_bytes) or iterations == 0 or bound.over(iterations, limits.iterations)) return error.KdfLimit;
     const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     const bmp = try password.bmpForm();
     if (std.mem.eql(u8, id, oid_sha1)) return hmacMac(Sha1, gpa, bmp, salt, rounds, content, expected);
@@ -171,7 +173,7 @@ fn pbmac1(parameters: Der.Element, content: []const u8, expected: []const u8, pa
     try kp.finish();
     const scheme = try Pbe.prf((try p.expect(0x30)).encoded);
     try p.finish();
-    if (salt.len > limits.salt_bytes or iterations == 0 or iterations > limits.iterations or iterations > std.math.maxInt(u32)) return error.KdfLimit;
+    if (bound.over(salt.len, limits.salt_bytes) or iterations == 0 or bound.over(iterations, limits.iterations) or iterations > std.math.maxInt(u32)) return error.KdfLimit;
     if (key_length == 0 or key_length > Kdf.max_key) return error.InvalidPkcs12;
     const rounds = aegis.int.cast(u32, iterations) catch return error.KdfLimit;
     var key_owner = aegis.Secret([Kdf.max_key]u8).init(undefined);
@@ -252,7 +254,7 @@ fn safeContents(bytes: []const u8, password: *const Pbe.Password, limits: Limits
     @setRuntimeSafety(true);
     var r = (Der.single(bytes, 0x30) catch return error.InvalidPkcs12).reader();
     while (!r.empty()) {
-        if (bags.* == limits.bags) return error.BagLimit;
+        if (bound.reached(bags.*, limits.bags)) return error.BagLimit;
         bags.* += 1;
         var bag = (try r.expect(0x30)).reader();
         const id = (try bag.expect(6)).value;
@@ -274,7 +276,7 @@ fn safeContents(bytes: []const u8, password: *const Pbe.Password, limits: Limits
                 if (std.mem.eql(u8, kind, oid_x509_certificate)) try sink.onCertificate(der.value);
             },
             6 => {
-                if (nesting + 1 >= limits.nesting) return error.BagLimit;
+                if (bound.reached(nesting + 1, limits.nesting)) return error.BagLimit;
                 try safeContents(value.encoded, password, limits, bags, nesting + 1, SinkError, sink);
             },
             // crlBag and secretBag carry nothing an identity holds.

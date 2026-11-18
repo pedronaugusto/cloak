@@ -1,5 +1,6 @@
 //! One caller handle and one executor handle; completion never points to a connection.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const aegis = @import("aegis");
 const types = @import("../types.zig");
 const Native = @import("Native.zig");
@@ -156,8 +157,8 @@ fn release(state: *State) void {
 }
 fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceLimit}!usize {
     @setRuntimeSafety(true);
-    if (request.chain.len == 0 or request.chain.len > request.limits.certificates or request.pins.len > 256 or request.anchor_policies.len > 4096) return error.ServiceLimit;
-    if (request.limits.depth > 16 or request.limits.certificates > 16) return error.ServiceLimit;
+    if (request.chain.len == 0 or bound.over(request.chain.len, request.limits.certificates) or request.pins.len > 256 or request.anchor_policies.len > 4096) return error.ServiceLimit;
+    if (bound.above(request.limits.depth, 16) or bound.above(request.limits.certificates, 16)) return error.ServiceLimit;
     for ([_][]const []const u8{ request.chain, anchors, request.policy.required_policies, request.evidence.crls, request.evidence.ocsp }) |list| {
         if (list.len > 4096) return error.ServiceLimit;
     }
@@ -166,10 +167,10 @@ fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceL
     if (request.identity == .dns and request.identity.dns.len > 253) return error.ServiceLimit;
     for (request.anchor_policies) |policy| if (policy.required_policies.len > 256) return error.ServiceLimit;
     var total = (aegis.int.Checked(usize).init(@sizeOf(State)).add(try OwnedRequest.byteSize(request, anchors)) catch return error.ServiceLimit).raw();
-    total = (aegis.int.Checked(usize).init(total).add(request.limits.receipt_bytes) catch return error.ServiceLimit).raw();
+    total = (aegis.int.Checked(usize).init(total).add(request.limits.receipt_bytes.raw()) catch return error.ServiceLimit).raw();
     // Charge all cloak-owned native descriptor/name scratch alongside the path.
     // Framework/CryptoAPI private allocations remain OS-owned and job-count bounded.
-    const descriptors = (aegis.int.Checked(usize).init(request.limits.depth).mul(2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit).raw();
+    const descriptors = (aegis.int.Checked(usize).init(request.limits.depth.raw()).mul(2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit).raw();
     total = (aegis.int.Checked(usize).init(total).add(descriptors + 508) catch return error.ServiceLimit).raw();
     const references = (aegis.int.Checked(usize).init(@max(request.chain.len, anchors.len)).mul(@sizeOf(usize)) catch return error.ServiceLimit).raw();
     return (aegis.int.Checked(usize).init(total).add(references) catch return error.ServiceLimit).raw();

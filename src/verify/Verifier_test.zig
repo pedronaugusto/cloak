@@ -38,7 +38,7 @@ test "portable selected path identity pins limits and native floors" {
     defer native_none.deinit();
     try std.testing.expect(!native_none.authenticated);
     req = request();
-    req.limits.candidates = 0;
+    req.limits.candidates = .fromRaw(0);
     try std.testing.expectError(error.VerificationLimit, V.verify(std.testing.allocator, req, &.{root}));
 }
 test "F153 catalogue_revocation_verdict_surfaces (a path refused by its revocation evidence reports why, not that no path was found)" {
@@ -84,7 +84,7 @@ test "portable indexed verification accepts large stores within discovery budget
     try receipt.check(request());
     try std.testing.expectError(error.VerificationLimit, V.verify(std.testing.allocator, request(), &roots));
     var limited = request();
-    limited.limits.candidates = 0;
+    limited.limits.candidates = .fromRaw(0);
     try std.testing.expectError(error.VerificationLimit, V.indexed(std.testing.allocator, limited, &index));
 }
 
@@ -111,7 +111,7 @@ test "F14 catalogue_verification_flood_charges_every_branch (signed inputs withi
     inline for (.{ 1, 1900 }) |count| {
         const flood_leaf = testdata.file(std.fmt.comptimePrint("verify/fixtures/work/work-leaf-{d}.der", .{count}));
         const issuer = testdata.file(std.fmt.comptimePrint("verify/fixtures/work/work-inter-{d}.der", .{count}));
-        const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = .fromNanoseconds(1791467000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .limits = .{ .candidates = 16, .parses = 8, .signatures = 2, .rejected = 8, .policy_nodes = 1, .depth = 3 } };
+        const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = .fromNanoseconds(1791467000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .limits = .{ .candidates = .fromRaw(16), .parses = .fromRaw(8), .signatures = .fromRaw(2), .rejected = .fromRaw(8), .policy_nodes = .fromRaw(1), .depth = .fromRaw(3) } };
         const anchors = &.{testdata.file("verify/fixtures/work/work-root.der")};
         if (count == 1) {
             var receipt = try V.verify(std.testing.allocator, req, anchors);

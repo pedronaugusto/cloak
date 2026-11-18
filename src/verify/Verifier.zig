@@ -1,5 +1,6 @@
 //! Portable bounded path search. Inputs and time are supplied; no I/O or clock.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const aegis = @import("aegis");
 const Der = @import("../wire/Der.zig");
 const C = @import("../certificate.zig");
@@ -39,7 +40,7 @@ const Search = struct {
         errdefer gpa.destroy(self);
         const path = try gpa.alloc(C.Certificate, capacity);
         errdefer gpa.free(path);
-        self.* = .{ .gpa = gpa, .request = request, .anchors = anchors, .issuer_index = index, .path = path, .constraint_work = .{ .remaining = request.limits.constraint_work }, .policy_work = .{ .remaining = request.limits.policy_work } };
+        self.* = .{ .gpa = gpa, .request = request, .anchors = anchors, .issuer_index = index, .path = path, .constraint_work = .{ .remaining = request.limits.constraint_work.raw() }, .policy_work = .{ .remaining = request.limits.policy_work.raw() } };
         return self;
     }
     fn deinit(self: *Search) void {
@@ -52,14 +53,14 @@ const Search = struct {
     fn charge(self: *Search, comptime field: []const u8, amount: usize) VerifyError!void {
         @setRuntimeSafety(true);
         const sum = (aegis.int.Checked(usize).init(@field(self.work, field)).add(amount) catch return error.VerificationLimit).raw();
-        if (sum > @field(self.request.limits, field)) return error.VerificationLimit;
+        if (sum > @field(self.request.limits, field).raw()) return error.VerificationLimit;
         @field(self.work, field) = sum;
     }
     fn parse(self: *Search, der: []const u8) VerifyError!C.Certificate {
         @setRuntimeSafety(true);
         try self.charge("parses", 1);
         try self.charge("parsed_bytes", der.len);
-        return C.parse(der, .{ .bytes = self.request.limits.chain_bytes });
+        return C.parse(der, .{ .bytes = self.request.limits.chain_bytes.raw() });
     }
     /// Why no path was accepted: the last revocation refusal, else the last transparency one,
     /// else no path to an anchor.
@@ -116,7 +117,7 @@ const Search = struct {
                     continue;
                 };
                 if (!C.Name.equal(child.issuer, issuer.subject) or (akiConsistent(child, &issuer) != (priority == 0))) continue;
-                if (self.caBelow() + @intFromBool(!issuer.selfIssued()) > self.request.limits.intermediates) continue;
+                if (bound.over(self.caBelow() + @intFromBool(!issuer.selfIssued()), self.request.limits.intermediates)) continue;
                 if (!try self.link(child, &issuer, false)) continue;
                 self.path[self.count] = issuer;
                 self.count += 1;
@@ -136,7 +137,7 @@ const Search = struct {
     fn duplicate(self: *Search, candidates: []const []const u8, index: usize) VerifyError!bool {
         @setRuntimeSafety(true);
         // Each comparison is charged, including same-subject/identical floods.
-        if (candidates[index].len > self.request.limits.chain_bytes) return false;
+        if (bound.over(candidates[index].len, self.request.limits.chain_bytes)) return false;
         for (candidates[0..index]) |prior| {
             try self.charge("candidates", 1);
             if (std.mem.eql(u8, prior, candidates[index])) return true;
@@ -184,7 +185,7 @@ const Search = struct {
     fn accept(self: *Search, anchor_index: usize) VerifyError!bool {
         @setRuntimeSafety(true);
         const ap: T.AnchorPolicy = if (self.request.anchor_policies.len == 0) .{} else self.request.anchor_policies[anchor_index];
-        if (ap.name_constraints.len > self.request.limits.chain_bytes or ap.required_policies.len > self.request.limits.policy_nodes) return error.VerificationLimit;
+        if (bound.over(ap.name_constraints.len, self.request.limits.chain_bytes) or bound.over(ap.required_policies.len, self.request.limits.policy_nodes)) return error.VerificationLimit;
         const anchor = &self.path[self.count - 1];
         if ((self.request.purpose == .server and !ap.server) or (self.request.purpose == .client and !ap.client)) return false;
         if (ap.check_validity and (T.seconds(self.request.time) < anchor.not_before or T.seconds(self.request.time) > anchor.not_after)) return false;
@@ -203,7 +204,7 @@ const Search = struct {
             if (err == error.DerLimit or err == error.VerificationLimit) return err;
             return false;
         };
-        @call(.never_inline, policies.check, .{ self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes, &self.policy_work }) catch |err| {
+        @call(.never_inline, policies.check, .{ self.gpa, self.path[0..self.count], self.request.policy, ap.required_policies, self.request.limits.policy_nodes.raw(), &self.policy_work }) catch |err| {
             if (err == error.OutOfMemory or err == error.VerificationLimit) return err;
             return false;
         };
@@ -214,16 +215,16 @@ const Search = struct {
         };
         // Certificate Transparency: the leaf's SCTs over this path's issuer key. Each signature
         // it verifies is charged like the path's.
-        var left = self.request.limits.signatures - self.work.signatures;
+        var left = (self.request.limits.signatures.sub(.fromRaw(self.work.signatures)) catch aegis.assert.never("charged work never passes its limit")).raw();
         const transparent = transparency.check(self.gpa, self.path[0..self.count], T.milliseconds(self.request.time), self.request.policy.transparency, self.request.evidence.scts, evidence.scts, &left) catch |err| switch (err) {
             error.MissingTransparency, error.InvalidTransparency => {
-                self.work.signatures = self.request.limits.signatures - left;
+                self.work.signatures = (self.request.limits.signatures.sub(.fromRaw(left)) catch aegis.assert.never("what is left is within the limit")).raw();
                 self.transparency_failure = err;
                 return false;
             },
             else => return err,
         };
-        self.work.signatures = self.request.limits.signatures - left;
+        self.work.signatures = (self.request.limits.signatures.sub(.fromRaw(left)) catch aegis.assert.never("what is left is within the limit")).raw();
         var expires = self.path[0].not_after;
         for (self.path[0 .. self.count - 1]) |*cert| expires = @min(expires, cert.not_after);
         if (ap.check_validity) expires = @min(expires, anchor.not_after);
@@ -272,7 +273,7 @@ fn run(gpa: std.mem.Allocator, request: T.Request, anchors: []const []const u8, 
     try identity.validate(request.identity, request.purpose);
     // Portable paths use supplied candidates plus at most one explicit anchor.
     // The depth cap is at most sixteen, so the addition below cannot overflow.
-    const capacity = if (request.chain.len >= request.limits.depth) request.limits.depth else request.chain.len + 1;
+    const capacity = if (bound.reached(request.chain.len, request.limits.depth)) request.limits.depth.raw() else request.chain.len + 1;
     const state = try Search.init(gpa, request, anchors, index, capacity);
     defer state.deinit();
     state.path[0] = try state.parse(request.chain[0]);
@@ -293,10 +294,10 @@ fn leafFloors(cert: *const C.Certificate, request: T.Request) VerifyError!void {
 }
 fn bounds(request: T.Request, anchors: usize) VerifyError!void {
     @setRuntimeSafety(true);
-    if (request.chain.len == 0 or request.chain.len > request.limits.certificates or request.limits.depth == 0 or request.limits.depth > 16) return error.VerificationLimit;
+    if (request.chain.len == 0 or bound.over(request.chain.len, request.limits.certificates) or bound.none(request.limits.depth) or bound.above(request.limits.depth, 16)) return error.VerificationLimit;
     var bytes: usize = 0;
     for (request.chain) |cert| bytes = (aegis.int.Checked(usize).init(bytes).add(cert.len) catch return error.VerificationLimit).raw();
-    if (bytes > request.limits.chain_bytes or request.pins.len > request.limits.candidates or request.policy.required_policies.len > request.limits.policy_nodes) return error.VerificationLimit;
+    if (bound.over(bytes, request.limits.chain_bytes) or bound.over(request.pins.len, request.limits.candidates) or bound.over(request.policy.required_policies.len, request.limits.policy_nodes)) return error.VerificationLimit;
     if (request.evidence.scts.len > T.TransparencyPolicy.max_lists) return error.VerificationLimit;
     if (request.policy.transparency) |policy| try transparency.validate(policy.*);
     if (request.anchor_policies.len != 0 and request.anchor_policies.len != anchors) return error.InvalidAnchorPolicy;
@@ -320,7 +321,7 @@ test {
 pub fn nativePath(gpa: std.mem.Allocator, request: T.Request, selected_chain: []const []const u8) VerifyError!V {
     @setRuntimeSafety(true);
     try bounds(request, 0);
-    if (selected_chain.len == 0 or selected_chain.len > request.limits.depth or !std.mem.eql(u8, selected_chain[0], request.chain[0])) return error.InvalidAnchorPolicy;
+    if (selected_chain.len == 0 or bound.over(selected_chain.len, request.limits.depth) or !std.mem.eql(u8, selected_chain[0], request.chain[0])) return error.InvalidAnchorPolicy;
     if (request.mode == .none) return verify(gpa, request, &.{});
     try identity.validate(request.identity, request.purpose);
     const state = try Search.init(gpa, request, &.{}, null, selected_chain.len);

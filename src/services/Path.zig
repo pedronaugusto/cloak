@@ -1,5 +1,6 @@
 //! Owned OS-selected path. Native success remains provisional until portable floors.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const aegis = @import("aegis");
 const types = @import("../types.zig");
 const Path = @This();
@@ -11,10 +12,10 @@ token: types.Token,
 pub const InitError = std.mem.Allocator.Error || error{ ServiceLimit, NativeEvidenceUnavailable };
 pub fn init(gpa: std.mem.Allocator, request: types.Request, chain: []const []const u8) InitError!Path {
     @setRuntimeSafety(true);
-    if (chain.len == 0 or chain.len > request.limits.depth) return error.NativeEvidenceUnavailable;
+    if (chain.len == 0 or bound.over(chain.len, request.limits.depth)) return error.NativeEvidenceUnavailable;
     var bytes: usize = 0;
     for (chain) |der| bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.ServiceLimit).raw();
-    if (bytes > request.limits.receipt_bytes) return error.ServiceLimit;
+    if (bound.over(bytes, request.limits.receipt_bytes)) return error.ServiceLimit;
     const storage = try gpa.alloc(u8, bytes);
     errdefer gpa.free(storage);
     const owned = try gpa.alloc([]const u8, chain.len);

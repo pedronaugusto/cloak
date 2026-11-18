@@ -12,11 +12,11 @@ const pem_examples = [_][]const u8{ testdata.file("credentials/testdata/ed25519.
 
 fn parseKey(bytes: []const u8) void {
     // a fuzzed key may parse or not; the target asks only that neither crashes or leaks
-    if (PrivateKey.parse(std.testing.allocator, bytes, .{ .iterations = 4 })) |key| key.deinit() else |_| {}
+    if (PrivateKey.parse(std.testing.allocator, bytes, .{ .iterations = .fromRaw(4) })) |key| key.deinit() else |_| {}
 }
 fn parseEncrypted(bytes: []const u8) void {
     // a fuzzed key may parse or not; the target asks only that neither crashes or leaks
-    if (PrivateKey.parse(std.testing.allocator, bytes, .{ .passphrase = "correct-horse", .iterations = 4 })) |key| key.deinit() else |_| {}
+    if (PrivateKey.parse(std.testing.allocator, bytes, .{ .passphrase = "correct-horse", .iterations = .fromRaw(4) })) |key| key.deinit() else |_| {}
 }
 fn walkPem(bytes: []const u8) void {
     var pem = Pem.init(bytes);

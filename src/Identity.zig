@@ -1,6 +1,7 @@
 //! Shared immutable identity: owned DER chain, encoded certificate list and key; or a raw
 //! public key (RFC 7250) and its key, with no certificate at all.
 const std = @import("std");
+const bound = @import("limit.zig");
 const aegis = @import("aegis");
 const types = @import("types.zig");
 const certificate = @import("certificate.zig");
@@ -10,8 +11,8 @@ const Identity = @This();
 /// Private: immutable material is wiped/released by the final owner.
 state: Handle,
 pub const Options = struct {
-    chain_bytes: usize = 65536,
-    certificates: usize = 16,
+    chain_bytes: aegis.units.Bytes(usize) = .literal("64KiB"),
+    certificates: types.Limit(.certificates) = .fromRaw(16),
     generation: types.IdentityGeneration = .fromRaw(1),
     /// What `initPem` does with a block that is not a CERTIFICATE: `skip` reads a file that
     /// holds the key too, as OpenSSL's chain reader does.
@@ -57,7 +58,8 @@ fn buildPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: ?PrivateKey, opt
     defer ders.deinit(gpa);
     var reader = Pem.init(chain_pem);
     // Armor is a third larger than the DER it carries, and its markers add a little.
-    const limit = (aegis.int.Checked(usize).init(options.chain_bytes / 3 * 4).add(4096) catch return error.IdentityLimit).raw();
+    const armor = (options.chain_bytes.divTrunc(3) catch aegis.assert.never("three divides any size")).mul(4) catch return error.IdentityLimit;
+    const limit = (armor.add(.literal("4KiB")) catch return error.IdentityLimit).raw();
     while (try reader.next(gpa, limit)) |block| {
         var owned = block;
         errdefer owned.deinit(gpa);
@@ -68,7 +70,7 @@ fn buildPem(gpa: std.mem.Allocator, chain_pem: []const u8, key: ?PrivateKey, opt
                 continue;
             },
         };
-        if (blocks.items.len == options.certificates) return error.IdentityLimit;
+        if (bound.reached(blocks.items.len, options.certificates)) return error.IdentityLimit;
         try blocks.append(gpa, owned);
         errdefer _ = blocks.pop();
         try ders.append(gpa, owned.der);
@@ -93,7 +95,7 @@ pub fn initRawKeyExternal(gpa: std.mem.Allocator, spki: []const u8, options: Opt
 fn buildRaw(gpa: std.mem.Allocator, spki: []const u8, key: ?PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
     if (spki.len == 0) return error.EmptyChain;
-    if (spki.len > options.chain_bytes or spki.len > 0xffffff) return error.IdentityLimit;
+    if (bound.over(spki.len, options.chain_bytes) or spki.len > 0xffffff) return error.IdentityLimit;
     // The key is parsed from the owned copy, which it borrows, never from the caller's bytes.
     const storage = try gpa.dupe(u8, spki);
     errdefer gpa.free(storage);
@@ -119,11 +121,11 @@ pub fn initExternal(gpa: std.mem.Allocator, certificates: []const []const u8, op
 fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?PrivateKey, options: Options) InitError!Identity {
     @setRuntimeSafety(true);
     if (certificates.len == 0) return error.EmptyChain;
-    if (certificates.len > options.certificates) return error.IdentityLimit;
+    if (bound.over(certificates.len, options.certificates)) return error.IdentityLimit;
     var bytes: usize = 0;
     for (certificates) |der| {
         bytes = (aegis.int.Checked(usize).init(bytes).add(der.len) catch return error.IdentityLimit).raw();
-        if (der.len > 0xffffff or bytes > options.chain_bytes) return error.IdentityLimit;
+        if (der.len > 0xffffff or bound.over(bytes, options.chain_bytes)) return error.IdentityLimit;
     }
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
     const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();

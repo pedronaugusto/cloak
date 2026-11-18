@@ -1,5 +1,6 @@
 //! Lower-layer verification vocabulary. No trust owner or handshake dependency.
 const std = @import("std");
+const bound = @import("limit.zig");
 const aegis = @import("aegis");
 pub const ConnectionGeneration = aegis.id.Id(struct {}, u64);
 pub const RequestId = aegis.id.Id(struct {}, u64);
@@ -154,22 +155,33 @@ pub const Policy = struct {
     /// Certificate Transparency, borrowed for as long as requests name it; null checks none.
     transparency: ?*const TransparencyPolicy = null,
 };
+/// A count a limit bounds, typed by what it counts: one type per name, so the same limit read from
+/// one options struct passes to another.
+pub fn Limit(comptime what: @TypeOf(.counted)) type {
+    return aegis.units.Count(Counted(what), usize);
+}
+
+fn Counted(comptime what: @TypeOf(.counted)) type {
+    _ = what;
+    return enum { counted };
+}
+
 pub const Limits = struct {
-    chain_bytes: usize = 65536,
-    certificates: usize = 16,
-    depth: usize = 8,
-    intermediates: usize = 16,
-    candidates: usize = 256,
-    parses: usize = 256,
-    signatures: usize = 256,
-    rejected: usize = 256,
-    parsed_bytes: usize = 4 * 1024 * 1024,
-    receipt_bytes: usize = 65536,
-    policy_nodes: usize = 256,
+    chain_bytes: aegis.units.Bytes(usize) = .literal("64KiB"),
+    certificates: Limit(.certificates) = .fromRaw(16),
+    depth: Limit(.depth) = .fromRaw(8),
+    intermediates: Limit(.intermediates) = .fromRaw(16),
+    candidates: Limit(.candidates) = .fromRaw(256),
+    parses: Limit(.parses) = .fromRaw(256),
+    signatures: Limit(.signatures) = .fromRaw(256),
+    rejected: Limit(.rejected) = .fromRaw(256),
+    parsed_bytes: aegis.units.Bytes(usize) = .literal("4MiB"),
+    receipt_bytes: aegis.units.Bytes(usize) = .literal("64KiB"),
+    policy_nodes: Limit(.policy_nodes) = .fromRaw(256),
     /// Cumulative subtree visits and compared bytes across all candidate paths.
-    constraint_work: usize = 4 * 1024 * 1024,
+    constraint_work: Limit(.constraint_work) = .fromRaw(4 * 1024 * 1024),
     /// Cumulative policy visits and compared OID bytes, separate from node storage.
-    policy_work: usize = 4 * 1024 * 1024,
+    policy_work: Limit(.policy_work) = .fromRaw(4 * 1024 * 1024),
 };
 pub const AnchorPolicy = struct {
     check_validity: bool = false,
@@ -248,7 +260,7 @@ pub const Request = struct {
             uint(&h, @intFromBool(ct.expires != null));
             timestamp(&h, ct.expires orelse .zero);
         }
-        inline for (@typeInfo(Limits).@"struct".field_names) |f| uint(&h, @field(self.limits, f));
+        inline for (@typeInfo(Limits).@"struct".field_names) |f| uint(&h, @field(self.limits, f).raw());
         uint(&h, self.anchor_policies.len);
         for (self.anchor_policies) |p| {
             uint(&h, @intFromBool(p.check_validity));
@@ -317,7 +329,7 @@ pub const Verification = struct {
         for (path) |der| size = (aegis.int.Checked(usize).init(size).add(der.len) catch return error.VerificationLimit).raw();
         const descriptors = (aegis.int.Checked(usize).init(path.len).mul(@sizeOf([]const u8)) catch return error.VerificationLimit).raw();
         const owned_bytes = (aegis.int.Checked(usize).init(size).add(std.math.add(usize, descriptors, name_bytes) catch return error.VerificationLimit) catch return error.VerificationLimit).raw();
-        if (owned_bytes > request.limits.receipt_bytes or path.len > request.limits.depth) return error.VerificationLimit;
+        if (bound.over(owned_bytes, request.limits.receipt_bytes) or bound.over(path.len, request.limits.depth)) return error.VerificationLimit;
         const storage = try gpa.alloc(u8, size);
         errdefer gpa.free(storage);
         const chain = try gpa.alloc([]const u8, path.len);

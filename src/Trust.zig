@@ -1,5 +1,6 @@
 //! A mutable trust builder and immutable, retained trust snapshots.
 const std = @import("std");
+const bound = @import("limit.zig");
 const aegis = @import("aegis");
 const types = @import("types.zig");
 const TrustGeneration = types.TrustGeneration;
@@ -21,11 +22,11 @@ system: System = .portable,
 
 pub const System = enum { portable, macos, windows };
 pub const Limits = struct {
-    roots: usize = 4096,
-    bytes: usize = 16 * 1024 * 1024,
-    file_bytes: usize = 1024 * 1024,
-    certificate_bytes: usize = 64 * 1024,
-    directory_entries: usize = 8192,
+    roots: types.Limit(.roots) = .fromRaw(4096),
+    bytes: aegis.units.Bytes(usize) = .literal("16MiB"),
+    file_bytes: aegis.units.Bytes(usize) = .literal("1MiB"),
+    certificate_bytes: aegis.units.Bytes(usize) = .literal("64KiB"),
+    directory_entries: types.Limit(.directory_entries) = .fromRaw(8192),
 };
 pub const AddDerError = std.mem.Allocator.Error || certificate.ParseError || error{TrustLimit};
 pub const AddPemError = AddDerError || error{ InvalidPem, InvalidPadding, InvalidCharacter };
@@ -49,10 +50,10 @@ pub fn deinit(t: *Trust) void {
 
 pub fn addDer(t: *Trust, der: []const u8, limits: Limits) AddDerError!void {
     @setRuntimeSafety(true);
-    if (der.len > limits.certificate_bytes) return error.TrustLimit;
+    if (bound.over(der.len, limits.certificate_bytes)) return error.TrustLimit;
     _ = try certificate.parse(der, .{});
     for (t.roots.items) |root| if (std.mem.eql(u8, root, der)) return;
-    if (t.roots.items.len >= limits.roots or der.len > limits.bytes -| t.bytes) return error.TrustLimit;
+    if (bound.reached(t.roots.items.len, limits.roots) or bound.over(der.len +| t.bytes, limits.bytes)) return error.TrustLimit;
     const copy = try t.gpa.dupe(u8, der);
     errdefer t.gpa.free(copy);
     try t.roots.append(t.gpa, copy);
@@ -69,7 +70,7 @@ pub fn addPem(t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
 // remains transactional; no malformed root becomes an authorization candidate.
 fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: Limits) AddPemError!void {
     @setRuntimeSafety(true);
-    if (pem.len > limits.file_bytes) return error.TrustLimit;
+    if (bound.over(pem.len, limits.file_bytes)) return error.TrustLimit;
     const count = t.roots.items.len;
     const bytes = t.bytes;
     errdefer t.rollback(count, bytes);
@@ -82,7 +83,7 @@ fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: L
     // comment before it. Text after the last block is not.
     while (Pem.boundary(pem, at)) |start| {
         if (system_bundle) {
-            if (blocks >= limits.roots) return error.TrustLimit;
+            if (bound.reached(blocks, limits.roots)) return error.TrustLimit;
             blocks += 1;
         }
         const rest = pem[start..];
@@ -106,7 +107,7 @@ fn importPem(comptime system_bundle: bool, t: *Trust, pem: []const u8, limits: L
         }
         const decoder = std.base64.standard.Decoder;
         const der_len = decoder.calcSizeForSlice(compact[0..len]) catch return error.InvalidPem;
-        if (der_len > limits.certificate_bytes) return error.TrustLimit;
+        if (bound.over(der_len, limits.certificate_bytes)) return error.TrustLimit;
         const der = try t.gpa.alloc(u8, der_len);
         defer t.gpa.free(der);
         decoder.decode(der, compact[0..len]) catch return error.InvalidPem;
@@ -231,7 +232,7 @@ fn systemTask(t: *Trust, io: std.Io, limits: Limits, loading: *Loading) AddSyste
 /// Loading occurs before traffic; `io` and file ownership remain per call.
 fn file(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddFileError!void {
     @setRuntimeSafety(true);
-    const pem = try aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes));
+    const pem = try aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes.raw()));
     defer t.gpa.free(pem);
     try t.addPem(pem, limits);
 }
@@ -248,10 +249,10 @@ fn directory(t: *Trust, io: std.Io, path: []const u8, limits: Limits) AddDirErro
     var iterator = dir.iterate();
     var entries: usize = 0;
     while (try iterator.next(io)) |entry| {
-        if (entries >= limits.directory_entries) return error.TrustLimit;
+        if (bound.reached(entries, limits.directory_entries)) return error.TrustLimit;
         entries += 1;
         if (entry.kind != .file and entry.kind != .sym_link) continue;
-        const pem = try aegis.own.readFile(io, dir, entry.name, t.gpa, .fromRaw(limits.file_bytes));
+        const pem = try aegis.own.readFile(io, dir, entry.name, t.gpa, .fromRaw(limits.file_bytes.raw()));
         defer t.gpa.free(pem);
         try t.addPem(pem, limits);
     }
@@ -275,7 +276,7 @@ fn systemLoad(t: *Trust, io: std.Io, limits: Limits) AddSystemError!void {
 fn firstBundle(t: *Trust, io: std.Io, paths: []const []const u8, limits: Limits) AddSystemError!void {
     @setRuntimeSafety(true);
     for (paths) |path| {
-        const pem = aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes)) catch |err| switch (err) {
+        const pem = aegis.own.readFile(io, .cwd(), path, t.gpa, .fromRaw(limits.file_bytes.raw())) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => return err,
         };

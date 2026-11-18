@@ -21,7 +21,7 @@ test "F11 catalogue_untrusted_self_signed_and_verifier_error (receipts are bound
     defer receipt.deinit();
     try std.testing.expect(!receipt.authenticated);
     var capped = request;
-    capped.limits.receipt_bytes = 2;
+    capped.limits.receipt_bytes = .fromRaw(2);
     try std.testing.expectError(error.VerificationLimit, V.init(std.testing.allocator, capped, request.chain, true, .fromNanoseconds(2 * std.time.ns_per_s)));
     try std.testing.expectError(error.VerificationLimit, V.init(std.testing.allocator, request, &.{}, true, .fromNanoseconds(2 * std.time.ns_per_s)));
 }

@@ -6,17 +6,19 @@
 //! expiry; one lock covers bounded sections, and allocation and erasure happen outside it.
 //! There is no process-global cache and no persistence.
 const std = @import("std");
+const bound = @import("../../limit.zig");
 const aegis = @import("aegis");
+const types = @import("../../types.zig");
 const suites = @import("../crypto/Suite.zig");
 const Group = @import("../crypto/Group.zig").Group;
 
 pub const Options = struct {
     /// Tickets kept across every key.
-    max_entries: usize = 256,
+    max_entries: types.Limit(.max_entries) = .fromRaw(256),
     /// Bytes of tickets and their records across every key.
-    max_bytes: usize = 1 << 20,
+    max_bytes: aegis.units.Bytes(usize) = .literal("1MiB"),
     /// Tickets kept for one key; the oldest goes first.
-    per_key: usize = 4,
+    per_key: types.Limit(.per_key) = .fromRaw(4),
 };
 
 /// The longest ticket kept; a server sending a longer one gets no resumption.
@@ -88,10 +90,10 @@ pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
 /// An empty cache; keep it at a stable address while connections use it.
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!SessionCache {
     @setRuntimeSafety(true);
-    if (options.max_entries == 0 or options.max_entries > 1 << 20 or options.per_key == 0 or options.per_key > 16 or options.max_bytes < @sizeOf(Entry) + 64) return error.InvalidOptions;
-    const slots = try gpa.alloc(?*Entry, options.max_entries);
+    if (bound.none(options.max_entries) or bound.above(options.max_entries, 1 << 20) or bound.none(options.per_key) or bound.above(options.per_key, 16) or bound.below(options.max_bytes, @sizeOf(Entry) + 64)) return error.InvalidOptions;
+    const slots = try gpa.alloc(?*Entry, options.max_entries.raw());
     @memset(slots, null);
-    return .{ .gpa = gpa, .options = options, .table = .init(.{ .slots = slots, .bytes = .init(options.max_bytes) }) };
+    return .{ .gpa = gpa, .options = options, .table = .init(.{ .slots = slots, .bytes = .init(options.max_bytes.raw()) }) };
 }
 
 /// Erases every ticket. No connection may be using the cache.
@@ -233,7 +235,7 @@ pub fn store(self: *SessionCache, fields: Fields) bool {
         .pin = fields.pin,
     };
     @memcpy(entry.secret.exposeMut()[0..fields.secret.len], fields.secret);
-    if (cost(entry) > self.options.max_bytes) {
+    if (bound.over(cost(entry), self.options.max_bytes)) {
         self.free(entry);
         return false;
     }
@@ -263,7 +265,7 @@ pub fn store(self: *SessionCache, fields: Fields) bool {
                     if (oldest_same == null or table.slots[oldest_same.?].?.sequence > held.sequence) oldest_same = i;
                 }
             }
-            const victim = if (same >= self.options.per_key)
+            const victim = if (bound.reached(same, self.options.per_key))
                 oldest_same
             else if (used >= table.slots.len or table.bytes.remaining() < cost(entry))
                 oldest

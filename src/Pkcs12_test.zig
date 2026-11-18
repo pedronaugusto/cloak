@@ -151,15 +151,15 @@ test "credential PKCS#12 refuses a file without a MAC unless the caller takes it
 test "credential PKCS#12 bounds hostile files before the work" {
     const gpa = std.testing.allocator;
     const bytes = testdata.file(dir ++ "p256.iter2048.p12");
-    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .iterations = 2047 } }));
+    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .iterations = .fromRaw(2047) } }));
     // A password past the bound is refused before the MAC's KDF reads it.
     const long: [4097]u8 = @splat('p');
     try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = &long }));
-    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .password_bytes = password.len - 1 } }));
+    try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .password_bytes = .fromRaw(password.len - 1) } }));
     try std.testing.expectError(error.KdfLimit, Pkcs12.parse(gpa, testdata.file(dir ++ "p256.pbmac1.p12"), .{ .passphrase = &long }));
-    try std.testing.expectError(error.InputLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bytes = 1000 } }));
+    try std.testing.expectError(error.InputLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bytes = .fromRaw(1000) } }));
     try std.testing.expectError(error.CertificateLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .certificates = 2 }));
-    try std.testing.expectError(error.BagLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bags = 3 } }));
+    try std.testing.expectError(error.BagLimit, Pkcs12.parse(gpa, bytes, .{ .passphrase = password, .limits = .{ .bags = .fromRaw(3) } }));
 }
 
 test "credential PKCS#12 keys under PKCS#12 PBE read as encrypted PKCS#8 too" {
@@ -183,7 +183,7 @@ test "fuzz PKCS#12 container parsing" {
             // Unauthenticated, one-iteration files: the mutations reach the decryptors and bags.
             const seeds = [_][]const u8{ testdata.file(dir ++ "p256.iter1.p12"), testdata.file(dir ++ "p256.nomac.p12"), testdata.file(dir ++ "go.passwordless.p12"), testdata.file(dir ++ "nss.legacy.p12")[0..64] };
             const input = inputs.draw(case, &buffer, &seeds, 64);
-            const p12 = Pkcs12.parse(std.testing.allocator, input, .{ .passphrase = password, .require_mac = false, .limits = .{ .iterations = 4096 } }) catch return;
+            const p12 = Pkcs12.parse(std.testing.allocator, input, .{ .passphrase = password, .require_mac = false, .limits = .{ .iterations = .fromRaw(4096) } }) catch return;
             defer p12.deinit();
             try std.testing.expect(p12.chain_length <= p12.certificates.len);
             if (p12.key) |key| if (p12.chain_length != 0) try std.testing.expect(key.matches(p12.certificates[0]));
@@ -205,7 +205,7 @@ test "fuzz PKCS#12 key bags, plain and shrouded" {
             defer bag_password.deinit(std.testing.allocator);
             for ([_]bool{ false, true }) |shrouded| {
                 // a fuzzed bag may parse or not; the target asks only that neither crashes or leaks
-                if (PrivateKey.parseBag(std.testing.allocator, input, shrouded, &bag_password, .{ .iterations = 4 })) |key| key.deinit() else |_| {}
+                if (PrivateKey.parseBag(std.testing.allocator, input, shrouded, &bag_password, .{ .iterations = .fromRaw(4) })) |key| key.deinit() else |_| {}
             }
             var material: Key.Material = undefined;
             // a fuzzed key may parse or not; the target asks only that neither crashes or leaks

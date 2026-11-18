@@ -5,6 +5,7 @@
 //! lives in `Options`; the checked state table, transcript and key schedule are the same ones
 //! the client uses.
 const std = @import("std");
+const bound = @import("../../limit.zig");
 const Der = @import("../../wire/Der.zig");
 const aegis = @import("aegis");
 const certificates = @import("../../certificates.zig");
@@ -404,7 +405,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!*Server {
         if (credential.ocsp.len != 0 and (credential.ocsp.len > Credential.max_ocsp or credential.identity.form() != .x509 or !ocspResponse(credential.ocsp))) return error.InvalidOptions;
     }
     if (options.accept_delegated and (options.client_auth == .none or options.client_verify != .full or options.max_version != .tls13)) return error.InvalidOptions;
-    if (options.client_auth != .none and options.client_verify == .full and options.client_verify.full.limits.certificates == 0) return error.InvalidOptions;
+    if (options.client_auth != .none and options.client_verify == .full and bound.none(options.client_verify.full.limits.certificates)) return error.InvalidOptions;
     if (options.limits.message < 1024 or options.limits.handshake < options.limits.message or options.limits.certificates == 0) return error.InvalidOptions;
     // The TLS 1.2 PSK suites are spoken only with provisioned keys to complete them.
     for (options.suites) |suite| if (suite.tls12()) |s12| if (s12.authentication() == .psk and options.external_psk == null) return error.InvalidOptions;

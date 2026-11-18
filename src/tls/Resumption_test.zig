@@ -471,7 +471,7 @@ test "F72 catalogue_ticket_ems_derivation_and_callback_errors" {
     duo.deinit();
     try std.testing.expectEqual(@as(usize, 0), fixture.cache.count());
     // A ticket a client refuses to keep (a lifetime of zero, or too long to hold) leaves nothing.
-    var tiny = try SessionCache.init(gpa, .{ .max_bytes = @sizeOf(SessionCache.Entry) + 64 });
+    var tiny = try SessionCache.init(gpa, .{ .max_bytes = .fromRaw(@sizeOf(SessionCache.Entry) + 64) });
     defer tiny.deinit();
     var options = fixture.options(2);
     options.cache = &tiny;

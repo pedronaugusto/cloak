@@ -186,13 +186,13 @@ fn check(case: Case, tally: *Tally) !void {
     const chain = described.request.chain;
     var configured = described.request;
     if (std.mem.startsWith(u8, case.id, "bettertls::pathbuilding::")) {
-        configured.limits.certificates = @max(16, chain.len);
-        configured.limits.chain_bytes = 262144;
-        configured.limits.candidates = 16384;
-        configured.limits.parses = 16384;
-        configured.limits.signatures = 4096;
-        configured.limits.rejected = 16384;
-        configured.limits.parsed_bytes = 32 * 1024 * 1024;
+        configured.limits.certificates = .fromRaw(@max(16, chain.len));
+        configured.limits.chain_bytes = .literal("256KiB");
+        configured.limits.candidates = .fromRaw(16384);
+        configured.limits.parses = .fromRaw(16384);
+        configured.limits.signatures = .fromRaw(4096);
+        configured.limits.rejected = .fromRaw(16384);
+        configured.limits.parsed_bytes = .fromRaw(32 * 1024 * 1024);
     }
     var result = V.verify(std.testing.allocator, configured, anchors);
     const success = if (result) |*receipt| blk: {
@@ -227,7 +227,7 @@ fn requestOf(alloc: std.mem.Allocator, case: Case) !struct { request: T.Request,
     const chain = try alloc.alloc([]const u8, others.len + 1);
     chain[0] = try der(alloc, case.peer_certificate);
     @memcpy(chain[1..], others);
-    return .{ .anchors = anchors, .request = .{ .chain = chain, .identity = try reference(case), .purpose = if (std.mem.eql(u8, case.validation_kind, "CLIENT")) .client else .server, .time = .fromNanoseconds(@as(i96, try timestamp(case.validation_time)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .evidence = .{ .crls = try ders(alloc, case.crls) }, .limits = .{ .depth = if (case.max_chain_depth != null) 16 else 8, .intermediates = case.max_chain_depth orelse 16 } } };
+    return .{ .anchors = anchors, .request = .{ .chain = chain, .identity = try reference(case), .purpose = if (std.mem.eql(u8, case.validation_kind, "CLIENT")) .client else .server, .time = .fromNanoseconds(@as(i96, try timestamp(case.validation_time)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .evidence = .{ .crls = try ders(alloc, case.crls) }, .limits = .{ .depth = if (case.max_chain_depth != null) .fromRaw(16) else .fromRaw(8), .intermediates = .fromRaw(case.max_chain_depth orelse 16) } } };
 }
 
 test "F13 catalogue_cross_signed_cycles_and_chain_depth (a cycle is never walked twice: its verdict comes within one signature check per certificate presented)" {
@@ -240,7 +240,7 @@ test "F13 catalogue_cross_signed_cycles_and_chain_depth (a cycle is never walked
         seen += 1;
         const r = try requestOf(arena.allocator(), case);
         var request = r.request;
-        request.limits.signatures = request.chain.len;
+        request.limits.signatures = .fromRaw(request.chain.len);
         const expected = std.mem.eql(u8, case.expected_result, "SUCCESS");
         if (V.verify(std.testing.allocator, request, r.anchors)) |receipt| {
             var owned = receipt;

@@ -6,7 +6,7 @@ fn fields(key: *const [32]u8, ticket: []const u8, expires: i64) SessionCache.Fie
 }
 
 test "C5 session cache: newest first, used once, expired dropped, bounded per key" {
-    var cache = try SessionCache.init(std.testing.allocator, .{ .per_key = 2 });
+    var cache = try SessionCache.init(std.testing.allocator, .{ .per_key = .fromRaw(2) });
     defer cache.deinit();
     const a: [32]u8 = @splat(1);
     const b: [32]u8 = @splat(2);
@@ -44,7 +44,7 @@ test "C5 a session cache whose store sequence is spent keeps no more tickets" {
 }
 
 test "C5 session cache bounds entries and bytes and clears" {
-    var cache = try SessionCache.init(std.testing.allocator, .{ .max_entries = 3, .per_key = 4 });
+    var cache = try SessionCache.init(std.testing.allocator, .{ .max_entries = .fromRaw(3), .per_key = .fromRaw(4) });
     defer cache.deinit();
     var key: [32]u8 = @splat(0);
     for (0..10) |i| {
@@ -62,7 +62,7 @@ test "C5 session cache bounds entries and bytes and clears" {
     try std.testing.expect(!cache.store(fields(&key, &long, 100)));
     cache.clear();
     try std.testing.expectEqual(@as(usize, 0), cache.count());
-    var small = try SessionCache.init(std.testing.allocator, .{ .max_bytes = @sizeOf(SessionCache.Entry) + 100 });
+    var small = try SessionCache.init(std.testing.allocator, .{ .max_bytes = .fromRaw(@sizeOf(SessionCache.Entry) + 100) });
     defer small.deinit();
     _ = small.store(fields(&key, &(@as([60]u8, @splat(2))), 100));
     _ = small.store(fields(&key, &(@as([60]u8, @splat(3))), 100));

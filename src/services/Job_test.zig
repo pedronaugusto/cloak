@@ -68,7 +68,7 @@ test "service public budget arithmetic cannot wrap before admission" {
     @setRuntimeSafety(true);
     var budget: Budget = .init(.{});
     var req = request();
-    req.limits.receipt_bytes = std.math.maxInt(usize);
+    req.limits.receipt_bytes = .fromRaw(std.math.maxInt(usize));
     try std.testing.expectError(error.ServiceLimit, Job.init(std.testing.failing_allocator, &budget, req, .{}));
     try std.testing.expectEqual(@as(usize, 0), budget.counts().jobs);
 }
@@ -79,7 +79,7 @@ test "service admission covers owned state and input allocation with a zero rece
     var budget: Budget = .init(.{});
     var q: Queue = .{};
     var req = request();
-    req.limits.receipt_bytes = 0;
+    req.limits.receipt_bytes = .fromRaw(0);
     const job = try Job.init(counting.allocator(), &budget, req, .{ .executor = &q.executor });
     try std.testing.expect(budget.counts().bytes >= counting.peak_bytes);
     job.abandon();

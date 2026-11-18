@@ -1,6 +1,7 @@
 //! SecTrust policy and its exact selected chain; no keychain mutation or networking. Security is opened
 //! from the system on first use, not linked.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const aegis = @import("aegis");
 const types = @import("../types.zig");
 const Path = @import("Path.zig");
@@ -11,7 +12,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     @setRuntimeSafety(true);
     const now = types.seconds(request.time);
     if (now < -62135596800 or now > 253402300799) return error.InvalidValidationTime;
-    if (request.chain.len == 0 or request.chain.len > request.limits.certificates) return error.ServiceLimit;
+    if (request.chain.len == 0 or bound.over(request.chain.len, request.limits.certificates)) return error.ServiceLimit;
     const sec = try Security.load();
     const certificates = try array(sec, gpa, request.chain);
     defer sec.CFRelease(certificates);
@@ -47,7 +48,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     const chain = sec.SecTrustCopyCertificateChain(owner) orelse return error.NativeEvidenceUnavailable;
     defer sec.CFRelease(chain);
     const count = sec.CFArrayGetCount(chain);
-    if (count <= 0 or count > request.limits.depth) return error.NativeEvidenceUnavailable;
+    if (count <= 0 or bound.over(count, request.limits.depth)) return error.NativeEvidenceUnavailable;
     const ders = try gpa.alloc([]const u8, @intCast(count)); // positive OS chain count is bounded before usize conversion
     defer gpa.free(ders);
     const buffers = try gpa.alloc(Cf, ders.len);
@@ -59,7 +60,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
         buffer.* = sec.SecCertificateCopyData(cert) orelse return error.NativeEvidenceUnavailable;
         populated += 1;
         const len = sec.CFDataGetLength(buffer.*);
-        if (len <= 0 or len > request.limits.receipt_bytes) return error.ServiceLimit;
+        if (len <= 0 or bound.over(len, request.limits.receipt_bytes)) return error.ServiceLimit;
         const ptr = sec.CFDataGetBytePtr(buffer.*) orelse return error.NativeEvidenceUnavailable;
         der.* = ptr[0..@intCast(len)]; // positive CFData length is bounded by receipt_bytes
     }

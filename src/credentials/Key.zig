@@ -1,7 +1,9 @@
 //! Bounded key parsing into the material `PrivateKey` signs with.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const Secret = @import("aegis").Secret;
 const aegis = @import("aegis");
+const types = @import("../types.zig");
 const SecretBytes = aegis.SecretBytes;
 const Der = @import("../wire/Der.zig");
 const Pem = @import("Pem.zig");
@@ -54,7 +56,7 @@ pub const MlDsa = struct {
         };
     }
 };
-pub const Options = struct { passphrase: ?[]const u8 = null, bytes: usize = 65536, depth: usize = 24, elements: usize = 4096, iterations: usize = 1_000_000, salt_bytes: usize = 1024, password_bytes: usize = 4096 };
+pub const Options = struct { passphrase: ?[]const u8 = null, bytes: aegis.units.Bytes(usize) = .literal("64KiB"), depth: types.Limit(.depth) = .fromRaw(24), elements: types.Limit(.elements) = .fromRaw(4096), iterations: types.Limit(.iterations) = .fromRaw(1_000_000), salt_bytes: aegis.units.Bytes(usize) = .literal("1KiB"), password_bytes: aegis.units.Bytes(usize) = .literal("4KiB") };
 pub const ParseError = Der.Error || Pem.Error || Rsa.Error || Cbc.Error || error{ UnsupportedKey, UnsupportedEncryption, PasswordRequired, KdfLimit };
 const oid_rsa = "\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
 const oid_ec = "\x2a\x86\x48\xce\x3d\x02\x01";
@@ -73,8 +75,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
     comptime {
         if (std.options.side_channels_mitigations == .none) @compileError("cloak private-key construction requires std side-channel mitigations");
     }
-    if (bytes.len > options.bytes) return error.InputLimit;
-    if (options.passphrase) |password| if (password.len > options.password_bytes) return error.KdfLimit;
+    if (bound.over(bytes.len, options.bytes)) return error.InputLimit;
+    if (options.passphrase) |password| if (bound.over(password.len, options.password_bytes)) return error.KdfLimit;
     // Armor may follow explanatory text, as `openssl pkcs12` writes it; a DER key starts with
     // its SEQUENCE tag, which no text before armor does.
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
@@ -82,7 +84,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options, out: *
     if (armored) {
         var pem = Pem.init(bytes);
         var found = false;
-        while (try pem.next(gpa, options.bytes)) |decoded| {
+        while (try pem.next(gpa, options.bytes.raw())) |decoded| {
             var block = decoded;
             defer block.deinit(gpa);
             if (std.mem.eql(u8, block.label, "CERTIFICATE")) {
@@ -126,7 +128,7 @@ fn labelShape(bytes: []const u8, rsa: bool, ec: bool) ParseError!void {
 }
 fn validate(bytes: []const u8, options: Options) ParseError!void {
     @setRuntimeSafety(true);
-    try Der.validate(bytes, .{ .bytes = options.bytes, .elements = options.elements, .depth = options.depth });
+    try Der.validate(bytes, .{ .bytes = options.bytes.raw(), .elements = options.elements.raw(), .depth = options.depth.raw() });
 }
 fn parseDer(bytes: []const u8, options: Options, out: *Material) ParseError!void {
     @setRuntimeSafety(true);
@@ -398,7 +400,7 @@ fn pbeError(err: Pbe.Error) ParseError {
 }
 /// The key parser's bounds as the password-based decryptor takes them.
 pub fn pbeLimits(options: Options) Pbe.Limits {
-    return .{ .iterations = options.iterations, .salt_bytes = options.salt_bytes, .password_bytes = options.password_bytes };
+    return .{ .iterations = options.iterations.raw(), .salt_bytes = options.salt_bytes.raw(), .password_bytes = options.password_bytes.raw() };
 }
 /// Parses the DER PrivateKeyInfo, RSAPrivateKey or ECPrivateKey `bytes` into `out`: what a
 /// PKCS#12 key bag carries, decrypted or not.

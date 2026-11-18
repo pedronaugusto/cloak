@@ -37,7 +37,7 @@ test "credential identity rejects mismatched leaf and empty chain" {
     var block = (try pem.next(std.testing.allocator, 65536)).?;
     defer block.deinit(std.testing.allocator);
     try rejectIdentity(error.KeyMismatch, Identity.init(std.testing.allocator, &.{block.der}, key, .{}));
-    try rejectIdentity(error.IdentityLimit, Identity.init(std.testing.allocator, &.{block.der}, key, .{ .chain_bytes = 1 }));
+    try rejectIdentity(error.IdentityLimit, Identity.init(std.testing.allocator, &.{block.der}, key, .{ .chain_bytes = .fromRaw(1) }));
 }
 
 fn rejectIdentity(expected: anyerror, result: anyerror!Identity) !void {
@@ -104,7 +104,7 @@ test "credential identity without a key holds the chain and never signs" {
     var out: [PrivateKey.max_signature]u8 = undefined;
     try std.testing.expectError(error.UnsupportedAlgorithm, identity.sign(.{ .ecdsa = .sha256 }, "content", "", &out));
     try rejectIdentity(error.EmptyChain, Identity.initExternal(gpa, &.{}, .{}));
-    try rejectIdentity(error.IdentityLimit, Identity.initExternal(gpa, &.{block.der}, .{ .chain_bytes = 1 }));
+    try rejectIdentity(error.IdentityLimit, Identity.initExternal(gpa, &.{block.der}, .{ .chain_bytes = .fromRaw(1) }));
     // A leaf that is not a certificate cannot name the schemes a peer may be offered.
     try std.testing.expect(if (Identity.initExternal(gpa, &.{"not a certificate"}, .{})) |unexpected| blk: {
         unexpected.deinit();
@@ -139,7 +139,7 @@ test "credential identity reads its chain from PEM, the leaf first, and refuses 
     try rejectPem(error.NotCertificate, Identity.initPem(gpa, chain ++ testdata.file("credentials/testdata/p256.pkcs8.pem"), key, .{}));
     try rejectPem(error.EmptyChain, Identity.initPem(gpa, " \n", key, .{}));
     try rejectPem(error.InvalidPem, Identity.initPem(gpa, "not pem", key, .{}));
-    try rejectPem(error.IdentityLimit, Identity.initPem(gpa, chain, key, .{ .certificates = 1 }));
+    try rejectPem(error.IdentityLimit, Identity.initPem(gpa, chain, key, .{ .certificates = .fromRaw(1) }));
     try rejectPem(error.KeyMismatch, Identity.initPem(gpa, testdata.file("credentials/testdata/rsa.cert.pem"), key, .{}));
     const auth = try ClientAuth.initPem(gpa, chain, key, .{});
     defer auth.deinit();
@@ -156,7 +156,7 @@ test "credential identity reads a chain whose key is held elsewhere from PEM" {
     try std.testing.expectEqual(@as(?usize, null), identity.noiseLength());
     try rejectPem(error.NotCertificate, Identity.initExternalPem(gpa, chain ++ testdata.file("credentials/testdata/p256.pkcs8.pem"), .{}));
     try rejectPem(error.EmptyChain, Identity.initExternalPem(gpa, " \n", .{}));
-    try rejectPem(error.IdentityLimit, Identity.initExternalPem(gpa, chain, .{ .certificates = 1 }));
+    try rejectPem(error.IdentityLimit, Identity.initExternalPem(gpa, chain, .{ .certificates = .fromRaw(1) }));
     const auth = try ClientAuth.initExternalPem(gpa, testdata.file("credentials/testdata/p256.cert.pem") ++ testdata.file("credentials/testdata/p256.pkcs8.pem"), .{ .other_blocks = .skip });
     defer auth.deinit();
     try std.testing.expectEqual(@as(usize, 1), auth.chain().len);

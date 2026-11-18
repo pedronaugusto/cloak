@@ -35,13 +35,13 @@ test "credential key formats match modern certificate public keys" {
 }
 test "F06 catalogue_key_import_failure_and_kdf_budget (input and KDF bounds precede allocation and expensive work)" {
     @setRuntimeSafety(true);
-    try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.pkcs1.pem"), .{ .bytes = 8 }));
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = 1 }));
+    try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.pkcs1.pem"), .{ .bytes = .fromRaw(8) }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = .fromRaw(1) }));
     // A passphrase past the bound is refused before any KDF reads it, a legacy PEM key's too.
     const long: [4097]u8 = @splat('p');
     try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = &long }));
     try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.legacy-aes128.pem"), .{ .passphrase = &long }));
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.legacy-des3.pem"), .{ .passphrase = "correct-horse", .password_bytes = 12 }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.legacy-des3.pem"), .{ .passphrase = "correct-horse", .password_bytes = .fromRaw(12) }));
     try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{}));
     try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
 }

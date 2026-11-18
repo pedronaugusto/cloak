@@ -1,5 +1,6 @@
 //! CryptoAPI policy with offline-only chain building and copied selected evidence.
 const std = @import("std");
+const bound = @import("../limit.zig");
 const W = std.os.windows;
 const C = W.crypt32;
 const types = @import("../types.zig");
@@ -11,7 +12,7 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     @setRuntimeSafety(true);
     const now = types.seconds(request.time);
     if (now < -62135596800 or now > 253402300799) return error.InvalidValidationTime;
-    if (request.chain.len == 0 or request.chain.len > request.limits.certificates) return error.ServiceLimit;
+    if (request.chain.len == 0 or bound.over(request.chain.len, request.limits.certificates)) return error.ServiceLimit;
     const additional = try store(request.chain);
     defer _ = C.CertCloseStore(additional, .{});
     const leaf = CertCreateCertificateContext(1, request.chain[0].ptr, @intCast(request.chain[0].len)) orelse return error.NativePolicyFailure; // store already checked the DER length to fit the SDK u32 size
@@ -65,12 +66,12 @@ pub fn evaluate(gpa: std.mem.Allocator, request: types.Request, anchors: []const
     const context: *const Context = @ptrCast(@alignCast(raw)); // CryptoAPI returns this aligned SDK CONTEXT prefix, owned until deferred free
     if (context.count != 1 or context.status.error_status != 0) return error.NativeEvidenceUnavailable;
     const selected = context.chains[0];
-    if (selected.count == 0 or selected.count > request.limits.depth) return error.NativeEvidenceUnavailable;
+    if (selected.count == 0 or bound.over(selected.count, request.limits.depth)) return error.NativeEvidenceUnavailable;
     const ders = try gpa.alloc([]const u8, selected.count);
     defer gpa.free(ders);
     for (ders, 0..) |*der, i| {
         const cert = selected.elements[i].certificate;
-        if (cert.cbCertEncoded > request.limits.receipt_bytes) return error.ServiceLimit;
+        if (bound.over(cert.cbCertEncoded, request.limits.receipt_bytes)) return error.ServiceLimit;
         der.* = cert.pbCertEncoded[0..cert.cbCertEncoded];
     }
     return Path.init(gpa, request, ders);

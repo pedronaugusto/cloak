@@ -21,7 +21,7 @@ test "verification request digest binds every public work limit" {
     const digest = request.digest();
     inline for (@typeInfo(T.Limits).@"struct".field_names) |field| {
         var changed = request;
-        @field(changed.limits, field) += 1;
+        @field(changed.limits, field) = .fromRaw(@field(changed.limits, field).raw() + 1);
         try std.testing.expect(!std.mem.eql(u8, &digest, &changed.digest()));
     }
 }
