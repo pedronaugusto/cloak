@@ -1,7 +1,102 @@
-# Credentials and certificate verification
+# cloak's design
 
-Cloak constructs and retains credentials and verifies certificate paths.
-It does not provide a TLS connection or encrypted stream.
+cloak is the family's TLS engine and the owner of its cryptography: TLS 1.3 and 1.2 over
+streams, DTLS 1.3 and 1.2, the handshake a QUIC stack drives, X.509 verification, credentials
+and their file formats, CMS, and the primitives other packages need (JOSE's). Its runtime closure
+is std, aegis and the native trust APIs (Security and CoreFoundation on macOS, crypt32 on
+Windows). This file is the design as built: the decisions first, then each layer.
+
+## Decisions
+
+| Question | Decision | Why |
+|---|---|---|
+| Boundary | cloak owns the TLS handshake, records, verification, credentials, tickets and TLS-specific kernel offload. No dialer, HTTP, DNS, scheduler or QUIC transport. | One owner; uplink and a QUIC stack each need TLS. |
+| Shape | One sans-I/O handshake. `Connection` adds stream records, `dtls.Datagram` datagram records, `quic.Handshake` levels and transport parameters; `Session` is the std.Io adapter over a caller's `Reader` and `Writer`. | No second engine per transport. |
+| Module | One module, `cloak`, with `certificates` and `tls` namespaces; DTLS and QUIC are namespaces of `tls`. | Every TLS user links the native trust store anyway; a split buys nothing. |
+| Versions | TLS 1.3 and 1.2 (ECDHE and AEAD only), both roles, default range 1.2 to 1.3, preferring 1.3. QUIC is 1.3 only. DTLS 1.3 and 1.2. | The modern rivals' general-purpose scope. |
+| Suites | 1.3: the three RFC 8446 AEAD suites. 1.2: ECDHE_RSA and ECDHE_ECDSA with AES-GCM and ChaCha20-Poly1305; ECDHE_ECDSA_WITH_AES_128_CCM_8 over TLS 1.2 and DTLS 1.2 only when listed (RFC 7925's CoAP profile). | A small modern surface. |
+| Key exchange | Default groups X25519MLKEM768, X25519, P-256, P-384; SecP256r1MLKEM768, SecP384r1MLKEM1024, pure ML-KEM and P-521 when listed. `require_hybrid` forbids classical selection and TLS 1.2, on full and resumed handshakes, with its own cache namespace. No automatic retry under a weaker policy. | Harvest-now-decrypt-later protection, never claimed as post-quantum authentication (that is `require_pq_auth`, ML-DSA). |
+| Signing | cloak signs with the ECDSA, Ed25519, ML-DSA and RSA (PKCS#1 v1.5 and PSS) keys its credentials hold; an external signer (`Session.Signer`) serves keys held elsewhere. No HSM provider framework. | Keys in hand need no callback; keys elsewhere need one seam, not a framework. |
+| Verification | Strict, bounded path building and SAN identity. Explicit roots use cloak's verifier; system trust is native policy on macOS and Windows and bounded root files on Linux and BSD, and the portable floors apply to the chain the OS chose. | std's subject-name map cannot express alternate issuers or OS distrust, and a success boolean does not say which chain was checked. |
+| Floors | MD5 and SHA-1 certificate signatures, RSA below 2,048 bits, invalid EC points, duplicate extensions and ROCA moduli are refused; unknown critical forms fail closed. No CN fallback; a wildcard is a whole leftmost label matching one label; IDNA is the caller's (cloak takes A-labels). A non-self-issued certificate without an authority key identifier is refused (RFC 5280 4.2.1.1, x509-limbo's verdict), although Go, OpenSSL and webpki accept it. | The verifier's answer means the same thing on every path. |
+| Pins | SPKI pins add to full verification. `Verify.leaf_key` trusts a leaf's key by its pin and checks nothing else of the chain (curl's pinned key with verification off); `Verify.raw_key` is RFC 7250's; `.none` is explicit and reports an unauthenticated peer. Each is its own trust and cache namespace. | A pin is either an extra check or the whole trust, never silently both. |
+| Negotiation | ALPN, SNI, several server identities, mTLS, exporters, certificate_authorities (a preference unless `must_match_issuer`), record_size_limit, GREASE and ClientHello extension permutation (off by default). ECH client and server with a supplied ECHConfigList and keys; discovery (HTTPS/SVCB) is the resolver's. | HTTP/2 and QUIC need ALPN; discovery is upstream. |
+| Resumption | TLS 1.3 PSK-DHE only, by default when a cache or ticket ring is supplied. TLS 1.2: RFC 5077 tickets alone, opt-in at both ends, the extended master secret required in both handshakes; no server session-ID cache (Go's line). Each ticket is sealed under its own key, HKDF of the ring key over a fresh 128-bit salt, so no nonce state exists to coordinate across processes. The caller owns the cache, the ring, rotation (default every 6 h) and the clock. | 1.3 keeps a fresh ephemeral exchange; tickets make server session state unnecessary. |
+| 0-RTT | Not offered on streams, DTLS or QUIC. A server skips a rejected early-data offer within a bound. | Keeps the replay-free contract; the lost resumed-flight latency is the stated cost. |
+| Key update | TLS 1.3 stream updates at exact record boundaries. QUIC's key updates are QUIC's. Records and bytes per epoch are capped (`Connection.Limits`), and TLS 1.2, which cannot rekey, ends a direction at the record cap. | A TLS KeyUpdate is illegal in QUIC. |
+| kTLS | Explicit offload of a clean direction to the kernel, Linux and FreeBSD behind one seam (`offload.Installer`); the handshake stays in software, and software is the default. | Serve offload users without making kernel APIs part of the core. |
+| Memory | Caller-sized handshake scratch, taken on a server's first byte and released at completion; no allocation in record processing; idle per-connection state of at most 2 KiB (see Targets). | uplink returns empty buffers to its pool, and a flood of silent connections costs no scratch. |
+| State and records | Checked role, version and mode transitions; `Connection` alone owns record sequences; no public raw seal or open. | A second seal path would make nonce and control ordering a caller obligation. |
+| Revocation | Offline: `.if_present` by default, supplied CRLs and OCSP validated, Must-Staple enforced, `.required` fails closed; clock skew 5 minutes and evidence without nextUpdate fresh for 24 h by default. No online OCSP, AIA or CRL fetching. | No network side effects in a leaf, and no claim of comprehensive revocation. |
+| Native services | No hidden thread. Native verification runs on the caller's executor under a bounded budget (64 jobs by default); overload fails `ServiceBusy` before copying. | A timeout storm cannot become unbounded memory, and no late OS result writes into freed state. |
+| Deadlines | `Session` takes no timeout: it cannot interrupt a read on a stream it does not own. The deadline is the transport's (a deadline-enforcing stream) or the task's (std.Io cancellation); a cancelled session fails, stays failed and is safe to deinit. One `receive` processes at most 64 records. | The owner of the transport is the only one who can enforce a deadline. |
+| Side channels | An active peer and a co-resident timing or cache observer must not recover traffic, private keys, signing randomness, PSKs or ML-KEM decapsulation validity; power, EM and a compromised process are outside the claim. A build with `side_channels_mitigations = .none` is refused. Secret work runs under aegis's `Timing` (DIT on AArch64). | Constant time cannot depend on the caller's std options. |
+| Crypto backend | std.crypto where it is constant time and fast enough; elsewhere cloak's own curve and protocol code over formally verified field arithmetic vendored unchanged (see Verified field arithmetic). No runtime libcrypto and no rival dependency. | The leaf stays std and aegis; a missed target is fixed here, not by a fallback. |
+
+## Scope and boundaries
+
+- **Does not own:** name resolution, HTTP protocol choice, connect retries, an HTTP request's
+  total budget, application sessions, passphrase acquisition, certificate fetching, the meaning of
+  replayed data. QUIC packets, Initial and packet keys, CRYPTO offsets, loss recovery and
+  congestion are QUIC's; ECH configuration discovery is uplink's, reactor's or the QUIC caller's.
+- **Caller obligations the engine cannot prove:** HTTP compression (BREACH), STARTTLS and
+  plaintext use before attachment, ALPACA across applications sharing names and ALPN, PSK
+  provisioning and authorization, QUIC flow control and amplification, source immutability under
+  sendfile, key-log sinks, cross-service key reuse, trust-store change notifications and
+  fork/process coordination. Mapping an mTLS identity to a user or permission is the application's.
+- **Compression:** cloak holds no codec. Certificate compression (RFC 8879) runs through bounded
+  decoders and encoders the caller supplies; in the family they are warp's.
+- **Edges:** at run time std, aegis and the native trust APIs; preflight (CI) and shakedown
+  (tests) are lazy. No reactor, uplink, warp, libcrypto or other TLS implementation in the runtime
+  closure. Users: uplink (origin and proxy TLS), relic (credentials and trust directly), bay
+  (`cloak-nuget-check`, see CMS) and a future QUIC stack through `quic.Handshake`.
+
+## Left out
+
+| Left out | Why |
+|---|---|
+| TLS 1.1 and older, SSL, renegotiation, TLS compression, static RSA, CBC suites, RC4, 3DES suites, DTLS 1.0 | Legacy protocol and attack surface. Old encrypted PEM and PKCS#12 files (RC2, 3DES) stay readable offline as key-file formats, never negotiated. |
+| 0-RTT early data | The replay-free contract. |
+| PSK-only key exchange | A fresh exchange is required; provisioned PSKs are PSK-DHE (raw or RFC 9258 imported). The one exception is TLS 1.2 and DTLS 1.2 plain PSK for CoAP and LwM2M, only when its suites are listed (see TLS 1.2 PSK). |
+| Old Kyber draft group IDs; experimental draft IDs in default policy | Drafts. |
+| ALPS, trust anchor IDs, SPAKE2+ credentials, Channel ID, NPN, False Start | Drafts, deprecated or obsolete; False Start sends data before the peer's Finished, which cloak never releases. |
+| Online OCSP, AIA and CRL fetching | Network side effects in a leaf. |
+| FIPS certification, an OpenSSL ABI, crypto-provider plugins | Separate products; a standardized algorithm is not a certification. |
+| Ed448/X448, FFDHE, brainpool, secp256k1 | Not built; candidates when a user asks. |
+| RSAES-PKCS1-v1_5 decryption, raw CBC, AES-192 | No padding oracle can be built from cloak's API; std has no AES-192 key schedule and JOSE marks it optional. |
+| PKCS#12 RC4 PBE and envelopedData | No writer left that uses them. |
+| CRL generation, CT precertificates | Not asked for. |
+
+## Rivals and targets
+
+cloak is measured against the fastest applicable rival on a matched profile: at least 1.0x
+BoringSSL for full handshakes and bulk sealing at 16 KiB, at least 1.10x for resumed PSK-DHE,
+small-record p99 within BoringSSL + 10%, and flash, peak RAM and per-connection state no larger
+than a matched mbedTLS embedded profile. A miss is reported and fixed in cloak, never waived by
+an arithmetic estimate or by a feature-disabled or unauthenticated profile. Benchmarks are
+cloak's own rows in `bench/` (`zig build bench`; CI compiles them, wall-clock speed never gates);
+rival harnesses and results live outside the repository, which carries no rival dependency, name
+in code or driver.
+
+| Rival | Role |
+|---|---|
+| BoringSSL | Primary speed and differential oracle; BoGo |
+| rustls (aws-lc-rs and ring) | Sans-I/O design and safe defaults |
+| s2n-tls | State-machine review, resource bounds, asynchronous private-key operations |
+| Go crypto/tls | Integrated configuration, hybrid default, ECH, ML-DSA |
+| OpenSSL | Breadth, DTLS, kTLS; tlsfuzzer's peer |
+| AWS-LC | The same s2n-bignum routines as cloak's field |
+| mbedTLS | Embedded size and RAM; DTLS |
+| std.crypto.tls, tls.zig | The Zig baseline and peer |
+
+Memory targets: an idle `Connection` at most 2 KiB (both directions, sequences, policy
+references, exporter state; no transcript, PQ key, certificates or empty record buffers); an
+active handshake at most 64 KiB of scratch for an 8 KiB chain, capped at 512 KiB under hostile
+input; record buffers leased by the caller, at most one input and one output record plus unread
+data. The embedded profile (TLS 1.3, X25519/P-256, AES-128-GCM or ChaCha20, explicit anchors or
+raw-key/PSK-DHE trust, a 4 KiB chain) targets 32 KiB of handshake scratch with every security
+floor on. Tickets, key updates and post-handshake authentication reacquire bounded scratch by an
+explicit request, never on a record's hot path.
 
 ## Layers and owners
 
@@ -201,9 +296,9 @@ SHA extensions are not used yet: there SHA-1 is std's.
 constructor a parsed key of its kind goes through, so a generated key gets every check a parsed
 one does: an EC scalar drawn at the order's width (P-521's top seven bits cleared) and redrawn
 when out of range, an Ed25519 or ML-DSA seed, and RSA's numbers through `Rsa.fromIntegers`.
-X25519 keys agree and sign nothing; they are not a kind.
+An X25519 key agrees and signs nothing (an ECDH-ES sender's ephemeral key).
 
-RSA generation (`crypto/rsa_keygen.zig`) is FIPS 186-5 A.1.3 for e = 65537, constant time on
+RSA generation (`crypto/rsa/keygen.zig`) is FIPS 186-5 A.1.3 for e = 65537, constant time on
 every value it keeps. Candidates of nlen/2 bits have their top two bits set (n is never a bit
 short) and are 7 mod 8, so (w - 1)/2 is odd and Miller-Rabin is one exponentiation and a
 comparison with +-1. Trial division by the odd primes below 2^12 and the check w mod e != 1
@@ -235,15 +330,32 @@ returns it has parsed and verified under the issuer's key. `certificates.request
 PKCS#10 request; `Request.parse` reads one as hostile input and `verifyRequest` checks that its
 requester holds the key.
 
-## Verified field arithmetic and P-521
+## Verified field arithmetic
 
-P-521's field runs formally verified code behind one interface, `crypto/field/p521.zig`:
-s2n-bignum's assembly (HOL Light proofs of correctness and constant time) where `build.zig`
+Every curve and RSA runs formally verified arithmetic, each family behind one interface:
+`crypto/field/nist.zig` (P-256 and P-384, one Montgomery form for both backends, so a constant or
+the P-256 comb serves either), `crypto/field/p521.zig`, `crypto/field/curve25519.zig` (X25519's
+portable ladder and Ed25519's portable formulas) and `crypto/field/bignum.zig` (RSA's Montgomery
+multiplication and squaring, any width to 64 limbs). On top, one way per job:
+`crypto/weierstrass.zig` is the one body of the three NIST curves (SEC 1, complete formulas, the
+masked signed five-bit walk, the public wNAF double base, ECDSA's pieces), with one
+`Sign.Ecdsa`, one `Ecdh.Nist` and one verifier for all three; `crypto/x25519.zig` and
+`crypto/edwards25519.zig` take s2n-bignum's ladder, base and double-base routines where they
+assemble and cloak's formulas over fiat's field elsewhere, which are also the reference the
+assembly is tested against. Addition, subtraction and negation for P-256 and P-384 are fiat's in
+both backends: verified, inlined, and cheaper than a call into the assembly. RSA's products take
+Karatsuba (`bignum_kmul`/`ksqr`) and `bignum_emontredc_8n` at multiples of 8 limbs on AArch64
+and on x86_64 with BMI2 and ADX, the generic `bignum_montmul`/`montsqr` elsewhere the assembly
+is, and the CIOS loop (the reference) where it is not; the walk, CRT, blinding and the check of
+every result stay cloak's. No hand-written per-curve code remains.
+
+The verified code is s2n-bignum's assembly (HOL Light proofs of correctness and constant time) where `build.zig`
 assembles it, x86_64 on every OS and AArch64 on ELF and Mach-O, and fiat-crypto's generated Zig
 (Rocq proofs) everywhere else. Both are vendored unchanged under `src/crypto/vendor` with their
 commit, licences and SHA-256 (`PROVENANCE.md`); no generator runs in the build. A cloak shim
-header ahead of upstream's on the include path names each routine `cloak_<routine>`, hidden, and
-gives COFF's function directive on Windows. Curve code sees `Fe` alone: operands by pointer (the
+header ahead of upstream's on the include path names each routine `cloak_<routine>`, hidden, so
+a program that also links AWS-LC's copy links, and gives COFF's function directive on Windows.
+Curve code sees `Fe` alone: operands by pointer (the
 assembly takes addresses, and a by-value operand cost a stack copy per call), canonical bytes
 across the seam, no allocation. The backend is fixed at compile time by target. s2n-bignum's two
 forms of multiplication and squaring (BMI2/ADX and base on x86_64; the `_alt` form for cores
@@ -254,16 +366,38 @@ agreement), which sets data-independent timing and erases the stack it wrote. Di
 tests hold s2n-bignum (every variant the processor runs) to fiat-crypto, and fiat-crypto to
 wide-integer arithmetic, on random and edge operands.
 
-The scalars mod n run on `crypto/field/Montgomery.zig`, P-256's Montgomery field generalised to n
-limbs: one generic constant-time field, as Go's nistec pairs fiat's base fields with its generic
-scalars. `crypto/p521.zig` is P-256's shape over that field: SEC 1 points (compressed ones by
-the square root a^(2^519)), complete constant-time multiplication by signed five-bit windows
-over a scanned table (the base point takes the same walk), a public width-5 NAF double-base
-walk for verification, and ECDSA's pieces. ECDSA nonces are hedged as P-256's and P-384's are,
-RFC 6979's bits2int taking the leftmost 521 bits of a 66-byte draw. In TLS the signature scheme
-ecdsa_secp521r1_sha512 is offered by default and the group secp521r1 only when listed;
-TLS 1.2's CertificateVerify keeps to SHA-256 and SHA-384 transcripts, so a P-521 client key
-signs under those there.
+Every curve's scalars (mod n, and Ed25519's mod L) run on `crypto/field/Montgomery.zig`, one
+generic constant-time Montgomery field over n limbs, as Go's nistec pairs fiat's base fields with
+its generic scalars: fiat commits scalar fields for P-256 and P-384 but not P-521, and one way
+for all beats a verified one for two of three. ECDSA nonces are hedged for every curve: an
+HMAC-DRBG over the key, the reduced digest (RFC 6979's bits2octets) and fresh noise.
+
+P-521 is `weierstrass.zig`'s curve over `field/p521.zig`. Its base point takes the
+variable-point walk (no comb table yet; one is built if the benchmark rows ask). In TLS the
+signature scheme ecdsa_secp521r1_sha512 is offered by default (verifying one costs nothing until
+a P-521 peer appears) and the group secp521r1 only when listed. TLS 1.2's CertificateVerify keeps
+to SHA-256 and SHA-384 transcripts, so a P-521 client key signs under those there.
+
+## JOSE's primitives
+
+clearance's JWE needs operations TLS does not, and cloak owns the family's cryptography, so they
+are here, on the same scrubbed kernels and aegis types:
+
+- `cloak.cipher`: `AesGcm(128 | 256)` under a caller's 96-bit nonce and AAD; AES key wrap
+  (`keyWrap`, RFC 3394, the integrity check in constant time and the key written only when it
+  holds); `CbcHmac(.a128cbc_hs256 | .a256cbc_hs512)`, RFC 7518 section 5.2's composite, the tag
+  checked in constant time before one block is decrypted and the padding checked under masks.
+  CBC exists publicly only inside the composite, so no caller can build a padding oracle.
+- RSA-OAEP (RFC 8017 section 7.1): `PrivateKey.decrypt` runs the blinded, publicly checked
+  private operation and decodes in constant time (every byte read, no early return), with one
+  `DecryptionFailed` for every bad ciphertext, so there is no Manger oracle;
+  `certificates.encryption.encrypt` is the public side. MGF1 is one function in
+  `crypto/pkcs1.zig`, shared with PSS signing and verification. No RSAES-PKCS1-v1_5 exists.
+- Agreement with a held key: `PrivateKey.agree(peer, out)`, ECDH on the three NIST curves (the
+  peer on the curve, not the identity) and X25519 (an all-zero result refused, RFC 7748
+  section 6.1).
+
+Each is pinned by Wycheproof's files for it.
 
 ## Build and verification decisions
 
@@ -1653,8 +1787,10 @@ data is one record per datagram (`write`), and what `receive` opened is read in 
 - Resumption: TLS 1.3 tickets as on a stream; a ticket's format byte names its carrier, so a
   DTLS ticket (its keys from "dtls13" labels) never resumes over TLS or the reverse.
 
-Defaults are design §5.7's: MTU 1,200, replay window 256 records per retained epoch,
-reassembly 16 messages / 256 KiB, flight cache 256 KiB, pre-validation output 3x.
+Defaults: MTU 1,200, replay window 256 records per retained epoch (RFC 6347 asks at least 32;
+256, as BoringSSL keeps, takes the reordering of paths that spread a burst), reassembly 16
+messages / 256 KiB, flight cache 256 KiB, retransmission from 1 s doubling to 60 s at most 7
+times inside the handshake deadline, pre-validation output 3x the bytes received.
 
 ### AES-CCM
 
@@ -1916,8 +2052,10 @@ TLS 1.3, an ECH hello's inner one alone (the names say what the client trusts). 
 
 ## Failure catalogue: the test map
 
-The design book's failure catalogue lists each known TLS and X.509 failure class with its
-evidence, the guard and the assertion its test must make; the repo carries the tests. Every
+The failure catalogue began as 93 failure classes from the OpenSSL, BoringSSL, NSS, GnuTLS, Go,
+rustls, Mbed TLS and s2n-tls registers, grouped by the invariant they break: every known TLS and
+X.509 failure gets a guard and a named test. F46–F64 are refused legacy mechanisms whose modern
+variants F28–F45 guard. Every
 catalogue test is named `Fnn catalogue_<name> (what it checks)`, so `-Dtest-filter="Fnn "` runs
 one row's guards (the files below are under `src/`). The mutation column records a change to the
 guard that its named tests were run against and failed on; a row without one has tests but no
@@ -2081,7 +2219,7 @@ conformance failures C7's suites (tlsfuzzer, BoGo) found, each with its failing 
 | F138 | `catalogue_certificate_authorities_decoded` | `tls/handshake/ClientHello_test.zig`, `tls/handshake/Messages_test.zig` | the empty-list check removed from `Authorities.parse`; before, the extension went unread in both messages (found by BoGo's RejectEmptyCertificateAuthorities and ExtensionTrailingData-CertificateAuthorities rows; RFC 8446 4.2.4) |
 | F139 | `catalogue_server_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in `Server.chooseCredential`, and the issuer comparison in `Authorities.chains`; before, the client's names were not read (RFC 8446 4.2.4, main's call 2026-10-20) |
 | F140 | `catalogue_client_credential_by_named_authority` | `tls/CertificateAuthorities_test.zig` | the preference taken as true in each client walk (TLS 1.3, TLS 1.2, post-handshake); before, a client held one credential and read no names (RFC 8446 4.2.4, RFC 5246 7.4.4) |
-| F141 | `catalogue_pin_without_authorities` | `tls/LeafKey_test.zig` | the pin check made to pass in each role's leaf-key branch (TLS 1.3 and 1.2 client and server), the cache key's mode label, and the empty-pins refusal; before, a pin was checked only beside full verification, so a caller verifying no chain could not hold a pinned key (main's call 2026-10-21, designs/cloak.md §5.2) |
+| F141 | `catalogue_pin_without_authorities` | `tls/LeafKey_test.zig` | the pin check made to pass in each role's leaf-key branch (TLS 1.3 and 1.2 client and server), the cache key's mode label, and the empty-pins refusal; before, a pin was checked only beside full verification, so a caller verifying no chain could not hold a pinned key (see Pinned leaf keys) |
 | F142 | `catalogue_tls12_ecdsa_scheme_names_hash_not_curve` | `tls/handshake/Possession_test.zig`, `credentials/Key_test.zig` | the signer bound back to each curve's own hash, and the client's TLS 1.2 chooser to its curve's scheme; before, a TLS 1.2 server took a P-384 key for a client listing only ecdsa_secp256r1_sha256 and failed to sign (internal_error), and the client never offered the pairing (BoGo's CertificateSelection-*-SignatureAlgorithmECDSACurve-TLS-TLS12) |
 | F143 | `catalogue_resumed_server_certificate_type` | `tls/RawKey_test.zig`, `tls/resumption/Ticket_test.zig` | each resumption's answer (TLS 1.3 EncryptedExtensions, TLS 1.2 ServerHello) and each server's type check on a ticket removed; before, a resumed handshake answered server_certificate_type with nothing, which a client offering raw keys alone reads as X.509 and refuses (BoGo's ServerCertificateType-Server-*) |
 | F144 | `catalogue_dtls13_application_data_under_handshake_keys` | `tls/dtls/Datagram_test.zig` | the epoch check on application records removed; before, application data under the DTLS 1.3 handshake keys reached the application once the handshake completed (BoGo's AppDataBeforeTLS13KeyChange-DTLS; RFC 9147 section 6.1) |

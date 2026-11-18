@@ -143,7 +143,7 @@ test "F68 a ServerHello selects only the one identity the client offered" {
 }
 
 test "F118 catalogue_tls12_only_hello_offers_classical_groups (a hello offering TLS 1.2 alone lists no post-quantum group)" {
-    // Hybrid and ML-KEM groups are TLS 1.3's (designs/cloak.md section 5.8; RFC 8422 has no such
+    // Hybrid and ML-KEM groups are TLS 1.3's (docs/design.md, Decisions; RFC 8422 has no such
     // group): a hello that cannot negotiate TLS 1.3 names only groups TLS 1.2 can use.
     var out: [4096]u8 = undefined;
     for ([_]bool{ false, true }) |only12| {

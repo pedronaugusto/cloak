@@ -27,7 +27,7 @@ pub const Verify = union(enum) {
     /// A raw public key (RFC 7250) trusted by its pin; no certificate is taken.
     raw_key: Pins,
     /// A certificate taken for its leaf's key alone, trusted by its pin: no path, name, validity,
-    /// usage or revocation is checked (designs/cloak.md §5.2, a pin with no authorities).
+    /// usage or revocation is checked (docs/design.md, Pinned leaf keys).
     leaf_key: Pins,
     pub const Pins = struct {
         /// The SHA-256 of each SubjectPublicKeyInfo the peer may hold, at least one and at most

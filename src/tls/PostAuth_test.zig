@@ -319,7 +319,7 @@ test "C10 post-handshake auth memory: what each end keeps for it, and gives back
         pair.conn.trimOutput();
         std.debug.print("\nC10 memory post-handshake auth client idle heap={d} bytes, after an exchange={d} bytes, struct={d} bytes\n", .{ idle, count.live_bytes, @sizeOf(Connection) });
         // The hash state through the client's Finished is all it keeps: still within the idle
-        // client's 2 KiB (designs/cloak.md 7.3), and an exchange leaves nothing behind.
+        // client's 2 KiB (docs/design.md, Rivals and targets), and an exchange leaves nothing behind.
         try std.testing.expect(idle + @sizeOf(Connection) <= 2048);
         try std.testing.expectEqual(idle, count.live_bytes);
     }

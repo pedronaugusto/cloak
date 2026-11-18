@@ -97,7 +97,7 @@ test "C10 an ML-DSA-87 handshake's client memory is measured and bounded" {
     duo.client.trimOutput();
     std.debug.print("\nC10 memory ML-DSA-87 chain: client handshake peak={d} bytes idle heap={d} bytes\n", .{ count.peak_bytes, count.live_bytes });
     // Two certificates of 7.4 and 5.4 KiB, past the 8 KiB chain the 64 KiB target names
-    // (designs/cloak.md 7.3), within the 512 KiB cap; the matrix is never held.
+    // (docs/design.md, Rivals and targets), within the 512 KiB cap; the matrix is never held.
     try std.testing.expect(count.peak_bytes <= 96 * 1024);
     try std.testing.expect(count.live_bytes <= 2048);
 }
