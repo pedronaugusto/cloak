@@ -55,6 +55,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Changed
 
+- The package a project fetches holds no test data: every fixture, vector and key the tests read moved from `src/` to `testdata/`, outside build.zig.zon's paths, and the tests, probes and benchmarks read them through the development build's `testdata` module. A fetch is 1.8 MB compressed and 8.8 MiB unpacked, where it was 18 MB and 70 MiB.
 - The field routines' x86_64 choice between s2n-bignum's BMI2/ADX forms and the base ones is ladar's (`ladar.has(.x86_bmi2_adx)`, pinned at c347b66), where cloak ran CPUID itself; the family's one detection. The AArch64 choice by the core's model (MIDR) stays here, which ladar leaves to its users.
 - Under a kernel that takes a direction's keys once (Linux before 6.14, FreeBSD), a TLS 1.3 connection no longer sends a KeyUpdate the kernel cannot follow, which left the peer reading a truncated stream. `keyUpdate` refuses (`NoKeyUpdate`, as under TLS 1.2); where one is due (a quarter of the record budget left, or the peer's request) the write side closes with close_notify, and the read side ends at its limit as TLS 1.2's does. A peer's KeyUpdate still ends the connection.
 - RSA's private operation multiplies and squares with s2n-bignum's formally verified routines on x86_64 and AArch64: Karatsuba and `bignum_emontredc_8n` for moduli of a multiple of 8 limbs (the halves of RSA-2048, -3072 and -4096) on AArch64 and on x86_64 with BMI2 and ADX, its generic Montgomery routines at other widths and without them. Squarings now have their own routine. The exponentiation stays constant time with base blinding, fixed windows and the public check of every result.
@@ -69,8 +70,6 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - `cloak-nuget-check` is built only for a hosted target. It is a command-line tool on `std.process` and `Io.Threaded`, which does not compile for a freestanding one; a wasm32-freestanding build now gets the library alone, where its check failed inside std.
 - Windows on x86_64 links again for good: the COFF directive that gives s2n-bignum's X25519 base ladders their function entry now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged). 0.23.1's change to the label's name did not link.
 - An ML-DSA key generated in a Debug build reaches less stack than the depth its generation erases: each level's key is built in a function of its own (`Key.mldsaSeed`), where one function built every level's inline and Debug held a whole key material for each in its frame, 147944 bytes of the 131072 erased on Linux.
-### Fixed
-
 - A legacy PEM key (`DEK-Info`) opened with a wrong passphrase is `BadPassword` every time, where about one wrong passphrase in 256 unpadded its ciphertext and the bytes it decrypted to were `InvalidDer` or `InvalidKey`. An encrypted PKCS#8 key decrypted to a supported shape that is no supported key is `UnsupportedKey`, and one past a bound `InputLimit`, where either was `BadPassword`.
 
 ## [0.23.1] - 2026-10-31

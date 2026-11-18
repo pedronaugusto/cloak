@@ -46,6 +46,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
         const test_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         test_module.addImport("shakedown", shakedown.module("shakedown"));
+        test_module.addImport("testdata", testdataModule(b, p));
         addAegis(p, test_module, target, optimize);
         nativeLinks(test_module, target);
         const tests = b.addTest(.{ .root_module = test_module, .filters = filters });
@@ -62,6 +63,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         const release_shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .fast });
         const release_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = .fast });
         release_module.addImport("shakedown", release_shakedown.module("shakedown"));
+        release_module.addImport("testdata", testdataModule(b, p));
         addAegis(p, release_module, target, .fast);
         nativeLinks(release_module, target);
         const release_tests = b.addTest(.{ .name = "release-tests", .root_module = release_module, .filters = &.{ "parser", "credential", "trust", "service", "receipt", "C2", "C3", "F93 " } });
@@ -75,6 +77,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         b.step("kernel-tls-setup", "Load Linux's tls module for kernel-tls (sudo modprobe tls)").dependOn(&b.addSystemCommand(&.{ "sudo", "modprobe", "tls" }).step);
         const check_module = b.createModule(.{ .root_source_file = p.path("src/tests.zig"), .target = target, .optimize = optimize });
         check_module.addImport("shakedown", shakedown.module("shakedown"));
+        check_module.addImport("testdata", testdataModule(b, p));
         addAegisOnly(p, check_module, target, optimize);
         const checked = b.addTest(.{ .name = "check", .root_module = check_module, .emit_object = true });
         check.dependOn(&checked.step);
@@ -178,6 +181,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     // The scripted peer and drivers, rooted where they reach the TLS sources by relative path.
     const harness = b.createModule(.{ .root_source_file = p.path("src/testing.zig"), .target = target, .optimize = optimize });
     addAegisOnly(p, harness, target, optimize);
+    harness.addImport("testdata", testdataModule(b, p));
     nativeLinks(harness, target);
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "harness", .module = harness },
@@ -244,12 +248,20 @@ fn addAssembly(p: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTa
     }
 }
 
+/// cloak's test data, outside src/ and the paths a project fetches: a test, probe or benchmark
+/// reads a file by its path under testdata/ (`testdata.file("verify/fixtures/limbo.json")`).
+fn testdataModule(b: *std.Build, p: *std.Build) *std.Build.Module {
+    @setRuntimeSafety(true);
+    return b.createModule(.{ .root_source_file = p.path("testdata/root.zig") });
+}
+
 /// The portable probes: certificates and the record and handshake kernels under one module, since a
 /// source file belongs to one module and the probes reach files the public surface does not.
 fn createProbes(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     @setRuntimeSafety(true);
     const probes = b.createModule(.{ .root_source_file = p.path("src/portable.zig"), .target = target, .optimize = optimize });
     addAegis(p, probes, target, optimize);
+    probes.addImport("testdata", testdataModule(b, p));
     nativeLinks(probes, target);
     return probes;
 }

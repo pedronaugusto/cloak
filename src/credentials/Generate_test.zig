@@ -9,6 +9,7 @@ const signature = @import("../verify/signature.zig");
 const encryption = @import("../verify/encryption.zig");
 const Pem = @import("Pem.zig");
 const Der = @import("../wire/Der.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
@@ -161,7 +162,7 @@ test "a generated ML-DSA key's PKCS#8 is RFC 9881's seed form" {
 
 test "an ML-DSA key read is written back in the seed form when its form carries the seed, as its expanded key when not" {
     // The seed alone and the expanded key alone come back as they were read.
-    for ([_][]const u8{ @embedFile("testdata/mldsa44.seed.pem"), @embedFile("testdata/mldsa87.expanded.pem") }) |text| {
+    for ([_][]const u8{ testdata.file("credentials/testdata/mldsa44.seed.pem"), testdata.file("credentials/testdata/mldsa87.expanded.pem") }) |text| {
         var read = try fixture(text);
         defer read.deinit(gpa);
         var key = try PrivateKey.parse(gpa, text, .{});
@@ -171,7 +172,7 @@ test "an ML-DSA key read is written back in the seed form when its form carries 
         try std.testing.expectEqualSlices(u8, read.der, der.expose());
     }
     // Both: the seed alone, the same key.
-    const both = @embedFile("testdata/mldsa65.both.pem");
+    const both = testdata.file("credentials/testdata/mldsa65.both.pem");
     var read = try fixture(both);
     defer read.deinit(gpa);
     var pair = (try Der.single(try choice(read.der), 0x30)).reader();
@@ -187,7 +188,7 @@ test "an ML-DSA key read is written back in the seed form when its form carries 
 }
 
 test "an ML-DSA key in both forms whose seed and expanded key disagree is refused" {
-    const both = @embedFile("testdata/mldsa65.both.pem");
+    const both = testdata.file("credentials/testdata/mldsa65.both.pem");
     // The seed's byte, then the expanded key's last.
     for ([_]bool{ true, false }) |in_seed| {
         var read = try fixture(both);
@@ -200,7 +201,7 @@ test "an ML-DSA key in both forms whose seed and expanded key disagree is refuse
 }
 
 test "an ML-DSA key from its seed (RFC 9964's AKP priv) is the key its PKCS#8 holds, its public key checked when given" {
-    const text = @embedFile("testdata/mldsa44.seed.pem");
+    const text = testdata.file("credentials/testdata/mldsa44.seed.pem");
     var read = try fixture(text);
     defer read.deinit(gpa);
     const seed = (try choice(read.der))[2..];

@@ -2,6 +2,7 @@ const std = @import("std");
 const C = @import("../certificate.zig");
 const S = @import("signature.zig");
 const PrivateKey = @import("../PrivateKey.zig");
+const testdata = @import("testdata");
 const Test = struct { tcId: usize, flags: []const []const u8, msg: []const u8, sig: []const u8, result: []const u8 };
 const Group = struct { publicKeyDer: []const u8, tests: []Test };
 fn hex(gpa: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -13,7 +14,7 @@ fn campaign(comptime file: []const u8, algorithm: C.Algorithm.Signature) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
-    const parsed = try std.json.parseFromSlice(struct { numberOfTests: usize, testGroups: []Group }, gpa, @embedFile("fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(struct { numberOfTests: usize, testGroups: []Group }, gpa, testdata.file("verify/fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
     var passed: usize = 0;
     var mismatch: usize = 0;
     for (parsed.value.testGroups) |group| {
@@ -187,7 +188,7 @@ test "Wycheproof rsa_pss_misc_test: every salt length from 0 to 64 under every h
     defer arena.deinit();
     const gpa = arena.allocator();
     const PssGroup = struct { publicKeyDer: []const u8, sha: []const u8, mgfSha: []const u8, sLen: usize, tests: []Test };
-    const parsed = try std.json.parseFromSliceLeaky(struct { testGroups: []PssGroup }, gpa, @embedFile("fixtures/wycheproof/rsa_pss_misc_test.json"), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSliceLeaky(struct { testGroups: []PssGroup }, gpa, testdata.file("verify/fixtures/wycheproof/rsa_pss_misc_test.json"), .{ .ignore_unknown_fields = true });
     var checked: usize = 0;
     for (parsed.testGroups) |group| {
         const hash = hashNamed(group.sha) orelse continue;
@@ -211,7 +212,7 @@ fn signatureGeneration(comptime file: []const u8, expected: usize) !void {
     const gpa = arena.allocator();
     const GenTest = struct { tcId: usize, msg: []const u8, sig: []const u8, result: []const u8 };
     const GenGroup = struct { privateKeyPkcs8: []const u8, sha: []const u8, tests: []GenTest };
-    const parsed = try std.json.parseFromSliceLeaky(struct { testGroups: []GenGroup }, gpa, @embedFile("fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSliceLeaky(struct { testGroups: []GenGroup }, gpa, testdata.file("verify/fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
     var checked: usize = 0;
     for (parsed.testGroups) |group| {
         const hash = hashNamed(group.sha) orelse continue;

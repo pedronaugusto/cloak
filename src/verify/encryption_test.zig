@@ -7,6 +7,7 @@ const std = @import("std");
 const C = @import("../certificate.zig");
 const encryption = @import("encryption.zig");
 const PrivateKey = @import("../PrivateKey.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 
@@ -33,7 +34,7 @@ fn campaign(comptime name: []const u8, only: ?u32) !usize {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const file = try std.json.parseFromSliceLeaky(File, arena, @embedFile("fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
+    const file = try std.json.parseFromSliceLeaky(File, arena, testdata.file("verify/fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
     var ran: usize = 0;
     var not_offered: usize = 0;
     var elsewhere: usize = 0;
@@ -130,7 +131,7 @@ test "Wycheproof rsa_oaep_misc, the other sizes" {
 }
 
 test "encryption refuses what is not an RSA encryption key, and messages longer than the key carries" {
-    const key = try PrivateKey.parse(gpa, @embedFile("../crypto/testdata/rsa2048.der"), .{});
+    const key = try PrivateKey.parse(gpa, testdata.file("crypto/testdata/rsa2048.der"), .{});
     defer key.deinit();
     var info: [PrivateKey.max_public_key_info]u8 = undefined;
     var public = try C.parsePublicKey(key.publicKeyInfo(&info));
@@ -149,7 +150,7 @@ test "encryption refuses what is not an RSA encryption key, and messages longer 
     var plain: [PrivateKey.max_plaintext]u8 = undefined;
     try std.testing.expectError(error.DecryptionFailed, key.decrypt(scheme, out[0..255], noise[0..key.noiseLength()], &plain));
     try std.testing.expectError(error.DecryptionFailed, key.decrypt(scheme, public.rsa.modulus, noise[0..key.noiseLength()], &plain));
-    const ed = try PrivateKey.parse(gpa, @embedFile("../credentials/testdata/ed25519.pkcs8.pem"), .{});
+    const ed = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/ed25519.pkcs8.pem"), .{});
     defer ed.deinit();
     try std.testing.expectError(error.UnsupportedAlgorithm, ed.decrypt(scheme, out[0..256], "", &plain));
 }

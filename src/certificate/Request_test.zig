@@ -5,6 +5,7 @@ const Request = @import("Request.zig");
 const Template = @import("Template.zig");
 const Builder = @import("../wire/Builder.zig");
 const PrivateKey = @import("../PrivateKey.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
@@ -96,16 +97,16 @@ test "a request truncated anywhere is refused" {
     for (0..der.len) |len| try std.testing.expect(std.meta.isError(Request.parse(der[0..len], .{})));
 }
 
-const dir = "testdata/";
+const dir = "certificate/testdata/";
 const written_elsewhere = [_][]const u8{
-    @embedFile(dir ++ "openssl.p256.csr.der"),
-    @embedFile(dir ++ "openssl.ed25519.csr.der"),
-    @embedFile(dir ++ "openssl.rsa2048-pss.csr.der"),
-    @embedFile(dir ++ "openssl.mldsa44.csr.der"),
-    @embedFile(dir ++ "go.p521.csr.der"),
-    @embedFile(dir ++ "go.ed25519.csr.der"),
-    @embedFile(dir ++ "go.rsa2048.csr.der"),
-    @embedFile(dir ++ "go.mldsa65.csr.der"),
+    testdata.file(dir ++ "openssl.p256.csr.der"),
+    testdata.file(dir ++ "openssl.ed25519.csr.der"),
+    testdata.file(dir ++ "openssl.rsa2048-pss.csr.der"),
+    testdata.file(dir ++ "openssl.mldsa44.csr.der"),
+    testdata.file(dir ++ "go.p521.csr.der"),
+    testdata.file(dir ++ "go.ed25519.csr.der"),
+    testdata.file(dir ++ "go.rsa2048.csr.der"),
+    testdata.file(dir ++ "go.mldsa65.csr.der"),
 };
 
 test "requests OpenSSL and Go wrote are read, their signatures verified and their names read back" {

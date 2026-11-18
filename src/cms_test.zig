@@ -4,10 +4,11 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const cms = @import("cms.zig");
+const testdata = @import("testdata");
 const gpa = std.testing.allocator;
 
-const real = @embedFile("testdata/nuget-d3d12-1.619.6.p7s");
-const root = @embedFile("testdata/digicert-trusted-root-g4.der");
+const real = testdata.file("testdata/nuget-d3d12-1.619.6.p7s");
+const root = testdata.file("testdata/digicert-trusted-root-g4.der");
 const options: cms.Options = .{ .roots = &.{root} };
 
 test "Microsoft's signature on a real NuGet package verifies, at the time its timestamp proves" {
@@ -43,7 +44,7 @@ test "the package hash in the signed content changed: refused" {
 }
 
 test "another root: the chain is not proved, whoever signed" {
-    const other = @embedFile("testing/pki/ca.der");
+    const other = testdata.file("testing/pki/ca.der");
     try std.testing.expectError(error.NoTrustedPath, cms.verify(gpa, real, .{ .roots = &.{other} }));
 }
 

@@ -5,6 +5,7 @@ const Job = @import("Job.zig");
 const Budget = @import("Budget.zig");
 const types = @import("../types.zig");
 const shakedown = @import("shakedown");
+const testdata = @import("testdata");
 const Queue = struct {
     held: ?Job = null,
     executor: Job.Executor = .{ .submit = submit },
@@ -177,9 +178,9 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (path cleanup releas
 test "F26 catalogue_verify_job_cancel_alloc_and_late_result (abandoned during evaluation, the result is reaped outside the guard)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return error.SkipZigTest;
-    const root = @embedFile("../verify/fixtures/vectors/p256.der");
-    const leaf = @embedFile("../verify/fixtures/vectors/leaf.der");
-    const req: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const root = testdata.file("verify/fixtures/vectors/p256.der");
+    const leaf = testdata.file("verify/fixtures/vectors/leaf.der");
+    const req: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var no_resize = shakedown.alloc.NoResize.init(std.testing.allocator);
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     var budget: Budget = .init(.{});
@@ -213,8 +214,8 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (a concurrent abando
     var cleanup: Cleanup = .{ .backing = no_resize.allocator() };
     var budget: Budget = .init(.{ .max_jobs = 1 });
     var q: Queue = .{};
-    const req: types.Request = .{ .chain = &.{@embedFile("../verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("../verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
-    var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = &q.executor, .anchors = &.{@embedFile("../verify/fixtures/vectors/p256.der")} });
+    const req: types.Request = .{ .chain = &.{testdata.file("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    var caller: ?Job = try Job.init(cleanup.allocator(), &budget, req, .{ .executor = &q.executor, .anchors = &.{testdata.file("verify/fixtures/vectors/p256.der")} });
     defer if (caller) |job| {
         job.abandon();
         job.deinit();

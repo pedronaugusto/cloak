@@ -606,17 +606,17 @@ fn pkcs8Released(key: PrivateKey, gpa: std.mem.Allocator) Pkcs8Error!void {
 test "a parse, a generation, a signature, a decryption and a PKCS#8 reach less stack than the depths that erase it" {
     const gpa = std.testing.allocator;
     const keys = [_][]const u8{
-        @embedFile("crypto/testdata/rsa4096.der"),
-        @embedFile("crypto/testdata/rsa2049.der"),
-        @embedFile("credentials/testdata/p384.pkcs8.pem"),
-        @embedFile("credentials/testdata/p521.pkcs8.pem"),
-        @embedFile("credentials/testdata/p256.pkcs8.pem"),
-        @embedFile("credentials/testdata/ed25519.pkcs8.pem"),
-        @embedFile("credentials/testdata/mldsa44.seed.pem"),
-        @embedFile("credentials/testdata/mldsa65.both.pem"),
-        @embedFile("credentials/testdata/mldsa87.expanded.pem"),
-        @embedFile("credentials/testdata/rsa.enc-aes256-sha256.pem"),
-        @embedFile("credentials/testdata/p384.enc-des3.pem"),
+        @import("testdata").file("crypto/testdata/rsa4096.der"),
+        @import("testdata").file("crypto/testdata/rsa2049.der"),
+        @import("testdata").file("credentials/testdata/p384.pkcs8.pem"),
+        @import("testdata").file("credentials/testdata/p521.pkcs8.pem"),
+        @import("testdata").file("credentials/testdata/p256.pkcs8.pem"),
+        @import("testdata").file("credentials/testdata/ed25519.pkcs8.pem"),
+        @import("testdata").file("credentials/testdata/mldsa44.seed.pem"),
+        @import("testdata").file("credentials/testdata/mldsa65.both.pem"),
+        @import("testdata").file("credentials/testdata/mldsa87.expanded.pem"),
+        @import("testdata").file("credentials/testdata/rsa.enc-aes256-sha256.pem"),
+        @import("testdata").file("credentials/testdata/p384.enc-des3.pem"),
     };
     var parsing: usize = 0;
     var signing: usize = 0;

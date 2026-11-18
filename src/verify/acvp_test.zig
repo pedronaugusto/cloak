@@ -7,6 +7,7 @@ const C = @import("../certificate.zig");
 const S = @import("signature.zig");
 const PrivateKey = @import("../PrivateKey.zig");
 const Builder = @import("../wire/Builder.zig");
+const testdata = @import("testdata");
 
 const Value = std.json.Value;
 const Tally = struct {
@@ -18,7 +19,7 @@ const Tally = struct {
 };
 
 fn load(gpa: std.mem.Allocator, comptime file: []const u8) ![]Value {
-    const parsed = try std.json.parseFromSliceLeaky(Value, gpa, @embedFile("fixtures/acvp/" ++ file), .{});
+    const parsed = try std.json.parseFromSliceLeaky(Value, gpa, testdata.file("verify/fixtures/acvp/" ++ file), .{});
     return parsed.object.get("testGroups").?.array.items;
 }
 

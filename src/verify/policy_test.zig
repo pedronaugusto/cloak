@@ -2,6 +2,7 @@ const std = @import("std");
 const Work = @import("Work.zig");
 const C = @import("../certificate.zig");
 const P = @import("policy.zig");
+const testdata = @import("testdata");
 const a = "\x2a\x03\x04";
 const b = "\x2a\x03\x05";
 const policy_a = "\x30\x07\x30\x05\x06\x03\x2a\x03\x04";
@@ -17,7 +18,7 @@ fn extension(cert: *C.Certificate, id: u8, value: []const u8) void {
 }
 test "policy tree explicit OIDs mapping inhibition and null tree are enforced" {
     var work: Work = .{ .remaining = 4 * 1024 * 1024 };
-    var path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p384.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p256.der"), .{}) };
+    var path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p384.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{}) };
     extension(&path[0], 32, policy_b);
     extension(&path[1], 32, policy_a);
     try std.testing.expectError(error.PolicyViolation, P.check(std.testing.allocator, &path, .{ .required_policies = &.{a} }, &.{}, 256, &work));
@@ -32,7 +33,7 @@ test "policy tree explicit OIDs mapping inhibition and null tree are enforced" {
 
 test "anyPolicy cannot bridge disjoint request and anchor policies" {
     var work: Work = .{ .remaining = 4 * 1024 * 1024 };
-    var path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p256.der"), .{}) };
+    var path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{}) };
     extension(&path[0], 32, "\x30\x08\x30\x06\x06\x04\x55\x1d\x20\x00");
     try std.testing.expectError(error.PolicyViolation, P.check(std.testing.allocator, &path, .{ .required_policies = &.{a} }, &.{b}, 256, &work));
     try P.check(std.testing.allocator, &path, .{ .required_policies = &.{a} }, &.{a}, 256, &work);
@@ -40,7 +41,7 @@ test "anyPolicy cannot bridge disjoint request and anchor policies" {
 }
 
 test "F21 catalogue_policy_leaf_mapping_and_enablement (F14: policy comparisons and mapping work are bounded, storage never standing in for work)" {
-    var path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p384.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p256.der"), .{}) };
+    var path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p384.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{}) };
     extension(&path[0], 32, policy_b);
     extension(&path[1], 32, policy_a);
     extension(&path[1], 33, "\x30\x0c\x30\x0a\x06\x03\x2a\x03\x04\x06\x03\x2a\x03\x05");

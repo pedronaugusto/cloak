@@ -3,8 +3,9 @@ const shakedown = @import("shakedown");
 const C = @import("../certificate.zig");
 const V = @import("Verifier.zig");
 const T = @import("../types.zig");
-const leaf = @embedFile("fixtures/vectors/leaf.der");
-const anchor = @embedFile("fixtures/vectors/p256.der");
+const testdata = @import("testdata");
+const leaf = testdata.file("verify/fixtures/vectors/leaf.der");
+const anchor = testdata.file("verify/fixtures/vectors/p256.der");
 test "certificate parser bounded mutations cannot manufacture authentication" {
     try shakedown.check(std.testing.allocator, {}, mutate, .{ .cases = 4096, .seed = 0xc10a5 });
 }
@@ -17,7 +18,7 @@ fn mutate(_: void, case: *shakedown.Case) !void {
     }
     const length = shakedown.gen.intRange(case.source, usize, 0, bytes.len);
     const input = bytes[0..length];
-    const now = try std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10);
+    const now = try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10);
     const req: T.Request = .{ .chain = &.{input}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, now) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     // generated input may verify or not; the property checks only what verifies
     if (V.verify(case.gpa, req, &.{anchor})) |receipt_value| {

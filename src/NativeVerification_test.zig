@@ -4,12 +4,13 @@ const Native = @import("NativeVerification.zig");
 const services = @import("services.zig");
 const types = @import("types.zig");
 const shakedown = @import("shakedown");
+const testdata = @import("testdata");
 test "F23 catalogue_native_receipt_path_token_and_clock (a native receipt binds its request and rechecks expiry at completion)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
-    const root = @embedFile("verify/fixtures/vectors/p256.der");
-    const leaf = @embedFile("verify/fixtures/vectors/leaf.der");
-    const request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const root = testdata.file("verify/fixtures/vectors/p256.der");
+    const leaf = testdata.file("verify/fixtures/vectors/leaf.der");
+    const request: types.Request = .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .init(.{});
     const good = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{root} });
     defer good.deinit();
@@ -26,8 +27,8 @@ test "native verification checks a public server against the system's own author
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     const gpa = std.testing.allocator;
-    const chain: []const []const u8 = &.{ @embedFile("services/fixtures/public/leaf.der"), @embedFile("services/fixtures/public/intermediate.der"), @embedFile("services/fixtures/public/cross.der") };
-    const time = types.instant(try std.fmt.parseInt(i64, std.mem.trimEnd(u8, @embedFile("services/fixtures/public/time.txt"), "\n"), 10));
+    const chain: []const []const u8 = &.{ testdata.file("services/fixtures/public/leaf.der"), testdata.file("services/fixtures/public/intermediate.der"), testdata.file("services/fixtures/public/cross.der") };
+    const time = types.instant(try std.fmt.parseInt(i64, std.mem.trimEnd(u8, testdata.file("services/fixtures/public/time.txt"), "\n"), 10));
     const request: types.Request = .{ .chain = chain, .identity = .{ .dns = "github.com" }, .time = time, .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .init(.{});
     const native = try Native.init(gpa, &budget, request, .{});
@@ -46,9 +47,9 @@ test "native verification checks a public server against the system's own author
 test "F23 catalogue_native_receipt_path_token_and_clock (a late native receipt rejects a backwards real clock)" {
     @setRuntimeSafety(true);
     if (builtin.os.tag != .macos and builtin.os.tag != .windows) return;
-    const request: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const request: types.Request = .{ .chain = &.{testdata.file("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .init(.{});
-    const native = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{@embedFile("verify/fixtures/vectors/p256.der")} });
+    const native = try Native.init(std.testing.allocator, &budget, request, .{ .anchors = &.{testdata.file("verify/fixtures/vectors/p256.der")} });
     defer native.deinit();
     try std.testing.expectError(error.ValidationTimeChanged, native.take(std.testing.allocator, request, .fromNanoseconds(request.time.nanoseconds - 1)));
 }
@@ -61,13 +62,13 @@ test "F26 catalogue_verify_job_cancel_alloc_and_late_result (native completion: 
 }
 fn nativeAllocations(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
-    const req: types.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const req: types.Request = .{ .chain = &.{testdata.file("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var budget: services.Budget = .init(.{});
     defer {
         std.debug.assert(budget.counts().jobs == 0);
         std.debug.assert(budget.counts().bytes == 0);
     }
-    const native = try Native.init(gpa, &budget, req, .{ .anchors = &.{@embedFile("verify/fixtures/vectors/p256.der")} });
+    const native = try Native.init(gpa, &budget, req, .{ .anchors = &.{testdata.file("verify/fixtures/vectors/p256.der")} });
     defer native.deinit();
     var receipt = try native.take(gpa, req, req.time);
     defer receipt.deinit();

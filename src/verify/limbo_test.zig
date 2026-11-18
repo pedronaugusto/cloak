@@ -3,6 +3,7 @@ const C = @import("../certificate.zig");
 const V = @import("Verifier.zig");
 const profiles = @import("limbo_profiles.zig");
 const T = @import("../types.zig");
+const testdata = @import("testdata");
 const Case = struct {
     id: []const u8,
     features: []const []const u8,
@@ -131,7 +132,7 @@ fn corpus(comptime batch: usize) !void {
     @setRuntimeSafety(true);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), @embedFile("fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), testdata.file("verify/fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
     // Fixed fixture cardinality and disjoint residues preserve complete coverage.
     try std.testing.expectEqual(@as(usize, 9802), parsed.value.testcases.len);
     const selected = (parsed.value.testcases.len + 7 - batch) / 8;
@@ -153,7 +154,7 @@ pub fn family(names: []const []const u8) !void {
     @setRuntimeSafety(true);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), @embedFile("fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), testdata.file("verify/fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
     var tally: Tally = .{};
     for (names) |name| {
         var selected: usize = 0;
@@ -232,7 +233,7 @@ fn requestOf(alloc: std.mem.Allocator, case: Case) !struct { request: T.Request,
 test "F13 catalogue_cross_signed_cycles_and_chain_depth (a cycle is never walked twice: its verdict comes within one signature check per certificate presented)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), @embedFile("fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(struct { version: usize, testcases: []Case }, arena.allocator(), testdata.file("verify/fixtures/limbo.json"), .{ .ignore_unknown_fields = true });
     var seen: usize = 0;
     for (parsed.value.testcases) |case| {
         if (!std.mem.eql(u8, case.id, "cve::cve-2024-0567") and !std.mem.startsWith(u8, case.id, "pathological::intermediate-cycle")) continue;

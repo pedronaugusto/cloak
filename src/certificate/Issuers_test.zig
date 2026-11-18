@@ -3,7 +3,8 @@ const I = @import("Issuers.zig");
 const C = @import("Certificate.zig");
 const N = @import("Name.zig");
 const shakedown = @import("shakedown");
-const root = @embedFile("../verify/fixtures/vectors/p256.der");
+const testdata = @import("testdata");
+const root = testdata.file("verify/fixtures/vectors/p256.der");
 test "issuer index deduplicates exact DER and preserves normalized subject buckets" {
     const roots: [512][]const u8 = @splat(root);
     var index = try I.init(std.testing.allocator, &roots, .{});

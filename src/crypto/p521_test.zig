@@ -1,5 +1,6 @@
 const std = @import("std");
 const p521 = @import("p521.zig");
+const testdata = @import("testdata");
 
 const prime: u521 = std.math.maxInt(u521);
 const n: u521 = p521.order;
@@ -210,7 +211,7 @@ test "P-521 digest scalar: SHA-512's bits whole, longer digests their leftmost 5
 
 test "Wycheproof P-521 ECDH at the curve: every valid uncompressed vector's shared x" {
     const gpa = std.testing.allocator;
-    const text = @embedFile("../verify/fixtures/wycheproof/ecdh_secp521r1_ecpoint_test.json");
+    const text = testdata.file("verify/fixtures/wycheproof/ecdh_secp521r1_ecpoint_test.json");
     const parsed = try std.json.parseFromSlice(std.json.Value, gpa, text, .{});
     defer parsed.deinit();
     var checked: usize = 0;

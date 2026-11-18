@@ -1,10 +1,11 @@
 const std = @import("std");
 const rsa = @import("rsa.zig");
+const testdata = @import("testdata");
 const Modulus = std.crypto.ff.Modulus(4096);
 
 /// openssl-generated two-prime keys (PKCS#1 DER). 2056 bits gives an n of 33 limbs and factors
 /// of 17: widths that are not a multiple of the 2048-bit shapes.
-const keys = .{ @embedFile("testdata/rsa2048.der"), @embedFile("testdata/rsa2056.der"), @embedFile("testdata/rsa3072.der"), @embedFile("testdata/rsa4096.der") };
+const keys = .{ testdata.file("crypto/testdata/rsa2048.der"), testdata.file("crypto/testdata/rsa2056.der"), testdata.file("crypto/testdata/rsa3072.der"), testdata.file("crypto/testdata/rsa4096.der") };
 
 /// The nine INTEGERs of an RSAPrivateKey, minimal magnitudes.
 const Parts = struct {

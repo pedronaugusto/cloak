@@ -4,6 +4,7 @@
 //! as not offered.
 const std = @import("std");
 const cipher = @import("cipher.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 
@@ -18,7 +19,7 @@ const Group = struct { keySize: u32, ivSize: u32 = 0, tagSize: u32 = 0, tests: [
 const File = struct { numberOfTests: u32, testGroups: []const Group };
 
 fn load(arena: std.mem.Allocator, comptime name: []const u8) !File {
-    return std.json.parseFromSliceLeaky(File, arena, @embedFile("verify/fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
+    return std.json.parseFromSliceLeaky(File, arena, testdata.file("verify/fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
 }
 
 test "Wycheproof aes_gcm: every 128- and 256-bit case with a 96-bit nonce sealed and opened as the file says" {

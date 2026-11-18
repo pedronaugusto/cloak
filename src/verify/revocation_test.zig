@@ -2,18 +2,19 @@ const std = @import("std");
 const C = @import("../certificate.zig");
 const D = @import("../wire/Der.zig");
 const R = @import("revocation.zig");
+const testdata = @import("testdata");
 test "revocation work requires a bounded selected path" {
     try std.testing.expectError(error.VerificationLimit, R.check(&.{}, 0, .{}, .{}));
     try std.testing.expectEqual(.unchecked, (try R.check(&.{}, 0, .{ .mode = .off }, .{})).status);
 }
 
 test "offline CRL and OCSP authority signature serial freshness and required coverage" {
-    const now = try std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10);
-    const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{}), try C.parse(@embedFile("fixtures/vectors/p256.der"), .{}) };
-    const good_crl = @embedFile("fixtures/vectors/good.crl");
-    const bad_crl = @embedFile("fixtures/vectors/revoked.crl");
-    const good_ocsp = @embedFile("fixtures/vectors/good.ocsp");
-    const bad_ocsp = @embedFile("fixtures/vectors/revoked.ocsp");
+    const now = try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10);
+    const path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{}), try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{}) };
+    const good_crl = testdata.file("verify/fixtures/vectors/good.crl");
+    const bad_crl = testdata.file("verify/fixtures/vectors/revoked.crl");
+    const good_ocsp = testdata.file("verify/fixtures/vectors/good.ocsp");
+    const bad_ocsp = testdata.file("verify/fixtures/vectors/revoked.ocsp");
     try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .crls = &.{good_crl} })).status);
     try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{good_ocsp} })).status);
     try std.testing.expectError(error.Revoked, R.check(&path, now, .{}, .{ .crls = &.{bad_crl} }));
@@ -35,17 +36,17 @@ test "offline CRL and OCSP authority signature serial freshness and required cov
 }
 
 test "offline delegated responders require their own valid evidence and CRLs cover rollover paths" {
-    const now = try std.fmt.parseInt(i64, @embedFile("fixtures/offline/time.txt"), 10);
-    const leaf = try C.parse(@embedFile("fixtures/offline/leaf.der"), .{});
-    const ca = try C.parse(@embedFile("fixtures/offline/ca.der"), .{});
-    const rollover = try C.parse(@embedFile("fixtures/offline/rollover.der"), .{});
+    const now = try std.fmt.parseInt(i64, testdata.file("verify/fixtures/offline/time.txt"), 10);
+    const leaf = try C.parse(testdata.file("verify/fixtures/offline/leaf.der"), .{});
+    const ca = try C.parse(testdata.file("verify/fixtures/offline/ca.der"), .{});
+    const rollover = try C.parse(testdata.file("verify/fixtures/offline/rollover.der"), .{});
     const path = [_]C.Certificate{ leaf, ca };
-    const crl = @embedFile("fixtures/offline/good.crl");
-    const ocsp = @embedFile("fixtures/offline/delegated.ocsp");
+    const crl = testdata.file("verify/fixtures/offline/good.crl");
+    const ocsp = testdata.file("verify/fixtures/offline/delegated.ocsp");
     try std.testing.expectError(error.MissingRevocation, R.check(&path, now, .{}, .{ .ocsp = &.{ocsp} }));
     try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{ocsp}, .crls = &.{crl} })).status);
-    try std.testing.expectError(error.Revoked, R.check(&path, now, .{}, .{ .ocsp = &.{ocsp}, .crls = &.{@embedFile("fixtures/offline/responder-revoked.crl")} }));
-    try std.testing.expectError(error.UnsupportedRevocation, R.check(&path, now, .{}, .{ .crls = &.{@embedFile("fixtures/offline/invalid-remove.crl")} }));
+    try std.testing.expectError(error.Revoked, R.check(&path, now, .{}, .{ .ocsp = &.{ocsp}, .crls = &.{testdata.file("verify/fixtures/offline/responder-revoked.crl")} }));
+    try std.testing.expectError(error.UnsupportedRevocation, R.check(&path, now, .{}, .{ .crls = &.{testdata.file("verify/fixtures/offline/invalid-remove.crl")} }));
     const rolled_path = [_]C.Certificate{ leaf, rollover, ca };
     try std.testing.expectEqual(.good, (try R.check(&rolled_path, now, .{ .mode = .required, .coverage = .whole_path }, .{ .crls = &.{crl} })).status);
     const deadline = (try R.check(&path, now, .{}, .{ .crls = &.{crl} })).expires.?;
@@ -54,11 +55,11 @@ test "offline delegated responders require their own valid evidence and CRLs cov
 }
 
 test "F22 catalogue_revocation_matching_entry_and_responder (signed responses select the target, regardless of entry order)" {
-    const now = try std.fmt.parseInt(i64, @embedFile("fixtures/catalogue/time.txt"), 10);
-    const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/catalogue/target.der"), .{}), try C.parse(@embedFile("fixtures/catalogue/ca.der"), .{}) };
-    try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{@embedFile("fixtures/catalogue/good-neighbor.ocsp")} })).status);
-    for ([_][]const u8{ @embedFile("fixtures/catalogue/good-first.ocsp"), @embedFile("fixtures/catalogue/target-first.ocsp") }) |response| {
+    const now = try std.fmt.parseInt(i64, testdata.file("verify/fixtures/catalogue/time.txt"), 10);
+    const path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/catalogue/target.der"), .{}), try C.parse(testdata.file("verify/fixtures/catalogue/ca.der"), .{}) };
+    try std.testing.expectEqual(.good, (try R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{testdata.file("verify/fixtures/catalogue/good-neighbor.ocsp")} })).status);
+    for ([_][]const u8{ testdata.file("verify/fixtures/catalogue/good-first.ocsp"), testdata.file("verify/fixtures/catalogue/target-first.ocsp") }) |response| {
         try std.testing.expectError(error.Revoked, R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{response} }));
     }
-    try std.testing.expectError(error.InvalidRevocation, R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{@embedFile("fixtures/catalogue/unrelated.ocsp")} }));
+    try std.testing.expectError(error.InvalidRevocation, R.check(&path, now, .{ .mode = .required }, .{ .ocsp = &.{testdata.file("verify/fixtures/catalogue/unrelated.ocsp")} }));
 }

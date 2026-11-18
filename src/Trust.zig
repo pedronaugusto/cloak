@@ -375,7 +375,7 @@ test "trust bundles name their roots in text before each one" {
     @setRuntimeSafety(true);
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
-    const root = @embedFile("credentials/testdata/p256.cert.pem");
+    const root = @import("testdata").file("credentials/testdata/p256.cert.pem");
     try trust.addPem("##\n## Bundle of CA Root Certificates\n##\n\nWork root\n=========\n" ++ root, .{});
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     // A system bundle passes over a block of another kind; a named file refuses it.

@@ -1,9 +1,10 @@
 const std = @import("std");
 const Rsa = @import("Rsa.zig");
 const Pem = @import("Pem.zig");
+const testdata = @import("testdata");
 test "credential complete RSA CRT fields reject tampering" {
     @setRuntimeSafety(true);
-    var pem = Pem.init(@embedFile("testdata/rsa.pkcs1.pem"));
+    var pem = Pem.init(testdata.file("credentials/testdata/rsa.pkcs1.pem"));
     var block = (try pem.next(std.testing.allocator, 65536)).?;
     defer block.deinit(std.testing.allocator);
     var key: Rsa.Key = undefined;
@@ -16,7 +17,7 @@ test "credential complete RSA CRT fields reject tampering" {
 
 test "credential RSA mathematical congruence does not permit out of range secret integers" {
     @setRuntimeSafety(true);
-    for ([_][]const u8{ @embedFile("testdata/rsa.invalid-qinv-range.der"), @embedFile("testdata/rsa.invalid-d-range.der") }) |encoded| {
+    for ([_][]const u8{ testdata.file("credentials/testdata/rsa.invalid-qinv-range.der"), testdata.file("credentials/testdata/rsa.invalid-d-range.der") }) |encoded| {
         var key: Rsa.Key = undefined;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
         try std.testing.expectError(error.InvalidKey, Rsa.parse(encoded, &key));

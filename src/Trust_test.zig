@@ -4,6 +4,7 @@ const V = @import("verify.zig");
 const shakedown = @import("shakedown");
 const Trust = @import("Trust.zig");
 const builtin = @import("builtin");
+const testdata = @import("testdata");
 
 test "F11 catalogue_untrusted_self_signed_and_verifier_error (an empty portable store fails closed)" {
     @setRuntimeSafety(true);
@@ -51,8 +52,8 @@ test "trust byte identical dedup transactional PEM and immutable input ownership
     @setRuntimeSafety(true);
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
-    const pem = @embedFile("credentials/testdata/p256.cert.pem");
-    var der: [@embedFile("credentials/testdata/p256.cert.der").len]u8 = @embedFile("credentials/testdata/p256.cert.der").*;
+    const pem = testdata.file("credentials/testdata/p256.cert.pem");
+    var der: [testdata.file("credentials/testdata/p256.cert.der").len]u8 = testdata.file("credentials/testdata/p256.cert.der").*;
     try trust.addDer(&der, .{});
     try trust.addPem(pem, .{});
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
@@ -61,14 +62,14 @@ test "trust byte identical dedup transactional PEM and immutable input ownership
     @memset(&der, 0);
     const snapshot = try trust.freeze();
     defer snapshot.deinit();
-    try std.testing.expectEqualSlices(u8, @embedFile("credentials/testdata/p256.cert.der"), snapshot.anchors()[0]);
+    try std.testing.expectEqualSlices(u8, testdata.file("credentials/testdata/p256.cert.der"), snapshot.anchors()[0]);
 }
 
 test "trust file bounds errors cancellation and deadline preserve prior state" {
     @setRuntimeSafety(true);
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
-    try trust.addPem(@embedFile("credentials/testdata/p256.cert.pem"), .{});
+    try trust.addPem(testdata.file("credentials/testdata/p256.cert.pem"), .{});
     const path = "src/credentials/testdata/p256.cert.pem";
     try trust.addFile(std.testing.io, path, .{});
     try std.testing.expectError(error.StreamTooLong, trust.addFile(std.testing.io, path, .{ .limits = .{ .file_bytes = 8 } }));
@@ -87,7 +88,7 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
         defer fault.deinit();
         var trust = Trust.init(std.testing.allocator);
         defer trust.deinit();
-        try trust.addPem(@embedFile("credentials/testdata/p256.cert.pem"), .{});
+        try trust.addPem(testdata.file("credentials/testdata/p256.cert.pem"), .{});
         try std.testing.expectError(error.Canceled, trust.addFile(fault.io(), path, .{}));
         try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     }
@@ -98,7 +99,7 @@ test "trust FaultIo open read cancellation and finite stalled read rollback" {
     defer fault.deinit();
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
-    try trust.addPem(@embedFile("credentials/testdata/p256.cert.pem"), .{});
+    try trust.addPem(testdata.file("credentials/testdata/p256.cert.pem"), .{});
     var work = try std.testing.io.concurrent(Trust.addFile, .{ &trust, fault.io(), path, Trust.LoadOptions{ .timeout = .{ .duration = .{ .raw = .fromMilliseconds(1), .clock = .awake } } } });
     const barrier: std.Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } };
     started.event.waitTimeout(std.testing.io, barrier) catch |err| {
@@ -130,7 +131,7 @@ test "trust native system policy keeps explicit anchors besides it" {
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
     trust.system = .macos;
-    try trust.addDer(@embedFile("credentials/testdata/p256.cert.der"), .{});
+    try trust.addDer(testdata.file("credentials/testdata/p256.cert.der"), .{});
     const snapshot = try trust.freeze();
     defer snapshot.deinit();
     try std.testing.expectEqual(Trust.System.macos, snapshot.systemPolicy());
@@ -156,7 +157,7 @@ test "F25 catalogue_trust_snapshot_extension_race_and_time (workers keep one imm
     const io = threaded.io();
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
-    try trust.addDer(@embedFile("verify/fixtures/vectors/p256.der"), .{});
+    try trust.addDer(testdata.file("verify/fixtures/vectors/p256.der"), .{});
     var first: ?Trust.Snapshot = try trust.freeze();
     defer if (first) |snapshot| snapshot.deinit();
     var gate: std.Io.Event = .unset;
@@ -170,7 +171,7 @@ test "F25 catalogue_trust_snapshot_extension_race_and_time (workers keep one imm
         worker.* = try snapshotWorker(io, first.?, &gate);
         started += 1;
     }
-    try trust.addDer(@embedFile("verify/fixtures/vectors/p384.der"), .{});
+    try trust.addDer(testdata.file("verify/fixtures/vectors/p384.der"), .{});
     const next = try trust.freeze();
     defer next.deinit();
     try std.testing.expectEqual(try first.?.generation().successor(), next.generation());
@@ -189,7 +190,7 @@ fn verifyRetainedSnapshot(io: std.Io, snapshot: Trust.Snapshot, gate: *std.Io.Ev
     @setRuntimeSafety(true);
     defer snapshot.deinit();
     try gate.wait(io);
-    const request: V.Request = .{ .chain = &.{@embedFile("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, @embedFile("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
+    const request: V.Request = .{ .chain = &.{testdata.file("verify/fixtures/vectors/leaf.der")}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, try std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10)) * std.time.ns_per_s), .trust_generation = snapshot.generation(), .policy_generation = .fromRaw(1) };
     for (0..64) |_| {
         const temporary = snapshot.retain();
         defer temporary.deinit();
@@ -216,12 +217,12 @@ fn systemBundleAllocation(gpa: std.mem.Allocator, comptime load: anytype) !void 
     @setRuntimeSafety(true);
     var trust = Trust.init(gpa);
     defer trust.deinit();
-    try trust.addDer(@embedFile("verify/fixtures/work/work-root.der"), .{});
-    try expectImportError(trust.addPem(@embedFile("trust/fixtures/system-mixed.pem"), .{}), error.InvalidTime);
+    try trust.addDer(testdata.file("verify/fixtures/work/work-root.der"), .{});
+    try expectImportError(trust.addPem(testdata.file("trust/fixtures/system-mixed.pem"), .{}), error.InvalidTime);
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     try load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{});
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
-    try std.testing.expectEqualSlices(u8, @embedFile("verify/fixtures/work/work-root.der"), trust.roots.items[0]);
+    try std.testing.expectEqualSlices(u8, testdata.file("verify/fixtures/work/work-root.der"), trust.roots.items[0]);
     try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .certificate_bytes = 8 }), error.TrustLimit);
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .roots = 1 }), error.TrustLimit);

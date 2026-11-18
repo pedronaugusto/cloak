@@ -4,6 +4,7 @@ const P = @import("Possession.zig");
 const Hello = @import("Hello.zig");
 const Messages = @import("Messages.zig");
 const peer = @import("../../testing/Peer.zig");
+const testdata = @import("testdata");
 
 const pki = peer.pki;
 const content = "cloak possession test content";
@@ -37,7 +38,7 @@ test "C2 possession binds each scheme to the key type and curve it may use" {
 }
 
 test "C2 possession verifies RSA-PSS and rejects PKCS#1 and unoffered schemes" {
-    const signature = @embedFile("../../testing/pki/rsa-pss-sha256.sig");
+    const signature = testdata.file("testing/pki/rsa-pss-sha256.sig");
     try P.verify(0x0804, &Hello.schemes, pki.rsa, content, signature);
     var damaged: [256]u8 = undefined;
     @memcpy(&damaged, signature);
@@ -47,7 +48,7 @@ test "C2 possession verifies RSA-PSS and rejects PKCS#1 and unoffered schemes" {
     // SHA-384 PSS parameters do not accept a SHA-256 signature.
     try std.testing.expectError(error.BadSignature, P.verify(0x0805, &Hello.schemes, pki.rsa, content, signature));
     // PKCS#1 v1.5 (0x0401) is not a TLS 1.3 scheme: not in the table, never accepted.
-    try std.testing.expectError(error.UnofferedScheme, P.verify(0x0401, &Hello.schemes, pki.rsa, content, @embedFile("../../testing/pki/rsa-pkcs1-sha256.sig")));
+    try std.testing.expectError(error.UnofferedScheme, P.verify(0x0401, &Hello.schemes, pki.rsa, content, testdata.file("testing/pki/rsa-pkcs1-sha256.sig")));
     // A scheme the caller did not offer is refused even when the signature is good.
     try std.testing.expectError(error.UnofferedScheme, P.verify(0x0804, &.{.ed25519}, pki.rsa, content, signature));
     try std.testing.expectError(error.UnofferedScheme, P.verify(0xdead, &Hello.schemes, pki.rsa, content, signature));

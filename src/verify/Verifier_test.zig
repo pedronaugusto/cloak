@@ -7,10 +7,11 @@ test "portable verifier rejects empty chains and work budget overflow" {
 const C = @import("../certificate.zig");
 const T = @import("../types.zig");
 const shakedown = @import("shakedown");
-const root = @embedFile("fixtures/vectors/p256.der");
-const leaf = @embedFile("fixtures/vectors/leaf.der");
+const testdata = @import("testdata");
+const root = testdata.file("verify/fixtures/vectors/p256.der");
+const leaf = testdata.file("verify/fixtures/vectors/leaf.der");
 fn request() T.Request {
-    return .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("fixtures/vectors/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
+    return .{ .chain = &.{leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, testdata.file("verify/fixtures/vectors/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(2) };
 }
 test "portable selected path identity pins limits and native floors" {
     var req = request();
@@ -44,12 +45,12 @@ test "F153 catalogue_revocation_verdict_surfaces (a path refused by its revocati
     // Found by the OCSP stapling interop rows: a revocation refusal was reported as NoTrustedPath,
     // and a revoked certificate went out as unknown_ca.
     var req = request();
-    req.evidence = .{ .ocsp = &.{@embedFile("fixtures/vectors/revoked.ocsp")} };
+    req.evidence = .{ .ocsp = &.{testdata.file("verify/fixtures/vectors/revoked.ocsp")} };
     try std.testing.expectError(error.Revoked, V.verify(std.testing.allocator, req, &.{root}));
     req.evidence = .{};
     req.policy.revocation.mode = .required;
     try std.testing.expectError(error.MissingRevocation, V.verify(std.testing.allocator, req, &.{root}));
-    req.evidence = .{ .ocsp = &.{@embedFile("fixtures/vectors/good.ocsp")} };
+    req.evidence = .{ .ocsp = &.{testdata.file("verify/fixtures/vectors/good.ocsp")} };
     var receipt = try V.verify(std.testing.allocator, req, &.{root});
     defer receipt.deinit();
     try std.testing.expectEqual(.good, receipt.revocation);
@@ -88,7 +89,7 @@ test "portable indexed verification accepts large stores within discovery budget
 }
 
 test "F23 catalogue_native_receipt_path_token_and_clock (portable and native selected leaves share strict serial and issuer metadata floors)" {
-    const zero = @embedFile("fixtures/limbo-zero-serial.der");
+    const zero = testdata.file("verify/fixtures/limbo-zero-serial.der");
     const cert = try C.parse(zero, .{});
     const req: T.Request = .{ .chain = &.{zero}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, cert.not_before) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     try std.testing.expectError(error.InvalidCertificate, V.verify(std.testing.allocator, req, &.{zero}));
@@ -97,9 +98,9 @@ test "F23 catalogue_native_receipt_path_token_and_clock (portable and native sel
 }
 
 test "F23 catalogue_native_receipt_path_token_and_clock (a native selected path may hold intermediates absent from the request and still meets the floors)" {
-    const selected_leaf = @embedFile("fixtures/offline/leaf.der");
-    const selected = &.{ selected_leaf, @embedFile("fixtures/offline/rollover.der"), @embedFile("fixtures/offline/ca.der") };
-    const req: T.Request = .{ .chain = &.{selected_leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, @embedFile("fixtures/offline/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
+    const selected_leaf = testdata.file("verify/fixtures/offline/leaf.der");
+    const selected = &.{ selected_leaf, testdata.file("verify/fixtures/offline/rollover.der"), testdata.file("verify/fixtures/offline/ca.der") };
+    const req: T.Request = .{ .chain = &.{selected_leaf}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(@as(i96, std.fmt.parseInt(i64, testdata.file("verify/fixtures/offline/time.txt"), 10) catch unreachable) * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     var receipt = try V.nativePath(std.testing.allocator, req, selected);
     defer receipt.deinit();
     try std.testing.expectEqual(@as(usize, 3), receipt.path.len);
@@ -108,10 +109,10 @@ test "F23 catalogue_native_receipt_path_token_and_clock (a native selected path 
 
 test "F14 catalogue_verification_flood_charges_every_branch (signed inputs within the wire cap cannot evade comparison limits)" {
     inline for (.{ 1, 1900 }) |count| {
-        const flood_leaf = @embedFile(std.fmt.comptimePrint("fixtures/work/work-leaf-{d}.der", .{count}));
-        const issuer = @embedFile(std.fmt.comptimePrint("fixtures/work/work-inter-{d}.der", .{count}));
+        const flood_leaf = testdata.file(std.fmt.comptimePrint("verify/fixtures/work/work-leaf-{d}.der", .{count}));
+        const issuer = testdata.file(std.fmt.comptimePrint("verify/fixtures/work/work-inter-{d}.der", .{count}));
         const req: T.Request = .{ .chain = &.{ flood_leaf, issuer }, .identity = .{ .dns = "review.example" }, .time = .fromNanoseconds(1791467000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1), .limits = .{ .candidates = 16, .parses = 8, .signatures = 2, .rejected = 8, .policy_nodes = 1, .depth = 3 } };
-        const anchors = &.{@embedFile("fixtures/work/work-root.der")};
+        const anchors = &.{testdata.file("verify/fixtures/work/work-root.der")};
         if (count == 1) {
             var receipt = try V.verify(std.testing.allocator, req, anchors);
             defer receipt.deinit();
@@ -134,13 +135,13 @@ test "F14 catalogue_verification_flood_charges_every_branch (signed inputs withi
 test "a signature-only key asserting encipherment or agreement is refused (RFC 8410, RFC 9881)" {
     // An Ed25519 leaf whose keyUsage adds keyEncipherment, under a P-256 root; x509-limbo
     // covers ML-DSA's rfc9881 cases.
-    const anchor = @embedFile("../testing/pki/mixed_ca.der");
-    const ed25519 = @embedFile("../testing/pki/ed25519_key_encipherment.der");
+    const anchor = testdata.file("testing/pki/mixed_ca.der");
+    const ed25519 = testdata.file("testing/pki/ed25519_key_encipherment.der");
     const req: T.Request = .{ .chain = &.{ed25519}, .identity = .{ .dns = "example.com" }, .time = .fromNanoseconds(1_800_000_000 * std.time.ns_per_s), .trust_generation = .fromRaw(1), .policy_generation = .fromRaw(1) };
     try std.testing.expectError(error.InvalidPurpose, V.verify(std.testing.allocator, req, &.{anchor}));
     // The same root and profile with an ML-DSA-44 leaf that asserts only digitalSignature passes.
     var ok = req;
-    ok.chain = &.{@embedFile("../testing/pki/mldsa44_classical.der")};
+    ok.chain = &.{testdata.file("testing/pki/mldsa44_classical.der")};
     var receipt = try V.verify(std.testing.allocator, ok, &.{anchor});
     receipt.deinit();
 }

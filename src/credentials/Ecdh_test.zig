@@ -1,6 +1,7 @@
 const std = @import("std");
 const shakedown = @import("shakedown");
 const Ecdh = @import("Ecdh.zig");
+const testdata = @import("testdata");
 
 fn hex(comptime value: []const u8) [value.len / 2]u8 {
     var bytes: [value.len / 2]u8 = undefined;
@@ -102,7 +103,7 @@ fn agreementCampaign(comptime Group: type, comptime file: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []const struct { tests: []const Agreement } }, a, @embedFile("../verify/fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []const struct { tests: []const Agreement } }, a, testdata.file("verify/fixtures/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
     var checked: usize = 0;
     for (parsed.testGroups) |group| for (group.tests) |vector| {
         const public = try a.alloc(u8, vector.public.len / 2);

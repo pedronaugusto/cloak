@@ -3,6 +3,7 @@
 //! which include malformed hints, norm violations, wrong lengths and out-of-range private keys.
 const std = @import("std");
 const mldsa = @import("mldsa.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 
@@ -110,7 +111,7 @@ fn verifyCampaign(comptime level: mldsa.Level, comptime file: []const u8) !void 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []struct { publicKey: []const u8, tests: []VerifyTest } }, arena, @embedFile("testdata/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []struct { publicKey: []const u8, tests: []VerifyTest } }, arena, testdata.file("crypto/testdata/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
     var mismatch: usize = 0;
     var count: usize = 0;
     for (parsed.testGroups) |group| {
@@ -143,7 +144,7 @@ fn signCampaign(comptime level: mldsa.Level, comptime file: []const u8, comptime
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const Group = if (seeded) struct { privateSeed: []const u8, publicKey: ?[]const u8 = null, tests: []SignTest } else struct { privateKey: []const u8, publicKey: ?[]const u8 = null, tests: []SignTest };
-    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []Group }, arena, @embedFile("testdata/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSliceLeaky(struct { numberOfTests: usize, testGroups: []Group }, arena, testdata.file("crypto/testdata/wycheproof/" ++ file), .{ .ignore_unknown_fields = true });
     var mismatch: usize = 0;
     var count: usize = 0;
     for (parsed.testGroups) |group| {

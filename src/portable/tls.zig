@@ -21,8 +21,8 @@ pub fn vectors() u32 {
     }
     const Hash = std.crypto.hash.sha2.Sha256;
     var transcript: handshake.Transcript.Transcript(Hash) = .{};
-    transcript.commit(@embedFile("../tls/handshake/testdata/client-hello.bin")) catch return 6;
-    transcript.commit(@embedFile("../tls/handshake/testdata/server-hello.bin")) catch return 7;
+    transcript.commit(@import("testdata").file("tls/handshake/testdata/client-hello.bin")) catch return 6;
+    transcript.commit(@import("testdata").file("tls/handshake/testdata/server-hello.bin")) catch return 7;
     const shared = [_]u8{ 0x8b, 0xd4, 0x05, 0x4f, 0xb5, 0x5b, 0x9d, 0x63, 0xfd, 0xfb, 0xac, 0xf9, 0xf0, 0x4b, 0x9f, 0x0d, 0x35, 0xe6, 0xd6, 0x3f, 0x53, 0x75, 0x63, 0xef, 0xd4, 0x62, 0x72, 0x90, 0x0f, 0x89, 0x49, 0x2d };
     const K = handshake.Schedule.Schedule(.aes_128_gcm_sha256);
     var traffic: K.Traffic = .{};

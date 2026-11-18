@@ -10,6 +10,10 @@ Requires Zig 0.17.0. Pin a reviewed commit:
 zig fetch --save git+https://github.com/pedronaugusto/cloak#<commit>
 ```
 
+The package a project fetches is cloak's build files, its Zig sources and the s2n-bignum
+assembly it compiles: 1.8 MB compressed, 8.8 MiB unpacked. Its test data (the Wycheproof,
+limbo and ACVP vectors, the keys and certificates its tests read) stays in the repository.
+
 ## Stability
 
 cloak is 0.x and tracks Zig 0.17.x. A breaking change comes only in a minor release

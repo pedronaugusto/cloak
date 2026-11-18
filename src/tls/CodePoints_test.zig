@@ -14,6 +14,7 @@ const certificates = @import("../certificates.zig");
 const Duo = @import("../testing/Duo.zig");
 const ServerPair = @import("../testing/ServerPair.zig").ServerPair;
 const pki = @import("../testing/Peer.zig").pki;
+const testdata = @import("testdata");
 const gpa = std.testing.allocator;
 
 /// Numbers no type here names: GREASE, and registered values cloak does not speak (ffdhe2048,
@@ -70,7 +71,7 @@ fn serverHello(out: *[fixture.len]u8, suite: ?u16, group: ?u16) []const u8 {
     }
     return out;
 }
-const fixture = @embedFile("handshake/testdata/server-hello.bin");
+const fixture = testdata.file("tls/handshake/testdata/server-hello.bin");
 
 test "F32 catalogue_extension_uniqueness_and_negotiation_allowlist (open code points: a peer's selection)" {
     const share: [32]u8 = @splat(1);

@@ -115,15 +115,16 @@ fn edDifferential(_: void, case: *shakedown.Case) !void {
 const Rsa = @import("Rsa.zig");
 const signature = @import("../verify/signature.zig");
 const certificate = @import("../certificate.zig");
+const testdata = @import("testdata");
 const StdRsa = std.crypto.Certificate.rsa;
 const sha2 = std.crypto.hash.sha2;
 
 /// The OpenSSL keys of the private-operation tests: every modulus size the parser accepts has
 /// the same shape, and 2056 bits is a width that is not a multiple of a limb.
-const rsa_keys = .{ @embedFile("../crypto/testdata/rsa2048.der"), @embedFile("../crypto/testdata/rsa2056.der"), @embedFile("../crypto/testdata/rsa3072.der"), @embedFile("../crypto/testdata/rsa4096.der") };
+const rsa_keys = .{ testdata.file("crypto/testdata/rsa2048.der"), testdata.file("crypto/testdata/rsa2056.der"), testdata.file("crypto/testdata/rsa3072.der"), testdata.file("crypto/testdata/rsa4096.der") };
 /// Moduli that are not a whole number of bytes, for PSS's top bits: at 2049 bits its encoding
 /// is a byte shorter than the modulus.
-const odd_keys = .{ @embedFile("../crypto/testdata/rsa2049.der"), @embedFile("../crypto/testdata/rsa3070.der") };
+const odd_keys = .{ testdata.file("crypto/testdata/rsa2049.der"), testdata.file("crypto/testdata/rsa3070.der") };
 
 fn rsaKey(der: []const u8) !Rsa.Key {
     var key: Rsa.Key = undefined;
@@ -178,8 +179,8 @@ fn stdVerify(comptime Scheme: type, comptime Hash: type, key: *const Rsa.Key, me
 test "rsa pss signatures OpenSSL made with moduli of 2049 and 3070 bits verify, and others do not" {
     const message = "cloak rsa known answer";
     const answers = .{
-        .{ odd_keys[0], certificate.Algorithm.Hash.sha256, @embedFile("../crypto/testdata/rsa2049-pss-sha256.sig") },
-        .{ odd_keys[1], certificate.Algorithm.Hash.sha384, @embedFile("../crypto/testdata/rsa3070-pss-sha384.sig") },
+        .{ odd_keys[0], certificate.Algorithm.Hash.sha256, testdata.file("crypto/testdata/rsa2049-pss-sha256.sig") },
+        .{ odd_keys[1], certificate.Algorithm.Hash.sha384, testdata.file("crypto/testdata/rsa3070-pss-sha384.sig") },
     };
     inline for (answers) |answer| {
         const der, const hash, const made = answer;
@@ -195,9 +196,9 @@ test "rsa pss signatures OpenSSL made with moduli of 2049 and 3070 bits verify, 
 test "rsa pkcs1 signatures equal OpenSSL's known answers and std's encoding" {
     const message = "cloak rsa known answer";
     const answers = .{
-        .{ rsa_keys[1], sha2.Sha256, @embedFile("../crypto/testdata/rsa2056-pkcs1-sha256.sig") },
-        .{ rsa_keys[2], sha2.Sha384, @embedFile("../crypto/testdata/rsa3072-pkcs1-sha384.sig") },
-        .{ rsa_keys[3], sha2.Sha512, @embedFile("../crypto/testdata/rsa4096-pkcs1-sha512.sig") },
+        .{ rsa_keys[1], sha2.Sha256, testdata.file("crypto/testdata/rsa2056-pkcs1-sha256.sig") },
+        .{ rsa_keys[2], sha2.Sha384, testdata.file("crypto/testdata/rsa3072-pkcs1-sha384.sig") },
+        .{ rsa_keys[3], sha2.Sha512, testdata.file("crypto/testdata/rsa4096-pkcs1-sha512.sig") },
     };
     var prng: std.Random.DefaultPrng = .init(0x9c51);
     inline for (answers) |answer| {
@@ -222,7 +223,7 @@ test "rsa pkcs1 signatures equal OpenSSL's known answers and std's encoding" {
 }
 
 test "rsa pkcs1 equals the TLS fixture signature made by OpenSSL" {
-    const pem = @embedFile("../testing/pki/rsa.key.pem");
+    const pem = testdata.file("testing/pki/rsa.key.pem");
     var reader = @import("Pem.zig").init(pem);
     var block = (try reader.next(std.testing.allocator, 65536)).?;
     defer block.deinit(std.testing.allocator);
@@ -235,7 +236,7 @@ test "rsa pkcs1 equals the TLS fixture signature made by OpenSSL" {
     defer std.crypto.secureZero(u8, std.mem.asBytes(&key));
     var out: [Sign.max_signature]u8 = undefined;
     const made = try Sign.rsa.pkcs1(sha2.Sha256, &key.crt, "cloak possession test content", &@as([Sign.rsa.noise_length]u8, @splat(3)), &out);
-    try std.testing.expectEqualSlices(u8, @embedFile("../testing/pki/rsa-pkcs1-sha256.sig"), made);
+    try std.testing.expectEqualSlices(u8, testdata.file("testing/pki/rsa-pkcs1-sha256.sig"), made);
 }
 
 test "rsa blinding never changes a signature: the seed is invisible, the salt is not" {
@@ -262,5 +263,5 @@ test "rsa blinding never changes a signature: the seed is invisible, the salt is
 
 test "rsa keys with a factor the private operation cannot hold are refused by type" {
     // A valid key whose larger factor has 2112 bits: more than half of the largest modulus.
-    try std.testing.expectError(error.UnsupportedKey, rsaKey(@embedFile("../crypto/testdata/rsa-unbalanced.der")));
+    try std.testing.expectError(error.UnsupportedKey, rsaKey(testdata.file("crypto/testdata/rsa-unbalanced.der")));
 }

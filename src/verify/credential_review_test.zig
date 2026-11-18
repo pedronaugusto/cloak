@@ -6,12 +6,13 @@ const signature = @import("signature.zig");
 const Algorithm = @import("../certificate/Algorithm.zig");
 const Kdf = @import("../credentials/Kdf.zig");
 const EdKey = @import("../credentials/EdKey.zig");
+const testdata = @import("testdata");
 test "credential review a key with composite factors releases no wrong signature" {
     // Its numbers agree (n = pq, the CRT congruences) but p and q are not prime: the parse
     // checks agreement, and the private operation refuses any signature the public key rejects.
     var material: Rsa.Key = undefined;
     defer std.crypto.secureZero(u8, std.mem.asBytes(&material));
-    Rsa.parse(@embedFile("fixtures/rsa-composite.der"), &material) catch |err| {
+    Rsa.parse(testdata.file("verify/fixtures/rsa-composite.der"), &material) catch |err| {
         // The kernel may refuse the shape outright; that releases nothing either.
         return std.testing.expectEqual(error.UnsupportedKey, err);
     };

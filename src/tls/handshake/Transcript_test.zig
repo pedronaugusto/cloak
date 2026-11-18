@@ -2,6 +2,7 @@ const std = @import("std");
 const T = @import("Transcript.zig");
 const R = @import("../record/Epoch.zig");
 const L = @import("../crypto/Labels.zig");
+const testdata = @import("testdata");
 fn hex(comptime value: []const u8) [value.len / 2]u8 {
     var out: [value.len / 2]u8 = undefined;
     _ = std.fmt.hexToBytes(&out, value) catch unreachable;
@@ -10,8 +11,8 @@ fn hex(comptime value: []const u8) [value.len / 2]u8 {
 test "C2 RFC8448 transcript protected server flight and Finished" {
     const H = std.crypto.hash.sha2.Sha256;
     var transcript: T.Transcript(H) = .{};
-    try transcript.commit(@embedFile("testdata/client-hello.bin"));
-    try transcript.commit(@embedFile("testdata/server-hello.bin"));
+    try transcript.commit(testdata.file("tls/handshake/testdata/client-hello.bin"));
+    try transcript.commit(testdata.file("tls/handshake/testdata/server-hello.bin"));
     try std.testing.expectEqualSlices(u8, &hex("860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8"), &transcript.digest());
     const traffic = hex("b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38");
     var key: [16]u8 = undefined;
@@ -22,8 +23,8 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
     try rx.init(&key, &iv, .{});
     defer rx.deinit();
     var out: [658]u8 = undefined;
-    const plain = try rx.open(@embedFile("testdata/server-record.bin"), &out);
-    try std.testing.expectEqualSlices(u8, @embedFile("testdata/server-flight.bin"), plain.bytes);
+    const plain = try rx.open(testdata.file("tls/handshake/testdata/server-record.bin"), &out);
+    try std.testing.expectEqualSlices(u8, testdata.file("tls/handshake/testdata/server-flight.bin"), plain.bytes);
     var pos: usize = 0;
     while (pos < plain.bytes.len) {
         const size = 4 + @as(usize, std.mem.readInt(u24, plain.bytes[pos + 1 ..][0..3], .big));
@@ -37,14 +38,14 @@ test "C2 RFC8448 transcript protected server flight and Finished" {
     try tx.init(&key, &iv, .{});
     defer tx.deinit();
     var wire: [679]u8 = undefined;
-    try std.testing.expectEqualSlices(u8, @embedFile("testdata/server-record.bin"), try tx.seal(.handshake, plain.bytes, 0, &wire));
+    try std.testing.expectEqualSlices(u8, testdata.file("tls/handshake/testdata/server-record.bin"), try tx.seal(.handshake, plain.bytes, 0, &wire));
 }
 test "F31 catalogue_hrr_illegal_group_ch2_and_reallocation" {
     // Transcript component of F31: exact synthetic message_hash, once only.
     // Group/CH2 validation awaits the ClientHello/ServerHello parser integration.
     inline for (.{ std.crypto.hash.sha2.Sha256, std.crypto.hash.sha2.Sha384 }) |H| {
         var transcript: T.Transcript(H) = .{};
-        const ch = @embedFile("testdata/client-hello.bin");
+        const ch = testdata.file("tls/handshake/testdata/client-hello.bin");
         const hrr = "\x02\x00\x00\x03hrr";
         try transcript.commit(ch);
         var reference = H.init(.{});

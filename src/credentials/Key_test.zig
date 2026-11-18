@@ -2,25 +2,26 @@ const std = @import("std");
 const shakedown = @import("shakedown");
 const PrivateKey = @import("../PrivateKey.zig");
 const Pem = @import("Pem.zig");
+const testdata = @import("testdata");
 test "credential key formats match modern certificate public keys" {
     @setRuntimeSafety(true);
     const Case = struct { key: []const u8, cert: []const u8, passphrase: ?[]const u8 = null };
     const cases = [_]Case{
-        .{ .key = @embedFile("testdata/rsa.pkcs8.pem"), .cert = @embedFile("testdata/rsa.cert.pem") },
-        .{ .key = @embedFile("testdata/rsa.pkcs1.pem"), .cert = @embedFile("testdata/rsa.cert.pem") },
-        .{ .key = @embedFile("testdata/rsa.enc-aes256-sha256.pem"), .cert = @embedFile("testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/rsa.legacy-aes256.pem"), .cert = @embedFile("testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/p256.pkcs8.pem"), .cert = @embedFile("testdata/p256.cert.pem") },
-        .{ .key = @embedFile("testdata/p256.sec1.pem"), .cert = @embedFile("testdata/p256.cert.pem") },
-        .{ .key = @embedFile("testdata/p256.pkcs8.der"), .cert = @embedFile("testdata/p256.cert.der") },
-        .{ .key = @embedFile("testdata/p256.enc-aes128-sha1.pem"), .cert = @embedFile("testdata/p256.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/p256.legacy-aes128.pem"), .cert = @embedFile("testdata/p256.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/p384.pkcs8.pem"), .cert = @embedFile("testdata/p384.cert.pem") },
-        .{ .key = @embedFile("testdata/p384.enc-des3.pem"), .cert = @embedFile("testdata/p384.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/rsa.legacy-des3.pem"), .cert = @embedFile("testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/p384.enc-aes192.pem"), .cert = @embedFile("testdata/p384.cert.pem"), .passphrase = "correct-horse" },
-        .{ .key = @embedFile("testdata/ed25519.pkcs8.pem"), .cert = @embedFile("testdata/ed25519.cert.pem") },
-        .{ .key = @embedFile("testdata/ed25519.enc-aes256-sha512.pem"), .cert = @embedFile("testdata/ed25519.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/rsa.pkcs8.pem"), .cert = testdata.file("credentials/testdata/rsa.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/rsa.pkcs1.pem"), .cert = testdata.file("credentials/testdata/rsa.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/rsa.enc-aes256-sha256.pem"), .cert = testdata.file("credentials/testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/rsa.legacy-aes256.pem"), .cert = testdata.file("credentials/testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/p256.pkcs8.pem"), .cert = testdata.file("credentials/testdata/p256.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/p256.sec1.pem"), .cert = testdata.file("credentials/testdata/p256.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/p256.pkcs8.der"), .cert = testdata.file("credentials/testdata/p256.cert.der") },
+        .{ .key = testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .cert = testdata.file("credentials/testdata/p256.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/p256.legacy-aes128.pem"), .cert = testdata.file("credentials/testdata/p256.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/p384.pkcs8.pem"), .cert = testdata.file("credentials/testdata/p384.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/p384.enc-des3.pem"), .cert = testdata.file("credentials/testdata/p384.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/rsa.legacy-des3.pem"), .cert = testdata.file("credentials/testdata/rsa.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/p384.enc-aes192.pem"), .cert = testdata.file("credentials/testdata/p384.cert.pem"), .passphrase = "correct-horse" },
+        .{ .key = testdata.file("credentials/testdata/ed25519.pkcs8.pem"), .cert = testdata.file("credentials/testdata/ed25519.cert.pem") },
+        .{ .key = testdata.file("credentials/testdata/ed25519.enc-aes256-sha512.pem"), .cert = testdata.file("credentials/testdata/ed25519.cert.pem"), .passphrase = "correct-horse" },
     };
     for (cases) |case| {
         const key = try PrivateKey.parse(std.testing.allocator, case.key, .{ .passphrase = case.passphrase });
@@ -34,24 +35,24 @@ test "credential key formats match modern certificate public keys" {
 }
 test "F06 catalogue_key_import_failure_and_kdf_budget (input and KDF bounds precede allocation and expensive work)" {
     @setRuntimeSafety(true);
-    try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.pkcs1.pem"), .{ .bytes = 8 }));
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = 1 }));
+    try rejectKey(error.InputLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.pkcs1.pem"), .{ .bytes = 8 }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "correct-horse", .iterations = 1 }));
     // A passphrase past the bound is refused before any KDF reads it, a legacy PEM key's too.
     const long: [4097]u8 = @splat('p');
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = &long }));
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = &long }));
-    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-des3.pem"), .{ .passphrase = "correct-horse", .password_bytes = 12 }));
-    try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{}));
-    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = &long }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.legacy-aes128.pem"), .{ .passphrase = &long }));
+    try rejectKey(error.KdfLimit, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.legacy-des3.pem"), .{ .passphrase = "correct-horse", .password_bytes = 12 }));
+    try rejectKey(error.PasswordRequired, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{}));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), .{ .passphrase = "wrong" }));
 }
 test "a legacy PEM key a wrong passphrase decrypts to valid padding is a bad password, not an invalid key" {
     @setRuntimeSafety(true);
     // Each passphrase was found to unpad its key's ciphertext: about one wrong passphrase in
     // 256 does, and what it decrypts to is no key.
-    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong-613" }));
-    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-aes256.pem"), .{ .passphrase = "wrong-77" }));
-    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/rsa.legacy-des3.pem"), .{ .passphrase = "wrong-391" }));
-    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, @embedFile("testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong-613" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.legacy-aes256.pem"), .{ .passphrase = "wrong-77" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/rsa.legacy-des3.pem"), .{ .passphrase = "wrong-391" }));
+    try rejectKey(error.BadPassword, PrivateKey.parse(std.testing.allocator, testdata.file("credentials/testdata/p256.legacy-aes128.pem"), .{ .passphrase = "wrong" }));
 }
 test "F06 catalogue_key_import_failure_and_kdf_budget (final ownership survives the original owner's release and allocation faults)" {
     @setRuntimeSafety(true);
@@ -60,7 +61,7 @@ test "F06 catalogue_key_import_failure_and_kdf_budget (final ownership survives 
 }
 fn allocation(gpa: std.mem.Allocator) !void {
     @setRuntimeSafety(true);
-    const key = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    const key = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/ed25519.pkcs8.pem"), .{});
     const held = key.retain();
     key.deinit();
     held.deinit();
@@ -68,7 +69,7 @@ fn allocation(gpa: std.mem.Allocator) !void {
 
 test "credential PEM complete input and declared key format are strict" {
     @setRuntimeSafety(true);
-    const pem = @embedFile("testdata/ed25519.pkcs8.pem");
+    const pem = testdata.file("credentials/testdata/ed25519.pkcs8.pem");
     try rejectKey(error.InvalidKey, PrivateKey.parse(std.testing.allocator, pem ++ pem, .{}));
     try rejectKey(error.InvalidPem, PrivateKey.parse(std.testing.allocator, pem ++ "junk", .{}));
     const rsa_label = "-----BEGIN RSA PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END RSA PRIVATE KEY-----";
@@ -77,7 +78,7 @@ test "credential PEM complete input and declared key format are strict" {
 
 test "credential PEM key after the attributes a PKCS #12 export writes" {
     @setRuntimeSafety(true);
-    const key = try PrivateKey.parse(std.testing.allocator, "Bag Attributes\n    localKeyID: 01\nKey Attributes: <No Attributes>\n" ++ @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    const key = try PrivateKey.parse(std.testing.allocator, "Bag Attributes\n    localKeyID: 01\nKey Attributes: <No Attributes>\n" ++ testdata.file("credentials/testdata/ed25519.pkcs8.pem"), .{});
     defer key.deinit();
     try std.testing.expectEqual(@as(?usize, 0), key.noiseLength());
 }
@@ -85,7 +86,7 @@ test "credential PEM key after the attributes a PKCS #12 export writes" {
 // The unencrypted RFC 8410 seed is a public dummy fixture, not a deployed key.
 test "credential PKCS8 attributes require Attribute grammar and implicit SET order" {
     @setRuntimeSafety(true);
-    var pem = Pem.init(@embedFile("testdata/ed25519.pkcs8.pem"));
+    var pem = Pem.init(testdata.file("credentials/testdata/ed25519.pkcs8.pem"));
     var block = (try pem.next(std.testing.allocator, 65536)).?;
     defer block.deinit(std.testing.allocator);
     const invalid = [_][]const u8{
@@ -117,9 +118,9 @@ test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a messag
     const signature = @import("../verify/signature.zig");
     const certificate = @import("../certificate.zig");
     const gpa = std.testing.allocator;
-    const key = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{});
+    const key = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/rsa.pkcs1.pem"), .{});
     defer key.deinit();
-    var cert_pem = Pem.init(@embedFile("testdata/rsa.cert.pem"));
+    var cert_pem = Pem.init(testdata.file("credentials/testdata/rsa.cert.pem"));
     var block = (try cert_pem.next(gpa, 65536)).?;
     defer block.deinit(gpa);
     const leaf = try certificate.parse(block.der, .{});
@@ -150,7 +151,7 @@ test "credential RSA keys sign PSS and PKCS#1 v1.5 for every hash, from a messag
     try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.{ .ecdsa = .sha256 }, "content", noise[0..96], &out));
     try std.testing.expectError(error.UnsupportedAlgorithm, key.sign(.ed25519, "content", noise[0..96], &out));
     // The digest form is RSA's alone until ECDSA gains one; Ed25519 never has it.
-    const ed = try PrivateKey.parse(gpa, @embedFile("testdata/ed25519.pkcs8.pem"), .{});
+    const ed = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/ed25519.pkcs8.pem"), .{});
     defer ed.deinit();
     try std.testing.expectError(error.UnsupportedAlgorithm, ed.signDigest(.ed25519, &@as([64]u8, @splat(0)), "", &out));
 }
@@ -160,9 +161,9 @@ test "F142 catalogue_tls12_ecdsa_scheme_names_hash_not_curve (ECDSA keys sign as
     const signature = @import("../verify/signature.zig");
     const certificate = @import("../certificate.zig");
     const gpa = std.testing.allocator;
-    inline for (.{ .{ "testdata/p256.pkcs8.pem", certificate.Algorithm.Hash.sha256, certificate.Algorithm.Curve.p256, 32 }, .{ "testdata/p384.pkcs8.pem", .sha384, .p384, 48 }, .{ "testdata/p521.pkcs8.pem", .sha512, .p521, 66 } }) |row| {
+    inline for (.{ .{ "credentials/testdata/p256.pkcs8.pem", certificate.Algorithm.Hash.sha256, certificate.Algorithm.Curve.p256, 32 }, .{ "credentials/testdata/p384.pkcs8.pem", .sha384, .p384, 48 }, .{ "credentials/testdata/p521.pkcs8.pem", .sha512, .p521, 66 } }) |row| {
         const file, const hash, const curve, const width = row;
-        const key = try PrivateKey.parse(gpa, @embedFile(file), .{});
+        const key = try PrivateKey.parse(gpa, testdata.file(file), .{});
         defer key.deinit();
         const pair = key.state.get().material.expose().*;
         const encoded: []const u8 = switch (pair) {
@@ -242,7 +243,7 @@ test "C10 private keys from their components: the same key as parsed, and every 
     const Der = @import("../wire/Der.zig");
     defer freeKept();
     // RSA: the eight numbers of an RSAPrivateKey, as a JWK carries them.
-    var rsa_block = try pemDer(@embedFile("testdata/rsa.pkcs1.pem"));
+    var rsa_block = try pemDer(testdata.file("credentials/testdata/rsa.pkcs1.pem"));
     defer rsa_block.deinit(gpa);
     var r = (try Der.single(rsa_block.der, 0x30)).reader();
     _ = try r.expect(2);
@@ -250,8 +251,8 @@ test "C10 private keys from their components: the same key as parsed, and every 
     for (&numbers) |*n| n.* = try Der.integer((try r.expect(2)).value);
     const rsa = try PrivateKey.fromComponents(gpa, .{ .rsa = .{ .n = numbers[0], .e = numbers[1], .d = numbers[2], .p = numbers[3], .q = numbers[4], .dp = numbers[5], .dq = numbers[6], .qi = numbers[7] } });
     defer rsa.deinit();
-    try std.testing.expect(rsa.matchesKey(try certKey(@embedFile("testdata/rsa.cert.pem"))));
-    const parsed = try PrivateKey.parse(gpa, @embedFile("testdata/rsa.pkcs1.pem"), .{});
+    try std.testing.expect(rsa.matchesKey(try certKey(testdata.file("credentials/testdata/rsa.cert.pem"))));
+    const parsed = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/rsa.pkcs1.pem"), .{});
     defer parsed.deinit();
     var noise: [PrivateKey.max_noise]u8 = @splat(7);
     var a: [PrivateKey.max_signature]u8 = undefined;
@@ -271,14 +272,14 @@ test "C10 private keys from their components: the same key as parsed, and every 
         .{ numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], "" },
     }) |bad| try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .rsa = .{ .n = bad[0], .e = bad[1], .d = bad[2], .p = bad[3], .q = bad[4], .dp = bad[5], .dq = bad[6], .qi = bad[7] } }));
     // EC: the scalar and the public point of an ECPrivateKey.
-    var ec_block = try pemDer(@embedFile("testdata/p256.sec1.pem"));
+    var ec_block = try pemDer(testdata.file("credentials/testdata/p256.sec1.pem"));
     defer ec_block.deinit(gpa);
     var e = (try Der.single(ec_block.der, 0x30)).reader();
     _ = try e.expect(2);
     const d = (try e.expect(4)).value;
     _ = try e.expect(0xa0);
     const point = try Der.octetBits((try Der.single((try e.expect(0xa1)).value, 3)).value);
-    const p256_cert = try certKey(@embedFile("testdata/p256.cert.pem"));
+    const p256_cert = try certKey(testdata.file("credentials/testdata/p256.cert.pem"));
     for ([_]?[]const u8{ null, point }) |public| {
         const ec = try PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p256, .d = d, .public = public } });
         defer ec.deinit();
@@ -298,10 +299,10 @@ test "C10 private keys from their components: the same key as parsed, and every 
     // A P-256 scalar is not a P-384 key.
     try std.testing.expectError(error.InvalidKey, PrivateKey.fromComponents(gpa, .{ .ec = .{ .curve = .p384, .d = d } }));
     // Ed25519: the seed (a JWK's d) and the public key (its x).
-    var ed_block = try pemDer(@embedFile("testdata/ed25519.pkcs8.pem"));
+    var ed_block = try pemDer(testdata.file("credentials/testdata/ed25519.pkcs8.pem"));
     defer ed_block.deinit(gpa);
     const seed = ed_block.der[ed_block.der.len - 32 ..];
-    const ed_cert = try certKey(@embedFile("testdata/ed25519.cert.pem"));
+    const ed_cert = try certKey(testdata.file("credentials/testdata/ed25519.cert.pem"));
     const ed = try PrivateKey.fromComponents(gpa, .{ .ed25519 = .{ .seed = seed, .public = ed_cert.ed25519 } });
     defer ed.deinit();
     try std.testing.expect(ed.matchesKey(ed_cert));
@@ -316,17 +317,17 @@ test "P-521 private keys: SEC 1 and PKCS#8 read to one key, its SubjectPublicKey
     const certificate = @import("../certificate.zig");
     const Der = @import("../wire/Der.zig");
     const gpa = std.testing.allocator;
-    const pkcs8 = try PrivateKey.parse(gpa, @embedFile("testdata/p521.pkcs8.pem"), .{});
+    const pkcs8 = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/p521.pkcs8.pem"), .{});
     defer pkcs8.deinit();
-    const sec1 = try PrivateKey.parse(gpa, @embedFile("testdata/p521.sec1.pem"), .{});
+    const sec1 = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/p521.sec1.pem"), .{});
     defer sec1.deinit();
     var out: [PrivateKey.max_public_key_info]u8 = undefined;
     const spki = pkcs8.publicKeyInfo(&out);
-    try std.testing.expectEqualSlices(u8, @embedFile("testdata/p521.pub.der"), spki);
+    try std.testing.expectEqualSlices(u8, testdata.file("credentials/testdata/p521.pub.der"), spki);
     const public = try certificate.Algorithm.publicKey(spki);
     try std.testing.expect(sec1.matchesKey(public));
     // The components: d and the point, from the SEC 1 form.
-    var block = try pemDer(@embedFile("testdata/p521.sec1.pem"));
+    var block = try pemDer(testdata.file("credentials/testdata/p521.sec1.pem"));
     defer block.deinit(gpa);
     var e = (try Der.single(block.der, 0x30)).reader();
     _ = try e.expect(2);

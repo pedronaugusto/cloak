@@ -4,10 +4,11 @@ const shakedown = @import("shakedown");
 const inputs = @import("../testing/inputs.zig");
 const PrivateKey = @import("../PrivateKey.zig");
 const Pem = @import("Pem.zig");
+const testdata = @import("testdata");
 
-const key_examples = [_][]const u8{ @embedFile("testdata/ed25519.pkcs8.pem"), @embedFile("testdata/p256.pkcs8.der"), "", "\x30\x80" };
-const encrypted_examples = [_][]const u8{ @embedFile("testdata/ed25519.enc-low-work.pem"), @embedFile("testdata/p256.enc-aes128-sha1.pem"), @embedFile("testdata/ed25519.enc-aes256-sha512.pem"), "\x30\x00" };
-const pem_examples = [_][]const u8{ @embedFile("testdata/ed25519.pkcs8.pem"), "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----", "" };
+const key_examples = [_][]const u8{ testdata.file("credentials/testdata/ed25519.pkcs8.pem"), testdata.file("credentials/testdata/p256.pkcs8.der"), "", "\x30\x80" };
+const encrypted_examples = [_][]const u8{ testdata.file("credentials/testdata/ed25519.enc-low-work.pem"), testdata.file("credentials/testdata/p256.enc-aes128-sha1.pem"), testdata.file("credentials/testdata/ed25519.enc-aes256-sha512.pem"), "\x30\x00" };
+const pem_examples = [_][]const u8{ testdata.file("credentials/testdata/ed25519.pkcs8.pem"), "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----", "" };
 
 fn parseKey(bytes: []const u8) void {
     // a fuzzed key may parse or not; the target asks only that neither crashes or leaks

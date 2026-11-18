@@ -2,6 +2,7 @@ const std = @import("std");
 const Work = @import("Work.zig");
 const constraints = @import("constraints.zig");
 const C = @import("../certificate.zig");
+const testdata = @import("testdata");
 test "F19 catalogue_general_name_syntax_and_constraint_forms (directoryName matching normalizes ASCII strings and retains RDN boundaries)" {
     const a = "\x30\x0f\x31\x0d\x30\x0b\x06\x03\x55\x04\x03\x0c\x04Test";
     const b = "\x30\x0f\x31\x0d\x30\x0b\x06\x03\x55\x04\x03\x13\x04tEST";
@@ -10,8 +11,8 @@ test "F19 catalogue_general_name_syntax_and_constraint_forms (directoryName matc
 
 test "F16 catalogue_wildcard_constraint_intersection_and_case (wildcard constraints exclude intersecting hosts and preserve label depth)" {
     var work: Work = .{ .remaining = 4 * 1024 * 1024 };
-    var leaf = try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{});
-    var ca = try C.parse(@embedFile("fixtures/vectors/p256.der"), .{});
+    var leaf = try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{});
+    var ca = try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{});
     leaf.extensions[leaf.extension_count] = .{ .oid = "\x55\x1d\x11", .critical = false, .value = "\x30\x0f\x82\x0d*.example.com" };
     leaf.extension_count += 1;
     ca.extensions[ca.extension_count] = .{ .oid = "\x55\x1d\x1e", .critical = true, .value = "\x30\x19\xa1\x17\x30\x15\x82\x13sub.foo.example.com" };
@@ -27,8 +28,8 @@ test "F16 catalogue_wildcard_constraint_intersection_and_case (wildcard constrai
 
 test "F15 catalogue_constraints_across_all_cas (an excluded-only predecessor cannot disable later permitted subtrees)" {
     var work: Work = .{ .remaining = 4 * 1024 * 1024 };
-    const leaf = try C.parse(@embedFile("fixtures/vectors/leaf.der"), .{});
-    var lower = try C.parse(@embedFile("fixtures/vectors/p256.der"), .{});
+    const leaf = try C.parse(testdata.file("verify/fixtures/vectors/leaf.der"), .{});
+    var lower = try C.parse(testdata.file("verify/fixtures/vectors/p256.der"), .{});
     var upper = lower;
     lower.extensions[lower.extension_count] = .{ .oid = "\x55\x1d\x1e", .critical = true, .value = "\x30\x11\xa0\x0f\x30\x0d\x82\x0bexample.com" };
     lower.extension_count += 1;
@@ -40,7 +41,7 @@ test "F15 catalogue_constraints_across_all_cas (an excluded-only predecessor can
 }
 
 test "F14 catalogue_verification_flood_charges_every_branch (constraint work: visits and byte scans charged to the exact boundary, rejected paths never refunded)" {
-    const path = [_]C.Certificate{ try C.parse(@embedFile("fixtures/work/work-leaf-1.der"), .{}), try C.parse(@embedFile("fixtures/work/work-inter-1.der"), .{}), try C.parse(@embedFile("fixtures/work/work-root.der"), .{}) };
+    const path = [_]C.Certificate{ try C.parse(testdata.file("verify/fixtures/work/work-leaf-1.der"), .{}), try C.parse(testdata.file("verify/fixtures/work/work-inter-1.der"), .{}), try C.parse(testdata.file("verify/fixtures/work/work-root.der"), .{}) };
     var measured: Work = .{ .remaining = 65536 };
     try constraints.check(&path, &.{}, &measured);
     const cost = 65536 - measured.remaining;

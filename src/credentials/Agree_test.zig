@@ -5,6 +5,7 @@
 const std = @import("std");
 const PrivateKey = @import("../PrivateKey.zig");
 const certificate = @import("../certificate.zig");
+const testdata = @import("testdata");
 
 const gpa = std.testing.allocator;
 
@@ -29,7 +30,7 @@ fn campaign(comptime name: []const u8, comptime kind: Kind) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const file = try std.json.parseFromSliceLeaky(File, arena, @embedFile("../verify/fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
+    const file = try std.json.parseFromSliceLeaky(File, arena, testdata.file("verify/fixtures/wycheproof/" ++ name), .{ .ignore_unknown_fields = true });
     const width: usize = switch (kind) {
         .p256, .x25519 => 32,
         .p384 => 48,
@@ -114,13 +115,13 @@ test "an X25519 key from PKCS#8 (RFC 8410) agrees, signs nothing, and has its RF
 }
 
 test "an RSA or Ed25519 key agrees on nothing; an EC key refuses a peer off its curve" {
-    const rsa = try PrivateKey.parse(gpa, @embedFile("../crypto/testdata/rsa2048.der"), .{});
+    const rsa = try PrivateKey.parse(gpa, testdata.file("crypto/testdata/rsa2048.der"), .{});
     defer rsa.deinit();
     var out: [PrivateKey.max_shared]u8 = undefined;
     try std.testing.expectError(error.UnsupportedAlgorithm, rsa.agree(&@as([65]u8, @splat(4)), &out));
-    const p384 = try PrivateKey.parse(gpa, @embedFile("testdata/p384.pkcs8.pem"), .{});
+    const p384 = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/p384.pkcs8.pem"), .{});
     defer p384.deinit();
-    const p256 = try PrivateKey.parse(gpa, @embedFile("testdata/p256.pkcs8.pem"), .{});
+    const p256 = try PrivateKey.parse(gpa, testdata.file("credentials/testdata/p256.pkcs8.pem"), .{});
     defer p256.deinit();
     var info: [PrivateKey.max_public_key_info]u8 = undefined;
     const p256_public = (try certificate.parsePublicKey(p256.publicKeyInfo(&info))).ec.bytes;

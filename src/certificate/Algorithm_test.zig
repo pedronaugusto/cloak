@@ -2,6 +2,7 @@ const std = @import("std");
 const A = @import("Algorithm.zig");
 const Certificate = @import("Certificate.zig");
 const p521 = @import("../crypto/p521.zig");
+const testdata = @import("testdata");
 
 test "F24 catalogue_algorithm_identifier_and_empty_point (keys and signature identifiers take exactly their legal parameters; empty and unknown keys are refused)" {
     const p256 = "\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07";
@@ -31,7 +32,7 @@ test "F24 catalogue_algorithm_identifier_and_empty_point (keys and signature ide
     try std.testing.expectError(error.InvalidDer, A.signature("\x30\x0d\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0b\x04\x00"));
     try std.testing.expectError(error.InvalidDer, A.signature("\x30\x0b\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x0a"));
     // The certificate's outer algorithm must equal the one its signed body names.
-    const der = @embedFile("../verify/fixtures/vectors/p256.der");
+    const der = testdata.file("verify/fixtures/vectors/p256.der");
     _ = try Certificate.parse(der, .{});
     var altered = der.*;
     const ecdsa_sha256 = "\x2a\x86\x48\xce\x3d\x04\x03\x02";

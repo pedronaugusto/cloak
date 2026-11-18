@@ -4,9 +4,10 @@ const inputs = @import("../../testing/inputs.zig");
 const H = @import("Hello.zig");
 const Reader = @import("../../wire/Reader.zig");
 const Extensions = @import("../wire/Extensions.zig");
+const testdata = @import("testdata");
 const x: [32]u8 = @splat(1);
 const shares = [_]H.Share{.{ .group = .x25519, .bytes = &x }};
-const fixture = @embedFile("testdata/server-hello.bin");
+const fixture = testdata.file("tls/handshake/testdata/server-hello.bin");
 test "C2 hello codec RFC server selection and bounded client offer" {
     const parsed = (try H.server(fixture, "", &shares, .{}, .{})).tls13;
     try std.testing.expectEqual(.aes_128_gcm_sha256, parsed.suite);

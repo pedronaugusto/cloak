@@ -7,34 +7,35 @@ const T = @import("../types.zig");
 const Der = @import("../wire/Der.zig");
 const ct = @import("transparency.zig");
 const signatures = @import("signature.zig");
+const testdata = @import("testdata");
 const gpa = std.testing.allocator;
 
 const vectors = struct {
-    const log = @embedFile("fixtures/ct/ct-server-key-public.der");
-    const ca = @embedFile("fixtures/ct/ca-cert.der");
-    const intermediate = @embedFile("fixtures/ct/intermediate-cert.der");
-    const cert = @embedFile("fixtures/ct/test-cert.der");
-    const proof = @embedFile("fixtures/ct/test-cert.proof");
-    const invalid = @embedFile("fixtures/ct/test-invalid-embedded-cert.der");
+    const log = testdata.file("verify/fixtures/ct/ct-server-key-public.der");
+    const ca = testdata.file("verify/fixtures/ct/ca-cert.der");
+    const intermediate = testdata.file("verify/fixtures/ct/intermediate-cert.der");
+    const cert = testdata.file("verify/fixtures/ct/test-cert.der");
+    const proof = testdata.file("verify/fixtures/ct/test-cert.proof");
+    const invalid = testdata.file("verify/fixtures/ct/test-invalid-embedded-cert.der");
 };
 
 const pki = struct {
-    const ca = @embedFile("../testing/pki/ct_ca.der");
-    const leaf = @embedFile("../testing/pki/ct_leaf.der");
-    const one_operator = @embedFile("../testing/pki/ct_leaf_one_operator.der");
-    const long = @embedFile("../testing/pki/ct_leaf_long.der");
-    const long_three = @embedFile("../testing/pki/ct_leaf_long_three.der");
-    const wrong_entry = @embedFile("../testing/pki/ct_leaf_wrong_entry.der");
-    const plain = @embedFile("../testing/pki/ct_plain.der");
-    const plain_scts = @embedFile("../testing/pki/ct_plain.scts");
-    const log_a = @embedFile("../testing/pki/ct_log_a.spki.der");
-    const log_b = @embedFile("../testing/pki/ct_log_b.spki.der");
-    const log_c = @embedFile("../testing/pki/ct_log_c.spki.der");
-    const log_d = @embedFile("../testing/pki/ct_log_d.spki.der");
-    const ocsp_ca = @embedFile("../testing/pki/ct_ocsp_ca.der");
-    const ocsp_leaf = @embedFile("../testing/pki/ct_ocsp_leaf.der");
-    const ocsp_stapled = @embedFile("../testing/pki/ct_ocsp_leaf.ocsp");
-    const ocsp_bare = @embedFile("../testing/pki/ct_ocsp_leaf_bare.ocsp");
+    const ca = testdata.file("testing/pki/ct_ca.der");
+    const leaf = testdata.file("testing/pki/ct_leaf.der");
+    const one_operator = testdata.file("testing/pki/ct_leaf_one_operator.der");
+    const long = testdata.file("testing/pki/ct_leaf_long.der");
+    const long_three = testdata.file("testing/pki/ct_leaf_long_three.der");
+    const wrong_entry = testdata.file("testing/pki/ct_leaf_wrong_entry.der");
+    const plain = testdata.file("testing/pki/ct_plain.der");
+    const plain_scts = testdata.file("testing/pki/ct_plain.scts");
+    const log_a = testdata.file("testing/pki/ct_log_a.spki.der");
+    const log_b = testdata.file("testing/pki/ct_log_b.spki.der");
+    const log_c = testdata.file("testing/pki/ct_log_c.spki.der");
+    const log_d = testdata.file("testing/pki/ct_log_d.spki.der");
+    const ocsp_ca = testdata.file("testing/pki/ct_ocsp_ca.der");
+    const ocsp_leaf = testdata.file("testing/pki/ct_ocsp_leaf.der");
+    const ocsp_stapled = testdata.file("testing/pki/ct_ocsp_leaf.ocsp");
+    const ocsp_bare = testdata.file("testing/pki/ct_ocsp_leaf_bare.ocsp");
     /// The SCTs were issued an hour after 2026-12-01T00:00:00Z, when the certificates start.
     const issued_ms: i64 = 1_796_086_800_000;
     const now_ms: i64 = 1_800_000_000_000;
@@ -95,13 +96,13 @@ fn embeddedVector(leaf: []const u8, issuer: []const u8) !void {
 }
 
 test "F88 RFC 6962 reference vectors: embedded SCTs over the precertificate, also through a precertificate signing certificate" {
-    try embeddedVector(@embedFile("fixtures/ct/test-embedded-cert.der"), vectors.ca);
-    try embeddedVector(@embedFile("fixtures/ct/test-embedded-with-preca-cert.der"), vectors.ca);
-    try embeddedVector(@embedFile("fixtures/ct/test-embedded-with-intermediate-cert.der"), vectors.intermediate);
-    try embeddedVector(@embedFile("fixtures/ct/test-embedded-with-intermediate-preca-cert.der"), vectors.intermediate);
+    try embeddedVector(testdata.file("verify/fixtures/ct/test-embedded-cert.der"), vectors.ca);
+    try embeddedVector(testdata.file("verify/fixtures/ct/test-embedded-with-preca-cert.der"), vectors.ca);
+    try embeddedVector(testdata.file("verify/fixtures/ct/test-embedded-with-intermediate-cert.der"), vectors.intermediate);
+    try embeddedVector(testdata.file("verify/fixtures/ct/test-embedded-with-intermediate-preca-cert.der"), vectors.intermediate);
     // An SCT for another precertificate, and a right one checked under the wrong issuer.
     try std.testing.expectError(error.InvalidSignature, embeddedVector(vectors.invalid, vectors.ca));
-    try std.testing.expectError(error.InvalidSignature, embeddedVector(@embedFile("fixtures/ct/test-embedded-cert.der"), vectors.intermediate));
+    try std.testing.expectError(error.InvalidSignature, embeddedVector(testdata.file("verify/fixtures/ct/test-embedded-cert.der"), vectors.intermediate));
 }
 
 test "F88 RFC 6962 reference vectors: an SCT over the certificate itself" {
@@ -118,11 +119,11 @@ test "F88 RFC 6962 reference vectors: an SCT over the certificate itself" {
 }
 
 test "F88 a public certificate's SCTs from two production logs meet the default policy" {
-    const leaf = try C.parse(@embedFile("fixtures/ct/www-google-com.der"), .{});
-    const issuer = try C.parse(@embedFile("fixtures/ct/google-we2.der"), .{});
+    const leaf = try C.parse(testdata.file("verify/fixtures/ct/www-google-com.der"), .{});
+    const issuer = try C.parse(testdata.file("verify/fixtures/ct/google-we2.der"), .{});
     const production = [_]T.TransparencyLog{
-        .{ .key = @embedFile("fixtures/ct/argon2026h2.spki.der"), .operator = "Google" },
-        .{ .key = @embedFile("fixtures/ct/wyvern2026h2.spki.der"), .operator = "DigiCert" },
+        .{ .key = testdata.file("verify/fixtures/ct/argon2026h2.spki.der"), .operator = "Google" },
+        .{ .key = testdata.file("verify/fixtures/ct/wyvern2026h2.spki.der"), .operator = "DigiCert" },
     };
     // 2026-10-17T00:00:00Z, within the certificate's validity.
     const now_ms: i64 = 1_792_195_200_000;
