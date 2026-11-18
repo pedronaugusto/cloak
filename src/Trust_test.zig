@@ -70,7 +70,7 @@ test "trust file bounds errors cancellation and deadline preserve prior state" {
     var trust = Trust.init(std.testing.allocator);
     defer trust.deinit();
     try trust.addPem(testdata.file("credentials/testdata/p256.cert.pem"), .{});
-    const path = "src/credentials/testdata/p256.cert.pem";
+    const path = "testdata/credentials/testdata/p256.cert.pem";
     try trust.addFile(std.testing.io, path, .{});
     try std.testing.expectError(error.StreamTooLong, trust.addFile(std.testing.io, path, .{ .limits = .{ .file_bytes = 8 } }));
     var clock = shakedown.Clock.init(std.testing.io, .{ .monotonic = .fromNanoseconds(100) });
@@ -81,7 +81,7 @@ test "trust file bounds errors cancellation and deadline preserve prior state" {
 
 test "trust FaultIo open read cancellation and finite stalled read rollback" {
     @setRuntimeSafety(true);
-    const path = "src/credentials/testdata/p256.cert.pem";
+    const path = "testdata/credentials/testdata/p256.cert.pem";
     // aegis.own.readFile opens, then reads by streaming alone (no positional read, no stat).
     inline for (.{ .dirOpenFile, .file_read_streaming }) |call| {
         const fault = try shakedown.FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = call, .n = 1 } }, .fault = .cancel }} });
@@ -220,21 +220,21 @@ fn systemBundleAllocation(gpa: std.mem.Allocator, comptime load: anytype) !void 
     try trust.addDer(testdata.file("verify/fixtures/work/work-root.der"), .{});
     try expectImportError(trust.addPem(testdata.file("trust/fixtures/system-mixed.pem"), .{}), error.InvalidTime);
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
-    try load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{});
+    try load(&trust, std.testing.io, &.{"testdata/trust/fixtures/system-mixed.pem"}, .{});
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
     try std.testing.expectEqualSlices(u8, testdata.file("verify/fixtures/work/work-root.der"), trust.roots.items[0]);
-    try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .certificate_bytes = 8 }), error.TrustLimit);
+    try expectImportError(load(&trust, std.testing.io, &.{"testdata/trust/fixtures/system-mixed.pem"}, .{ .certificate_bytes = 8 }), error.TrustLimit);
     try std.testing.expectEqual(@as(usize, 1), trust.roots.items.len);
-    try expectImportError(load(&trust, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .roots = 1 }), error.TrustLimit);
+    try expectImportError(load(&trust, std.testing.io, &.{"testdata/trust/fixtures/system-mixed.pem"}, .{ .roots = 1 }), error.TrustLimit);
     var malformed = Trust.init(gpa);
     defer malformed.deinit();
-    try expectImportError(load(&malformed, std.testing.io, &.{"src/trust/fixtures/system-malformed.pem"}, .{}), error.InvalidPem);
+    try expectImportError(load(&malformed, std.testing.io, &.{"testdata/trust/fixtures/system-malformed.pem"}, .{}), error.InvalidPem);
     try std.testing.expectError(error.NoTrustAnchors, malformed.freeze());
-    try expectImportError(load(&malformed, std.testing.io, &.{"src/trust/fixtures/system-mixed.pem"}, .{ .bytes = 8 }), error.TrustLimit);
+    try expectImportError(load(&malformed, std.testing.io, &.{"testdata/trust/fixtures/system-mixed.pem"}, .{ .bytes = 8 }), error.TrustLimit);
     try std.testing.expectError(error.NoTrustAnchors, malformed.freeze());
     var empty = Trust.init(gpa);
     defer empty.deinit();
-    try load(&empty, std.testing.io, &.{"src/trust/fixtures/system-unusable.pem"}, .{});
+    try load(&empty, std.testing.io, &.{"testdata/trust/fixtures/system-unusable.pem"}, .{});
     try std.testing.expectError(error.NoTrustAnchors, empty.freeze());
 }
 

@@ -787,7 +787,7 @@ client flight in named ways), both able to misbehave on purpose, and drivers tha
 client or a server against them in memory, or the two QUIC roles against each other. The peer reuses cloak's HKDF, schedule and record
 protection, which the RFC 8448 vectors pin; its parsing, message assembly and
 signatures are its own. The test PKI is disposable material generated once with
-OpenSSL, recorded in `src/testing/pki/provenance.md`.
+OpenSSL, recorded in `testdata/testing/pki/provenance.md`.
 
 ## TLS 1.3 resumption
 
