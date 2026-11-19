@@ -94,6 +94,11 @@ test "on x86_64 the plain routines run exactly where ladar finds BMI2 and ADX" {
 /// AArch64 Linux: a core with a wide multiplier by its MIDR_EL1, which the kernel emulates
 /// for user space when it says so (HWCAP_CPUID, bit 11): Apple's (implementer 0x61) and
 /// Arm's Neoverse V1 (0xd40) and V2 (0xd4f).
+///
+/// Model selection, not feature detection: both variants run on every AArch64 core, and this
+/// picks the one tuned for the core's model. ladar answers instruction-set questions only (its
+/// design keeps model reads out), and a family-wide model query waits for a second user; so this
+/// read, cloak's only one, stays here, the one place cloak asks the processor itself.
 fn wideMultiplier() bool {
     if (builtin.os.tag != .linux) return false;
     if (std.os.linux.getauxval(std.elf.AT.HWCAP) & (1 << 11) == 0) return false;
