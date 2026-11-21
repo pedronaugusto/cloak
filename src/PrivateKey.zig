@@ -26,7 +26,7 @@ pub const ParseOptions = parser.Options;
 /// Stack a parse and a signature reach below their entry, erased when they return: the frames
 /// of the parser and the kernels, whose spills and copies of key material no owner can name.
 /// A test measures every key type and scheme against them in each build mode. A key is built
-/// straight into its shared block (aegis `Shared.createWith`), never in a frame first.
+/// straight into its shared block (aegis `Shared.createInPlace`), never in a frame first.
 /// Debug's parsing depth is Zig's own x86_64 backend's, the one a Debug build for x86_64 Linux
 /// compiles with: its frames are larger than LLVM's (an encrypted RSA key's parse reaches 108 KiB
 /// there, 90 KiB under LLVM).
@@ -48,7 +48,7 @@ fn parseKey(gpa: std.mem.Allocator, bytes: []const u8, options: ParseOptions) Pa
             try parser.parse(c[0], c[1], c[2], state.material.exposeMut());
         }
     };
-    return .{ .state = try .createWith(gpa, .{ gpa, bytes, options }, Build.run) };
+    return .{ .state = try .createInPlace(gpa, .{ gpa, bytes, options }, Build.run) };
 }
 /// Package-internal (`Pkcs12`): a key bag's key, a PrivateKeyInfo or, when `shrouded`, an
 /// EncryptedPrivateKeyInfo opened with `password` in the form the file's MAC verified.
@@ -66,7 +66,7 @@ fn parseBagKey(gpa: std.mem.Allocator, bag: []const u8, shrouded: bool, password
             if (c[2]) try parser.encryptedWith(c[0], c[1], c[3], c[4], out) else try parser.parsePlain(c[1], c[4], out);
         }
     };
-    return .{ .state = try .createWith(gpa, .{ gpa, bag, shrouded, password, options }, Build.run) };
+    return .{ .state = try .createInPlace(gpa, .{ gpa, bag, shrouded, password, options }, Build.run) };
 }
 /// A private key by its numbers, as a JWK (RFC 7518 section 6, RFC 8037) or another format
 /// carries them, never in DER. Each goes through the checks a parsed key of its kind gets, by the
@@ -114,7 +114,7 @@ fn buildKey(gpa: std.mem.Allocator, components: Components) ComponentsError!Priv
             };
         }
     };
-    return .{ .state = try .createWith(gpa, .{ gpa, components }, Build.run) };
+    return .{ .state = try .createInPlace(gpa, .{ gpa, components }, Build.run) };
 }
 
 /// The kinds of key `generate` makes. An X25519 key only agrees (`agree`): an ephemeral key for
@@ -142,7 +142,7 @@ fn generateKey(gpa: std.mem.Allocator, io: std.Io, kind: Kind) GenerateError!Pri
             try generateInto(c[1], c[2], state.material.exposeMut());
         }
     };
-    return .{ .state = try .createWith(gpa, .{ gpa, io, kind }, Build.run) };
+    return .{ .state = try .createInPlace(gpa, .{ gpa, io, kind }, Build.run) };
 }
 
 /// A new key of `kind` into `out`: the draws and the RSA integers in this frame, which `scrubbed`
