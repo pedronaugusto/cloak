@@ -56,6 +56,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 
 ### Changed
 
+- cloak's own development holds it to the family's policy: `"policy": "family"` in ci/preflight.json, beside the hardened profile ci/workflow.json already declares; the hardened and hardened-tsan legs pass.
 - The package a project fetches holds no test data: every fixture, vector and key the tests read moved from `src/` to `testdata/`, outside build.zig.zon's paths, and the tests, probes and benchmarks read them through the development build's `testdata` module. A fetch is 1.8 MB compressed and 8.8 MiB unpacked, where it was 18 MB and 70 MiB.
 - The field routines' x86_64 choice between s2n-bignum's BMI2/ADX forms and the base ones is ladar's (`ladar.has(.x86_bmi2_adx)`, pinned at c347b66), where cloak ran CPUID itself; the family's one detection. The AArch64 choice by the core's model (MIDR) stays here, which ladar leaves to its users.
 - Under a kernel that takes a direction's keys once (Linux before 6.14, FreeBSD), a TLS 1.3 connection no longer sends a KeyUpdate the kernel cannot follow, which left the peer reading a truncated stream. `keyUpdate` refuses (`NoKeyUpdate`, as under TLS 1.2); where one is due (a quarter of the record budget left, or the peer's request) the write side closes with close_notify, and the read side ends at its limit as TLS 1.2's does. A peer's KeyUpdate still ends the connection.
