@@ -170,8 +170,9 @@ fn inputSize(request: types.Request, anchors: []const []const u8) error{ServiceL
     total = (aegis.int.Checked(usize).init(total).add(request.limits.receipt_bytes.raw()) catch return error.ServiceLimit).raw();
     // Charge all cloak-owned native descriptor/name scratch alongside the path.
     // Framework/CryptoAPI private allocations remain OS-owned and job-count bounded.
-    const descriptors = (aegis.int.Checked(usize).init(request.limits.depth.raw()).mul(2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit).raw();
-    total = (aegis.int.Checked(usize).init(total).add(descriptors + 508) catch return error.ServiceLimit).raw();
+    const descriptors = aegis.int.Checked(usize).init(request.limits.depth.raw()).mul(2 * @sizeOf([]const u8) + @sizeOf(usize)) catch return error.ServiceLimit;
+    const scratch = descriptors.add(508) catch return error.ServiceLimit;
+    total = (aegis.int.Checked(usize).init(total).add(scratch.raw()) catch return error.ServiceLimit).raw();
     const references = (aegis.int.Checked(usize).init(@max(request.chain.len, anchors.len)).mul(@sizeOf(usize)) catch return error.ServiceLimit).raw();
     return (aegis.int.Checked(usize).init(total).add(references) catch return error.ServiceLimit).raw();
 }

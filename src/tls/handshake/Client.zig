@@ -1459,9 +1459,9 @@ pub fn receive(self: *Client, bytes_in: []const u8, epoch: Epoch, boundary: bool
     errdefer self.state.fail();
     if (bytes_in.len > self.kept.message_limit) return error.HandshakeLimit;
     if (!self.established) {
-        const total = (aegis.int.Checked(usize).init(self.total_bytes).add(bytes_in.len) catch return error.HandshakeLimit).raw();
-        if (total > self.options.limits.handshake) return error.HandshakeLimit;
-        self.total_bytes = total;
+        const total = aegis.int.Checked(usize).init(self.total_bytes).add(bytes_in.len) catch return error.HandshakeLimit;
+        if (total.compare(.init(self.options.limits.handshake)) == .gt) return error.HandshakeLimit;
+        self.total_bytes = total.raw();
     }
     const parsed = try Messages.body(bytes_in);
     if (self.version == .tls12) return Client12.receive(self, parsed.kind, bytes_in, epoch, boundary);
