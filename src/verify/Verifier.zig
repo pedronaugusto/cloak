@@ -52,9 +52,9 @@ const Search = struct {
     }
     fn charge(self: *Search, comptime field: []const u8, amount: usize) VerifyError!void {
         @setRuntimeSafety(true);
-        const sum = (aegis.int.Checked(usize).init(@field(self.work, field)).add(amount) catch return error.VerificationLimit).raw();
-        if (sum > @field(self.request.limits, field).raw()) return error.VerificationLimit;
-        @field(self.work, field) = sum;
+        const sum = aegis.int.Checked(usize).init(@field(self.work, field)).add(amount) catch return error.VerificationLimit;
+        if (sum.compare(.init(@field(self.request.limits, field).raw())) == .gt) return error.VerificationLimit;
+        @field(self.work, field) = sum.raw();
     }
     fn parse(self: *Search, der: []const u8) VerifyError!C.Certificate {
         @setRuntimeSafety(true);

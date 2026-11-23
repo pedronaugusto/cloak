@@ -128,8 +128,8 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
         if (der.len > 0xffffff or bound.over(bytes, options.chain_bytes)) return error.IdentityLimit;
     }
     const overhead = (aegis.int.Checked(usize).init(certificates.len).mul(3) catch return error.IdentityLimit).raw();
-    const flight_size = (aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit).raw();
-    if (flight_size > 0xffffff) return error.IdentityLimit;
+    const flight_size = aegis.int.Checked(usize).init(bytes).add(overhead) catch return error.IdentityLimit;
+    if (flight_size.compare(.init(0xffffff)) == .gt) return error.IdentityLimit;
     // The chain is copied first and parsed from the copy, so each certificate's issuer Name and
     // the leaf's key borrow the owned bytes, never the caller's.
     const names = try gpa.alloc([]const u8, certificates.len);
@@ -138,7 +138,7 @@ fn build(gpa: std.mem.Allocator, certificates: []const []const u8, key: ?Private
     errdefer gpa.free(owned);
     const storage = try gpa.alloc(u8, bytes);
     errdefer gpa.free(storage);
-    const flight = try gpa.alloc(u8, flight_size);
+    const flight = try gpa.alloc(u8, flight_size.raw());
     errdefer gpa.free(flight);
     var at: usize = 0;
     var wire: usize = 0;

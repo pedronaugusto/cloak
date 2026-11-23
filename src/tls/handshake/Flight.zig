@@ -257,10 +257,10 @@ pub fn pending(self: *const Flight) bool {
 /// this end's own output: QueueFull, an internal error, never the peer's.
 pub fn reserve(self: *Flight, gpa: std.mem.Allocator, want: usize, cap: usize) Error![]u8 {
     @setRuntimeSafety(true);
-    const needed = (aegis.int.Checked(usize).init(self.used).add(want) catch return error.QueueFull).raw();
-    if (needed > self.buf.view().len) {
-        if (needed > cap) return error.QueueFull;
-        _ = try self.buf.ensure(gpa, @min(cap, @max(needed, @max(4096, self.buf.view().len * 2))));
+    const needed = aegis.int.Checked(usize).init(self.used).add(want) catch return error.QueueFull;
+    if (needed.compare(.init(self.buf.view().len)) == .gt) {
+        if (needed.compare(.init(cap)) == .gt) return error.QueueFull;
+        _ = try self.buf.ensure(gpa, @min(cap, @max(needed.raw(), @max(4096, self.buf.view().len * 2))));
     }
     return self.buf.bytes()[self.used..];
 }

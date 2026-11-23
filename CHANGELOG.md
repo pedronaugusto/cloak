@@ -68,6 +68,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - Development: `cloak-nuget-check` and the misuse checks (`ci/failstop.zig`) write standard output and standard error through a streaming writer, where a positional one wrote them at an offset: output appended to a file was written over from its start (glint P014).
 ### Fixed
 
+- A native verification job's scratch charge adds its fixed 508 bytes through a checked sum, so a depth limit whose descriptors reach the top of `usize` is `ServiceLimit` where the bare add could overflow.
 - The RSA key generation's stack test builds for riscv64: its entropy source seeded ChaCha in a field's default, which runs the key setup at compile time, past the branch quota where the target has no vector path. It is seeded at run time. Tests only.
 - `cloak-nuget-check` is built only for a hosted target. It is a command-line tool on `std.process` and `Io.Threaded`, which does not compile for a freestanding one; a wasm32-freestanding build now gets the library alone, where its check failed inside std.
 - Windows on x86_64 links again for good: the COFF directive that gives s2n-bignum's X25519 base ladders their function entry now goes at each function's end, as ELF's does, where `.ifdef` gives it to the renamed routines alone and the local functions keep their labels (`src/crypto/vendor/shim`; the vendored files are unchanged). 0.23.1's change to the label's name did not link.

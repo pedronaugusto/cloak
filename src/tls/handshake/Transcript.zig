@@ -17,10 +17,10 @@ pub fn Transcript(comptime Hash: type) type {
             @setRuntimeSafety(true);
             if (message.len < 4 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
             if (message.len > 128 * 1024) return error.HandshakeLimit;
-            const count = (aegis.int.Checked(usize).init(self.bytes).add(message.len) catch return error.HandshakeLimit).raw();
-            if (count > 256 * 1024) return error.HandshakeLimit;
+            const count = aegis.int.Checked(usize).init(self.bytes).add(message.len) catch return error.HandshakeLimit;
+            if (count.compare(.init(256 * 1024)) == .gt) return error.HandshakeLimit;
             self.hash.update(message);
-            self.bytes = count;
+            self.bytes = count.raw();
             self.messages += 1;
         }
         /// Commits a TLS-form message in its DTLS 1.2 form: the twelve-byte header with
@@ -30,13 +30,13 @@ pub fn Transcript(comptime Hash: type) type {
             @setRuntimeSafety(true);
             if (message.len < 4 or std.mem.readInt(u24, message[1..4], .big) != message.len - 4) return error.InvalidLength;
             if (message.len > 128 * 1024) return error.HandshakeLimit;
-            const count = (aegis.int.Checked(usize).init(self.bytes).add(message.len + 8) catch return error.HandshakeLimit).raw();
-            if (count > 256 * 1024 + 8 * 64) return error.HandshakeLimit;
+            const count = aegis.int.Checked(usize).init(self.bytes).add(message.len + 8) catch return error.HandshakeLimit;
+            if (count.compare(.init(256 * 1024 + 8 * 64)) == .gt) return error.HandshakeLimit;
             var header: [12]u8 = undefined;
             datagramHeader(&header, message, sequence);
             self.hash.update(&header);
             self.hash.update(message[4..]);
-            self.bytes = count;
+            self.bytes = count.raw();
             self.messages += 1;
         }
         /// Starts the transcript of a handshake whose first ClientHello was answered with a
