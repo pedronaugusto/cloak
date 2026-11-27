@@ -6,12 +6,12 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "LICENSE", "README.md", "CHANGELOG.md" },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.4.0#4739dccd71cfc16b0c15bc27e2d7dca76de9bc21",
-            .hash = "aegis-0.4.0-rsxouv1KDgCdGc-mhY-qBfyE70ar4OQiGGKHKndirWnQ",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.5.0#a5e31b494b9a1eda241e9c9dc2b2920a486fe0fe",
+            .hash = "aegis-0.5.0-rsxourRYDgBBm4yeSU1kWElAmUuEXC6qoeZPs_FVLRUs",
         },
         .ladar = .{
-            .url = "git+https://github.com/pedronaugusto/ladar?ref=v0.1.0#118198e79dcd02d4886e1134ab6e5388724c5cad",
-            .hash = "ladar-0.1.0-fezdEmGUAADsmWiaUnH-1rYzMSMUvuNen38bixu7EEFF",
+            .url = "git+https://github.com/pedronaugusto/ladar?ref=v0.1.1#b66700b1fa6811d9e855ffcfa6c51361b2a35389",
+            .hash = "ladar-0.1.1-fezdEsqWAAC2btuC8MLFcHp-fn0Xn8Vd7j77hBdng311",
         },
     },
     .dev_dependencies = .{

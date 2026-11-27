@@ -66,6 +66,7 @@ All notable changes are documented here, following [Keep a Changelog 1.1.0](http
 - The Linux kernel record layer's tests run on CI, where they skipped: a "kernel TLS" job on Ubuntu loads the `tls` module (`zig build kernel-tls-setup`, `sudo modprobe tls`) and runs them alone (`zig build kernel-tls`), where the probe fails if the kernel has no record layer (`CLOAK_KERNEL_TLS=required`), so a skip cannot pass for a run. Elsewhere a kernel without the module still skips them.
 - aegis 0.3's names: `aegis.Secret` where `aegis.secret.Secret` was, `assert.invariant` where `assert.pre` and `assert.post` were, and the trust store's load waits on its guard (`held.wait(&condition, io, deadline)`). Pins aegis breaking-0.3 (7bdb587) and shakedown's port to it, whose fault callbacks are `shakedown.Hook`s (the trust store's stalled-read test).
 - Development: `cloak-nuget-check` and the misuse checks (`ci/failstop.zig`) write standard output and standard error through a streaming writer, where a positional one wrote them at an offset: output appended to a file was written over from its start (glint P014).
+- Pins aegis 0.5.0 and ladar 0.1.1.
 ### Fixed
 
 - A native verification job's scratch charge adds its fixed 508 bytes through a checked sum, so a depth limit whose descriptors reach the top of `usize` is `ServiceLimit` where the bare add could overflow.
